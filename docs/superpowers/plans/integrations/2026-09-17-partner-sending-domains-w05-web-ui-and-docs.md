@@ -1,7 +1,7 @@
 ---
 tracking_issue: LanternOps/breeze#__PARENT__
 ---
-# Partner Sending Domains W04: Web UI and Docs — Implementation Plan
+# Partner Sending Domains W05: Web UI and Docs — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -14,10 +14,10 @@ contract they fixed is visible to the reviewer; the rest are UI decisions
 recorded so nobody re-litigates them mid-task.
 
 1. **RESOLVED upstream — `SenderIdentityDto.domain` and `.fromAddress` are now
-   populated.** The gap was that W02b's `toIdentityDto` mapped only
+   populated.** The gap was that W03's `toIdentityDto` mapped only
    `id, stream, sendingDomainId, localPart, displayName, replyTo, updatedAt` and
    cast with `as SenderIdentityDto`, over a query that never joined the domain,
-   so neither declared field could be produced. W02b Task 6 now takes
+   so neither declared field could be produced. W03 Task 6 now takes
    `toIdentityDto(row, domain)` against a joined `partner_sending_domains` and
    fills both. **What this wave still does, deliberately:** the rendered address
    comes from `fromAddressFor()` in `domainView.ts`, which composes
@@ -29,8 +29,8 @@ recorded so nobody re-litigates them mid-task.
 2. **RESOLVED upstream — `SendingDomainDto` now carries `statusChangedAt`.**
    The gap was that spec §10's `failed` row says "Retry (inside the window)"
    while the DTO exposed only `createdAt`, `verifiedAt` and `lastCheckedAt`, so
-   the client had nothing to measure the 72 h against. W02a Task 3 now declares
-   `statusChangedAt: string` (ISO, from a `NOT NULL` column) and W02b Task 6's
+   the client had nothing to measure the 72 h against. W02 Task 3 now declares
+   `statusChangedAt: string` (ISO, from a `NOT NULL` column) and W03 Task 6's
    `toDomainDto` fills it. **This wave therefore honours the window:**
    `isInsideRetryWindow(domain, nowMs)` in `domainView.ts` gates the "Try again"
    button, and an expired row shows the failure reason and Remove only. The
@@ -38,7 +38,7 @@ recorded so nobody re-litigates them mid-task.
    a click that races the boundary still surfaces the server's error through
    `runAction` like any other failure.
 3. **Spec §10 "unsupported → tab hidden" and spec §5.1 "the settings tab
-   explains `provider_key_send_only`" contradict each other**, because W02b
+   explains `provider_key_send_only`" contradict each other**, because W03
    returns `supported: false` for both cases (plan lines 3078–3090). They are
    distinguishable by `capability.provider`: `null` for "no provider configured
    on this instance", the provider id for "configured but its key cannot manage
@@ -64,12 +64,12 @@ recorded so nobody re-litigates them mid-task.
    `dispatchTrustDenied` (`apps/web/src/lib/trustProbation.ts:43`) — the same
    handoff `runAction` performs on a 403 — and falls back to an error toast
    when nothing handles it. No new page, no dead link.
-6. **W02b's "Assumed from W02a" block is stale about
+6. **W03's "Assumed from W02" block is stale about
    `normalizeSendingDomain`.** It records
-   `normalizeSendingDomain(input: string): string | null` (W02b plan line 97),
-   but W02a Task 3 — the wave that defines it — ships
+   `normalizeSendingDomain(input: string): string | null` (W03 plan line 97),
+   but W02 Task 3 — the wave that defines it — ships
    `{ ok: true; domain: string } | { ok: false; reason: SendingDomainRejection }`
-   (W02a plan lines 1003–1005, 1016–1055). **This wave consumes W02a's shape**,
+   (W02 plan lines 1003–1005, 1016–1055). **This wave consumes W02's shape**,
    which is the defining one.
 7. **`fetchWithAuth` auto-injects `?orgId=`** (`apps/web/src/stores/auth.ts:1335–1343`).
    `/partner/sending-domains` is partner-axis and ignores the parameter, so it
@@ -119,7 +119,7 @@ and the "where replies go" requirement), §8.3 (Reply-To precedence), §8.5
 (no-inbound-configured warning), §10 (the state table this wave implements),
 §11 (env var table for the docs page), §13 (the 2-minute provisioning delay
 notice, the `static` relay-refusal text), §14 (the E2E bullet and the lab
-check), §15 row W04, §16.1 (rollout steps), §16.2 (self-hosted docs bullets).
+check), §15 row W05, §16.1 (rollout steps), §16.2 (self-hosted docs bullets).
 Plan index: `docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains.md`.
 
 ## Global Constraints
@@ -157,15 +157,15 @@ same PR.
   address is composed for display only (spec §4.4).
 - **The tab is hidden when the feature is unsupported** — and per plan amendment
   3 that means exactly: the `GET` 404s, or `capability.provider === null`.
-- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W04__`; the PR
-  body contains `Closes #__W04__`.** `get_feature_status` before starting.
+- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W05__`; the PR
+  body contains `Closes #__W05__`.** `get_feature_status` before starting.
 - **Web test command form:** `cd apps/web && npx vitest run <path>`. Never
   `pnpm --filter <pkg> test -- --run <path>` — pnpm forwards the literal `--`,
   vitest swallows `--run`, and the whole suite runs in watch mode. A trailing
   slash on a path filter silently skips sibling files, so list paths explicitly.
 - **Commit after every task** with the trailer
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
-- **Rigor is low-ceremony but red-first** (index: "W01 and W04 are wide but
+- **Rigor is low-ceremony but red-first** (index: "W01 and W05 are wide but
   low-risk: red first, typecheck, affected tests"). Write the failing assertion,
   run it, watch it fail, then implement. No plan/review/subagent ceremony.
 
@@ -1151,7 +1151,7 @@ the two values that are deliberately identical in every locale:
 this comment above the number, matching the file's existing style:
 
 ```ts
-    // +2 (partner sending domains W04): `addPlaceholder` and
+    // +2 (partner sending domains W05): `addPlaceholder` and
     // `identityDisplayNamePlaceholder` are sample values — a domain example and
     // a sample display name. Localising them would change the protected-literal
     // occurrence count that localeParity.test.ts:513 pins against English.
@@ -1187,7 +1187,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `fetchWithAuth` (`apps/web/src/stores/auth.ts:1335`), `runAction` /
   `ActionError` (`apps/web/src/lib/runAction.ts:78`), `i18n`
-  (`apps/web/src/lib/i18n`), and from `@breeze/shared` (W02a Task 3):
+  (`apps/web/src/lib/i18n`), and from `@breeze/shared` (W02 Task 3):
   `SendingDomainDto`, `SenderIdentityDto`, `SendingDomainsListResponse`,
   `PartnerMailStreamValue`.
 - Produces:
@@ -1517,7 +1517,7 @@ export async function upsertSenderIdentity(
 ): Promise<SenderIdentityDto> {
   return runAction<SenderIdentityDto>({
     request: () =>
-      // `stream` is a path parameter, never a body field (W02b's
+      // `stream` is a path parameter, never a body field (W03's
       // upsertSenderIdentitySchema is .strict() and rejects it in the body).
       fetchWithAuth(`${SENDING_DOMAINS_PATH}/identities/${input.stream}`, {
         method: 'PUT',
@@ -1605,7 +1605,7 @@ spec §10 are unit-tested without rendering anything.
 **Interfaces:**
 - Consumes: `SendingDomainDto`, `SendingDomainDnsRecordDto`,
   `SenderIdentityDto`, `SendingDomainsCapabilityDto`, `PartnerMailStreamValue`
-  from `@breeze/shared` (W02a Task 3).
+  from `@breeze/shared` (W02 Task 3).
 - Produces:
   ```ts
   export const SENDING_DOMAIN_STREAMS: readonly PartnerMailStreamValue[];
@@ -2064,7 +2064,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `apps/web/src/components/settings/sendingDomains/AddDomainForm.test.tsx`
 
 **Interfaces:**
-- Consumes: `normalizeSendingDomain` from `@breeze/shared` (W02a Task 3 — returns
+- Consumes: `normalizeSendingDomain` from `@breeze/shared` (W02 Task 3 — returns
   `{ ok: true; domain } | { ok: false; reason }`), `useTranslation('settings')`.
 - Produces:
   ```tsx
@@ -2937,7 +2937,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `senderLocalPartSchema`, `senderDisplayNameSchema`,
   `SendingDomainDto`, `SenderIdentityDto`, `PartnerMailStreamValue` from
-  `@breeze/shared` (W02a Task 3); `SENDING_DOMAIN_STREAMS`,
+  `@breeze/shared` (W02 Task 3); `SENDING_DOMAIN_STREAMS`,
   `SUGGESTED_LOCAL_PARTS`, `sendableDomains`, `fromAddressFor` (Task 3).
 - Produces:
   ```tsx
@@ -4610,7 +4610,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 Append to `TARGET_GLOBS`:
 
 ```ts
-  // Partner sending domains W04: the client module holds every mutation for the
+  // Partner sending domains W05: the client module holds every mutation for the
   // custom-sender-address surface (add / check / remove / identity upsert and
   // clear / test send), each already wrapped in runAction. Guarding the file is
   // about the NEXT mutation — a bare fetchWithAuth added beside them would
@@ -4637,7 +4637,7 @@ At `:675`, append to the running comment and change the number:
 
 ```ts
     // #4050 adds settings/ProfilePage.tsx (account security): 142 → 143.
-    // Partner sending domains W04 adds lib/api/sendingDomains.ts and
+    // Partner sending domains W05 adds lib/api/sendingDomains.ts and
     // settings/PartnerSendingDomainTab.tsx: 143 → 145.
     expect(absoluteFiles.length).toBe(145);
 ```
@@ -4669,14 +4669,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ## Task 12: E2E — page object, spec, and the `fake` provider in the stack
 
-**How `EMAIL_DOMAINS_PROVIDER=fake` reaches the API and the worker.** W02a Task 5
+**How `EMAIL_DOMAINS_PROVIDER=fake` reaches the API and the worker.** W02 Task 5
 already did the plumbing that makes the variable *possible*: it declared the key
 in `apps/api/src/config/validate.ts`, documented it in `.env.example` and
 `deploy/.env.example`, and mapped it in the `x-api-env: &api-env` anchor of both
 `docker-compose.yml` and `deploy/docker-compose.prod.yml`. That anchor is merged
 by the `api` service **and** the `worker` service, which is the only mechanism
 that reaches both containers — Compose interpolates only what the anchor names,
-so a value in `.env` alone is inert. **W04 adds nothing to those four files.**
+so a value in `.env` alone is inert. **W05 adds nothing to those four files.**
 What is left is choosing the value in the two places that start an E2E stack:
 `scripts/dev/wt-stack/env.ts` for a local run, and the `portal-dev-e2e` job's
 `.env` heredoc for CI. The dev stack runs one `api` container with
@@ -4698,7 +4698,7 @@ the same process serves the routes and runs the `sending-domains` worker.
   (`e2e-tests/pages/hydration.ts`), the `authedPage` fixture
   (`e2e-tests/fixtures.ts:12`), `clearRefreshState`
   (`e2e-tests/test-helpers.ts:29`), and the `fake` adapter's deterministic
-  domain names (W02a Task 8): `*.verify.test` verifies, `*.fail.test` fails,
+  domain names (W02 Task 8): `*.verify.test` verifies, `*.fail.test` fails,
   `conflict.test` conflicts, `preexisting.*` is adopted already verified.
 - Produces: `export class PartnerSendingDomainsPage extends BasePage`.
 
@@ -4717,13 +4717,13 @@ In `scripts/dev/wt-stack/env.ts`, add to `DEV_ENV` immediately after
 `MFA_FORCE_FOR_PARTNER_ADMIN: 'false',`:
 
 ```ts
-  // Partner sending domains W04. `fake` is the deterministic adapter: it makes
+  // Partner sending domains W05. `fake` is the deterministic adapter: it makes
   // no external calls, verifies `*.verify.test` on the first check, fails
   // `*.fail.test`, and hands a send to the platform transport so Mailpit shows
   // the custom From. config/validate.ts refuses it in production, and the
   // settings tab is hidden whenever this is unset — which is why the E2E spec
   // needs it. .env.stack is passed LAST to compose, so this wins over a stale
-  // root .env, and docker-compose.yml's x-api-env anchor (added in W02a) is what
+  // root .env, and docker-compose.yml's x-api-env anchor (added in W02) is what
   // carries it into the api and worker containers.
   EMAIL_DOMAINS_PROVIDER: 'fake',
 ```
@@ -4816,7 +4816,7 @@ import { clearRefreshState } from '../test-helpers';
 import { PartnerSendingDomainsPage } from '../pages/PartnerSendingDomainsPage';
 
 /**
- * Partner sending domains W04 — the browser slice of spec §14's E2E bullet.
+ * Partner sending domains W05 — the browser slice of spec §14's E2E bullet.
  *
  * Runs against the `fake` email-domain provider (EMAIL_DOMAINS_PROVIDER=fake in
  * the dev stack), whose behaviour is keyed on the DOMAIN NAME, so no seeding is
@@ -5010,7 +5010,7 @@ git commit -m "test(e2e): partner sending domains against the fake provider
 Add, verify, configure the support stream, test send and remove, plus the
 provider-rejection path and the not-eligible locked card. The dev stack and the
 portal-dev-e2e job set EMAIL_DOMAINS_PROVIDER=fake; the compose mapping that
-carries it into the api and worker containers already shipped in W02a.
+carries it into the api and worker containers already shipped in W02.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -5344,7 +5344,7 @@ have to reconstruct it, and so the reviewer can check it against §16.2.
 
 **Files:**
 - None. This block is copied into the GitHub Release body's self-hoster section
-  by the `release` skill when the release that contains W04 is cut.
+  by the `release` skill when the release that contains W05 is cut.
 
 - [ ] **Step 1: Record the block in the PR body**
 
@@ -5484,8 +5484,8 @@ Expected: no project from this worktree still running.
 
 - [ ] **Step 7: Open the PR**
 
-Branch `feature/__PARENT__-partner-sending-domains/wave-__W04__`, PR body
-contains `Closes #__W04__`, the release-notes block from Task 14 under a
+Branch `feature/__PARENT__-partner-sending-domains/wave-__W05__`, PR body
+contains `Closes #__W05__`, the release-notes block from Task 14 under a
 `## Release notes` heading, and a line stating that `portal-dev-e2e` is
 non-blocking so the new spec is signal rather than a gate. `get_feature_status`
 and `complete_wave` per the feature-lifecycle skill.
@@ -5496,7 +5496,7 @@ and `complete_wave` per the feature-lifecycle skill.
 
 Everything below is done by a human against real infrastructure, after this
 wave's PR has merged. It is recorded here because spec §16.1 and §14 are part of
-what W04 delivers, and because the first three steps are what turn the feature on
+what W05 delivers, and because the first three steps are what turn the feature on
 for the first hosted partner. **No task above depends on any of it, and an
 implementing agent must not attempt any of it.**
 
@@ -5509,7 +5509,7 @@ implementing agent must not attempt any of it.**
   alone is inert. The hosted rule is enforced at boot: the partner-lane key must
   differ from `RESEND_API_KEY`, and `static` is refused when `IS_HOSTED=true`.
 
-- [ ] **§16.1 step 2 — merge W01 through W04 with the provider still unset.**
+- [ ] **§16.1 step 2 — merge W01 through W05 with the provider still unset.**
   Nothing changes for any tenant: the tab is hidden, the routes 404, the worker
   is not registered, and W01's golden test is the proof that no rendered email
   moved.
@@ -5518,7 +5518,7 @@ implementing agent must not attempt any of it.**
   `PARTNER_TRUST_MODE=enforce` on both regions. Set `EMAIL_DOMAINS_PROVIDER` and
   an `EMAIL_DOMAINS_PARTNER_ALLOWLIST` containing OliveTech only. Verify with
   the version-parity enumeration from CLAUDE.md that both regions are actually
-  running the release that contains W04 — `/health` cannot see a service that
+  running the release that contains W05 — `/health` cannot see a service that
   was never rolled.
 
 - [ ] **§14 lab check — before any other partner is enabled.** On a

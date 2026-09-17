@@ -1,7 +1,7 @@
 ---
 tracking_issue: LanternOps/breeze#__PARENT__
 ---
-# Partner Sending Domains W03: Partner Lane — Implementation Plan
+# Partner Sending Domains W04: Partner Lane — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -11,29 +11,29 @@ tracking_issue: LanternOps/breeze#__PARENT__
 
 **Tech Stack:** TypeScript (Hono API), Drizzle ORM, ioredis, Vitest (unit + the RLS/integration contract suites on real Postgres), `tsc --noEmit` over `apps/api/tsconfig.json`.
 
-**Spec:** `docs/superpowers/specs/integrations/2026-09-17-partner-sending-domains-design.md` §8.2 (ticket precedence, the last rule), §8.3 (resolution, eligibility, Reply-To precedence), §8.4 (failure semantics), §8.5 (threading and loop prevention), §9.1 (allowlist, kill switch, caps, eligibility at send), §13 (rows "Partner lane paused or rate-limited", "`static`: the relay refuses the custom sender", "Partner suspended or restricted"), §14 (sender resolution, `sendEmail` error classes, the transport matrix for `static`, loop prevention, the integration bullet), §15 row W03. Plan index: `docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains.md` — the "Defined in W01", "Defined in W02a", "Defined in W02b" and "Defined in W03" contract blocks, which are binding.
+**Spec:** `docs/superpowers/specs/integrations/2026-09-17-partner-sending-domains-design.md` §8.2 (ticket precedence, the last rule), §8.3 (resolution, eligibility, Reply-To precedence), §8.4 (failure semantics), §8.5 (threading and loop prevention), §9.1 (allowlist, kill switch, caps, eligibility at send), §13 (rows "Partner lane paused or rate-limited", "`static`: the relay refuses the custom sender", "Partner suspended or restricted"), §14 (sender resolution, `sendEmail` error classes, the transport matrix for `static`, loop prevention, the integration bullet), §15 row W04. Plan index: `docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains.md` — the "Defined in W01", "Defined in W02", "Defined in W03" and "Defined in W04" contract blocks, which are binding.
 
 ---
 
 ## Plan amendments
 
-Deviations from the spec, the index or W01, each forced by the real code and verified by reading the file cited on 2026-09-17. W01, W02a and W02b are treated as merged.
+Deviations from the spec, the index or W01, each forced by the real code and verified by reading the file cited on 2026-09-17. W01, W02 and W03 are treated as merged.
 
 1. **The partner branch's database work lives behind a dynamic import.** `apps/api/src/db/index.ts` runs `dotenv`, resolves a connection config and constructs a `postgres()` client at module load (`db/index.ts:1-3, 28-42`), and `services/partnerTrust.ts` statically imports `./partnerTrust.repo`, `./auditService` and `./redis` (`partnerTrust.ts:1-8`). A static `import { db } from '../../db'` in `senderResolution.ts` would drag both graphs into **every** suite that imports `services/email.ts` — including `email.golden.test.ts` and `email.test.ts`, which mock neither and call `vi.resetModules()` before each case. So the read, the trust evaluation and the partner-axis escape live in `services/emailDomains/partnerLaneLookup.ts`, which `senderResolution.ts` reaches only through `await import('./partnerLaneLookup')` inside the partner branch. `EmailService.sendEmail` reaches `partnerLaneSend.ts` the same way, which additionally breaks a genuine cycle (`email.ts` → `partnerLaneSend.ts` → `providerRegistry.ts` → `adapters/static.ts` → `email.ts`), and `partnerLaneSend.ts` reaches `jobs/sendingDomainsWorker.ts` the same way (BullMQ, and that worker sends `staff.sending_domain_status` through `getEmailService()`). Established precedent for exactly this: `services/policyEvaluationService.ts:1322`, `services/aiBudgetAlerts.ts:157`, `services/drExecutionService.ts:480`, `services/eventSubscribers.ts:70`.
 
 2. **A partner-scoped ambient context NEVER takes the partner-axis escape.** Spec §8.3 says the escape is taken "otherwise (org scope, portal, no context)" — its own parenthetical omits partner scope. That omission is load-bearing: `readWithPartnerAxisVisibility` runs the read as `system`, so escalating for a partner-scoped caller whose `accessiblePartnerIds` does not contain the requested partner would hand partner B the identity of partner A. Under partner scope the lookup therefore runs **in place**, and RLS decides: accessible → rows; not accessible → zero rows → the platform lane with reason `partner_ineligible`. Fail closed, no escalation. This is what makes the cross-partner integration assertion in Task 11 provable at all.
 
-3. **`recordPartnerLaneCapHit` lives in `sendCap.ts` and is called by `sendCap.ts`, not by the resolver.** The index's "Defined in W03" block names only `tryCountPartnerLaneSend(partnerId): Promise<boolean>`. Exporting the hook from the same module is additive, and calling it there is the only way to distinguish a genuine cap hit from a Redis outage: both return `false` to the resolver, but only the first is an abuse signal for W05 to produce. A Redis outage must never fabricate one.
+3. **`recordPartnerLaneCapHit` lives in `sendCap.ts` and is called by `sendCap.ts`, not by the resolver.** The index's "Defined in W04" block names only `tryCountPartnerLaneSend(partnerId): Promise<boolean>`. Exporting the hook from the same module is additive, and calling it there is the only way to distinguish a genuine cap hit from a Redis outage: both return `false` to the resolver, but only the first is an abuse signal for W06 to produce. A Redis outage must never fabricate one.
 
-4. **`over_cap` is also the reason for "cap could not be evaluated".** `PlatformLaneReason` is fixed by the index and has no `cap_unavailable`. A Redis outage therefore resolves to `over_cap` (the safe direction — platform lane, no mail lost, no cap lifted) and is told apart in the logs by a distinct structured line emitted inside `sendCap.ts`. If W05 wants a separate reason, it changes the index.
+4. **`over_cap` is also the reason for "cap could not be evaluated".** `PlatformLaneReason` is fixed by the index and has no `cap_unavailable`. A Redis outage therefore resolves to `over_cap` (the safe direction — platform lane, no mail lost, no cap lifted) and is told apart in the logs by a distinct structured line emitted inside `sendCap.ts`. If W06 wants a separate reason, it changes the index.
 
-5. **`NormalizedInboundEmail` has no generic header bag, so the marker needs a field.** `services/inboundEmail/types.ts:44-70` carries `autoSubmitted` and `precedence` as *named* fields precisely because the two providers surface headers differently: Mailgun ships a JSON `message-headers` form field (`mailgun.ts:60-63`, `parseHeader` at `:204`) and Graph ships `internetMessageHeaders` (`normalizeGraphMessage.ts:83-84`, `header()` at `:4`). `raw` is NOT a substitute — Mailgun's `raw` is the whole form body, Graph's is `{ graphConversationId, receivedDateTime }` only. W03 adds one field, `outboundMarker?: string`, populated by both normalizers with the same helper each already uses.
+5. **`NormalizedInboundEmail` has no generic header bag, so the marker needs a field.** `services/inboundEmail/types.ts:44-70` carries `autoSubmitted` and `precedence` as *named* fields precisely because the two providers surface headers differently: Mailgun ships a JSON `message-headers` form field (`mailgun.ts:60-63`, `parseHeader` at `:204`) and Graph ships `internetMessageHeaders` (`normalizeGraphMessage.ts:83-84`, `header()` at `:4`). `raw` is NOT a substitute — Mailgun's `raw` is the whole form body, Graph's is `{ graphConversationId, receivedDateTime }` only. W04 adds one field, `outboundMarker?: string`, populated by both normalizers with the same helper each already uses.
 
-6. **The marker check belongs at ingest, not in `loopPrevention.ts`'s existing function.** `autoresponseSuppressionReason` only suppresses the **autoresponse** (its single caller is `autoresponder.ts:114`); spec §8.5 says the mail must be *ignored*. The ingest-time self-loop drop at `inboundEmailService.ts:192-205` is where "ignored" is implemented, so W03 adds a second exported function, `ownOutboundReason`, in `loopPrevention.ts` and calls it there. The file is still the right home — it is the module the spec names and the one that already owns "is this our own mail".
+6. **The marker check belongs at ingest, not in `loopPrevention.ts`'s existing function.** `autoresponseSuppressionReason` only suppresses the **autoresponse** (its single caller is `autoresponder.ts:114`); spec §8.5 says the mail must be *ignored*. The ingest-time self-loop drop at `inboundEmailService.ts:192-205` is where "ignored" is implemented, so W04 adds a second exported function, `ownOutboundReason`, in `loopPrevention.ts` and calls it there. The file is still the right home — it is the module the spec names and the one that already owns "is this our own mail".
 
 7. **`invoiceResend.test.ts` and `quoteLifecycle.test.ts` get their partner-lane case through the real `resolveSender`, not through a real transport.** Both suites mock `getEmailService` wholesale (`quoteLifecycle.test.ts:84-88`, `invoiceResend.test.ts:86-90`), so a "partner-lane case" asserted against their `sendEmailMock` would be vacuous. Instead each suite feeds the envelope it captured into the real `resolveSender` with `partnerLaneLookup` mocked, which fails the moment either call site regresses to `partnerId: null`. The end-to-end partner-lane send lives in `email.test.ts` (Task 5) and `staticTransportMatrix.test.ts` (Task 6).
 
-8. **W03 owns the structured-transport-error fix W02a deferred.** W02a plan amendment 7 states it explicitly: W01's `deliverRaw` inherits today's throws, so the `static` adapter's send-error classifier has only text to work with — the Resend branch throws `new Error(\`Resend error: ${error.message}\`)` (`services/email.ts:265`), discarding `error.name` and `error.statusCode`; the Mailgun branch throws `Mailgun API error (<status>)<details>` (`services/email.ts:807`); the SMTP branch does not catch at all (`services/email.ts:300`), so nodemailer's error arrives intact with `responseCode`/`response`. "Carrying a structured cause out of `deliverRaw` is a W03 follow-up." Task 3 does it. The one hard constraint is that `.message` stays **byte-for-byte identical**, because three live matchers key on it: `services/reportNarrativeDelivery.ts:138` (`/^Resend error:/i`), `:145-146` (`/^Mailgun API error \((?:408|429)\)/i` and `/^Mailgun API error \(4\d\d\)/i`), and `services/notificationChannelSecrets.test.ts:127`. `EmailTransportError extends Error` therefore changes the error's **shape**, never its text.
+8. **W04 owns the structured-transport-error fix W02 deferred.** W02 plan amendment 7 states it explicitly: W01's `deliverRaw` inherits today's throws, so the `static` adapter's send-error classifier has only text to work with — the Resend branch throws `new Error(\`Resend error: ${error.message}\`)` (`services/email.ts:265`), discarding `error.name` and `error.statusCode`; the Mailgun branch throws `Mailgun API error (<status>)<details>` (`services/email.ts:807`); the SMTP branch does not catch at all (`services/email.ts:300`), so nodemailer's error arrives intact with `responseCode`/`response`. "Carrying a structured cause out of `deliverRaw` is a W04 follow-up." Task 3 does it. The one hard constraint is that `.message` stays **byte-for-byte identical**, because three live matchers key on it: `services/reportNarrativeDelivery.ts:138` (`/^Resend error:/i`), `:145-146` (`/^Mailgun API error \((?:408|429)\)/i` and `/^Mailgun API error \(4\d\d\)/i`), and `services/notificationChannelSecrets.test.ts:127`. `EmailTransportError extends Error` therefore changes the error's **shape**, never its text.
 
 9. **The report-delivery snapshot suite needs one more queued `select`.** `reportDelivery.snapshot.test.ts:162-175` drives `processRunScheduledReport` with a FIFO queue of exactly three `selectMock.mockReturnValueOnce(...)` entries; a fourth `db.select` would receive `undefined` and throw on `.from`. Task 8 adds the org→partner read after `resolveOrgTimezone`, so a fourth entry is appended in the same task, and the five success snapshots are regenerated (`partnerId` goes from `null` to the partner id). The failure snapshot is untouched — `emailReportFailure` is `staff.report_failure`, a platform purpose.
 
@@ -47,38 +47,38 @@ Verbatim binding rules for this wave.
 - **An ambiguous failure never crosses lanes.** `message_rejected` and `ambiguous` throw, exactly as today. A message whose fate is unknown is never re-sent on the platform lane, because a recipient receiving two copies is worse than a retry.
 - **The fallback never loses mail.** `domain_unusable` and `lane_unavailable` mean the message was definitively NOT sent; it goes out on the platform lane with the purpose's `platformFallbackFrom`, carrying neither `X-Breeze-Outbound` nor any partner tag.
 - **`partnerId` never comes from request input.** It comes from a row the call site already read under its own RLS context, or from the verified auth context (spec §8.1).
-- **The send path never WRITES a partner-axis table.** `last_send_error` / `last_send_error_at` are written by the worker from the `sync-domain` payload (spec §3.1), never by `sendEmail`, which may be running in a context that cannot write them. This is also a CI contract: `ALLOWED_WITHOUT_CAPABILITY_CHECK` in `apps/api/src/__tests__/partner-wide-write-coverage.test.ts:64` greps every file under `src/routes/**` and `src/services/**` for `.insert|update|delete(<partner-axis table>` without `canManagePartnerWidePolicies` and reds the required **Test API** job (W02a plan amendment 3, W02b plan amendment 10 — which also verified that **`src/jobs/**` is NOT scanned**, so Task 7's write inside `sendingDomainsWorker.ts` needs no entry). W03 adds **no** entry to that allowlist, because it adds no such write — `senderResolution.ts`, `partnerLaneLookup.ts` and `partnerLaneSend.ts` only SELECT, and the refusal text reaches the row through `enqueueSyncDomain(domainId, { lastSendError })`. Task 12 greps for this.
+- **The send path never WRITES a partner-axis table.** `last_send_error` / `last_send_error_at` are written by the worker from the `sync-domain` payload (spec §3.1), never by `sendEmail`, which may be running in a context that cannot write them. This is also a CI contract: `ALLOWED_WITHOUT_CAPABILITY_CHECK` in `apps/api/src/__tests__/partner-wide-write-coverage.test.ts:64` greps every file under `src/routes/**` and `src/services/**` for `.insert|update|delete(<partner-axis table>` without `canManagePartnerWidePolicies` and reds the required **Test API** job (W02 plan amendment 3, W03 plan amendment 10 — which also verified that **`src/jobs/**` is NOT scanned**, so Task 7's write inside `sendingDomainsWorker.ts` needs no entry). W04 adds **no** entry to that allowlist, because it adds no such write — `senderResolution.ts`, `partnerLaneLookup.ts` and `partnerLaneSend.ts` only SELECT, and the refusal text reaches the row through `enqueueSyncDomain(domainId, { lastSendError })`. Task 12 greps for this.
 - **No cache.** Resolution reads the row on every send, which is what makes suspend/unsuspend and a trust-state change take effect on the next message (spec §8.3, §9.1 kill switch).
-- **No new table, no migration, no new env var.** W03 consumes `EMAIL_DOMAINS_*` as W02a declared them; the index reserves no migration slot for this wave.
+- **No new table, no migration, no new env var.** W04 consumes `EMAIL_DOMAINS_*` as W02 declared them; the index reserves no migration slot for this wave.
 - **Rigor is high** (send path, tenancy, abuse surface — index "Rules every wave inherits"). Red first on every task: write the failing assertion, run it, watch it fail, then implement. Before the PR: `pnpm test-stack up`, the RLS and integration contract suites, then `pnpm test-stack down` — nothing reaps it for you.
 - **Test command form:** `cd apps/api && npx vitest run <path>`. Never `pnpm --filter <pkg> test -- --run <path>`: pnpm forwards the literal `--`, vitest swallows `--run`, and the whole suite runs in watch mode. Vitest's path filter is a plain substring, so list sibling files explicitly and check the reported file count.
-- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W03__`; PR body contains `Closes #__W03__`.** `get_feature_status` before starting.
+- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W04__`; PR body contains `Closes #__W04__`.** `get_feature_status` before starting.
 - **Commit after every task** with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ---
 
-## Consumed from W02a/W02b (reconciled)
+## Consumed from W02/W03 (reconciled)
 
-Both plans are complete and were re-read before this one was finalised. **Every name below was read from their Interfaces blocks — W03 guesses none of them.** Where a shape differs from the plan index's "Defined in W02a/W02b" list, the wave's own plan wins and the difference is called out.
+Both plans are complete and were re-read before this one was finalised. **Every name below was read from their Interfaces blocks — W04 guesses none of them.** Where a shape differs from the plan index's "Defined in W02/W03" list, the wave's own plan wins and the difference is called out.
 
 | Name | Source | Status |
 |---|---|---|
-| `partnerSendingDomains`, `partnerSenderIdentities` (Drizzle, column names) | W02a Task 1 | verified |
-| `PartnerLaneMessage = RawEmailMessage`; `class PartnerLaneSendFailure extends Error { constructor(readonly error: PartnerLaneSendError) }` with `.name = 'PartnerLaneSendFailure'` and message `partner lane send failed: <kind>` | W02a Task 6 | verified |
-| `getEmailDomainProvider(): EmailDomainProvider \| null`, `resetEmailDomainProviderForTests()` (`providerRegistry.ts`) | W02a Task 6 | verified |
-| `EmailDomainProvider.send(m: PartnerLaneMessage & { partnerRef: string; tags: Record<string,string> }): Promise<{ providerMessageId: string }>` | W02a Task 6 | verified |
-| `getEmailDomainsConfig(): EmailDomainsConfig` with `dailySendCap: number` (0 = unlimited) and `partnerAllowlist: string[]`; `isPartnerLaneConfigured(): boolean`; `findStaticAllowedEntry` | W02a Task 5 | verified — W03 reads only `dailySendCap` and `partnerAllowlist` |
-| `GatedCapability` includes `'custom_sending_domain'` | W02a Task 10 | verified |
-| `createStaticDomainProvider()`, `classifyPlatformTransportError(err: unknown): PartnerLaneSendError` exported from `services/emailDomains/adapters/static.ts`; the `static` adapter calls `getEmailService().deliverRaw(raw)` and wraps any throw in `PartnerLaneSendFailure(classifyPlatformTransportError(err))` | W02a Task 8 | verified — Task 3 upgrades that classifier |
-| `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts` exists (W02a Task 12) | W02a File Structure | verified it is created there; Task 11 appends to it and reuses its `SYSTEM_CTX` / `partnerContext` / `orgContext` / `fixture` / `seedDomain` helpers verbatim |
-| `SENDING_DOMAINS_QUEUE = 'sending-domains'`; `enqueueSyncDomain(domainId: string, opts?: { lastSendError?: string }): Promise<void>`; `enqueueTestSend(domainId, userId)`; `initializeSendingDomainsWorker`; `shutdownSendingDomainsWorker`; `runSendingDomainsSweep`; `runDailyMaintenance` (`apps/api/src/jobs/sendingDomainsWorker.ts`) | W02b Task 4 | verified |
-| `runTestSend(domainId: string, userId: string): Promise<'sent' \| 'refused' \| 'skipped'>` — **this**, not an inline job handler, is the function Task 7 edits | W02b Task 4 | verified |
-| `markStaticDomainVerified(domainId: string, now?: Date): Promise<boolean>` (`services/emailDomains/domainSync.ts`) — the ONLY path a `static` row reaches `verified`, called by `runTestSend` **after** an accepted send | W02b Task 3, Global Constraints | verified |
-| The worker's Redis accessor is `getRedis()` from `services/redis.ts` (`services/emailDomains/keyProbe.ts`, W02b Task 4, Step 4) — the same shared client `sendCap.ts` uses, with the same `getRedis() → null` degrade | W02b Task 4 | verified |
-| W02b amendment 7: the test send is bounded by the route's 5/h/partner limit alone in that wave, and "W03 adds the cap call to the `test-send` processor" | W02b amendment 7 | verified — Task 7 discharges it |
-| W02b amendment 10: `partner-wide-write-coverage.test.ts` scans `src/routes/**` and `src/services/**` only — **`src/jobs/**` is NOT scanned**, so `sendingDomainsWorker.ts` needs no allowlist entry despite updating `partnerSendingDomains` | W02b amendment 10 | verified |
+| `partnerSendingDomains`, `partnerSenderIdentities` (Drizzle, column names) | W02 Task 1 | verified |
+| `PartnerLaneMessage = RawEmailMessage`; `class PartnerLaneSendFailure extends Error { constructor(readonly error: PartnerLaneSendError) }` with `.name = 'PartnerLaneSendFailure'` and message `partner lane send failed: <kind>` | W02 Task 6 | verified |
+| `getEmailDomainProvider(): EmailDomainProvider \| null`, `resetEmailDomainProviderForTests()` (`providerRegistry.ts`) | W02 Task 6 | verified |
+| `EmailDomainProvider.send(m: PartnerLaneMessage & { partnerRef: string; tags: Record<string,string> }): Promise<{ providerMessageId: string }>` | W02 Task 6 | verified |
+| `getEmailDomainsConfig(): EmailDomainsConfig` with `dailySendCap: number` (0 = unlimited) and `partnerAllowlist: string[]`; `isPartnerLaneConfigured(): boolean`; `findStaticAllowedEntry` | W02 Task 5 | verified — W04 reads only `dailySendCap` and `partnerAllowlist` |
+| `GatedCapability` includes `'custom_sending_domain'` | W02 Task 10 | verified |
+| `createStaticDomainProvider()`, `classifyPlatformTransportError(err: unknown): PartnerLaneSendError` exported from `services/emailDomains/adapters/static.ts`; the `static` adapter calls `getEmailService().deliverRaw(raw)` and wraps any throw in `PartnerLaneSendFailure(classifyPlatformTransportError(err))` | W02 Task 8 | verified — Task 3 upgrades that classifier |
+| `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts` exists (W02 Task 12) | W02 File Structure | verified it is created there; Task 11 appends to it and reuses its `SYSTEM_CTX` / `partnerContext` / `orgContext` / `fixture` / `seedDomain` helpers verbatim |
+| `SENDING_DOMAINS_QUEUE = 'sending-domains'`; `enqueueSyncDomain(domainId: string, opts?: { lastSendError?: string }): Promise<void>`; `enqueueTestSend(domainId, userId)`; `initializeSendingDomainsWorker`; `shutdownSendingDomainsWorker`; `runSendingDomainsSweep`; `runDailyMaintenance` (`apps/api/src/jobs/sendingDomainsWorker.ts`) | W03 Task 4 | verified |
+| `runTestSend(domainId: string, userId: string): Promise<'sent' \| 'refused' \| 'skipped'>` — **this**, not an inline job handler, is the function Task 7 edits | W03 Task 4 | verified |
+| `markStaticDomainVerified(domainId: string, now?: Date): Promise<boolean>` (`services/emailDomains/domainSync.ts`) — the ONLY path a `static` row reaches `verified`, called by `runTestSend` **after** an accepted send | W03 Task 3, Global Constraints | verified |
+| The worker's Redis accessor is `getRedis()` from `services/redis.ts` (`services/emailDomains/keyProbe.ts`, W03 Task 4, Step 4) — the same shared client `sendCap.ts` uses, with the same `getRedis() → null` degrade | W03 Task 4 | verified |
+| W03 amendment 7: the test send is bounded by the route's 5/h/partner limit alone in that wave, and "W04 adds the cap call to the `test-send` processor" | W03 amendment 7 | verified — Task 7 discharges it |
+| W03 amendment 10: `partner-wide-write-coverage.test.ts` scans `src/routes/**` and `src/services/**` only — **`src/jobs/**` is NOT scanned**, so `sendingDomainsWorker.ts` needs no allowlist entry despite updating `partnerSendingDomains` | W03 amendment 10 | verified |
 
-**Still unpinned: nothing.** One reconciliation note for the executor: W02b's `sendingDomainsWorker.test.ts` already mocks `../services/emailDomains/config` with `dailySendCap: 0`, so W03's cap must be mocked as its own `vi.mock('../services/emailDomains/sendCap', …)` block rather than by editing that config mock — the cap is read inside `sendCap.ts`, which the worker no longer touches directly.
+**Still unpinned: nothing.** One reconciliation note for the executor: W03's `sendingDomainsWorker.test.ts` already mocks `../services/emailDomains/config` with `dailySendCap: 0`, so W04's cap must be mocked as its own `vi.mock('../services/emailDomains/sendCap', …)` block rather than by editing that config mock — the cap is read inside `sendCap.ts`, which the worker no longer touches directly.
 
 ---
 
@@ -113,7 +113,7 @@ Both plans are complete and were re-read before this one was finalised. **Every 
 - Create: `apps/api/src/services/emailDomains/sendCap.test.ts` (Test)
 
 **Interfaces:**
-- Consumes: `getRedis` from `../redis` (`apps/api/src/services/redis.ts:110`, returns `Redis | null`) — the SAME shared client accessor W02b's `services/emailDomains/keyProbe.ts` uses, with the same `getRedis() → null` degrade; `getEmailDomainsConfig` from `./config` (W02a Task 5).
+- Consumes: `getRedis` from `../redis` (`apps/api/src/services/redis.ts:110`, returns `Redis | null`) — the SAME shared client accessor W03's `services/emailDomains/keyProbe.ts` uses, with the same `getRedis() → null` degrade; `getEmailDomainsConfig` from `./config` (W02 Task 5).
 - Produces:
   ```ts
   export function partnerLaneCapKey(partnerId: string, now: number): string;
@@ -217,7 +217,7 @@ describe('tryCountPartnerLaneSend (spec §9.1)', () => {
     await expect(tryCountPartnerLaneSend(PARTNER)).resolves.toBe(false);
   });
 
-  // A Redis outage must NOT fabricate an abuse signal for W05 to act on.
+  // A Redis outage must NOT fabricate an abuse signal for W06 to act on.
   it('logs a cap hit only for a genuine over-cap count, never for an outage', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getRedisMock.mockReturnValue(redisWithCount(2001));
@@ -276,8 +276,8 @@ export function partnerLaneCapKey(partnerId: string, now: number): string {
 }
 
 /**
- * The daily cap was reached for this partner. W05 owns the abuse-signal
- * producer (spec §9.2) and wires it here; W03 records the structured line so
+ * The daily cap was reached for this partner. W06 owns the abuse-signal
+ * producer (spec §9.2) and wires it here; W04 records the structured line so
  * the event is observable from day one.
  *
  * Called ONLY on a genuine over-cap count — never on a Redis outage, which
@@ -349,7 +349,7 @@ Spec §9.1. Fixed-window Redis counter per partner per UTC day, INCR+EXPIRE in
 one multi() (the readActionBudget idiom). 0 = unlimited and never touches Redis
 (the self-hosted default). When Redis cannot answer, the send goes out on the
 PLATFORM lane: nothing is lost and an outage cannot lift the abuse cap.
-recordPartnerLaneCapHit fires only on a genuine over-cap count, so W05's abuse
+recordPartnerLaneCapHit fires only on a genuine over-cap count, so W06's abuse
 signal can never be fabricated by our own outage.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
@@ -368,7 +368,7 @@ EOF
 - Modify: `apps/api/src/services/emailDomains/senderResolution.test.ts` (created by W01 Task 2 — replace the db tripwire mock, keep every existing case, add the partner matrix)
 
 **Interfaces:**
-- Consumes: `mailPurposePolicy`, `MailPurpose`, `PartnerMailStream` from `./mailPurposes` (W01 Task 1); `fromWithDisplayName`, `platformFallbackFrom` from `./senderResolution` (W01 Task 2); `isPartnerLaneConfigured`, `getEmailDomainsConfig` from `./config` (W02a); `tryCountPartnerLaneSend` from `./sendCap` (Task 1); `db`, `getCurrentDbAccessContext` from `../../db`; `readWithPartnerAxisVisibility` from `../../db/partnerAxisRead`; `partners`, `partnerSenderIdentities`, `partnerSendingDomains` from `../../db/schema`; `evaluateCapabilityContinuationForState` from `../partnerTrust`.
+- Consumes: `mailPurposePolicy`, `MailPurpose`, `PartnerMailStream` from `./mailPurposes` (W01 Task 1); `fromWithDisplayName`, `platformFallbackFrom` from `./senderResolution` (W01 Task 2); `isPartnerLaneConfigured`, `getEmailDomainsConfig` from `./config` (W02); `tryCountPartnerLaneSend` from `./sendCap` (Task 1); `db`, `getCurrentDbAccessContext` from `../../db`; `readWithPartnerAxisVisibility` from `../../db/partnerAxisRead`; `partners`, `partnerSenderIdentities`, `partnerSendingDomains` from `../../db/schema`; `evaluateCapabilityContinuationForState` from `../partnerTrust`.
 - Produces:
   ```ts
   // partnerLaneLookup.ts
@@ -744,11 +744,11 @@ Expected: `Test Files  1 passed (1)`, 13 tests passed.
 
 - [ ] **Step 5: Replace the db tripwire in `senderResolution.test.ts` (red)**
 
-W01 Task 2's tripwire is a namespace-level `Proxy` that throws on **any** property access of `../../db`. `partnerLaneLookup.ts` legitimately reads that module, so the tripwire must become one that still fails on a platform-lane input but permits the module to exist. In `apps/api/src/services/emailDomains/senderResolution.test.ts`, replace the whole `vi.mock('../../db', () => new Proxy({}, { … }))` block (the W03 TRIPWIRE comment and the factory) with:
+W01 Task 2's tripwire is a namespace-level `Proxy` that throws on **any** property access of `../../db`. `partnerLaneLookup.ts` legitimately reads that module, so the tripwire must become one that still fails on a platform-lane input but permits the module to exist. In `apps/api/src/services/emailDomains/senderResolution.test.ts`, replace the whole `vi.mock('../../db', () => new Proxy({}, { … }))` block (the W04 TRIPWIRE comment and the factory) with:
 
 ```ts
 // W01's property-throwing namespace Proxy, kept as a per-EXPORT tripwire now
-// that W03 has a partner branch that legitimately reads the database. Every
+// that W04 has a partner branch that legitimately reads the database. Every
 // assertion in this file is a platform-lane input, so any of these firing means
 // the short-circuit of spec §8.1 regressed. `partnerLaneLookup` is mocked
 // separately, per test, for the partner cases.
@@ -815,7 +815,7 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
     expect(lookup).toHaveBeenLastCalledWith('p1', 'general');
   });
 
-  // Condition 1a: the lane is off. This is the DARK state of W02a/W03 on every
+  // Condition 1a: the lane is off. This is the DARK state of W02/W04 on every
   // deployment until an operator sets EMAIL_DOMAINS_PROVIDER.
   it('returns lane_unconfigured, before any lookup, when the lane is off', async () => {
     laneConfigured.mockReturnValue(false);
@@ -917,7 +917,7 @@ import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
 import { tryCountPartnerLaneSend } from './sendCap';
 ```
 
-then replace the final `// W03 inserts the partner branch here.` comment and its `return { lane: 'platform', from, reason: 'lane_unconfigured' };` with:
+then replace the final `// W04 inserts the partner branch here.` comment and its `return { lane: 'platform', from, reason: 'lane_unconfigured' };` with:
 
 ```ts
   // Condition 1 (spec §8.3): the lane must be configured at all. With
@@ -1015,16 +1015,16 @@ EOF
 
 ### Task 3: Structured transport errors
 
-W02a's `static` adapter has to decide, from a failure thrown by the platform transport, whether the *sending domain* was refused (fall back to `EMAIL_FROM`) or the *message* was (throw). Today it can only read text, because `deliverRaw` flattens every provider fault into a bare `Error`. W02a plan amendment 7 names this and defers it here. The fix is a typed error that carries the structure and keeps the text.
+W02's `static` adapter has to decide, from a failure thrown by the platform transport, whether the *sending domain* was refused (fall back to `EMAIL_FROM`) or the *message* was (throw). Today it can only read text, because `deliverRaw` flattens every provider fault into a bare `Error`. W02 plan amendment 7 names this and defers it here. The fix is a typed error that carries the structure and keeps the text.
 
 **Files:**
 - Modify: `apps/api/src/services/email.ts` — add `EmailTransportError` next to `EmailAttachment` (`:11-15`); the Resend throw inside `deliverRaw` (W01 Task 3 moved it there from `:265`); the SMTP `sendMail` call inside `deliverRaw` (W01 Task 3, from `:300`); the Mailgun non-OK throw in `sendViaMailgun` (`:804-808`)
 - Create: `apps/api/src/services/email.transportError.test.ts` (Test)
-- Modify: `apps/api/src/services/emailDomains/adapters/static.ts` — `classifyPlatformTransportError` (created by W02a Task 8)
-- Modify: `apps/api/src/services/emailDomains/adapters/static.test.ts` (Test — created by W02a Task 8)
+- Modify: `apps/api/src/services/emailDomains/adapters/static.ts` — `classifyPlatformTransportError` (created by W02 Task 8)
+- Modify: `apps/api/src/services/emailDomains/adapters/static.test.ts` (Test — created by W02 Task 8)
 
 **Interfaces:**
-- Consumes: `PartnerLaneSendError` from `../provider` (W02a Task 6).
+- Consumes: `PartnerLaneSendError` from `../provider` (W02 Task 6).
 - Produces:
   ```ts
   // services/email.ts
@@ -1255,7 +1255,7 @@ export interface EmailTransportErrorFields {
  * WHY: the partner lane has to tell "the relay refused this SENDER" (fall back
  * to EMAIL_FROM, spec §8.4) from "the relay refused this MESSAGE" (throw), and
  * before this class the only evidence was a flattened string — see the `static`
- * adapter's classifier and W02a plan amendment 7.
+ * adapter's classifier and W02 plan amendment 7.
  *
  * `message` is IDENTICAL to what this service threw before. Three live matchers
  * key on that text (services/reportNarrativeDelivery.ts:138, :145, :146), so a
@@ -1392,10 +1392,10 @@ Expected: all 5 pass. `reportNarrativeDelivery.test.ts` and `notificationChannel
 
 - [ ] **Step 8: Upgrade the `static` classifier (red first)**
 
-Append to `apps/api/src/services/emailDomains/adapters/static.test.ts` (created by W02a Task 8):
+Append to `apps/api/src/services/emailDomains/adapters/static.test.ts` (created by W02 Task 8):
 
 ```ts
-describe('classifyPlatformTransportError prefers structured fields (W03)', () => {
+describe('classifyPlatformTransportError prefers structured fields (W04)', () => {
   function transportError(message: string, fields: Record<string, unknown>) {
     return Object.assign(new Error(message), { name: 'EmailTransportError' }, fields);
   }
@@ -1445,7 +1445,7 @@ Run and watch it fail:
 cd apps/api && npx vitest run src/services/emailDomains/adapters/static.test.ts
 ```
 
-Expected failure: every `opaque …` row reports `ambiguous` (or, for the SMTP rows, only the three codes W02a already handles), because the classifier reads no `transport` or `statusCode`.
+Expected failure: every `opaque …` row reports `ambiguous` (or, for the SMTP rows, only the three codes W02 already handles), because the classifier reads no `transport` or `statusCode`.
 
 - [ ] **Step 9: Implement the structured branch**
 
@@ -1460,7 +1460,7 @@ In `apps/api/src/services/emailDomains/adapters/static.ts`, replace the body of 
   if (includesAny(haystack, RECIPIENT_REFUSAL_MARKERS)) return { kind: 'message_rejected', detail: message };
   if (includesAny(haystack, MESSAGE_REFUSAL_MARKERS)) return { kind: 'message_rejected', detail: message };
 
-  // Structured fields next (W03: services/email.ts EmailTransportError). Before
+  // Structured fields next (W04: services/email.ts EmailTransportError). Before
   // these existed, an opaque provider body fell through to `ambiguous` — and an
   // `ambiguous` sender refusal is a LOST email, because §8.4 forbids retrying
   // it on the other lane. A status code is weaker evidence than the body text,
@@ -1514,7 +1514,7 @@ cd apps/api && npx vitest run \
 pnpm exec tsc --noEmit --project tsconfig.json
 ```
 
-Expected: both suites pass; `tsc` prints nothing. If `adapterContract.test.ts` reds on a `static` send-error row, the fixture there asserted the pre-W03 `ambiguous` default for an opaque status — update that row to the structured answer, in this task.
+Expected: both suites pass; `tsc` prints nothing. If `adapterContract.test.ts` reds on a `static` send-error row, the fixture there asserted the pre-W04 `ambiguous` default for an opaque status — update that row to the structured answer, in this task.
 
 - [ ] **Step 11: Commit**
 
@@ -1523,7 +1523,7 @@ git add apps/api/src/services/email.ts apps/api/src/services/email.transportErro
 git commit -m "$(cat <<'EOF'
 feat(email): EmailTransportError — structure out of deliverRaw
 
-W02a plan amendment 7 deferred this to W03. All three deliverRaw branches now
+W02 plan amendment 7 deferred this to W04. All three deliverRaw branches now
 throw EmailTransportError carrying transport + statusCode + providerErrorName +
 the nodemailer SMTP reply, with `.message` BYTE-IDENTICAL to what they threw
 before — reportNarrativeDelivery.ts:138/145/146 match on that text, so a
@@ -1550,7 +1550,7 @@ EOF
 - Create: `apps/api/src/services/emailDomains/partnerLaneSend.test.ts` (Test)
 
 **Interfaces:**
-- Consumes: `getEmailDomainProvider` from `./providerRegistry` (W02a Task 6); `PartnerLaneSendFailure`, `PartnerLaneMessage` from `./provider` (W02a Task 6); `MailPurpose`, `PartnerMailStream` from `./mailPurposes` (W01 Task 1); `sendOpsAlert` from `../opsAlerts` (`apps/api/src/services/opsAlerts.ts:85`); `getRedis` from `../redis`; `enqueueSyncDomain` from `../../jobs/sendingDomainsWorker` (W02b, dynamically imported).
+- Consumes: `getEmailDomainProvider` from `./providerRegistry` (W02 Task 6); `PartnerLaneSendFailure`, `PartnerLaneMessage` from `./provider` (W02 Task 6); `MailPurpose`, `PartnerMailStream` from `./mailPurposes` (W01 Task 1); `sendOpsAlert` from `../opsAlerts` (`apps/api/src/services/opsAlerts.ts:85`); `getRedis` from `../redis`; `enqueueSyncDomain` from `../../jobs/sendingDomainsWorker` (W03, dynamically imported).
 - Produces:
   ```ts
   // outboundMarker.ts
@@ -1873,7 +1873,7 @@ export async function sendOnPartnerLane(input: PartnerLaneSendInput): Promise<Pa
       ...input.message,
       headers,
       partnerRef: input.partnerId,
-      // W05 attributes every delivery event by these four (spec §9.3).
+      // W06 attributes every delivery event by these four (spec §9.3).
       tags: {
         partner_id: input.partnerId,
         domain_id: input.domainId,
@@ -2263,7 +2263,7 @@ Spec §14 "Transport matrix for `static`": the partner-lane send with a custom F
 - Create: `apps/api/src/services/emailDomains/staticTransportMatrix.test.ts` (Test)
 
 **Interfaces:**
-- Consumes: everything from Tasks 2–5, plus W02a's `createStaticDomainProvider`, `getEmailDomainProvider`, `resetEmailDomainProviderForTests`.
+- Consumes: everything from Tasks 2–5, plus W02's `createStaticDomainProvider`, `getEmailDomainProvider`, `resetEmailDomainProviderForTests`.
 - Produces: nothing at runtime.
 
 - [ ] **Step 1: Write the test** — create `apps/api/src/services/emailDomains/staticTransportMatrix.test.ts`:
@@ -2497,7 +2497,7 @@ cd apps/api && npx vitest run src/services/emailDomains/staticTransportMatrix.te
 
 Expected: `Test Files  1 passed (1)`, 10 tests passed.
 
-If a *refusal* case reports one transport call instead of two, the `static` adapter's `classifyPlatformTransportError` (W02a Task 8, upgraded in Task 3 here) did not map that fixture to `domain_unusable`. **Fix the classifier, not the fixture** — every string above is a real sender refusal:
+If a *refusal* case reports one transport call instead of two, the `static` adapter's `classifyPlatformTransportError` (W02 Task 8, upgraded in Task 3 here) did not map that fixture to `domain_unusable`. **Fix the classifier, not the fixture** — every string above is a real sender refusal:
 - `550 5.7.60 … send as this sender` → matched by the structured `smtpResponseCode === 550` branch;
 - `The domain is not verified. Please verify your domain.` → matched by the `domain is not verified` and `verify your domain` text markers, and by the `statusCode === 403` branch;
 - `The acme.test domain is not verified.` → matched by `domain is not verified`.
@@ -2527,19 +2527,19 @@ EOF
 
 ### Task 7: `runTestSend` counts against the daily cap
 
-Spec §6.1 says the test send "counts against the daily cap". W02b amendment 7 records that it deliberately did not wire it — `tryCountPartnerLaneSend` ships here — and says in as many words: "W03 adds the cap call to the `test-send` processor." This task discharges that.
+Spec §6.1 says the test send "counts against the daily cap". W03 amendment 7 records that it deliberately did not wire it — `tryCountPartnerLaneSend` ships here — and says in as many words: "W04 adds the cap call to the `test-send` processor." This task discharges that.
 
 **Files:**
-- Modify: `apps/api/src/jobs/sendingDomainsWorker.ts` — `runTestSend(domainId, userId)` (created by W02b Task 4, Step 5), between its `sendable` guard and its `provider.send({ … })` call
-- Modify: `apps/api/src/jobs/sendingDomainsWorker.test.ts` — the `describe('test send (spec §6.1)', …)` block (created by W02b Task 4, Step 2) (Test)
+- Modify: `apps/api/src/jobs/sendingDomainsWorker.ts` — `runTestSend(domainId, userId)` (created by W03 Task 4, Step 5), between its `sendable` guard and its `provider.send({ … })` call
+- Modify: `apps/api/src/jobs/sendingDomainsWorker.test.ts` — the `describe('test send (spec §6.1)', …)` block (created by W03 Task 4, Step 2) (Test)
 
 **Interfaces:**
 - Consumes: `tryCountPartnerLaneSend` from `../services/emailDomains/sendCap` (Task 1).
-- Produces: **no signature change.** `runTestSend(domainId: string, userId: string): Promise<'sent' | 'refused' | 'skipped'>` keeps W02b's exact return union; a capped send resolves `'refused'` and writes `last_test_status = 'failed'` with a cap message.
+- Produces: **no signature change.** `runTestSend(domainId: string, userId: string): Promise<'sent' | 'refused' | 'skipped'>` keeps W03's exact return union; a capped send resolves `'refused'` and writes `last_test_status = 'failed'` with a cap message.
 
-**Why `'refused'` and not `'skipped'`.** W02b's vocabulary is consistent: every `'skipped'` branch (`!provider`, no context, no recipient, not sendable) writes **nothing** to the row, while `'refused'` is the one branch that records `last_test_*`. A cap hit records `last_test_*` — the partner must be able to see why the button did nothing — so it is a refusal. Returning `'skipped'` would leave W02b's "skipped writes nothing" invariant false.
+**Why `'refused'` and not `'skipped'`.** W03's vocabulary is consistent: every `'skipped'` branch (`!provider`, no context, no recipient, not sendable) writes **nothing** to the row, while `'refused'` is the one branch that records `last_test_*`. A cap hit records `last_test_*` — the partner must be able to see why the button did nothing — so it is a refusal. Returning `'skipped'` would leave W03's "skipped writes nothing" invariant false.
 
-**Placement is load-bearing, in both directions.** After the `sendable` guard: a row that could never send must not burn a counter slot. Before `provider.send`: the test button is the only partner-lane send a human can fire on demand, so an exhausted partner must not be able to use it as an uncapped path. And because the cap check returns before the send, it also returns before `markStaticDomainVerified` — a capped `static` test send must **not** verify the row, since nothing was handed to the relay and the relay's acceptance is the entire proof (spec §5.1, W02b Task 3).
+**Placement is load-bearing, in both directions.** After the `sendable` guard: a row that could never send must not burn a counter slot. Before `provider.send`: the test button is the only partner-lane send a human can fire on demand, so an exhausted partner must not be able to use it as an uncapped path. And because the cap check returns before the send, it also returns before `markStaticDomainVerified` — a capped `static` test send must **not** verify the row, since nothing was handed to the relay and the relay's acceptance is the entire proof (spec §5.1, W03 Task 3).
 
 - [ ] **Step 1: Write the failing tests** — in `apps/api/src/jobs/sendingDomainsWorker.test.ts`, add this mock beside the other `vi.mock` blocks (near the `keyProbe` mock, which is the closest sibling):
 
@@ -2563,7 +2563,7 @@ add one line to the file's `beforeEach`, beside `providerMock.listDomains.mockRe
 and append these four cases inside `describe('test send (spec §6.1)', …)`:
 
 ```ts
-  // Spec §6.1: "It counts against the daily cap." W02b left the wiring to W03
+  // Spec §6.1: "It counts against the daily cap." W03 left the wiring to W04
   // (its amendment 7); this is the assertion that it landed.
   it('consumes a cap slot for the domain partner before sending', async () => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
@@ -2619,7 +2619,7 @@ and append these four cases inside `describe('test send (spec §6.1)', …)`:
   });
 ```
 
-(`execRows` is W02b's FIFO of select results in `runTestSend`'s own order — domain row, recipient, support identity. `updates` captures every `.set()` value. `providerMock`, `markStaticVerifiedMock`, `DOMAIN_ID` and `USER_ID` are W02b's; the last case restores `providerMock.verifiesByDns` via the file's `beforeEach`, exactly as W02b's own `static` cases rely on.)
+(`execRows` is W03's FIFO of select results in `runTestSend`'s own order — domain row, recipient, support identity. `updates` captures every `.set()` value. `providerMock`, `markStaticVerifiedMock`, `DOMAIN_ID` and `USER_ID` are W03's; the last case restores `providerMock.verifiesByDns` via the file's `beforeEach`, exactly as W03's own `static` cases rely on.)
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -2629,7 +2629,7 @@ cd apps/api && npx vitest run src/jobs/sendingDomainsWorker.test.ts
 
 Expected failure: `expected "tryCountPartnerLaneSend" to be called with 'p1', but it was not called`, and the two capped cases resolving `'sent'` with `providerMock.send` called once — `runTestSend` still sends without consulting the cap.
 
-- [ ] **Step 3: Implement** — in `apps/api/src/jobs/sendingDomainsWorker.ts`, add the import beside the other `../services/emailDomains/*` imports (W02b Task 4, Step 5's import block):
+- [ ] **Step 3: Implement** — in `apps/api/src/jobs/sendingDomainsWorker.ts`, add the import beside the other `../services/emailDomains/*` imports (W03 Task 4, Step 5's import block):
 
 ```ts
 import { tryCountPartnerLaneSend } from '../services/emailDomains/sendCap';
@@ -2638,8 +2638,8 @@ import { tryCountPartnerLaneSend } from '../services/emailDomains/sendCap';
 and insert this immediately **after** `runTestSend`'s `sendable` guard and **before** its `const from = …` / `provider.send({ … })`:
 
 ```ts
-  // Spec §6.1: the test send counts against the daily partner-lane cap. W02b
-  // left this to W03 (its amendment 7) because tryCountPartnerLaneSend ships
+  // Spec §6.1: the test send counts against the daily partner-lane cap. W03
+  // left this to W04 (its amendment 7) because tryCountPartnerLaneSend ships
   // here.
   //
   // AFTER the sendable guard, so a row that could never send does not burn a
@@ -2670,7 +2670,7 @@ and insert this immediately **after** `runTestSend`'s `sendable` guard and **bef
   }
 ```
 
-(`db`, `withSystemDbAccessContext`, `partnerSendingDomains`, `eq` and `sql` are all already imported in this file by W02b Task 4, Step 5, and the `'sendingDomainTestSend*'` context labels follow its naming. `src/jobs/**` is not scanned by `partner-wide-write-coverage.test.ts` — W02b amendment 10 verified this — so the write needs no allowlist entry.)
+(`db`, `withSystemDbAccessContext`, `partnerSendingDomains`, `eq` and `sql` are all already imported in this file by W03 Task 4, Step 5, and the `'sendingDomainTestSend*'` context labels follow its naming. `src/jobs/**` is not scanned by `partner-wide-write-coverage.test.ts` — W03 amendment 10 verified this — so the write needs no allowlist entry.)
 
 - [ ] **Step 4: Run it and watch it pass**
 
@@ -2682,7 +2682,7 @@ cd apps/api && npx vitest run \
 pnpm exec tsc --noEmit --project tsconfig.json
 ```
 
-Expected: all three pass; `tsc` prints nothing. W02b's own six `test send` cases must still pass unchanged — they all leave `tryCountPartnerLaneSendMock` at its default `true`, so the cap is transparent to them.
+Expected: all three pass; `tsc` prints nothing. W03's own six `test send` cases must still pass unchanged — they all leave `tryCountPartnerLaneSendMock` at its default `true`, so the cap is transparent to them.
 
 - [ ] **Step 5: Commit**
 
@@ -2691,7 +2691,7 @@ git add apps/api/src/jobs/sendingDomainsWorker.ts apps/api/src/jobs/sendingDomai
 git commit -m "$(cat <<'EOF'
 feat(email): runTestSend counts against the daily cap
 
-Spec §6.1, discharging W02b amendment 7 ("W03 adds the cap call to the test-send
+Spec §6.1, discharging W03 amendment 7 ("W04 adds the cap call to the test-send
 processor") now that sendCap.ts exists.
 
 Placement is load-bearing both ways: AFTER the sendable guard, so a row that
@@ -2714,7 +2714,7 @@ EOF
 
 ### Task 8: The two sites W01 left at `partnerId: null`
 
-W01 plan amendment 5 records both, and says W03 is the wave that decides whether to widen their reads. Without this task the `general` stream and portal password resets can **never** use the partner lane, however the partner configures it — a silently dead feature, not a slow one.
+W01 plan amendment 5 records both, and says W04 is the wave that decides whether to widen their reads. Without this task the `general` stream and portal password resets can **never** use the partner lane, however the partner configures it — a silently dead feature, not a slow one.
 
 **Files:**
 - Modify: `apps/api/src/routes/portal/auth.ts:557-567` (the `withSystemDbAccessContext` select in `POST /auth/forgot-password`), `:8` (the schema import), and the `sendPasswordReset` call at `:594-598` (W01 Task 4 rewrote it)
@@ -3085,7 +3085,7 @@ EOF
 
 ### Task 9: Re-verify every other partner-lane site, the ticket precedence, and threading
 
-Four sites already pass a partner id after W01 (ticket customer notifications, portal invite, quote, invoice). This task proves each one passes a **non-null** id on its normal path — a regression to `null` is silent, costs nothing at runtime and switches the whole feature off for that stream — and pins the two rules W03 must not disturb: Graph beats the partner lane, and threading headers ignore the From entirely.
+Four sites already pass a partner id after W01 (ticket customer notifications, portal invite, quote, invoice). This task proves each one passes a **non-null** id on its normal path — a regression to `null` is silent, costs nothing at runtime and switches the whole feature off for that stream — and pins the two rules W04 must not disturb: Graph beats the partner lane, and threading headers ignore the From entirely.
 
 **Files:**
 - Modify: `apps/api/src/jobs/ticketNotifyWorker.test.ts` (Test)
@@ -3102,7 +3102,7 @@ Four sites already pass a partner id after W01 (ticket customer notifications, p
 Append inside the outermost `describe` of `apps/api/src/jobs/ticketNotifyWorker.test.ts`, immediately before its closing `});`:
 
 ```ts
-  // W01 made EmailPayload a discriminated union carrying the purpose; W03 is
+  // W01 made EmailPayload a discriminated union carrying the purpose; W04 is
   // the wave where a null partnerId would actually cost something. The ticket
   // row's own partner_id is the source (no new read) — a regression to null
   // would silently switch the `support` stream off for every ticket.
@@ -3138,7 +3138,7 @@ Append inside the outermost `describe` of `apps/api/src/jobs/ticketNotifyWorker.
 
 - [ ] **Step 2: Ticket worker — the Graph branch is untouched**
 
-`apps/api/src/jobs/ticketNotifyWorker.graphFork.test.ts` already pins the precedence in four cases (`:97`, `:114`, `:131`, `:148`): a connected mailbox routes through `sendThreadedReply` / `sendNewMail` and **never** through `EmailService`. W03 changes nothing inside `EmailService`'s *caller*, so that file needs no edit — it is the control. Run it and confirm:
+`apps/api/src/jobs/ticketNotifyWorker.graphFork.test.ts` already pins the precedence in four cases (`:97`, `:114`, `:131`, `:148`): a connected mailbox routes through `sendThreadedReply` / `sendNewMail` and **never** through `EmailService`. W04 changes nothing inside `EmailService`'s *caller*, so that file needs no edit — it is the control. Run it and confirm:
 
 ```bash
 cd apps/api && npx vitest run src/jobs/ticketNotifyWorker.graphFork.test.ts
@@ -3167,7 +3167,7 @@ Append to `apps/api/src/routes/orgPortalUsers.test.ts`, inside the describe that
 Add to the top of `apps/api/src/services/quoteLifecycle.test.ts`, beside the existing `vi.mock('./email', …)` block (`:84-88`):
 
 ```ts
-// W03: the real resolveSender runs over the envelope this suite captures, with
+// W04: the real resolveSender runs over the envelope this suite captures, with
 // only the database lookup mocked. This is what makes the assertion below
 // non-vacuous — `getEmailService` is mocked wholesale here, so asserting on
 // sendEmailMock alone could never prove the partner lane is REACHABLE.
@@ -3653,7 +3653,7 @@ cd apps/api && npx vitest run \
 pnpm exec tsc --noEmit --project tsconfig.json
 ```
 
-Expected: all seven pass; `tsc` prints nothing. `autoresponder.test.ts` is the control that `autoresponseSuppressionReason` was left alone — W03 adds a second, independent rule rather than widening the autoresponse gate, because §8.5 asks for the mail to be *ignored*, not merely un-autoresponded.
+Expected: all seven pass; `tsc` prints nothing. `autoresponder.test.ts` is the control that `autoresponseSuppressionReason` was left alone — W04 adds a second, independent rule rather than widening the autoresponse gate, because §8.5 asks for the mail to be *ignored*, not merely un-autoresponded.
 
 - [ ] **Step 11: Commit**
 
@@ -3689,10 +3689,10 @@ EOF
 Spec §14: "Resolution is exercised from an org-scoped context and from the unauthenticated portal route, because a mocked DB cannot see the zero-row failure." Every unit test above mocks `lookupPartnerLaneIdentity`, so **none of them can fail** if the partner-axis escape is wrong — under org scope a partner-axis read returns zero rows silently rather than raising, and the whole feature would collapse to the platform lane in production while every suite stayed green.
 
 **Files:**
-- Modify: `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts` (created by W02a Task 12 — append one describe; reuse its `SYSTEM_CTX`, `partnerContext`, `orgContext`, `fixture`, `seedDomain`, `uniqueDomain`, `createdPartnerIds` helpers)
+- Modify: `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts` (created by W02 Task 12 — append one describe; reuse its `SYSTEM_CTX`, `partnerContext`, `orgContext`, `fixture`, `seedDomain`, `uniqueDomain`, `createdPartnerIds` helpers)
 
 **Interfaces:**
-- Consumes: `resolveSender` from `../../services/emailDomains/senderResolution` (Task 2); `partnerSenderIdentities`, `partnerSendingDomains` from `../../db/schema`; W02a Task 12's harness.
+- Consumes: `resolveSender` from `../../services/emailDomains/senderResolution` (Task 2); `partnerSenderIdentities`, `partnerSendingDomains` from `../../db/schema`; W02 Task 12's harness.
 - Produces: nothing importable.
 
 - [ ] **Step 1: Write the suite** — append to `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts`:
@@ -3833,7 +3833,7 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
 });
 ```
 
-Add `partners` to the file's `../../db/schema` import list if W02a's version does not already import it (the suspended-partner case needs it), and `eq` is already imported there.
+Add `partners` to the file's `../../db/schema` import list if W02's version does not already import it (the suspended-partner case needs it), and `eq` is already imported there.
 
 - [ ] **Step 2: Bring up a stack and run it**
 
@@ -3844,7 +3844,7 @@ pnpm db:migrate
 cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts
 ```
 
-Expected: the whole file passes — W02a's RLS/guard/cascade cases plus these 9. Leave the stack up for Task 12.
+Expected: the whole file passes — W02's RLS/guard/cascade cases plus these 9. Leave the stack up for Task 12.
 
 If the org-scope case returns `{ lane: 'platform', reason: 'partner_ineligible' }`, the partner-axis escape did not fire: `inPartnerVisibleContext` took the in-place branch for org scope. That is exactly the bug this suite exists to catch — fix `partnerLaneLookup.ts`, not the test.
 
@@ -3899,7 +3899,7 @@ pnpm --filter @breeze/shared typecheck
 pnpm --filter @breeze/ext-workspace typecheck
 ```
 
-Expected: both pass. W03 adds nothing to `packages/shared`; this is a regression check.
+Expected: both pass. W04 adds nothing to `packages/shared`; this is a regression check.
 
 - [ ] **Step 3: Run every test file this wave touched**
 
@@ -3948,7 +3948,7 @@ cd apps/api && npx vitest run \
   src/__tests__/partner-wide-write-coverage.test.ts
 ```
 
-Expected: every file passes, and the reported file count is 41. Each path is a full filename — vitest's filter is a plain substring, so a mistyped path contributes nothing rather than erroring. If a path reports "No test files found", correct it rather than dropping it (`src/services/emailDomains/adapters/resend.test.ts` and `providerRegistry.test.ts` are W02a's; if W02a named them differently, use its names).
+Expected: every file passes, and the reported file count is 41. Each path is a full filename — vitest's filter is a plain substring, so a mistyped path contributes nothing rather than erroring. If a path reports "No test files found", correct it rather than dropping it (`src/services/emailDomains/adapters/resend.test.ts` and `providerRegistry.test.ts` are W02's; if W02 named them differently, use its names).
 
 - [ ] **Step 4: Prove the send path writes no partner-axis table**
 
@@ -3956,7 +3956,7 @@ Expected: every file passes, and the reported file count is 41. Each path is a f
 git grep -nE '\.(insert|update|delete)\(\s*partnerSend' -- apps/api/src/services apps/api/src/routes
 ```
 
-Expected: matches **only** in `apps/api/src/services/emailDomains/domainRelease.ts` and `apps/api/src/services/emailDomains/sendingDomainService.ts` (W02a and W02b, already allowlisted). **No match in `senderResolution.ts`, `partnerLaneLookup.ts`, `partnerLaneSend.ts` or `sendCap.ts`.** Then confirm the contract test agrees:
+Expected: matches **only** in `apps/api/src/services/emailDomains/domainRelease.ts` and `apps/api/src/services/emailDomains/sendingDomainService.ts` (W02 and W03, already allowlisted). **No match in `senderResolution.ts`, `partnerLaneLookup.ts`, `partnerLaneSend.ts` or `sendCap.ts`.** Then confirm the contract test agrees:
 
 ```bash
 cd apps/api && npx vitest run src/__tests__/partner-wide-write-coverage.test.ts
@@ -3996,7 +3996,7 @@ cd apps/api && npx vitest run --config vitest.config.rls.ts
 cd apps/api && npx vitest run --config vitest.integration.config.ts
 ```
 
-Expected: both green. The RLS suite is unchanged by W03 (no new table), so it is a regression check; the integration run must include `partnerSendingDomainsRls.integration.test.ts` with Task 11's nine cases, and `orgLifecycleFoundations.integration.test.ts` and `tenantCascade.integration.test.ts` must still pass. Do **not** scope the integration run with `test:integration -- <paths>`: pnpm forwards the literal `--` and the whole suite runs anyway.
+Expected: both green. The RLS suite is unchanged by W04 (no new table), so it is a regression check; the integration run must include `partnerSendingDomainsRls.integration.test.ts` with Task 11's nine cases, and `orgLifecycleFoundations.integration.test.ts` and `tenantCascade.integration.test.ts` must still pass. Do **not** scope the integration run with `test:integration -- <paths>`: pnpm forwards the literal `--` and the whole suite runs anyway.
 
 - [ ] **Step 8: Lint**
 
@@ -4027,7 +4027,7 @@ Expected: the second command lists nothing this session started. Say in the PR w
 | Condition 1 — lane configured; `EMAIL_DOMAINS_PARTNER_ALLOWLIST` → `not_allowlisted` / `lane_unconfigured` | §8.3, §9.1 "Dark launch" | 2 |
 | Condition 2 — `partners.status = 'active'` + `evaluateCapabilityContinuationForState('custom_sending_domain', …)`, the **side-effect-free** evaluator → `partner_ineligible` | §8.3, §9.1 "Eligibility" | 2 |
 | Condition 3 — identity for the stream → `no_identity`; domain `verified` or `at_risk` → `domain_not_sendable` (all seven statuses covered) | §8.3, §5.2 | 2 |
-| Condition 4 — daily cap → `over_cap`, plus the abuse-signal/log hook `recordPartnerLaneCapHit(partnerId)` for W05 | §8.3, §9.1 "Caps", §9.2 | 1, 2 |
+| Condition 4 — daily cap → `over_cap`, plus the abuse-signal/log hook `recordPartnerLaneCapHit(partnerId)` for W06 | §8.3, §9.1 "Caps", §9.2 | 1, 2 |
 | From = `"<display_name or partner name>" <local_part@domain>` with the `fromWithDisplayName` header-safety strip | §8.3, §4.4 | 2 |
 | No cache; suspend/unsuspend and trust changes take effect on the next send | §8.3, §9.1 "Kill switch" | 2 (no cache), 11 (live kill-switch cases) |
 | Platform purposes never read the DB and never reach the partner lane, whatever `partnerId` | §8.1 property 1 | 2 (reason matrix + the per-export db tripwire), 5, 12 Step 5 (module-graph grep) |
@@ -4041,15 +4041,15 @@ Expected: the second command lists nothing this session started. Say in the PR w
 | The fallback message carries neither `X-Breeze-Outbound` nor partner tags | §8.4 | 4 (fresh headers object), 5 (asserted at the transport) |
 | `static`: the relay refuses the custom sender → `domain_unusable` → out from `EMAIL_FROM`, refusal recorded on the row | §13 row, §5.1 | 3 (classifier), 4 (`enqueueSyncDomain`), 6 (end-to-end, all three transports) |
 | Transport matrix for `static`: `smtp`, `mailgun`, `resend` + sender refusal → `EMAIL_FROM` | §14 | 6 |
-| Structured transport errors out of `deliverRaw` (deferred to W03 by W02a amendment 7) | W02a amendment 7 | 3 |
+| Structured transport errors out of `deliverRaw` (deferred to W04 by W02 amendment 7) | W02 amendment 7 | 3 |
 | Daily cap: Redis counter per partner per UTC day with expiry, `EMAIL_DOMAINS_DAILY_SEND_CAP`, `0` = unlimited without touching Redis, Redis-down → platform lane | §9.1, §11 | 1 |
-| The test send counts against the daily cap — `runTestSend`, after the sendable guard, before the send, and therefore before `markStaticDomainVerified` (a capped `static` test never verifies the row) | §6.1, §5.1; W02b amendment 7 | 7 |
+| The test send counts against the daily cap — `runTestSend`, after the sendable guard, before the send, and therefore before `markStaticDomainVerified` (a capped `static` test never verifies the row) | §6.1, §5.1; W03 amendment 7 | 7 |
 | `portal.password_reset` resolves the org's partner (public route, read inside a DB context, live-DB proof) | §8.2, W01 amendment 5 | 8, 11 |
 | `report.delivery` carries the report org's partner, from both callers | §8.2, W01 amendment 5 | 8 |
 | Every other partner-lane site passes a non-null `partnerId` on the normal path | §8.1, §8.2 | 9 |
 | Ticket precedence: connected Graph mailbox, then partner lane, then platform | §8.2 last rule | 9 (graphFork as the control; only the `EmailService` branch changed) |
 | Message-ID / In-Reply-To / References keep `TICKETS_INBOUND_DOMAIN` whatever the From | §8.5 | 9 (ticket worker), 4 (`sendOnPartnerLane` preserves the call site's headers) |
-| `BREEZE_OUTBOUND_HEADER = 'X-Breeze-Outbound'` in `services/emailDomains/outboundMarker.ts` | index "Defined in W03" | 4 |
+| `BREEZE_OUTBOUND_HEADER = 'X-Breeze-Outbound'` in `services/emailDomains/outboundMarker.ts` | index "Defined in W04" | 4 |
 | Inbound ignored when it carries the header, or when its OWN Message-ID matches the `outboundThreading.ts` generator on `TICKETS_INBOUND_DOMAIN`, for BOTH inbound providers | §8.5 | 10 |
 | Inbound NOT suppressed by sending domain or identity address (a technician writing from the identity address is processed) | §8.5 | 10 |
 | Partner suspended or restricted → platform lane on the next send; provider domains kept | §13 row | 2, 11 |
@@ -4059,6 +4059,6 @@ Expected: the second command lists nothing this session started. Say in the PR w
 | `email.test.ts`, `invoiceResend.test.ts`, `quoteLifecycle.test.ts` gain partner-lane cases and keep their fallback assertions | §14 | 5, 9 (plan amendment 7) |
 | Integration on real Postgres: org-scoped and unauthenticated-portal resolution; another partner never gets this identity | §14 "Integration" | 11 |
 | Loop prevention: own Message-ID ignored; a technician writing from the identity address is not | §14 "Loop prevention" | 10 |
-| The send path never writes a partner-axis table (no `ALLOWED_WITHOUT_CAPABILITY_CHECK` entry) | §3.1; W02a amendment 3 | Global Constraints, 4, 12 Step 4 |
-| Hosted state after merge: dark (provider unset) | §15 row W03 | 2 (`lane_unconfigured` before any read), 5 (golden test unchanged), 11 (live dark case), 12 |
-| Branch, `Closes #__W03__`, commit trailer, `cd apps/api && npx vitest run <path>`, contract suites before the PR | index "Rules every wave inherits" | Global Constraints, every task |
+| The send path never writes a partner-axis table (no `ALLOWED_WITHOUT_CAPABILITY_CHECK` entry) | §3.1; W02 amendment 3 | Global Constraints, 4, 12 Step 4 |
+| Hosted state after merge: dark (provider unset) | §15 row W04 | 2 (`lane_unconfigured` before any read), 5 (golden test unchanged), 11 (live dark case), 12 |
+| Branch, `Closes #__W04__`, commit trailer, `cd apps/api && npx vitest run <path>`, contract suites before the PR | index "Rules every wave inherits" | Global Constraints, every task |

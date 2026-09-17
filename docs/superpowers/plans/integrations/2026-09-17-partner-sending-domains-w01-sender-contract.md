@@ -5,13 +5,13 @@ tracking_issue: LanternOps/breeze#__PARENT__
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every outbound email in the API declares *what it is* (`purpose`) instead of *who it is from* (`from`). One reviewable registry, `MAIL_PURPOSES`, classifies all 27 production send sites into the platform lane or a partner stream; `resolveSender` turns a purpose into a From address; `EmailService.deliverRaw` becomes the single raw entry point W02a's `static`/`fake` adapters will use. **Nothing about any rendered email changes** — From, Reply-To, headers, recipients and body are byte-identical to today under `EMAIL_PROVIDER` = `resend`, `smtp` and `mailgun`, proved by a golden test over every purpose × every provider.
+**Goal:** Every outbound email in the API declares *what it is* (`purpose`) instead of *who it is from* (`from`). One reviewable registry, `MAIL_PURPOSES`, classifies all 27 production send sites into the platform lane or a partner stream; `resolveSender` turns a purpose into a From address; `EmailService.deliverRaw` becomes the single raw entry point W02's `static`/`fake` adapters will use. **Nothing about any rendered email changes** — From, Reply-To, headers, recipients and body are byte-identical to today under `EMAIL_PROVIDER` = `resend`, `smtp` and `mailgun`, proved by a golden test over every purpose × every provider.
 
 **Architecture:** Two new files under `apps/api/src/services/emailDomains/`. `mailPurposes.ts` is a declarative `as const satisfies Record<string, MailPurposePolicy>` registry plus the derived `MailPurpose` / `PartnerLaneMailPurpose` / `PlatformMailPurpose` types — the compile-time guard for spec G5 ("an unclassified send does not compile"). `senderResolution.ts` owns the pure sender logic: `fromWithDisplayName` (moved verbatim off `EmailService`, now a pure function over `defaultFrom`), `platformFallbackFrom` (the purpose's fallback From — `default` or `"<Partner> via Breeze"`), and `resolveSender`, which in W01 **always** returns the platform lane with reason `platform_purpose` | `no_partner` | `lane_unconfigured` and performs **no database access at all**. `services/email.ts` splits in two: `deliverRaw(message: RawEmailMessage)` holds today's transport bodies verbatim with an explicit `from`, and `sendEmail(params: SendEmailParams)` becomes resolve → `deliverRaw`. Call sites are migrated in cohorts behind a transitional type (optional `purpose`, `from` still accepted) so the repo compiles and its tests stay green after every task; the last code task flips `purpose` to required and deletes `from`.
 
 **Tech Stack:** TypeScript (Hono API), Vitest (unit only — W01 adds no migration, no schema, no route, no integration suite), `tsc --noEmit` over `apps/api/tsconfig.json`.
 
-**Spec:** `docs/superpowers/specs/integrations/2026-09-17-partner-sending-domains-design.md` §8.1 (the `purpose` contract), §8.2 (classification of today's send sites — normative), §8.3 (the fallback-From half only; the partner branch is W03), §14 (the "W01 golden test" bullet, the `sendEmail` bullet's fallback assertions, the registry property tests), §15 row W01. Plan index: `docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains.md` — amendments 2, 4, 5, 6 and the "Defined in W01" contract block.
+**Spec:** `docs/superpowers/specs/integrations/2026-09-17-partner-sending-domains-design.md` §8.1 (the `purpose` contract), §8.2 (classification of today's send sites — normative), §8.3 (the fallback-From half only; the partner branch is W04), §14 (the "W01 golden test" bullet, the `sendEmail` bullet's fallback assertions, the registry property tests), §15 row W01. Plan index: `docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains.md` — amendments 2, 4, 5, 6 and the "Defined in W01" contract block.
 
 ---
 
@@ -25,12 +25,12 @@ Deviations from, and corrections to, the spec's §8.2 table and the index's W01 
 
 3. **`fromWithDisplayName(defaultFrom, displayName)` is exported from `senderResolution.ts`.** The index's contract block lists only `resolveSender` and `platformFallbackFrom`. Exporting the pure helper as well is additive and is needed to keep one existing assertion alive: `email.test.ts`'s "falls back to the default sender when the name is empty after sanitizing" case is unreachable through `platformFallbackFrom`, because that function appends `" via Breeze"` to the partner name, so the sanitized display name is never empty.
 
-4. **`SendEmailBase` is exported.** The index shows `interface SendEmailBase` without `export`. The golden test builds one shared message object typed as `SendEmailBase`, and W02a's `PartnerLaneMessage = RawEmailMessage` reads better with the base visible. Export is additive; no name changes.
+4. **`SendEmailBase` is exported.** The index shows `interface SendEmailBase` without `export`. The golden test builds one shared message object typed as `SendEmailBase`, and W02's `PartnerLaneMessage = RawEmailMessage` reads better with the base visible. Export is additive; no name changes.
 
 5. **Two partner-lane sites pass `partnerId: null` in W01**, which the spec explicitly allows (§8.1: "`null` resolves to the platform sender, for call sites that cannot always resolve a partner"), because neither has a partner id in hand and W01 adds no database reads:
    - `routes/portal/auth.ts:594` (`portal.password_reset`) — the `portalUsers` row it read selects `id, email, orgId, authMethod`; the partner is one join away.
    - `services/reportDelivery.ts:141` (`report.delivery`) — `emailReportRun` takes only email-address strings, a branding bag and a timezone ("touch no db handle", per its own module docstring); neither caller (`jobs/reportScheduleWorker.ts:605`, `services/reportNarrativeDelivery.ts:275`) holds a partner id either.
-   W03 is the wave that decides whether to widen those reads; until then both correctly resolve to the platform sender.
+   W04 is the wave that decides whether to widen those reads; until then both correctly resolve to the platform sender.
 
 6. **Amendment 6 of the index is confirmed and pinned.** The Mailgun branch drops `cc`: `sendViaMailgun` *supports* `cc` (`services/email.ts:736`, `:755`, `:783`) but `sendEmail`'s Mailgun call at `services/email.ts:275-284` never passes it. `deliverRaw` keeps that omission verbatim and the golden test asserts `body.getAll('cc')` is empty on Mailgun while Resend and SMTP receive the `cc`.
 
@@ -41,7 +41,7 @@ Deviations from, and corrections to, the spec's §8.2 table and the index's W01 
 ## Global Constraints
 
 - **No rendered email changes.** From, Reply-To, To/Cc, headers and bodies are byte-identical to today under each `EMAIL_PROVIDER` (`resend`, `smtp`, `mailgun`). This is the wave's acceptance criterion (spec §15 row W01) and the golden test is its proof.
-- **No database read anywhere in W01.** `resolveSender` returns the platform lane for every input; the partner branch (and its read) is W03. No call site may gain a query to supply `partnerId` — pass `null` and record it (spec §8.1).
+- **No database read anywhere in W01.** `resolveSender` returns the platform lane for every input; the partner branch (and its read) is W04. No call site may gain a query to supply `partnerId` — pass `null` and record it (spec §8.1).
 - **No new env var.** W01 reads no new configuration; `config/env.ts` and `config/validate.ts` are untouched (spec G7: "no new required env var, no boot refusal").
 - **No migration, no schema, no route, no worker.** W01 is types and call sites only. The index reserves no migration slot for it.
 - Branch `feature/__PARENT__-partner-sending-domains/wave-__W01__`; PR body contains `Closes #__W01__`. `get_feature_status` before starting.
@@ -174,9 +174,9 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
   });
 
   // Index amendment 5: the test send bypasses sendEmail entirely and
-  // staff.sending_domain_status arrives with its send site in W02b. Neither
+  // staff.sending_domain_status arrives with its send site in W03. Neither
   // may be added here early, or the "no dead entries" scan (Task 9) fails.
-  it('does not carry W02b-owned or tag-only purposes', () => {
+  it('does not carry W03-owned or tag-only purposes', () => {
     expect(ALL_PURPOSES).not.toContain('staff.sending_domain_status');
     expect(ALL_PURPOSES).not.toContain('sending_domain.test');
   });
@@ -201,7 +201,7 @@ Expected failure: `Failed to load .../mailPurposes.test.ts` … `Cannot find mod
  * FROM. That inversion is the point: the classification becomes a single
  * reviewable list instead of a `from:` argument scattered across 27 call
  * sites, platform purposes short-circuit before any lookup, and the purpose
- * doubles as the delivery-event tag in W05.
+ * doubles as the delivery-event tag in W06.
  *
  * Adding a purpose is a product decision, not a mechanical one. The rules
  * (spec §8.2):
@@ -344,9 +344,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { MAIL_PURPOSES, mailPurposePolicy, type MailPurpose } from './mailPurposes';
 import { fromWithDisplayName, platformFallbackFrom, resolveSender } from './senderResolution';
 
-// W03 TRIPWIRE. In W01 senderResolution imports nothing from the db layer, so
+// W04 TRIPWIRE. In W01 senderResolution imports nothing from the db layer, so
 // this factory is never invoked and this mock cannot fail — it is stated here
-// so that the moment W03 adds the partner-lane read, every assertion below
+// so that the moment W04 adds the partner-lane read, every assertion below
 // (all of which are platform-lane inputs) proves the short-circuit still
 // happens BEFORE any database access, which is spec §8.1's first property.
 vi.mock('../../db', () => new Proxy({}, {
@@ -434,7 +434,7 @@ describe('resolveSender (W01: always the platform lane)', () => {
     }
   });
 
-  it('returns lane_unconfigured for a partner purpose with a partner — the lane does not exist until W03', async () => {
+  it('returns lane_unconfigured for a partner purpose with a partner — the lane does not exist until W04', async () => {
     for (const purpose of PARTNER_PURPOSES) {
       const resolved = await resolveSender({ purpose, partnerId: 'partner-1', defaultFrom: DEFAULT_FROM });
       expect(resolved.lane).toBe('platform');
@@ -477,7 +477,7 @@ import {
  * Sender resolution (partner sending domains, spec §8.3).
  *
  * In W01 this ALWAYS returns the platform lane and performs NO database
- * access. W03 adds the partner branch — a single indexed read joining
+ * access. W04 adds the partner branch — a single indexed read joining
  * partners, partner_sender_identities and partner_sending_domains — between
  * the `no_partner` guard and the `lane_unconfigured` return below. The types
  * are already the final ones so no later wave has to change them.
@@ -493,7 +493,7 @@ export type PlatformLaneReason =
   | 'platform_purpose'
   | 'no_partner'
   | 'lane_unconfigured'
-  // W03
+  // W04
   | 'not_allowlisted'
   | 'partner_ineligible'
   | 'no_identity'
@@ -577,7 +577,7 @@ export async function resolveSender(input: ResolveSenderInput): Promise<Resolved
     return { lane: 'platform', from, reason: 'no_partner' };
   }
 
-  // W03 inserts the partner branch here. Until then the partner lane does not
+  // W04 inserts the partner branch here. Until then the partner lane does not
   // exist, so every customer-facing purpose falls back to today's sender.
   return { lane: 'platform', from, reason: 'lane_unconfigured' };
 }
@@ -613,7 +613,7 @@ feat(email): resolveSender + platformFallbackFrom (platform lane only)
 Spec §8.3. Pure module: fromWithDisplayName moves off EmailService as a
 function over defaultFrom, platformFallbackFrom reproduces each purpose's
 CURRENT From, and resolveSender always returns the platform lane with reason
-platform_purpose | no_partner | lane_unconfigured. No database access; the W03
+platform_purpose | no_partner | lane_unconfigured. No database access; the W04
 partner branch slots in between the last two returns without a type change.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
@@ -662,7 +662,7 @@ import type { SendEmailBase, SendEmailParams } from './email';
  * self-hoster's mail silently changing would have to break first.
  *
  * Nothing here asserts a partner-lane send: in W01 there is no partner lane,
- * so every purpose resolves to the platform sender. W03 adds partner-lane
+ * so every purpose resolves to the platform sender. W04 adds partner-lane
  * cases beside these; these rows must keep passing unchanged.
  */
 
@@ -1069,7 +1069,7 @@ feat(email): deliverRaw + the W01 golden test
 
 Splits EmailService.sendEmail into resolve (resolveSender) and deliver
 (deliverRaw, today's transport bodies verbatim with an explicit From).
-RawEmailMessage is the shape W02a's static/fake adapters and test send need
+RawEmailMessage is the shape W02's static/fake adapters and test send need
 (plan index amendment 2). SendEmailParams is transitional: `purpose` optional,
 `from` still accepted, so the 27 call sites migrate in cohorts.
 
@@ -1226,7 +1226,7 @@ export interface PortalInviteEmailParams {
   supportEmail?: string;
   /**
    * The partner that owns the org this invite belongs to — the `support`
-   * stream's sender once W03 lands. Must come from a row the call site already
+   * stream's sender once W04 lands. Must come from a row the call site already
    * read or from the verified auth context, never from request input (§8.1).
    */
   partnerId: string | null;
@@ -1817,7 +1817,7 @@ interface EmailPayloadBase {
  * Both audiences leave through the same send loop below, so the classification
  * has to travel with each payload rather than being decided at the transport.
  * Precedence for customer mail is unchanged: connected Graph mailbox first,
- * then the partner lane (W03), then the platform sender.
+ * then the partner lane (W04), then the platform sender.
  */
 type EmailPayloadSender =
   | { purpose: 'ticket.staff_notification' }
@@ -2492,7 +2492,7 @@ EOF
 
 ### Task 9: The two source-scan guards
 
-`deliverRaw` is the one place a From can be chosen freely. It exists for W02a's `static`/`fake` adapters and the test send — and for nothing else, or the classification G5 depends on leaks straight back out. The second scan keeps the registry honest in the other direction: an entry nobody sends is an entry nobody reviewed.
+`deliverRaw` is the one place a From can be chosen freely. It exists for W02's `static`/`fake` adapters and the test send — and for nothing else, or the classification G5 depends on leaks straight back out. The second scan keeps the registry honest in the other direction: an entry nobody sends is an entry nobody reviewed.
 
 **Files:**
 - Create: `apps/api/src/services/email.deliverRawScope.test.ts` (Test)

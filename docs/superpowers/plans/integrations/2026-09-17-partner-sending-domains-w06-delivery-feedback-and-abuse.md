@@ -1,7 +1,7 @@
 ---
 tracking_issue: LanternOps/breeze#__PARENT__
 ---
-# Partner Sending Domains W05: Delivery Feedback and Abuse Controls — Implementation Plan
+# Partner Sending Domains W06: Delivery Feedback and Abuse Controls — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -17,10 +17,10 @@ forced by the real code and verified by reading the file cited on 2026-09-17.
    The installed SDK settles it: `resend@6.18.0`'s `WebhookEvent` union
    (`node_modules/resend/dist/index.d.mts:2143`) **does** include `'email.sent'`,
    and its payload is the same `BaseEmailEventData` that carries
-   `tags?: Record<string, string>` (`:2144-2153`). So W05 subscribes to
+   `tags?: Record<string, string>` (`:2144-2153`). So W06 subscribes to
    `email.sent` and increments `sent` from it. The alternative — incrementing at
-   send time in W03's `sendOnPartnerLane` — is forbidden: "the send path never
-   WRITES a partner-axis table" is a verbatim W03 Global Constraint, and
+   send time in W04's `sendOnPartnerLane` — is forbidden: "the send path never
+   WRITES a partner-axis table" is a verbatim W04 Global Constraint, and
    `partner_sending_daily_stats` is partner-axis, so that write would also red
    the required **Test API** job through `ALLOWED_WITHOUT_CAPABILITY_CHECK`.
    Because a self-hoster may configure the endpoint without subscribing
@@ -53,16 +53,16 @@ forced by the real code and verified by reading the file cited on 2026-09-17.
    `v1,<sig>` entry of `svix-signature` (Svix sends more than one during secret
    rotation). No new dependency is added.
 4. **`suspendSendingDomain` does not write an audit row or a status mail, so
-   W05 widens it and adds both.** The index and the task brief assume the admin
-   suspend path already carries them. It does not: W02b's
+   W06 widens it and adds both.** The index and the task brief assume the admin
+   suspend path already carries them. It does not: W03's
    `suspendSendingDomain(domainId)` calls `setAdminStatus`, which patches the
    row and calls `enqueueSyncDomain` — the audit comes from the admin
    *route*'s `writeRouteAudit`, and `syncSendingDomain` on an already-`suspended`
    row returns `'suspended_noop'` after touching `nextCheckAt` only, so
-   `commitTransition` (the thing that mails) never runs. W05 therefore:
+   `commitTransition` (the thing that mails) never runs. W06 therefore:
    (a) widens the signature to
    `suspendSendingDomain(domainId, statusReason: 'platform_suspended' | 'abuse_auto' = 'platform_suspended')`,
-   which is source-compatible with W02b's admin route and its test, and
+   which is source-compatible with W03's admin route and its test, and
    (b) puts the system audit row and the `sendSendingDomainStatusEmail` call in
    `autoSuspend.ts`, which already holds the `partnerId`, `domain` and
    `createdBy` those two need and which is the only caller with no human actor.
@@ -87,15 +87,15 @@ forced by the real code and verified by reading the file cited on 2026-09-17.
    request body — only from a provider tag that is existence-checked against
    `partners` in the same statement.
 6. **`recordPartnerLaneCapHit` records into a Redis day-hash, not a table.**
-   W03 exports it as `recordPartnerLaneCapHit(partnerId: string): void` —
+   W04 exports it as `recordPartnerLaneCapHit(partnerId: string): void` —
    **synchronous, returning void**, called from `tryCountPartnerLaneSend` on the
    send path. It therefore cannot await a database write, and the send path is
-   forbidden from writing a partner-axis table anyway (amendment 1). W05 makes
+   forbidden from writing a partner-axis table anyway (amendment 1). W06 makes
    it additionally fire-and-forget `HINCRBY email-domains:cap-hits:<YYYY-MM-DD>
    <partnerId> 1` with an 8-day `EXPIRE`, keyed by **day** rather than by
    partner so the abuse producer reads the whole fleet's window with 7 bounded
    `HGETALL` calls and never needs `SCAN` or a partner enumeration. Losing a
-   record to a Redis outage is acceptable and correct: W03 already refuses to
+   record to a Redis outage is acceptable and correct: W04 already refuses to
    fabricate a cap-hit signal when Redis cannot answer.
 7. **The route needs its own isolated global-rate-limit bucket.**
    `middleware/globalRateLimit.ts:18` skips only `/health` and `/ready`, and its
@@ -121,7 +121,7 @@ forced by the real code and verified by reading the file cited on 2026-09-17.
    only for trust.** `apps/web/src/pages/admin/trust-queue.astro` mounts
    `apps/web/src/components/admin/TrustQueue.tsx`, which consumes
    `routes/admin/trust.ts`. There is **no** page consuming `routes/admin/abuse.ts`
-   (`grep -rln "admin/abuse" apps/web/src` → nothing). W05 therefore ships a new
+   (`grep -rln "admin/abuse" apps/web/src` → nothing). W06 therefore ships a new
    unlisted admin page, `apps/web/src/pages/admin/sending-domains.astro` +
    `apps/web/src/components/admin/SendingDomainsAdmin.tsx`, built in the
    `TrustQueue.tsx` idiom (`fetchWithAuth` for reads, `runAction` for mutations,
@@ -156,14 +156,14 @@ forced by the real code and verified by reading the file cited on 2026-09-17.
 
 ---
 
-**Goal:** Close the hosted general-availability gate (spec §15 row W05,
+**Goal:** Close the hosted general-availability gate (spec §15 row W06,
 §16.1 step 4). A signature-verified public webhook turns Resend delivery events
 into a partner-axis daily-stats table; a 7-day bounce/complaint evaluation
-suspends every domain of an offending partner through W02b's kill switch and
+suspends every domain of an offending partner through W03's kill switch and
 raises one ops alert; four new abuse signals and an evidence-card entry give the
 human reviewer the sending-domain picture; and the platform-admin list gains
 7-day volume, bounce rate and complaint count with a suspend / unsuspend /
-force-release UI. Nothing in this wave is a functional dependency of W01–W04:
+force-release UI. Nothing in this wave is a functional dependency of W01–W05:
 with `EMAIL_DOMAINS_WEBHOOK_SECRET` unset the endpoint answers `404` and does no
 work, with the auto-suspend thresholds unset on a self-hosted instance the
 evaluator is off, the stats table simply stays empty, and `static` mode produces
@@ -172,7 +172,7 @@ no provider events at all.
 **Architecture:** One migration adds `partner_sending_daily_stats`, RLS shape 3
 (partner-axis), PK `(partner_id, day)`, using the same
 `breeze_current_scope() = 'system' OR breeze_has_partner_access(partner_id)`
-policy idiom W02a's Task 1 shipped. The public route
+policy idiom W02's Task 1 shipped. The public route
 `POST /api/v1/webhooks/email-provider/resend` copies `routes/webhooks/stripe.ts`
 verbatim in shape: per-IP limiter first (fails closed → 429 → provider retries),
 raw body via `await c.req.text()` before anything can consume it, then signature,
@@ -196,32 +196,32 @@ integration on real Postgres), React + Astro for the admin page.
 **Spec:** `docs/superpowers/specs/integrations/2026-09-17-partner-sending-domains-design.md`
 §0.2 (Resend webhook event list), §9.2 (abuse signals), §9.3 (delivery feedback,
 automatic suspension, admin metrics), §11 (`EMAIL_DOMAINS_WEBHOOK_SECRET`),
-§13 (error handling), §14 (testing), §15 row W05, §16.1 steps 4–5.
+§13 (error handling), §14 (testing), §15 row W06, §16.1 steps 4–5.
 Plan index: `docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains.md`
-— the "Defined in W05" block (`partner_sending_daily_stats`,
+— the "Defined in W06" block (`partner_sending_daily_stats`,
 `partnerSendingDailyStats`, `POST /webhooks/email-provider/resend`,
 `services/emailDomains/autoSuspend.ts` → `evaluateAutoSuspension`) is binding.
 
-## Assumed from W03
+## Assumed from W04
 
-W03's plan document exists and was read; every row below is **verified against
+W04's plan document exists and was read; every row below is **verified against
 it** unless marked otherwise.
 
 | Name | Source | Status |
 |---|---|---|
-| Provider tags on every partner-lane message are exactly `partner_id`, `domain_id`, `stream`, `purpose` | W03 Task 4, the `provider.send({ … tags: { … } })` block | verified |
-| Tag values are sanitised by the `resend` adapter with `value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 256)` (W02a Task 7), so a UUID survives intact and a `purpose` like `ticket.customer_notification` arrives as `ticket_customer_notification` | W02a Task 7 `sanitizeTagValue` | verified — W05 never parses `purpose`, only `partner_id` |
-| `recordPartnerLaneCapHit(partnerId: string): void` lives in `apps/api/src/services/emailDomains/sendCap.ts`, is **synchronous**, currently only `console.warn`s, and is called **only** on a genuine over-cap count — never on a Redis outage | W03 Task 1 + its amendments 3 and 4 | verified |
-| `partnerLaneCapKey(partnerId, now)` returns `email-domains:partner-lane-sends:<partnerId>:<YYYY-MM-DD>` (UTC day) — W05's cap-hit key mirrors that namespace | W03 Task 1 | verified |
-| W03 adds **no** `ALLOWED_WITHOUT_CAPABILITY_CHECK` entry, because the send path only SELECTs | W03 Global Constraints | verified |
-| `sendOnPartnerLane` is the only caller of `provider.send`, and a fallback message carries neither `X-Breeze-Outbound` nor any partner tag — so a platform-lane fallback produces no webhook event attributable to a partner | W03 Task 4 | verified |
+| Provider tags on every partner-lane message are exactly `partner_id`, `domain_id`, `stream`, `purpose` | W04 Task 4, the `provider.send({ … tags: { … } })` block | verified |
+| Tag values are sanitised by the `resend` adapter with `value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 256)` (W02 Task 7), so a UUID survives intact and a `purpose` like `ticket.customer_notification` arrives as `ticket_customer_notification` | W02 Task 7 `sanitizeTagValue` | verified — W06 never parses `purpose`, only `partner_id` |
+| `recordPartnerLaneCapHit(partnerId: string): void` lives in `apps/api/src/services/emailDomains/sendCap.ts`, is **synchronous**, currently only `console.warn`s, and is called **only** on a genuine over-cap count — never on a Redis outage | W04 Task 1 + its amendments 3 and 4 | verified |
+| `partnerLaneCapKey(partnerId, now)` returns `email-domains:partner-lane-sends:<partnerId>:<YYYY-MM-DD>` (UTC day) — W06's cap-hit key mirrors that namespace | W04 Task 1 | verified |
+| W04 adds **no** `ALLOWED_WITHOUT_CAPABILITY_CHECK` entry, because the send path only SELECTs | W04 Global Constraints | verified |
+| `sendOnPartnerLane` is the only caller of `provider.send`, and a fallback message carries neither `X-Breeze-Outbound` nor any partner tag — so a platform-lane fallback produces no webhook event attributable to a partner | W04 Task 4 | verified |
 
-## Consumed from W02a / W02b
+## Consumed from W02 / W03
 
 Read from their finished plans; binding.
 
 ```ts
-// apps/api/src/services/emailDomains/config.ts  (W02a Task 5)
+// apps/api/src/services/emailDomains/config.ts  (W02 Task 5)
 export interface EmailDomainsConfig {
   provider: 'resend' | 'static' | 'fake' | null;
   resendApiKey: string | null; resendSendingKey: string | null;
@@ -233,16 +233,16 @@ export interface EmailDomainsConfig {
 export function getEmailDomainsConfig(): EmailDomainsConfig;
 export function isPartnerLaneConfigured(): boolean;
 
-// apps/api/src/services/emailDomains/sendingDomainService.ts  (W02b Task 6)
+// apps/api/src/services/emailDomains/sendingDomainService.ts  (W03 Task 6)
 export class SendingDomainServiceError extends Error {
   readonly code: SendingDomainErrorCode; readonly status: 400 | 404 | 409 | 429;
 }
-export async function suspendSendingDomain(domainId: string): Promise<void>;   // W05 widens — amendment 4
+export async function suspendSendingDomain(domainId: string): Promise<void>;   // W06 widens — amendment 4
 export async function unsuspendSendingDomain(domainId: string): Promise<void>;
 export async function forceReleaseSendingDomain(domainId: string): Promise<void>;
 export async function listAllSendingDomains(opts: { limit: number }): Promise<Array<SendingDomainDto & { partnerId: string; partnerName: string }>>;
 
-// apps/api/src/services/emailDomains/statusMail.ts  (W02b Task 2)
+// apps/api/src/services/emailDomains/statusMail.ts  (W03 Task 2)
 export type SendingDomainStatusEvent = 'verified' | 'at_risk' | 'failed' | 'suspended' | 'auto_removed';
 export interface SendingDomainStatusMailInput {
   partnerId: string; domain: string; event: SendingDomainStatusEvent;
@@ -250,7 +250,7 @@ export interface SendingDomainStatusMailInput {
 }
 export async function sendSendingDomainStatusEmail(input: SendingDomainStatusMailInput): Promise<number>;
 
-// apps/api/src/jobs/sendingDomainsWorker.ts  (W02b Task 4)
+// apps/api/src/jobs/sendingDomainsWorker.ts  (W03 Task 4)
 export const SENDING_DOMAINS_QUEUE = 'sending-domains';
 export async function enqueueSyncDomain(domainId: string, opts?: { lastSendError?: string }): Promise<void>;
 export async function enqueueTestSend(domainId: string, userId: string): Promise<void>;
@@ -258,7 +258,7 @@ export async function enqueueTestSend(domainId: string, userId: string): Promise
 // TEST_SEND_JOB='test-send', DAILY_JOB='daily-maintenance'; getQueue();
 // type SendingDomainsJobData; createSendingDomainsWorker()'s switch (job.name).
 
-// apps/api/src/db/schema/emailSendingDomains.ts  (W02a Task 1)
+// apps/api/src/db/schema/emailSendingDomains.ts  (W02 Task 1)
 //   partnerSendingDomains: id partnerId domain provider providerDomainId providerManaged
 //     provisionAttemptedAt providerRegion status statusReason dnsRecords checkRequestedAt
 //     lastCheckedAt nextCheckAt checkAttempts verifiedAt statusChangedAt lastTestAt
@@ -276,7 +276,7 @@ in the same PR.
   Before committing, run `ls apps/api/migrations/*.sql | sort | tail -1`. If the
   newest committed migration sorts at or after `2026-10-20-100100`, rename this
   file upward so it sorts last, and update every reference to it in this plan's
-  steps. W02a holds `2026-10-20-100000`; newest on `origin/main` when this plan
+  steps. W02 holds `2026-10-20-100000`; newest on `origin/main` when this plan
   was written was `2026-10-17-140000-snmp-metrics-instance-width.sql`.
 - **The migration is idempotent and has no inner `BEGIN`/`COMMIT`.**
   `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `pg_policies`
@@ -328,8 +328,8 @@ in the same PR.
   vitest swallows `--run`, and the whole suite runs in watch mode). Vitest's path
   filter is a plain substring, so list sibling files explicitly and check the
   reported file count. `apps/web` uses `cd apps/web && npx vitest run <path>`.
-- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W05__`; PR body
-  contains `Closes #__W05__`.** `get_feature_status` before starting.
+- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W06__`; PR body
+  contains `Closes #__W06__`.** `get_feature_status` before starting.
 - **Commit after every task** with the trailer
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
@@ -368,10 +368,10 @@ in the same PR.
 - Create: `apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql`
 - Modify: `apps/api/src/db/schema/emailSendingDomains.ts` (append below the
   `emailProviderDomainReleases` table and above the three `$inferSelect` type
-  aliases at the end of the file; created by W02a Task 1)
+  aliases at the end of the file; created by W02 Task 1)
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
   (`PARTNER_TENANT_TABLES`, immediately after the
-  `['partner_sender_identities', 'partner_id'],` entry W02a Task 2 added)
+  `['partner_sender_identities', 'partner_id'],` entry W02 Task 2 added)
 
 **Interfaces:**
 - Consumes: `partners` (`db/schema/orgs.ts`), `public.breeze_current_scope()`,
@@ -387,8 +387,8 @@ cd /Users/toddhebebrand/.herdr/worktrees/breeze/outbound-email-domain
 ls apps/api/migrations/*.sql | sort | tail -1
 ```
 Expected: a name sorting **before** `2026-10-20-100100-partner-sending-daily-stats.sql`
-(W02a's `2026-10-20-100000-partner-sending-domains.sql` is the expected answer
-once W02a has merged). If not, rename this file upward — e.g.
+(W02's `2026-10-20-100000-partner-sending-domains.sql` is the expected answer
+once W02 has merged). If not, rename this file upward — e.g.
 `2026-10-22-100100-partner-sending-daily-stats.sql` — and use the new name in
 every step below.
 
@@ -398,7 +398,7 @@ Create `apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql`:
 
 ```sql
 -- Partner sending daily stats (spec 2026-09-17-partner-sending-domains-design
--- §9.3). W05 of the partner-sending-domains feature.
+-- §9.3). W06 of the partner-sending-domains feature.
 --
 -- TENANCY: RLS shape 3 (partner-axis), exactly the idiom
 -- 2026-10-20-100000-partner-sending-domains.sql shipped for
@@ -418,7 +418,7 @@ Create `apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql`:
 -- table, not a retrofit of this one.
 --
 -- The partner FK deliberately carries NO ON DELETE CASCADE, matching the two
--- W02a partner tables: the partner sweep deletes these rows explicitly.
+-- W02 partner tables: the partner sweep deletes these rows explicitly.
 --
 -- Counters are bigint: a hosted partner-lane account carries every partner's
 -- mail, and an integer counter would be a latent overflow on a busy day.
@@ -492,7 +492,7 @@ definition and **before** the `export type PartnerSendingDomain = …` line:
  * shape 3), registered in PARTNER_TENANT_TABLES only.
  *
  * Every counter is written by the delivery webhook from a provider event, never
- * by the send path — W03 forbids the send path from writing a partner-axis
+ * by the send path — W04 forbids the send path from writing a partner-axis
  * table, and `sent` therefore comes from Resend's `email.sent` event rather than
  * from sendOnPartnerLane.
  *
@@ -548,11 +548,11 @@ tenancy bucket`, naming `partner_sending_daily_stats` as unclassified.
 
 Then, in `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`,
 immediately after the `['partner_sender_identities', 'partner_id'],` entry that
-W02a Task 2 added to `PARTNER_TENANT_TABLES`:
+W02 Task 2 added to `PARTNER_TENANT_TABLES`:
 
 ```ts
   // partner_sending_daily_stats (spec 2026-09-17 §9.3, partner sending domains
-  // W05): per-partner, per-UTC-day delivery counters written by the Resend
+  // W06): per-partner, per-UTC-day delivery counters written by the Resend
   // delivery webhook. Partner-axis (Shape 3) like its two siblings above, and
   // deliberately without a domain_id dimension — the spec's bounce/complaint
   // thresholds and the auto-suspension kill switch are both per PARTNER. No
@@ -787,7 +787,7 @@ import { db, withSystemDbAccessContext } from '../../db';
  *
  * WRITE PATH. The only writer is the Resend delivery webhook
  * (routes/webhooks/emailProvider.ts). The send path never writes here: a
- * partner-axis write from sendEmail is forbidden by W03's Global Constraints,
+ * partner-axis write from sendEmail is forbidden by W04's Global Constraints,
  * so `sent` is counted from the provider's own `email.sent` event.
  *
  * The increment is ONE statement whose row source is a SELECT over `partners`:
@@ -1040,13 +1040,13 @@ hosted falls back to the spec's defaults, self-hosted falls back to "off".
 
 **Files:**
 - Modify: `apps/api/src/config/validate.ts` — three zod keys immediately after
-  `EMAIL_DOMAINS_WEBHOOK_SECRET: z.string().optional(),` (added by W02a Task 5,
+  `EMAIL_DOMAINS_WEBHOOK_SECRET: z.string().optional(),` (added by W02 Task 5,
   the last line of its `EMAIL_DOMAINS_*` block)
-- Modify: `apps/api/src/config/validate.test.ts` — extend W02a's
+- Modify: `apps/api/src/config/validate.test.ts` — extend W02's
   `it.each([...])('%s is declared in the env schema')` list and add two cases
-- Modify: `apps/api/src/config/envComposeParity.test.ts` — extend W02a's
+- Modify: `apps/api/src/config/envComposeParity.test.ts` — extend W02's
   `EMAIL_DOMAINS_VARS` array inside
-  `describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02a)')`
+  `describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02)')`
 - Modify: `apps/api/src/services/emailDomains/config.ts` — an `autoSuspend`
   block on `EmailDomainsConfig`
 - Modify: `apps/api/src/services/emailDomains/config.test.ts` — a new describe
@@ -1144,7 +1144,7 @@ describe('getEmailDomainsConfig — auto-suspension (spec §9.3)', () => {
 });
 ```
 
-Extend the file's `beforeEach` env-clearing list (W02a Task 5 declared it as an
+Extend the file's `beforeEach` env-clearing list (W02 Task 5 declared it as an
 array of `EMAIL_DOMAINS_*` names) with the three new keys:
 
 ```ts
@@ -1262,7 +1262,7 @@ In `apps/api/src/config/validate.ts`, immediately after
 ```
 
 In `apps/api/src/config/validate.test.ts`, add the three names to the
-`it.each([...])('%s is declared in the env schema')` list W02a Task 5 created,
+`it.each([...])('%s is declared in the env schema')` list W02 Task 5 created,
 and add two cases beside it inside the same describe:
 
 ```ts
@@ -1326,7 +1326,7 @@ service.
 
 Finally, extend the `EMAIL_DOMAINS_VARS` array in
 `apps/api/src/config/envComposeParity.test.ts` (inside
-`describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02a)')`) with:
+`describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02)')`) with:
 
 ```ts
     'EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE',
@@ -1367,10 +1367,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `apps/api/src/services/emailDomains/autoSuspend.ts`
 - Create: `apps/api/src/services/emailDomains/autoSuspend.test.ts`
 - Modify: `apps/api/src/services/emailDomains/sendingDomainService.ts` — the
-  `suspendSendingDomain` function created by W02b Task 6 (it is the two-line
+  `suspendSendingDomain` function created by W03 Task 6 (it is the two-line
   wrapper over `setAdminStatus` immediately above `unsuspendSendingDomain`)
 - Modify: `apps/api/src/routes/admin/sendingDomains.test.ts` — one assertion that
-  the admin route still suspends with the default reason (W02b Task 8 created it)
+  the admin route still suspends with the default reason (W03 Task 8 created it)
 
 **Interfaces:**
 - Consumes: `getEmailDomainsConfig` (`./config`), `loadPartnerSendingWindowStats`
@@ -1614,7 +1614,7 @@ Expected failure: `Cannot find module './autoSuspend'`.
 - [ ] **Step 3: Widen `suspendSendingDomain`**
 
 In `apps/api/src/services/emailDomains/sendingDomainService.ts`, replace the
-`suspendSendingDomain` function W02b Task 6 shipped with:
+`suspendSendingDomain` function W03 Task 6 shipped with:
 
 ```ts
 /**
@@ -1622,7 +1622,7 @@ In `apps/api/src/services/emailDomains/sendingDomainService.ts`, replace the
  * resolution reads the row.
  *
  * `statusReason` defaults to `platform_suspended` — the admin route's meaning
- * and W02b's original behaviour, so that call site is unchanged. W05's
+ * and W03's original behaviour, so that call site is unchanged. W06's
  * automatic suspension passes `abuse_auto` (spec §9.3). The status reason is
  * the ONLY difference between the two: both stop sending, both keep the
  * provider domain, and neither can be undone by the partner.
@@ -1848,7 +1848,7 @@ cd /Users/toddhebebrand/.herdr/worktrees/breeze/outbound-email-domain/apps/api
 npx vitest run src/services/emailDomains/autoSuspend.test.ts src/services/emailDomains/sendingDomainService.test.ts src/routes/admin/sendingDomains.test.ts
 ```
 Expected: `Test Files 3 passed (3)`. `autoSuspend.test.ts` has 14 tests; the two
-W02b suites are unchanged apart from the one added case.
+W03 suites are unchanged apart from the one added case.
 
 - [ ] **Step 6: Commit**
 
@@ -1859,7 +1859,7 @@ git commit -m "feat(email-domains): automatic suspension on bounce and complaint
 
 Spec §9.3. Strictly-above on the 7-day bounce rate over at least minMessages,
 or an absolute complaint count; either one suspends EVERY sendable domain of the
-partner through W02b's kill switch with status_reason abuse_auto, writes a
+partner through W03's kill switch with status_reason abuse_auto, writes a
 system audit row and a status notice per domain, and raises exactly one ops
 alert for the partner. An already-suspended partner is an exact no-op, so the
 evaluation is safe to run on every bounce event. Unsuspending stays manual.
@@ -1875,12 +1875,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ## Task 5: The `evaluate-auto-suspend` job
 
 **Files:**
-- Modify: `apps/api/src/jobs/sendingDomainsWorker.ts` (created by W02b Task 4) —
+- Modify: `apps/api/src/jobs/sendingDomainsWorker.ts` (created by W03 Task 4) —
   one job-name constant beside `DAILY_JOB`, one member on the
   `SendingDomainsJobData` union, one exported producer beside
   `enqueueTestSend`, and one `case` in `createSendingDomainsWorker()`'s
   `switch (job.name)`
-- Modify: `apps/api/src/jobs/sendingDomainsWorker.test.ts` (created by W02b
+- Modify: `apps/api/src/jobs/sendingDomainsWorker.test.ts` (created by W03
   Task 4) — one describe block
 
 **Interfaces:**
@@ -1972,7 +1972,7 @@ import { evaluateAutoSuspension } from '../services/emailDomains/autoSuspend';
 
 Add the job-name constant immediately after `const DAILY_JOB = 'daily-maintenance';`:
 ```ts
-/** W05 (spec §9.3). Evaluated after a bounce/complaint event, never inline in the webhook request. */
+/** W06 (spec §9.3). Evaluated after a bounce/complaint event, never inline in the webhook request. */
 const AUTO_SUSPEND_JOB = 'evaluate-auto-suspend';
 ```
 
@@ -2712,7 +2712,7 @@ import { captureException } from '../../services/sentry';
  *     only enqueues `sync-domain`, and a bounce/complaint only enqueues
  *     `evaluate-auto-suspend`. All provider calls live in the worker (spec §2).
  *
- * ATTRIBUTION. Events are attributed by the `partner_id` provider tag W03 sets
+ * ATTRIBUTION. Events are attributed by the `partner_id` provider tag W04 sets
  * on every partner-lane message. The tag is never trusted beyond an existence
  * check: it must parse as a UUID, and the increment statement's row source is a
  * SELECT over `partners`, so an id that matches no partner counts nowhere. A
@@ -2736,7 +2736,7 @@ const DEDUPE_TTL_SECONDS = 24 * 60 * 60;
  * The events this endpoint counts. `email.sent` is the ONLY source of the
  * `sent` column: the send path is forbidden from writing a partner-axis table,
  * so subscribing this event on the provider webhook is what populates the rate
- * denominator (spec §9.3 + W03's Global Constraints).
+ * denominator (spec §9.3 + W04's Global Constraints).
  */
 const EVENT_COLUMN: Readonly<Record<string, DeliveryStatColumn>> = Object.freeze({
   'email.sent': 'sent',
@@ -2896,7 +2896,7 @@ async function handleDomainUpdated(envelope: WebhookEnvelope): Promise<void> {
   const row = rows[0];
   if (!row) {
     // A provider domain Breeze does not know about. The daily drift report
-    // (W02b) owns that case; the webhook says nothing.
+    // (W03) owns that case; the webhook says nothing.
     return;
   }
   // The worker re-reads the domain from the provider and maps the status. The
@@ -3031,7 +3031,7 @@ import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 
 and immediately after `api.route('/webhooks', quickbooksWebhookRoutes);` (`:921`):
 ```ts
-// Resend delivery webhook for partner sending domains (W05) — no session auth,
+// Resend delivery webhook for partner sending domains (W06) — no session auth,
 // Svix-signature-verified, and inert with a 404 when EMAIL_DOMAINS_WEBHOOK_SECRET
 // is unset. partnerGuard passes through (no Authorization header); the route
 // reads the raw body itself via c.req.text(), so no body-consuming middleware may
@@ -3042,7 +3042,7 @@ api.route('/webhooks', resendWebhookRoutes);
 
 In `apps/api/src/middleware/globalRateLimit.ts`, append to `ISOLATED_BUCKETS`:
 ```ts
-  // Partner sending-domain delivery events (W05). One provider egress IP
+  // Partner sending-domain delivery events (W06). One provider egress IP
   // delivers every partner's bounces, complaints and deliveries, so on the
   // shared 300/min per-IP budget a busy partner lane would throttle dashboard
   // traffic that happens to share an egress address — and vice versa. The
@@ -3111,17 +3111,17 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ## Task 9: Make the daily-cap hit readable
 
-W03 leaves `recordPartnerLaneCapHit(partnerId: string): void` as a
-`console.warn` with the comment *"W05 owns the abuse-signal producer (spec §9.2)
+W04 leaves `recordPartnerLaneCapHit(partnerId: string): void` as a
+`console.warn` with the comment *"W06 owns the abuse-signal producer (spec §9.2)
 and wires it here"*. This task is that wiring.
 
 **Decision, and why:** the record goes into a **Redis day-hash**, not a row.
 Three facts force it.
 1. `recordPartnerLaneCapHit` is **synchronous and returns `void`**, called from
    `tryCountPartnerLaneSend` on the send path — it cannot await a database write
-   without changing W03's signature and making every send await one more round
+   without changing W04's signature and making every send await one more round
    trip.
-2. W03's Global Constraints say verbatim that the send path never writes a
+2. W04's Global Constraints say verbatim that the send path never writes a
    partner-axis table, and `partner-wide-write-coverage.test.ts` enforces it for
    any file under `src/services/**`.
 3. The consumer is the fleet-wide abuse sweep, which needs "every partner that
@@ -3129,15 +3129,15 @@ Three facts force it.
    partnerId`) answers that with 7 bounded `HGETALL` calls — no `SCAN`, no
    partner enumeration. Keying it by partner would force one of the two.
 
-Losing a record to a Redis outage is acceptable and consistent: W03 already
+Losing a record to a Redis outage is acceptable and consistent: W04 already
 refuses to record a cap hit when Redis cannot answer, precisely so our own
 outage cannot manufacture an abuse signal.
 
 **Files:**
 - Create: `apps/api/src/services/emailDomains/capHits.ts`
 - Create: `apps/api/src/services/emailDomains/capHits.test.ts`
-- Modify: `apps/api/src/services/emailDomains/sendCap.ts` (created by W03 Task 1)
-- Modify: `apps/api/src/services/emailDomains/sendCap.test.ts` (created by W03 Task 1)
+- Modify: `apps/api/src/services/emailDomains/sendCap.ts` (created by W04 Task 1)
+- Modify: `apps/api/src/services/emailDomains/sendCap.test.ts` (created by W04 Task 1)
 
 **Interfaces:**
 - Consumes: `getRedis` (`../redis`).
@@ -3268,7 +3268,7 @@ Append to `apps/api/src/services/emailDomains/sendCap.test.ts` (and add
 `vi.hoisted` `recordCapHitMock` beside the file's existing hoisted block):
 
 ```ts
-describe('recordPartnerLaneCapHit wiring (W05)', () => {
+describe('recordPartnerLaneCapHit wiring (W06)', () => {
   it('records the hit for the abuse producer on a genuine over-cap count', async () => {
     getConfigMock.mockReturnValue({ dailySendCap: 2000 });
     getRedisMock.mockReturnValue(redisWithCount(2001));
@@ -3276,7 +3276,7 @@ describe('recordPartnerLaneCapHit wiring (W05)', () => {
     expect(recordCapHitMock).toHaveBeenCalledWith(PARTNER);
   });
 
-  // W03's invariant, re-pinned now that the hit has a consumer: an outage must
+  // W04's invariant, re-pinned now that the hit has a consumer: an outage must
   // never be able to manufacture an abuse signal against a partner.
   it('records NOTHING when Redis is unavailable', async () => {
     getConfigMock.mockReturnValue({ dailySendCap: 2000 });
@@ -3317,8 +3317,8 @@ import { getRedis } from '../redis';
  * Daily partner-lane cap hits, recorded for the abuse sweep (spec §9.2).
  *
  * WHY REDIS AND NOT A TABLE. The recorder is called from the SEND PATH, through
- * W03's synchronous `recordPartnerLaneCapHit(partnerId): void`. The send path is
- * forbidden from writing a partner-axis table (W03 Global Constraints, enforced
+ * W04's synchronous `recordPartnerLaneCapHit(partnerId): void`. The send path is
+ * forbidden from writing a partner-axis table (W04 Global Constraints, enforced
  * by partner-wide-write-coverage.test.ts), and a `void` function cannot await a
  * database write anyway.
  *
@@ -3329,7 +3329,7 @@ import { getRedis } from '../redis';
  * enumeration on every sweep.
  *
  * A Redis outage silently drops a record, which is the correct direction and
- * matches W03: `tryCountPartnerLaneSend` already declines to report a cap hit
+ * matches W04: `tryCountPartnerLaneSend` already declines to report a cap hit
  * when Redis cannot answer, so our own outage can never accuse a partner.
  */
 
@@ -3417,7 +3417,7 @@ docblock, and extending the docblock's last paragraph):
 ```ts
 export function recordPartnerLaneCapHit(partnerId: string): void {
   console.warn('[emailDomains/sendCap] daily partner-lane cap reached', { partnerId });
-  // W05: make the hit readable by the abuse sweep (spec §9.2). Fire-and-forget
+  // W06: make the hit readable by the abuse sweep (spec §9.2). Fire-and-forget
   // into a Redis day-hash — this runs on the send path, which must not await a
   // write and must not write a partner-axis table.
   recordCapHit(partnerId);
@@ -3441,7 +3441,7 @@ cd /Users/toddhebebrand/.herdr/worktrees/breeze/outbound-email-domain
 git add apps/api/src/services/emailDomains/capHits.ts apps/api/src/services/emailDomains/capHits.test.ts apps/api/src/services/emailDomains/sendCap.ts apps/api/src/services/emailDomains/sendCap.test.ts
 git commit -m "feat(email-domains): record daily-cap hits for the abuse sweep
 
-W03 left recordPartnerLaneCapHit as a log line for W05 to wire. It now also
+W04 left recordPartnerLaneCapHit as a log line for W06 to wire. It now also
 HINCRBYs a Redis hash keyed by UTC DAY with the partner id as the field, so the
 fleet-wide sweep reads a 7-day window with seven HGETALLs and never needs SCAN.
 Redis, not a row: the recorder is synchronous, sits on the send path, and the
@@ -3674,7 +3674,7 @@ In `apps/api/src/services/abuseSignals/config.ts`, append to the
 `SIGNAL_DEFAULTS` object (before its closing `} as const …`):
 
 ```ts
-  // --- Partner sending domains (spec §9.2, W05) ------------------------------
+  // --- Partner sending domains (spec §9.2, W06) ------------------------------
   // Four detectors over the outbound mail a partner sends from its OWN domain.
   // None of them is age-decayed: a lookalike domain and a bounce storm are
   // evidence about what the account is DOING, not about how old it is.
@@ -3978,7 +3978,7 @@ In `apps/api/src/services/abuseSignals/corroboration.ts`, append to
 `SIGNAL_AXIS` (before its closing `};`):
 
 ```ts
-  // Partner sending domains (W05). TWO axes, not four.
+  // Partner sending domains (W06). TWO axes, not four.
   //
   //  - `added` and `verify_failures` are the same observation at two
   //    strengths: this partner is claiming DNS names. A partner adding three
@@ -4345,7 +4345,7 @@ Spec §9.3: *"The admin list shows 7-day volume, bounce and complaint rates."*
   exported function beside `listAllSendingDomains`
 - Modify: `apps/api/src/services/emailDomains/sendingDomainService.test.ts`
 - Modify: `apps/api/src/routes/admin/sendingDomains.ts` — the `GET /` handler
-  W02b Task 8 shipped
+  W03 Task 8 shipped
 - Modify: `apps/api/src/routes/admin/sendingDomains.test.ts`
 
 **Interfaces:**
@@ -4366,7 +4366,7 @@ Spec §9.3: *"The admin list shows 7-day volume, bounce and complaint rates."*
   ```
 
 > `sendingDomainService.ts` is already in `ALLOWED_WITHOUT_CAPABILITY_CHECK`
-> (W02b Task 6), and this function only SELECTs, so no allowlist change.
+> (W03 Task 6), and this function only SELECTs, so no allowlist change.
 
 - [ ] **Step 1: Write the failing service test**
 
@@ -4568,7 +4568,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 A platform-admin web UI exists for the trust admin routes —
 `apps/web/src/pages/admin/trust-queue.astro` mounts
 `apps/web/src/components/admin/TrustQueue.tsx`, which consumes
-`routes/admin/trust.ts`. There is **no** page for `routes/admin/abuse.ts`. W05
+`routes/admin/trust.ts`. There is **no** page for `routes/admin/abuse.ts`. W06
 ships a new unlisted admin page for the sending-domain admin routes rather than
 bolting a second resource onto the trust queue; it is built in `TrustQueue.tsx`'s
 idiom (`fetchWithAuth` for the read, `runAction` for every mutation,
@@ -4740,7 +4740,7 @@ import { showToast } from '../shared/Toast';
 
 /**
  * Platform-admin view of every partner sending domain (spec §9.3), with the
- * 7-day deliverability the admin list gained in W05 and the three kill-switch
+ * 7-day deliverability the admin list gained in W06 and the three kill-switch
  * actions. Unlisted, like /admin/trust-queue: it is reached by URL.
  *
  * Every mutation goes through runAction so a failure is always surfaced; the
@@ -5057,7 +5057,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 `vitest.integration.config.ts`'s include list covers
 `src/__tests__/integration/**/*.test.ts`; a co-located `*.integration.test.ts`
 anywhere else runs in **no CI job at all**. The harness idiom below is the one
-W02a Task 12 established in `partnerSendingDomainsRls.integration.test.ts`.
+W02 Task 12 established in `partnerSendingDomainsRls.integration.test.ts`.
 
 **Files:**
 - Create: `apps/api/src/__tests__/integration/partnerSendingDailyStats.integration.test.ts`
@@ -5546,20 +5546,20 @@ session brought up. Nothing reaps a local stack for you.
 
 ```bash
 cd /Users/toddhebebrand/.herdr/worktrees/breeze/outbound-email-domain
-git push -u origin feature/__PARENT__-partner-sending-domains/wave-__W05__
-gh pr create --base main --title "W05: partner sending domains — delivery feedback and abuse controls" --body "$(cat <<'EOF'
-Closes #__W05__
+git push -u origin feature/__PARENT__-partner-sending-domains/wave-__W06__
+gh pr create --base main --title "W06: partner sending domains — delivery feedback and abuse controls" --body "$(cat <<'EOF'
+Closes #__W06__
 
-W05 of the partner-sending-domains feature (spec §9.2, §9.3, §11, §16.1 step 4).
+W06 of the partner-sending-domains feature (spec §9.2, §9.3, §11, §16.1 step 4).
 This is the gate for HOSTED general availability, not a functional dependency of
-W01–W04.
+W01–W05.
 
 - `partner_sending_daily_stats`, partner-axis RLS shape 3, PK `(partner_id, day)`.
 - `POST /api/v1/webhooks/email-provider/resend`: public, Svix-signature-verified,
   replay-deduped on `svix-id`, inert with a 404 when
   `EMAIL_DOMAINS_WEBHOOK_SECRET` is unset.
 - Automatic suspension on the 7-day bounce rate or complaint count, through
-  W02b's kill switch, with one ops alert per partner. Manual unsuspend only.
+  W03's kill switch, with one ops alert per partner. Manual unsuspend only.
 - Four abuse signals in `runAbuseSweep`, the partner's sending domains on the
   trust evidence card, and 7-day deliverability on the platform-admin list with
   a new `/admin/sending-domains` page.
@@ -5583,7 +5583,7 @@ EOF
 
 ## Rollout (operator checklist — NOT a Codex task)
 
-Spec §16.1 step 4. Run this **after** W05 has merged and shipped in a release.
+Spec §16.1 step 4. Run this **after** W06 has merged and shipped in a release.
 Nothing here belongs in the PR.
 
 ### 1. Configure the provider webhook, per region
@@ -5700,9 +5700,9 @@ Every in-scope spec requirement mapped to the task that satisfies it.
 | §9.3 — `sent` has a writer | 1, 2, 7 (`email.sent` provider event — plan amendment 1; the send path stays write-free) |
 | §9.3 — **automatic suspension**: 7-day bounce rate > 8% over ≥ 50 messages | 4 (`evaluateAutoSuspension`, strictly-greater, threshold matrix tested at and over) |
 | §9.3 — **or 3 complaints in 7 days** | 4 (absolute rule, tested at 2 and at exactly 3) |
-| §9.3 — **every domain of the partner set to `suspended` / `abuse_auto`** | 4 (fan-out through W02b's `suspendSendingDomain`, widened per plan amendment 4) |
+| §9.3 — **every domain of the partner set to `suspended` / `abuse_auto`** | 4 (fan-out through W03's `suspendSendingDomain`, widened per plan amendment 4) |
 | §9.3 — **with an ops alert** | 4 (exactly one per partner, not one per domain) |
-| §9.3 — **thresholds are env vars** | 3 (`EMAIL_DOMAINS_AUTOSUSPEND_{BOUNCE_RATE,MIN_MESSAGES,COMPLAINTS}`, declared the W02a way) |
+| §9.3 — **thresholds are env vars** | 3 (`EMAIL_DOMAINS_AUTOSUSPEND_{BOUNCE_RATE,MIN_MESSAGES,COMPLAINTS}`, declared the W02 way) |
 | §9.3 — **the admin list shows 7-day volume, bounce and complaint rates** | 12 (one grouped query, no N+1) + 13 (the page that shows them) |
 | §9.3 / §15 — evaluation **not inline in the webhook request** | 5 (`evaluate-auto-suspend`, `jobId = autosuspend:<partnerId>` so bursts collapse) |
 | §9.3 — an already-suspended partner is a no-op | 4 (the load filters to `verified`/`at_risk`; tested) |

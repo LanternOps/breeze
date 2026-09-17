@@ -1,13 +1,13 @@
 ---
 tracking_issue: LanternOps/breeze#__PARENT__
 ---
-# Partner Sending Domains W02b: Service, Worker and Routes — Implementation Plan
+# Partner Sending Domains W03: Service, Worker and Routes — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Everything that *calls* W02a's data model and adapters: the `sendingDomainService` (list / create / check / remove / identities / admin suspend-unsuspend-force-release / capability), the `syncSendingDomain` state machine with its cadence, the `sending-domains` BullMQ worker (sweep, outbox drain, test send, daily maintenance, key probe), the `staff.sending_domain_status` transactional mail, and the two route files (`/partner/sending-domains`, `/admin/sending-domains`). It lands **dark**: `EMAIL_DOMAINS_PROVIDER` is unset, so `getEmailDomainProvider()` returns `null`, every route answers `404 sending_domains_unsupported`, and the worker is not registered.
+**Goal:** Everything that *calls* W02's data model and adapters: the `sendingDomainService` (list / create / check / remove / identities / admin suspend-unsuspend-force-release / capability), the `syncSendingDomain` state machine with its cadence, the `sending-domains` BullMQ worker (sweep, outbox drain, test send, daily maintenance, key probe), the `staff.sending_domain_status` transactional mail, and the two route files (`/partner/sending-domains`, `/admin/sending-domains`). It lands **dark**: `EMAIL_DOMAINS_PROVIDER` is unset, so `getEmailDomainProvider()` returns `null`, every route answers `404 sending_domains_unsupported`, and the worker is not registered.
 
-**Architecture:** Request handlers only write intent rows and enqueue; the worker owns every provider call (spec §2). `syncSendingDomain` advances one row one step per job, idempotently, in **three phases with explicit DB-context boundaries** (short system transaction → provider call with NO context held → short system transaction), the `ticketOutboxPublisher.ts` shape. Provisioning commits `provision_attempted_at` in phase 1 *before* the provider `createDomain` in phase 2, so a crash between them is classified as "ours" on retry (spec §5.1 case 3) instead of adopted as pre-existing. `removing` deletes at the provider **only when `provider_managed`**, then nulls `provider_domain_id`, then deletes the row — in that order, because W02a's `BEFORE DELETE` guard raises while `provider_domain_id IS NOT NULL`. Creates avoid the 23505-aborts-the-request-transaction trap entirely by using `onConflictDoNothing({ target: … }).returning()` and treating a missing row as the conflict (the repo's preferred idiom, `routes/partnerServicePrincipals.ts:277-279`).
+**Architecture:** Request handlers only write intent rows and enqueue; the worker owns every provider call (spec §2). `syncSendingDomain` advances one row one step per job, idempotently, in **three phases with explicit DB-context boundaries** (short system transaction → provider call with NO context held → short system transaction), the `ticketOutboxPublisher.ts` shape. Provisioning commits `provision_attempted_at` in phase 1 *before* the provider `createDomain` in phase 2, so a crash between them is classified as "ours" on retry (spec §5.1 case 3) instead of adopted as pre-existing. `removing` deletes at the provider **only when `provider_managed`**, then nulls `provider_domain_id`, then deletes the row — in that order, because W02's `BEFORE DELETE` guard raises while `provider_domain_id IS NOT NULL`. Creates avoid the 23505-aborts-the-request-transaction trap entirely by using `onConflictDoNothing({ target: … }).returning()` and treating a missing row as the conflict (the repo's preferred idiom, `routes/partnerServicePrincipals.ts:277-279`).
 
 **Tech Stack:** Hono + Zod (`lib/validation`'s `zValidator`), Drizzle, BullMQ on the shared ioredis connection (`services/redis.ts`'s `getBullMQConnection()`), Redis sliding-window limiter (`services/rate-limit.ts`), Vitest (unit + one real-Postgres integration extension).
 
@@ -25,24 +25,24 @@ Recorded here because the spec or the index does not pin them and the real code 
 4. **`createSendingDomain` never raises 23505.** The repo's trap (`utils/pgErrors.ts:42-57`, prod incident 2026-09-15) is that a unique violation raised on the request's own `withDbAccessContext` transaction aborts it even when caught, so the mapped 409 surfaces as a 500 at commit. `partner_sending_domains` has a plain `UNIQUE (domain)`, so the sanctioned form applies directly: `onConflictDoNothing({ target: partnerSendingDomains.domain }).returning()` and `if (!created) → 409 domain_unavailable`. No savepoint, no catch, nothing raised. (The savepoint form, `db.transaction` + `isPgUniqueViolation(err, name)`, is only needed for partial/expression indexes — it is not needed here.)
 5. **The cross-partner `partner_inbound_domains` check (§3.4) must go through `readWithPartnerAxisVisibility`.** `partner_inbound_domains` is partner-axis, so a partner-scoped RLS context reading it by domain sees **zero rows** for another partner's row and the check would silently pass. `db/partnerAxisRead.ts`'s escape is the sanctioned read for exactly this. The lookup key is the requested domain (already normalised); no partner id from request input is ever used as an axis.
 6. **The admin routes mount on the admin hub, not on `apps/api/src/index.ts`.** `routes/admin/index.ts:13-15` already applies `platformAdminMiddleware` to everything it mounts (`adminRoutes` itself is mounted at `index.ts:1084`). Only `partnerSendingDomainsRoutes` is added to `index.ts`, and it must be registered **before** `api.route('/partner', partnerRoutes)` at `index.ts:1004`, the same ordering constraint `/partner/trust` observes.
-7. **The test send is capped by the route limit alone in this wave.** Spec §6.1 says the test send counts against the daily partner-lane cap, but `tryCountPartnerLaneSend` is defined in W03 (index, "Defined in W03"). In W02b the only bound is the route's 5/h/partner limit; W03 adds the cap call to the `test-send` processor.
-8. **The "Partner Admin" recipient query is implemented locally, not extracted.** No `getPartnerAdminEmails` helper exists; the `partnerUsers → users → roles` join on `roles.name = 'Partner Admin'` is duplicated today in `routes/auth/accountDeletion.ts:62-98` and `services/tenantOffboarding.ts:1767-1783`. W02b writes a third copy inside `services/emailDomains/statusMail.ts` with a comment naming the other two, rather than refactoring two unrelated files in a tenancy-surface PR.
+7. **The test send is capped by the route limit alone in this wave.** Spec §6.1 says the test send counts against the daily partner-lane cap, but `tryCountPartnerLaneSend` is defined in W04 (index, "Defined in W04"). In W03 the only bound is the route's 5/h/partner limit; W04 adds the cap call to the `test-send` processor.
+8. **The "Partner Admin" recipient query is implemented locally, not extracted.** No `getPartnerAdminEmails` helper exists; the `partnerUsers → users → roles` join on `roles.name = 'Partner Admin'` is duplicated today in `routes/auth/accountDeletion.ts:62-98` and `services/tenantOffboarding.ts:1767-1783`. W03 writes a third copy inside `services/emailDomains/statusMail.ts` with a comment naming the other two, rather than refactoring two unrelated files in a tenancy-surface PR.
 9. **The status-mail template lives in `statusMail.ts`, not in `services/email.ts`.** It is written in the `buildQuoteOutcomeTemplate` idiom (`renderLayout` + `BODY_PARA`/`MUTED_PARA` + a hand-built text arm returning `EmailTemplate`) but placed beside its send site, the precedent `services/quoteEmail.ts:2` already sets by importing `supportFooter, BODY_PARA, MUTED_PARA, type EmailTemplate` back from `./email`. `email.ts` is 1295 lines; this keeps it from growing.
 
-### Added when W02a's finished plan was reconciled against this one
+### Added when W02's finished plan was reconciled against this one
 
-10. **A sixth registration list: `ALLOWED_WITHOUT_CAPABILITY_CHECK`.** `apps/api/src/__tests__/partner-wide-write-coverage.test.ts:64` derives the partner-axis table set from the **live Drizzle schema** (`partnerAxisTableNames()`: any table with `partnerId` and no `notNull` `orgId`), so `partnerSendingDomains` and `partnerSenderIdentities` join it the moment W02a's Task 1 lands. It then greps every `.ts` under `src/routes/**` and `src/services/**` (`collectSourceFiles()`, `:290-291`) for `\.(insert|update|delete)\(\s*<table>\s*[,)]` and fails the required **Test API** job unless the file mentions `canManagePartnerWidePolicies` or is allowlisted with a reason of ≥ 20 characters. **Verified: `src/jobs/**` is NOT scanned**, so `jobs/sendingDomainsWorker.ts` needs no entry even though it updates `partnerSendingDomains`. Two W02b files do: `services/emailDomains/sendingDomainService.ts` (Task 6) and `services/emailDomains/domainSync.ts` (Task 3). Each task registers its own file so every task is green standing alone — the test's "no stale entries" case (`:354`) additionally means an entry may not be added before the file mutates the table. W02a registers `services/emailDomains/domainRelease.ts` the same way (its amendment 3); the routes are not flagged because they mutate nothing directly.
+10. **A sixth registration list: `ALLOWED_WITHOUT_CAPABILITY_CHECK`.** `apps/api/src/__tests__/partner-wide-write-coverage.test.ts:64` derives the partner-axis table set from the **live Drizzle schema** (`partnerAxisTableNames()`: any table with `partnerId` and no `notNull` `orgId`), so `partnerSendingDomains` and `partnerSenderIdentities` join it the moment W02's Task 1 lands. It then greps every `.ts` under `src/routes/**` and `src/services/**` (`collectSourceFiles()`, `:290-291`) for `\.(insert|update|delete)\(\s*<table>\s*[,)]` and fails the required **Test API** job unless the file mentions `canManagePartnerWidePolicies` or is allowlisted with a reason of ≥ 20 characters. **Verified: `src/jobs/**` is NOT scanned**, so `jobs/sendingDomainsWorker.ts` needs no entry even though it updates `partnerSendingDomains`. Two W03 files do: `services/emailDomains/sendingDomainService.ts` (Task 6) and `services/emailDomains/domainSync.ts` (Task 3). Each task registers its own file so every task is green standing alone — the test's "no stale entries" case (`:354`) additionally means an entry may not be added before the file mutates the table. W02 registers `services/emailDomains/domainRelease.ts` the same way (its amendment 3); the routes are not flagged because they mutate nothing directly.
 11. **The write routes gain a `canManagePartnerWidePolicies` gate.** Not merely to satisfy amendment 10 — on the merits. A sending domain and a sender identity are partner-wide by construction: the From address applies to every org under the MSP, including orgs created later, which is exactly what epic #2135's rule protects and what `partnerServicePrincipals.ts` was fixed for in the 2026-08-16 review. `PATCH /partners/me`, which spec §7 names as the model stack, carries this gate inline (`routes/orgs.ts:911-916`) — the spec's summary of that stack simply omitted it. So an `orgAccess: 'selected'` partner user cannot add, re-point or remove the MSP's sending identity. The two service files stay allowlisted, with reasons pointing at this gate.
-12. **`normalizeSendingDomain` returns a discriminated union, not `string | null`.** W02a Task 3 pins `NormalizeSendingDomainResult = { ok: true; domain } | { ok: false; reason: SendingDomainRejection }`. `createSendingDomain` therefore checks `result.ok` and surfaces `reason` in the 400 body, which is strictly better than the `null` this plan first assumed: the UI can say *why* the domain was refused. Identity validation likewise uses W02a's `senderLocalPartSchema` / `senderDisplayNameSchema` / `RESERVED_SENDER_LOCAL_PARTS` instead of the regex this plan originally hand-rolled — one definition, shared with the web.
-13. **A `pending` result from a non-DNS adapter is "no change", and provisioning must carry the partner slug.** Both are W02a contracts (its amendments 4 and 5). `static.getDomain(key)` keys on the **domain name** (there is no provider id) and *never* returns `verified` — only an accepted test send moves a `static` row there — so `syncSendingDomain` acts on `failed` alone when `provider.verifiesByDns === false`, or every daily re-check would demote a verified `static` domain back to `pending`. And `createDomain` takes `partnerSlug`, because `EMAIL_DOMAINS_STATIC_ALLOWED` binds entries by slug (`domain:partner-slug`), so the provisioning phase loads the partner's `slug` alongside the domain row and passes it.
-14. **The drift report resolves `createdAt` with `findDomainByName`, not from `listDomains()`.** W02a pins `listDomains(): Promise<Array<{ providerDomainId; domain }>>` — no creation time. Spec §6.4 only alerts on a provider domain **older than 24 h**, so the report fetches `findDomainByName(domain)` for each *unknown* domain (rare by construction: a leak, not a routine row) and treats a missing `createdAt` as reportable rather than suppressing it. Error classification during provisioning likewise keys on W02a's `ProviderDomainConflictError` / `ProviderDomainRejectedError` classes, not on an ad-hoc `err.reason` property.
+12. **`normalizeSendingDomain` returns a discriminated union, not `string | null`.** W02 Task 3 pins `NormalizeSendingDomainResult = { ok: true; domain } | { ok: false; reason: SendingDomainRejection }`. `createSendingDomain` therefore checks `result.ok` and surfaces `reason` in the 400 body, which is strictly better than the `null` this plan first assumed: the UI can say *why* the domain was refused. Identity validation likewise uses W02's `senderLocalPartSchema` / `senderDisplayNameSchema` / `RESERVED_SENDER_LOCAL_PARTS` instead of the regex this plan originally hand-rolled — one definition, shared with the web.
+13. **A `pending` result from a non-DNS adapter is "no change", and provisioning must carry the partner slug.** Both are W02 contracts (its amendments 4 and 5). `static.getDomain(key)` keys on the **domain name** (there is no provider id) and *never* returns `verified` — only an accepted test send moves a `static` row there — so `syncSendingDomain` acts on `failed` alone when `provider.verifiesByDns === false`, or every daily re-check would demote a verified `static` domain back to `pending`. And `createDomain` takes `partnerSlug`, because `EMAIL_DOMAINS_STATIC_ALLOWED` binds entries by slug (`domain:partner-slug`), so the provisioning phase loads the partner's `slug` alongside the domain row and passes it.
+14. **The drift report resolves `createdAt` with `findDomainByName`, not from `listDomains()`.** W02 pins `listDomains(): Promise<Array<{ providerDomainId; domain }>>` — no creation time. Spec §6.4 only alerts on a provider domain **older than 24 h**, so the report fetches `findDomainByName(domain)` for each *unknown* domain (rare by construction: a leak, not a routine row) and treats a missing `createdAt` as reportable rather than suppressing it. Error classification during provisioning likewise keys on W02's `ProviderDomainConflictError` / `ProviderDomainRejectedError` classes, not on an ad-hoc `err.reason` property.
 
-## Consumed from W02a (reconciled against its finished plan)
+## Consumed from W02 (reconciled against its finished plan)
 
-W02a's plan is complete (`docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains-w02a-data-model-and-adapters.md`). Every name below was read from its Interfaces blocks and is binding — this wave does not guess any of them. Where W02a's shape differs from the plan index's "Defined in W02a" list, W02a wins and the difference is called out.
+W02's plan is complete (`docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains-w02-data-model-and-adapters.md`). Every name below was read from its Interfaces blocks and is binding — this wave does not guess any of them. Where W02's shape differs from the plan index's "Defined in W02" list, W02 wins and the difference is called out.
 
 ```ts
-// packages/shared/src/validators/sendingDomains.ts  (W02a Task 3)
+// packages/shared/src/validators/sendingDomains.ts  (W02 Task 3)
 export const SENDING_DOMAIN_STATUSES: readonly ['provisioning','pending','verified','at_risk','failed','suspended','removing'];
 export const SENDING_DOMAIN_STATUS_REASONS: readonly ['provider_conflict','provider_rejected','quota_exhausted','dns_not_detected','dns_removed','platform_suspended','abuse_auto','failed_expired','user_removed'];
 export const PARTNER_MAIL_STREAMS: readonly ['support','billing','general'];
@@ -64,7 +64,7 @@ export const senderDisplayNameSchema: z.ZodType<string>;
 export const createSendingDomainSchema: z.ZodType<{ domain: string }>;
 export const upsertSenderIdentitySchema: z.ZodType<{ sendingDomainId: string; localPart: string; displayName?: string | null; replyTo?: string | null }>;
 
-// packages/shared/src/types/sendingDomains.ts  (W02a Task 3) — field sets are EXACT
+// packages/shared/src/types/sendingDomains.ts  (W02 Task 3) — field sets are EXACT
 export type SendingDomainProviderId = 'resend' | 'ses' | 'static' | 'fake';
 export interface SendingDomainDnsRecordDto {
   purpose: 'dkim' | 'spf' | 'return_path_mx' | 'other';
@@ -98,16 +98,16 @@ export interface SendingDomainsListResponse {
   capability: SendingDomainsCapabilityDto; domains: SendingDomainDto[]; identities: SenderIdentityDto[];
 }
 
-// apps/api/src/services/emailDomains/domainPolicy.ts  (W02a Task 4)
+// apps/api/src/services/emailDomains/domainPolicy.ts  (W02 Task 4)
 export type SendingDomainPolicyRejection = 'platform_domain' | 'consumer_domain' | 'public_suffix' | 'denylisted';
 export class SendingDomainPolicyError extends Error { readonly reason: SendingDomainPolicyRejection }
 export function assertSendingDomainAllowed(domain: string): void;   // throws; input already normalised
 export const PLATFORM_OWNED_DOMAINS: readonly ['2breeze.app', 'breezermm.com', 'lanternops.io'];
 
-// apps/api/src/services/emailDomains/config.ts  (W02a Task 5)
+// apps/api/src/services/emailDomains/config.ts  (W02 Task 5)
 // NOTE: the env KEYS are declared in the zod `envObjectSchema` of
-// apps/api/src/config/validate.ts, NOT in config/env.ts (W02a amendment 1).
-// This module is the only typed reader; W02b never reads process.env directly.
+// apps/api/src/config/validate.ts, NOT in config/env.ts (W02 amendment 1).
+// This module is the only typed reader; W03 never reads process.env directly.
 export type EmailDomainsProviderId = 'resend' | 'static' | 'fake';
 export interface StaticAllowedEntry { domain: string; partnerSlug: string | null }
 export interface EmailDomainsConfig {
@@ -122,7 +122,7 @@ export function getEmailDomainsConfig(): EmailDomainsConfig;
 export function isPartnerLaneConfigured(): boolean;
 export function findStaticAllowedEntry(domain: string, partnerSlug: string | null): StaticAllowedEntry | null;
 
-// apps/api/src/services/emailDomains/provider.ts  (W02a Task 6)
+// apps/api/src/services/emailDomains/provider.ts  (W02 Task 6)
 export type SendingDomainStatus = 'provisioning'|'pending'|'verified'|'at_risk'|'failed'|'suspended'|'removing';
 export interface ProviderDomain {
   providerDomainId: string | null; region?: string;
@@ -132,7 +132,7 @@ export interface ProviderDomain {
 }
 export interface CreateProviderDomainInput {
   domain: string; region?: string; partnerRef: string;
-  partnerSlug?: string | null;  // W02a amendment 4 — `static` binds its allow-list by SLUG
+  partnerSlug?: string | null;  // W02 amendment 4 — `static` binds its allow-list by SLUG
 }
 export class PartnerLaneSendFailure extends Error { readonly error: PartnerLaneSendError }
 export class ProviderDomainConflictError extends Error { readonly domain: string }   // -> failed/provider_conflict
@@ -150,21 +150,21 @@ export interface EmailDomainProvider {
   send(m: PartnerLaneMessage & { partnerRef: string; tags: Record<string, string> }): Promise<{ providerMessageId: string }>;
 }
 
-// apps/api/src/services/emailDomains/providerRegistry.ts  (W02a Task 6)
+// apps/api/src/services/emailDomains/providerRegistry.ts  (W02 Task 6)
 export function getEmailDomainProvider(): EmailDomainProvider | null;
 export function resetEmailDomainProviderForTests(): void;
 
-// apps/api/src/services/emailDomains/adapters/{static,fake}.ts  (W02a Task 8)
+// apps/api/src/services/emailDomains/adapters/{static,fake}.ts  (W02 Task 8)
 export function createStaticDomainProvider(): EmailDomainProvider;
 export function createFakeDomainProvider(): EmailDomainProvider;
 export function resetFakeDomainProviderState(): void;
 export const FAKE_PREEXISTING_PREFIX: string;
 export function classifyPlatformTransportError(err: unknown): PartnerLaneSendError;
 
-// apps/api/src/services/emailDomains/domainRelease.ts  (W02a Task 11)
+// apps/api/src/services/emailDomains/domainRelease.ts  (W02 Task 11)
 export function releaseSendingDomainsForPartner(partnerId: string): Promise<number>;
 
-// apps/api/src/db/schema/emailSendingDomains.ts  (W02a Task 1) — Drizzle names verbatim
+// apps/api/src/db/schema/emailSendingDomains.ts  (W02 Task 1) — Drizzle names verbatim
 //   partnerSendingDomains: id partnerId domain provider providerDomainId providerManaged
 //     provisionAttemptedAt providerRegion status statusReason dnsRecords checkRequestedAt
 //     lastCheckedAt nextCheckAt checkAttempts verifiedAt statusChangedAt lastTestAt
@@ -178,16 +178,16 @@ export function releaseSendingDomainsForPartner(partnerId: string): Promise<numb
 //     reason('user_removed'|'failed_expired'|'partner_released'|'force_release')  <- CHECK-constrained
 //     requestedAt attempts nextAttemptAt(NOT NULL, defaultNow) lastError
 //     uniqueIndex email_provider_domain_releases_provider_domain_uq (provider, providerDomainId)
-// GatedCapability gains 'custom_sending_domain' (W02a Task 10, services/partnerTrust.ts).
+// GatedCapability gains 'custom_sending_domain' (W02 Task 10, services/partnerTrust.ts).
 ```
 
 From W01: `EmailService.deliverRaw(message: RawEmailMessage): Promise<void>`, `MAIL_PURPOSES` / `MailPurpose` / `PartnerMailStream` in `services/emailDomains/mailPurposes.ts`, `sendEmail({ …, purpose })`.
 
-### Still unpinned — reconcile before merging W02b
+### Still unpinned — reconcile before merging W03
 
-- **`releaseSendingDomainsForPartner`'s outbox `reason`.** W02a's tests write `'partner_released'` for both hooks. W02b never calls that function, so nothing here depends on it; noted only so the CHECK's fourth value (`'force_release'`, which W02b's admin force-release writes) is not mistaken for dead.
+- **`releaseSendingDomainsForPartner`'s outbox `reason`.** W02's tests write `'partner_released'` for both hooks. W03 never calls that function, so nothing here depends on it; noted only so the CHECK's fourth value (`'force_release'`, which W03's admin force-release writes) is not mistaken for dead.
 - **Whether `EmailService.sendEmail` accepts `to: string[]`.** Today's `SendEmailParams.to` is `string | string[]` (`services/email.ts:18`) and W01 keeps `SendEmailBase` as "today's fields minus `from`", so `statusMail.ts` passes an array. If W01 narrows it, `statusMail.ts` joins with `', '` instead.
-- **`SendingDomainDto.lastTestStatus` has no `'passed'` value.** W02b writes `'sent'` on success and `'failed'` on a refusal; `'pending'` is unused by this wave (it exists for a queued test the UI can show in W04).
+- **`SendingDomainDto.lastTestStatus` has no `'passed'` value.** W03 writes `'sent'` on success and `'failed'` on a refusal; `'pending'` is unused by this wave (it exists for a queued test the UI can show in W05).
 
 ## Names this wave introduces beyond the index
 
@@ -205,13 +205,13 @@ Binding for every task in this plan. Do not relax any of them without changing t
 - **No route handler calls the provider.** Routes write intent rows and enqueue jobs. Task 9 adds a source-scan test asserting neither route file imports `providerRegistry` or any adapter, in both the static and the dynamic import form.
 - **All provider management calls happen in the one `sending-domains` worker** (spec §2). `getEmailDomainProvider()` is imported by `domainSync.ts`, `sendingDomainsWorker.ts` and nothing else in this wave.
 - **Never delete a provider domain with `provider_managed = false`** (spec §5.1, §14). Removal, partner release and failed-row expiry all drop the local row only; `deleteDomain` is never called and no `email_provider_domain_releases` row is written. Task 3's tests assert this on all three paths.
-- **Delete order on `removing` is fixed**: `deleteDomain` (managed only) → `UPDATE … SET provider_domain_id = NULL` → `DELETE` the row. W02a's `BEFORE DELETE` trigger raises while `provider_domain_id IS NOT NULL`, so reordering fails loudly.
+- **Delete order on `removing` is fixed**: `deleteDomain` (managed only) → `UPDATE … SET provider_domain_id = NULL` → `DELETE` the row. W02's `BEFORE DELETE` trigger raises while `provider_domain_id IS NOT NULL`, so reordering fails loudly.
 - **Register every partner-axis write file in `ALLOWED_WITHOUT_CAPABILITY_CHECK`** (`apps/api/src/__tests__/partner-wide-write-coverage.test.ts`) in the SAME task that makes it mutate the table, and put the real gate (`canManagePartnerWidePolicies`) on the caller-facing routes. `src/routes/**` and `src/services/**` are scanned; `src/jobs/**` is not.
 - **A `pending` result from an adapter with `verifiesByDns === false` is NO CHANGE.** Only `failed` acts. A `static` row reaches `verified` through `markStaticDomainVerified`, called by the `test-send` job after the relay accepted the message — never through a poll.
 - **The worker registers only when a provider is configured** — the `initializeAbuseSignalsWorker` enable-check shape (`jobs/abuseSignalsSweep.ts:149-188`), plus the readiness rule of plan amendment 3.
 - **Provider calls never run while a pooled DB connection is held** (#1105). Every provider/Redis/SMTP round trip sits *between* short `withSystemDbAccessContext` phases, never inside one — `jobs/ticketOutboxPublisher.ts:130-260` is the reference shape.
 - **Rigor is high** (tenancy, partner cascade, abuse surface). Red first on every task: write the failing test, run it, watch it fail for the stated reason, then implement. Before the PR run the contract suites against a real database: `pnpm test-stack up`, then the integration and RLS runs of Task 11, then `pnpm test-stack down`.
-- Branch `feature/__PARENT__-partner-sending-domains/wave-__W02B__`; PR body contains `Closes #__W02B__`. `get_feature_status` before starting.
+- Branch `feature/__PARENT__-partner-sending-domains/wave-__W03__`; PR body contains `Closes #__W03__`. `get_feature_status` before starting.
 - Test command form is `cd apps/api && npx vitest run <path>`. Never `pnpm --filter … test -- --run <path>` (the `--` is forwarded into argv and vitest runs the whole suite in watch mode).
 - Commit after every task with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
@@ -235,7 +235,7 @@ Binding for every task in this plan. Do not relax any of them without changing t
 | `apps/api/src/routes/partnerSendingDomains.ts` (+ `.test.ts`) | the seven routes of spec §7 | 7 |
 | `apps/api/src/routes/admin/sendingDomains.ts` (+ `.test.ts`) | list across partners, suspend, unsuspend, force-release | 8 |
 | `apps/api/src/index.ts`, `apps/api/src/routes/admin/index.ts`, `apps/api/src/routes/sendingDomainsMounting.test.ts` | mounting + no-provider-import source scan | 9 |
-| `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts` | real-Postgres `removing` guard order + sweep claim under system scope (extends W02a's file) | 10 |
+| `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts` | real-Postgres `removing` guard order + sweep claim under system scope (extends W02's file) | 10 |
 
 ---
 
@@ -246,7 +246,7 @@ Binding for every task in this plan. Do not relax any of them without changing t
 - Create: `apps/api/src/services/emailDomains/domainSync.test.ts`
 
 **Interfaces:**
-- Consumes: `SendingDomainStatus` from `./provider` (W02a).
+- Consumes: `SendingDomainStatus` from `./provider` (W02).
 - Produces: `export function nextCheckDelayMs(status: SendingDomainStatus, checkAttempts: number, rng?: () => number): number`.
 
 - [ ] **Step 1: Write the failing test**
@@ -553,7 +553,7 @@ Expected: collection fails — `Failed to resolve import "./statusMail"`.
 In `apps/api/src/services/emailDomains/mailPurposes.ts`, inside the `MAIL_PURPOSES` object literal, immediately after the `'staff.quote_outcome'` entry, add:
 
 ```ts
-  // W02b. The notice that a partner's own sending domain is verified / at risk
+  // W03. The notice that a partner's own sending domain is verified / at risk
   // / failed / suspended / auto-removed. PLATFORM on purpose: a mail saying
   // "your sending domain is broken" must never be sent from that domain
   // (spec §6.3). Its send site is services/emailDomains/statusMail.ts.
@@ -768,7 +768,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 - [ ] **Step 0: Register the file in `ALLOWED_WITHOUT_CAPABILITY_CHECK`**
 
-In `apps/api/src/__tests__/partner-wide-write-coverage.test.ts`, add to `ALLOWED_WITHOUT_CAPABILITY_CHECK` (`:64`), beside W02a's `services/emailDomains/domainRelease.ts` entry:
+In `apps/api/src/__tests__/partner-wide-write-coverage.test.ts`, add to `ALLOWED_WITHOUT_CAPABILITY_CHECK` (`:64`), beside W02's `services/emailDomains/domainRelease.ts` entry:
 
 ```ts
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
@@ -1055,7 +1055,7 @@ describe('syncSendingDomain (spec §6.1)', () => {
     expect(updates.at(-1)).toMatchObject({ status: 'failed', statusReason: 'provider_rejected' });
   });
 
-  // --- the `static` contract (W02a amendment 5) ------------------------------
+  // --- the `static` contract (W02 amendment 5) ------------------------------
 
   it('does NOT demote a verified static row when the adapter reports pending', async () => {
     providerMock.verifiesByDns = false;
@@ -1326,7 +1326,7 @@ const MAIL_EVENT: Partial<Record<SendingDomainStatus, SendingDomainStatusEvent>>
 
 /**
  * Map a provisioning failure onto a `status_reason` from
- * SENDING_DOMAIN_STATUS_REASONS. W02a's adapters throw the two typed classes;
+ * SENDING_DOMAIN_STATUS_REASONS. W02's adapters throw the two typed classes;
  * anything else is an unclassified provider refusal.
  */
 function statusReasonOf(err: unknown): SendingDomainStatusReason {
@@ -1455,7 +1455,7 @@ async function provision(
   }
 
   // The `static` allow-list binds entries by SLUG (`domain:partner-slug`,
-  // spec §2.1), and W02a's `createDomain` takes `partnerSlug` for exactly that
+  // spec §2.1), and W02's `createDomain` takes `partnerSlug` for exactly that
   // (its amendment 4). Read in the same short transaction as the stamp, so the
   // provider call below still holds no connection.
   const partnerSlug = await withSystemDbAccessContext(async () => {
@@ -1534,12 +1534,12 @@ async function poll(
   }
 
   // `static` has no provider object, so its key is the DOMAIN NAME
-  // (W02a amendment 5); every other adapter takes its provider domain id.
+  // (W02 amendment 5); every other adapter takes its provider domain id.
   const observed = await provider.getDomain(row.providerDomainId ?? row.domain);
 
   let next = mapProviderState(observed.state);
   if (!provider.verifiesByDns && next === 'pending') {
-    // W02a amendment 5, and it is load-bearing: a `static` adapter reports
+    // W02 amendment 5, and it is load-bearing: a `static` adapter reports
     // `pending` for "still listed in EMAIL_DOMAINS_STATIC_ALLOWED" and NEVER
     // `verified` — only an accepted test send moves a static row to verified
     // (spec §5.1). Taking `pending` at face value would demote every verified
@@ -1563,7 +1563,7 @@ async function poll(
 }
 
 /**
- * `removing`, spec §6.1 + §3.5. The order is load-bearing and W02a's
+ * `removing`, spec §6.1 + §3.5. The order is load-bearing and W02's
  * `BEFORE DELETE` trigger enforces it: the row cannot be deleted while
  * `provider_domain_id IS NOT NULL`, so a path that forgot to release the
  * provider handle fails loudly instead of leaking it.
@@ -1726,7 +1726,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 In `apps/api/src/jobs/scheduleRegistry.ts`, immediately after line 156 (`'monitor-episode-retention': '3 20 * * *',`), add:
 
 ```ts
-  // Partner sending domains W02b (spec §6.4). ONE daily job doing two things:
+  // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
   // the hosted drift report (listDomains vs local rows + outbox) and, on a
   // `static` instance, the re-check that a domain the operator removed from
   // EMAIL_DOMAINS_STATIC_ALLOWED stops being used. A slot rather than
@@ -2045,7 +2045,7 @@ describe('test send (spec §6.1)', () => {
     await runTestSend(DOMAIN_ID, USER_ID);
 
     // A sync would read `pending` from the static adapter and treat it as no
-    // change (W02a amendment 5), leaving the row pending forever.
+    // change (W02 amendment 5), leaving the row pending forever.
     expect(markStaticVerifiedMock).toHaveBeenCalledWith(DOMAIN_ID);
     expect(queueAdd).not.toHaveBeenCalled();
   });
@@ -2075,7 +2075,7 @@ describe('daily maintenance', () => {
       { providerDomainId: 'pd-ghost', domain: 'ghost.test' },
     ]);
     execRows.push([{ provider_domain_id: 'pd-known' }]);  // local rows + outbox, one query
-    // listDomains carries no createdAt (W02a pins the interface), so the age
+    // listDomains carries no createdAt (W02 pins the interface), so the age
     // comes from a second lookup — made only for the unaccounted-for domain.
     providerMock.findDomainByName.mockResolvedValue({
       providerDomainId: 'pd-ghost', state: 'verified', records: [], createdAt: new Date('2026-09-10T00:00:00Z'),
@@ -2205,7 +2205,7 @@ import { attachWorkerObservability } from './workerObservability';
  * ever needs SELF_MANAGED_DB_CONTEXT_ROUTES.
  *
  * Registration is conditional: with EMAIL_DOMAINS_PROVIDER unset (the default,
- * and the state hosted ships in until W04) nothing is constructed and nothing
+ * and the state hosted ships in until W05) nothing is constructed and nothing
  * is scheduled — the same enable-check shape as initializeAbuseSignalsWorker
  * (jobs/abuseSignalsSweep.ts:149). The readiness manifest carries a matching
  * 'sending_domains_configured' rule so an unconfigured box is not pinned
@@ -2340,7 +2340,7 @@ async function drainReleaseOutbox(
     const result = await db.execute<{ id: string; provider: string; provider_domain_id: string; attempts: number }>(sql`
       select id, provider, provider_domain_id, attempts
       from ${emailProviderDomainReleases}
-      -- next_attempt_at is NOT NULL DEFAULT now() in W02a's schema, so a
+      -- next_attempt_at is NOT NULL DEFAULT now() in W02's schema, so a
       -- freshly written row is due immediately and no IS NULL arm is needed.
       where ${emailProviderDomainReleases.nextAttemptAt} <= ${now.toISOString()}::timestamptz
       order by ${emailProviderDomainReleases.requestedAt} asc
@@ -2407,9 +2407,9 @@ async function drainReleaseOutbox(
  * message is the only proof Breeze can obtain that it may send as the domain,
  * so acceptance moves a `pending` row to `verified` (spec §5.1).
  *
- * NOTE (W02b): the daily partner-lane cap of spec §6.1 is NOT counted here —
- * `tryCountPartnerLaneSend` ships in W03. Until then the only bound is the
- * route's 5/h/partner limit. W03 adds the call.
+ * NOTE (W03): the daily partner-lane cap of spec §6.1 is NOT counted here —
+ * `tryCountPartnerLaneSend` ships in W04. Until then the only bound is the
+ * route's 5/h/partner limit. W04 adds the call.
  */
 export async function runTestSend(domainId: string, userId: string): Promise<'sent' | 'refused' | 'skipped'> {
   const provider = getEmailDomainProvider();
@@ -2482,7 +2482,7 @@ export async function runTestSend(domainId: string, userId: string): Promise<'se
 
   // `static` only: an accepted test send IS the verification (spec §5.1). This
   // must NOT be an enqueued sync — `syncSendingDomain` deliberately treats a
-  // `static` adapter's `pending` as no change (W02a amendment 5), so a sync
+  // `static` adapter's `pending` as no change (W02 amendment 5), so a sync
   // would leave the row pending forever. The transition is made here, with its
   // audit row and its status mail.
   if (!provider.verifiesByDns && domain.status === 'pending') {
@@ -2517,7 +2517,7 @@ export async function runDailyMaintenance(now: Date = new Date()): Promise<{ dri
         return new Set(extractRows<{ provider_domain_id: string }>(result).map((r) => r.provider_domain_id));
       }, 'sendingDomainsDriftKnown');
 
-      // `listDomains()` returns only { providerDomainId, domain } (W02a pins the
+      // `listDomains()` returns only { providerDomainId, domain } (W02 pins the
       // interface), so the age each candidate is judged on comes from a second
       // call. That is affordable precisely because it is made ONLY for domains
       // we cannot account for: in a healthy account that list is empty, and a
@@ -2731,7 +2731,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `apps/api/src/services/workerRegistry.sendingDomainsWorker.test.ts`
 
 **Interfaces:**
-- Consumes: `initializeSendingDomainsWorker` / `shutdownSendingDomainsWorker` (Task 4), `isPartnerLaneConfigured` (W02a).
+- Consumes: `initializeSendingDomainsWorker` / `shutdownSendingDomainsWorker` (Task 4), `isPartnerLaneConfigured` (W02).
 - Produces: registry entry `sendingDomainsWorker` (`placement: 'global'`); `ConsumerRequirementRule` gains `'sending_domains_configured'`; `declareExpectedConsumers` input gains `sendingDomainsConfigured: boolean`.
 
 > **Why `placement: 'global'`, verified not guessed.** `workerRegistry.ts:46-48` forbids guessing. The runtime import closure of `jobs/sendingDomainsWorker.ts` was walked (transitive relative imports, `import type` ignored) over `services/email.ts`, `services/opsAlerts.ts`, `services/partnerTrust.ts`, `services/auditEvents.ts`, `db/index.ts`, `db/schema/index.ts`, `services/redis.ts`, `jobs/workerObservability.ts` and `db/partnerAxisRead.ts` — none reaches `routes/agentWs.ts` or `services/agentCommandAwait.ts`. The same walk correctly flags `jobs/m365SyncWorker.ts` and `jobs/orgMerge.ts` as `socket-owner`, which is how their registry entries are classified, so the tool is not returning false negatives. `services/workerEntrypointClosure.contract.test.ts` remains the final authority and runs in Step 5.
@@ -2746,7 +2746,7 @@ import { describe, expect, it } from 'vitest';
 import { WORKER_REGISTRY } from './workerRegistry';
 import { WORKER_READINESS_MANIFEST } from '../jobs/workerReadinessManifest';
 
-describe('sendingDomainsWorker registration (W02b, partner sending domains)', () => {
+describe('sendingDomainsWorker registration (W03, partner sending domains)', () => {
   it('is registered in WORKER_REGISTRY as a global-placement, lazily-loaded entry', async () => {
     const entry = WORKER_REGISTRY.find((e) => e.name === 'sendingDomainsWorker');
     expect(entry).toBeDefined();
@@ -2780,7 +2780,7 @@ In `apps/api/src/services/workerRegistry.ts`, immediately after the `toolSourceD
 
 ```ts
   {
-    // Partner sending domains W02b. The ONE place that calls the email-domain
+    // Partner sending domains W03. The ONE place that calls the email-domain
     // provider (spec §2). `initializeSendingDomainsWorker` returns before
     // constructing anything when EMAIL_DOMAINS_PROVIDER is unset, which is the
     // default — hence the matching 'sending_domains_configured' readiness rule.
@@ -2808,15 +2808,15 @@ export type ConsumerRequirementRule =
   | 'audit_chain_verify_enabled' // audit verification kill switch
   | 'event_dispatch_enabled'  // D3a: eventDispatch (EVENT_DISPATCH_MODE !== 'off')
   | 'ai_agents_enabled'       // D3a: aiAgentRunner (AI_AGENTS_ENABLED)
-  | 'sending_domains_configured'; // W02b: sendingDomainsWorker (EMAIL_DOMAINS_PROVIDER set)
+  | 'sending_domains_configured'; // W03: sendingDomainsWorker (EMAIL_DOMAINS_PROVIDER set)
 ```
 
 After `consumers('toolSourceDiscoveryWorker'),` (`:264`), add:
 
 ```ts
-  // Partner sending domains W02b. initializeSendingDomainsWorker returns before
+  // Partner sending domains W03. initializeSendingDomainsWorker returns before
   // constructing a Worker when EMAIL_DOMAINS_PROVIDER is unset — the default on
-  // every self-hosted install and on hosted until W04 — so a plain-required row
+  // every self-hosted install and on hosted until W05 — so a plain-required row
   // would leave every api/all process permanently not-ready. Same shape and
   // same reason as aiAgentRunner above.
   consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
@@ -3107,7 +3107,7 @@ beforeEach(() => {
   policyMock.mockReturnValue(undefined);
 });
 
-describe('listSendingDomains DTO shape (W04 renders these fields)', () => {
+describe('listSendingDomains DTO shape (W05 renders these fields)', () => {
   it('fills every SendingDomainDto field, including statusChangedAt, as an ISO string', async () => {
     const at = new Date('2026-09-17T12:00:00.000Z');
     rows.push([{
@@ -3524,7 +3524,7 @@ export interface CapabilityPartnerRow {
 const iso = (value: Date | null | undefined): string | null => (value ? value.toISOString() : null);
 
 /**
- * W02a's `SendingDomainDto` is an EXACT field set with ISO-8601 strings, and it
+ * W02's `SendingDomainDto` is an EXACT field set with ISO-8601 strings, and it
  * deliberately omits `providerRegion` and `nextCheckAt` — the poll schedule and
  * the provider's region are not the partner's business. `statusChangedAt` IS
  * included: the UI dates the "at risk since"/"failed" banners from it.
@@ -3662,7 +3662,7 @@ function requireProvider(): NonNullable<ReturnType<typeof getEmailDomainProvider
 export async function createSendingDomain(input: { partnerId: string; domain: string; userId: string }): Promise<SendingDomainDto> {
   requireProvider();
 
-  // W02a returns a DISCRIMINATED UNION, not `string | null`, so the rejection
+  // W02 returns a DISCRIMINATED UNION, not `string | null`, so the rejection
   // reason reaches the UI instead of a generic "invalid".
   const normalized = normalizeSendingDomain(input.domain);
   if (!normalized.ok) {
@@ -3802,7 +3802,7 @@ export async function requestDomainRemoval(input: { partnerId: string; domainId:
 }
 
 /**
- * Spec §4.4, enforced by W02a's SHARED schemas rather than a second regex here:
+ * Spec §4.4, enforced by W02's SHARED schemas rather than a second regex here:
  * `senderLocalPartSchema` carries the pattern, the 64-char bound, the
  * consecutive-dot rule and RESERVED_SENDER_LOCAL_PARTS; `senderDisplayNameSchema`
  * carries the 78-char bound and the "display name that looks like another
@@ -5023,7 +5023,7 @@ import { partnerSendingDomainsRoutes } from './routes/partnerSendingDomains';
 ```
 and between `api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);` (`:1003`) and `api.route('/partner', partnerRoutes);` (`:1004`):
 ```ts
-// W02b (partner sending domains). MUST stay above the catch-all `/partner`
+// W03 (partner sending domains). MUST stay above the catch-all `/partner`
 // mount below, the same ordering `/partner/trust` relies on — Hono matches in
 // registration order, so a later specific mount is never reached.
 api.route('/partner/sending-domains', partnerSendingDomainsRoutes);
@@ -5035,7 +5035,7 @@ import { adminSendingDomainsRoutes } from './sendingDomains';
 ```
 and after the `ai-kill-state` mount (`:36`):
 ```ts
-// Partner sending domains W02b: cross-partner list plus the kill switch
+// Partner sending domains W03: cross-partner list plus the kill switch
 // (suspend / unsuspend / force-release, spec §9.1). Mounted UNDER the
 // platformAdminMiddleware above; the router adds its own requireMfa() on each
 // mutating verb.
@@ -5063,10 +5063,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 10: Real-Postgres proof for the release order and the sweep claim
 
 **Files:**
-- Modify: `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts` — append one `describe` block at the end of the file (the file is created by W02a; keep its existing imports and its `afterAll` cleanup, and extend the cleanup's id arrays if the block seeds its own rows)
+- Modify: `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts` — append one `describe` block at the end of the file (the file is created by W02; keep its existing imports and its `afterAll` cleanup, and extend the cleanup's id arrays if the block seeds its own rows)
 
 **Interfaces:**
-- Consumes: `syncSendingDomain` (Task 3), `runSendingDomainsSweep` (Task 4), `resetEmailDomainProviderForTests` + the `fake` adapter (W02a), `createPartner` / `createUser` (`./db-utils`), `withDbAccessContext` / `withSystemDbAccessContext` (`../../db`).
+- Consumes: `syncSendingDomain` (Task 3), `runSendingDomainsSweep` (Task 4), `resetEmailDomainProviderForTests` + the `fake` adapter (W02), `createPartner` / `createUser` (`./db-utils`), `withDbAccessContext` / `withSystemDbAccessContext` (`../../db`).
 - Produces: nothing exported; it is the only test that can see the `BEFORE DELETE` guard and the RLS visibility of the sweep's claim, because both are enforced by Postgres and invisible to a mocked db.
 
 > Why this cannot be a unit test: the `BEFORE DELETE` trigger and `FOR UPDATE SKIP LOCKED` are database behaviour. The mocked suites in Tasks 3 and 4 assert the *order of calls*; only real Postgres proves the trigger actually raises when the order is wrong, and that the sweep's claim runs under a scope that can see rows at all. The `tunnel-allowlist-duplicate-savepoint` incident is the repo's standing example of a mocked suite staying green through a production-only failure.
@@ -5077,9 +5077,9 @@ Append to `apps/api/src/__tests__/integration/partnerSendingDomainsRls.integrati
 
 ```ts
 // ---------------------------------------------------------------------------
-// W02b: the release ORDER and the sweep claim, against real Postgres.
+// W03: the release ORDER and the sweep claim, against real Postgres.
 // ---------------------------------------------------------------------------
-describe('W02b — provider release guard and sweep claim (breeze_app role)', () => {
+describe('W03 — provider release guard and sweep claim (breeze_app role)', () => {
   it('the BEFORE DELETE guard raises while provider_domain_id is set, and syncSendingDomain gets the order right', async () => {
     const partner = await createPartner();
     seededPartnerIds.push(partner.id);
@@ -5189,7 +5189,7 @@ describe('W02b — provider release guard and sweep claim (breeze_app role)', ()
 });
 ```
 
-Add to the file's imports (keeping W02a's): `import { runSendingDomainsSweep } from '../../jobs/sendingDomainsWorker';`, `import { syncSendingDomain } from '../../services/emailDomains/domainSync';`, `import { resetEmailDomainProviderForTests } from '../../services/emailDomains/providerRegistry';`, and add `emailProviderDomainReleases` / `partnerSendingDomains` to the schema import if W02a's file does not already pull them in.
+Add to the file's imports (keeping W02's): `import { runSendingDomainsSweep } from '../../jobs/sendingDomainsWorker';`, `import { syncSendingDomain } from '../../services/emailDomains/domainSync';`, `import { resetEmailDomainProviderForTests } from '../../services/emailDomains/providerRegistry';`, and add `emailProviderDomainReleases` / `partnerSendingDomains` to the schema import if W02's file does not already pull them in.
 
 - [ ] **Step 2: Bring up a database and run it**
 
@@ -5198,7 +5198,7 @@ Run:
 pnpm test-stack up
 cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/partnerSendingDomainsRls.integration.test.ts
 ```
-Expected before the implementation of Tasks 3-4 is present: the block fails on the missing imports. With them present: W02a's cases plus these three pass. The first case's CONTROL assertion must genuinely fail the delete — if `guardMessage` comes back `undefined`, W02a's `BEFORE DELETE` trigger is not installed and the rest of the case proves nothing; fix that before continuing.
+Expected before the implementation of Tasks 3-4 is present: the block fails on the missing imports. With them present: W02's cases plus these three pass. The first case's CONTROL assertion must genuinely fail the delete — if `guardMessage` comes back `undefined`, W02's `BEFORE DELETE` trigger is not installed and the rest of the case proves nothing; fix that before continuing.
 
 - [ ] **Step 3: Commit**
 
@@ -5278,7 +5278,7 @@ Expected: the worktree's private Postgres and Redis are gone. Nothing else reaps
 
 - [ ] **Step 8: Open the PR**
 
-Body must contain `Closes #__W02B__`, the list of plan amendments above, and an explicit statement that the wave lands dark (provider unset → routes 404, worker not registered). Request one independent review round (high rigor: tenancy, partner cascade, abuse surface).
+Body must contain `Closes #__W03__`, the list of plan amendments above, and an explicit statement that the wave lands dark (provider unset → routes 404, worker not registered). Request one independent review round (high rigor: tenancy, partner cascade, abuse surface).
 
 ---
 
@@ -5314,7 +5314,7 @@ Every in-scope spec requirement, mapped to the task that satisfies it and the te
 | §7 — `404 sending_domains_unsupported` when no provider | 7 | "404s every route with sending_domains_unsupported" (all seven paths) |
 | §7 — `writeRouteAudit` on every write | 7, 8 | each write case asserts the audit call; the error cases assert it is *not* written |
 | §7 — platform admin list / suspend / unsuspend / force-release under `platformAdminMiddleware` + `requireMfa()` | 8, 9 | `admin/sendingDomains.test.ts`; "the admin hub serves /admin/sending-domains under platformAdminMiddleware" |
-| §9.1 — kill switch takes effect on the next send | 6 | "suspend sets suspended/platform_suspended"; resolution reads the row (W03 consumes it) |
+| §9.1 — kill switch takes effect on the next send | 6 | "suspend sets suspended/platform_suspended"; resolution reads the row (W04 consumes it) |
 | §9.1 — `EMAIL_DOMAINS_MAX_PER_PARTNER` cap | 6 | "enforces the per-partner cap" |
 | §9.1 — dark-launch allowlist gates eligibility | 6 | "is ineligible when an allowlist is set and the partner is not on it" |
 | §9.1 — eligibility via the trust capability, evaluated without side effects | 6 | "is ineligible with a reason when the side-effect-free trust evaluator denies"; "never writes a denial audit row" |
@@ -5332,9 +5332,9 @@ Every in-scope spec requirement, mapped to the task that satisfies it and the te
 | Index amendment 5 — `staff.sending_domain_status` added here **with its send site** | 2 | "is a PLATFORM purpose"; `statusMail.ts` is the send site W01's registry property test requires |
 | Epic #2135 — a partner-wide write consults `canManagePartnerWidePolicies` | 7 | "403s EVERY write for a partner user without full partner access"; the source-scan case |
 | `ALLOWED_WITHOUT_CAPABILITY_CHECK` registration for both mutating service files | 3, 6 | `partner-wide-write-coverage.test.ts` runs in each task's green step and in verification |
-| W02a amendment 4 — `createDomain` carries `partnerSlug` | 3 | "passes the partner SLUG to createDomain" |
-| W02a amendment 5 — `static` `getDomain` keys on the domain name; `pending` is no change; only a test send verifies | 3, 4 | "does NOT demote a verified static row"; "keys a static getDomain on the DOMAIN NAME"; "DOES fail a static row the operator delisted"; the `markStaticDomainVerified` block; "an accepted static test send verifies the row THERE" |
-| W02a's typed provider errors drive `status_reason` | 3 | the `ProviderDomainConflictError` / `ProviderDomainRejectedError` `it.each`, plus the unclassified fallback |
-| W02a's DTO field sets and ISO-8601 strings are honoured exactly (incl. `statusChangedAt`, `domain`, `fromAddress`) | 6 | "fills every SendingDomainDto field, including statusChangedAt"; "joins each identity to its domain and computes fromAddress" |
+| W02 amendment 4 — `createDomain` carries `partnerSlug` | 3 | "passes the partner SLUG to createDomain" |
+| W02 amendment 5 — `static` `getDomain` keys on the domain name; `pending` is no change; only a test send verifies | 3, 4 | "does NOT demote a verified static row"; "keys a static getDomain on the DOMAIN NAME"; "DOES fail a static row the operator delisted"; the `markStaticDomainVerified` block; "an accepted static test send verifies the row THERE" |
+| W02's typed provider errors drive `status_reason` | 3 | the `ProviderDomainConflictError` / `ProviderDomainRejectedError` `it.each`, plus the unclassified fallback |
+| W02's DTO field sets and ISO-8601 strings are honoured exactly (incl. `statusChangedAt`, `domain`, `fromAddress`) | 6 | "fills every SendingDomainDto field, including statusChangedAt"; "joins each identity to its domain and computes fromAddress" |
 | `email_provider_domain_releases.reason` stays inside its CHECK | 6 | "force-release of a MANAGED domain writes the outbox row" asserts `reason: 'force_release'` |
 | `last_test_status` stays inside its CHECK (`pending`/`sent`/`failed`) | 4 | the test-send block asserts `lastTestStatus: 'sent'` and `'failed'` |

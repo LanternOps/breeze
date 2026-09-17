@@ -1,7 +1,7 @@
 ---
 tracking_issue: LanternOps/breeze#__PARENT__
 ---
-# Partner Sending Domains W02a: Data Model, Config and Adapters — Implementation Plan
+# Partner Sending Domains W02: Data Model, Config and Adapters — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -15,7 +15,7 @@ one was verified by reading the file cited.
    no `EMAIL_*` name at all — it is a grab-bag of hand-written readers
    (`envFlag`, `isHosted` at `env.ts:321-323`). The real declaration site is the
    zod `envObjectSchema` in `apps/api/src/config/validate.ts` (existing email
-   block at `validate.ts:804-809`). W02a declares the keys there and puts the
+   block at `validate.ts:804-809`). W02 declares the keys there and puts the
    typed reader in `services/emailDomains/config.ts`, modelled on
    `config/partnerTrustMode.ts` (call-time `process.env` read, `isHosted()`
    short-circuit, warn-and-fall-back on a bad value). **Nothing is added to
@@ -41,14 +41,14 @@ one was verified by reading the file cited.
    only `partnerRef` (the partner id), but the `static` allow-list binds entries
    by **slug** (`domain:partner-slug`, §2.1/§5.1). The input object gains
    `partnerSlug?: string | null`; `resend` and the future `ses` adapter ignore
-   it. W02b resolves the slug from the `partners` row it already loads.
+   it. W03 resolves the slug from the `partners` row it already loads.
 5. **`static`'s `getDomain(key)` keys on the domain name.**
    `provider_domain_id` is always null for `static` (§3.1), so there is no id to
    pass. The adapter's `getDomain` delegates to `findDomainByName`. It never
    returns `verified` — an accepted test send owns that transition (§5.1) — so
-   W02b's `syncSendingDomain` MUST treat a `pending` result from an adapter with
+   W03's `syncSendingDomain` MUST treat a `pending` result from an adapter with
    `verifiesByDns === false` as "no change" and only act on `failed`. Stated
-   here because W02a owns the adapter contract.
+   here because W02 owns the adapter contract.
 6. **The composite FK is NOT `DEFERRABLE`.** CLAUDE.md's deferrable rule is
    scoped to composite FKs on an **`org_id`** column, because the org merge runs
    `SET CONSTRAINTS ALL DEFERRED`. Verified: the only `SET CONSTRAINTS`
@@ -69,7 +69,7 @@ one was verified by reading the file cited.
    with `responseCode` / `response`. The classifier therefore keys on
    `responseCode`/`response` when present and on message text otherwise, with
    `ambiguous` as the default. Carrying a structured cause out of `deliverRaw`
-   is a W03 follow-up, not a W02a change.
+   is a W04 follow-up, not a W02 change.
 8. **Resend SDK 6.18.0's `DomainStatus` omits `temporary_failure`.** The
    installed union is
    `'pending' | 'verified' | 'failed' | 'not_started' | 'partially_verified' | 'partially_failed'`
@@ -102,7 +102,7 @@ one was verified by reading the file cited.
 **Goal:** Land every artefact the partner-sending-domain feature needs before
 anything calls out: three tables with partner-axis RLS and a `BEFORE DELETE`
 release guard, their Drizzle models, the allowlist registrations, the shared
-validators and DTOs W04's UI is built against, the `EMAIL_DOMAINS_*`
+validators and DTOs W05's UI is built against, the `EMAIL_DOMAINS_*`
 configuration with its deployment-mode boot rules, the `EmailDomainProvider`
 interface with `resend` / `static` / `fake` adapters, the
 `custom_sending_domain` capability, and the provider-release path wired into
@@ -142,7 +142,7 @@ interface, adapters, status model), §9.1 (eligibility capability, caps), §11
 (configuration), §13 (error handling), §14 (testing).
 Plan index: `docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains.md`
 — amendment 1 (W02 split, release hooks ship here with the guard), amendment 3
-(`PartnerLaneSendFailure` class), and the "Defined in W02a" name list, which is
+(`PartnerLaneSendFailure` class), and the "Defined in W02" name list, which is
 binding.
 
 ## Global Constraints
@@ -191,8 +191,8 @@ binding.
   vitest swallows `--run`, and the whole suite runs in watch mode).
   `packages/shared` and `apps/web` use the same `cd <dir> && npx vitest run
   <path>` form.
-- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W02A__`; PR body
-  contains `Closes #__W02A__`.** `get_feature_status` before starting.
+- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W02__`; PR body
+  contains `Closes #__W02__`.** `get_feature_status` before starting.
 - **Commit after every task** with the trailer
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
@@ -259,7 +259,7 @@ Expected: a name sorting **before** `2026-10-20-100000-partner-sending-domains.s
 
 ```sql
 -- Partner sending domains (spec 2026-09-17-partner-sending-domains-design §3).
--- W02a of the partner-sending-domains feature. Lands DARK: with
+-- W02 of the partner-sending-domains feature. Lands DARK: with
 -- EMAIL_DOMAINS_PROVIDER unset nothing reads or writes these tables.
 --
 -- TENANCY:
@@ -707,7 +707,7 @@ In `rls-coverage.integration.test.ts`, immediately **before** the `]);` that clo
 
 ```ts
   // partner_sending_domains / partner_sender_identities (spec 2026-09-17,
-  // partner sending domains W02a): the MSP's custom outbound From domain and
+  // partner sending domains W02): the MSP's custom outbound From domain and
   // one sender identity per (partner, mail stream). Partner-axis (Shape 3),
   // deliberately no org_id — the From domain is the MSP's identity, and a
   // per-org sending domain is the internal-phishing shape (spec §3.1). No
@@ -766,7 +766,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `packages/shared/src/types/index.ts` (add `export * from './sendingDomains';` after `export * from './deviceFunction';` at `:817`)
 
 **Interfaces:**
-- Produces (the plan index's "Defined in W02a" list, verbatim names):
+- Produces (the plan index's "Defined in W02" list, verbatim names):
   ```ts
   export const SENDING_DOMAIN_STATUSES: readonly ['provisioning','pending','verified','at_risk','failed','suspended','removing'];
   export const SENDING_DOMAIN_STATUS_REASONS: readonly ['provider_conflict','provider_rejected','quota_exhausted','dns_not_detected','dns_removed','platform_suspended','abuse_auto','failed_expired','user_removed'];
@@ -788,7 +788,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   export const upsertSenderIdentitySchema: z.ZodType<{ sendingDomainId: string; localPart: string; displayName?: string | null; replyTo?: string | null }, …>;
   ```
   and the DTOs `SendingDomainDnsRecordDto`, `SendingDomainDto`, `SenderIdentityDto`, `SendingDomainsCapabilityDto`, `SendingDomainsListResponse`.
-  Fields W04 depends on and that must stay **required** (not optional, not
+  Fields W05 depends on and that must stay **required** (not optional, not
   nullable): `SendingDomainDto.statusChangedAt` (the 72 h retry window on a
   `failed` row), `SenderIdentityDto.domain` and `SenderIdentityDto.fromAddress`
   (the identity card renders the exact From without re-joining). All three are
@@ -960,9 +960,9 @@ describe('constant sets', () => {
   });
 });
 
-describe('DTO shape W04 is built against', () => {
+describe('DTO shape W05 is built against', () => {
   // A runtime fixture typed as the DTO: an omitted or wrongly-nullable field is
-  // a compile error, and the assertions below keep the fields W04 depends on
+  // a compile error, and the assertions below keep the fields W05 depends on
   // from quietly becoming optional later.
   const domainDto: SendingDomainDto = {
     id: '11111111-2222-3333-4444-555555555555',
@@ -995,7 +995,7 @@ describe('DTO shape W04 is built against', () => {
     updatedAt: '2026-09-17T10:00:00.000Z'
   };
 
-  it('statusChangedAt is a REQUIRED ISO string — W04 computes the 72 h retry window on a failed row from it', () => {
+  it('statusChangedAt is a REQUIRED ISO string — W05 computes the 72 h retry window on a failed row from it', () => {
     expect(typeof domainDto.statusChangedAt).toBe('string');
     expect(Number.isNaN(Date.parse(domainDto.statusChangedAt))).toBe(false);
     // Required, so it cannot be narrowed to include null/undefined.
@@ -1221,7 +1221,7 @@ export interface SendingDomainDto {
   statusReason: SendingDomainStatusReason | null;
   /**
    * When `status` last changed. REQUIRED, never null — the column is
-   * `NOT NULL DEFAULT now()`. W04 needs it to compute the 72 h retry window on
+   * `NOT NULL DEFAULT now()`. W05 needs it to compute the 72 h retry window on
    * a `failed` row (spec §4.3, §10), which no other field carries.
    */
   statusChangedAt: string;
@@ -1303,7 +1303,7 @@ git commit -m "feat(shared): sending-domain normalisation, identity schemas and 
 normalizeSendingDomain does the platform-independent half of spec §4.1 (trim,
 lowercase, trailing dot, IDN->A-label via WHATWG URL, structural rejections) so
 the web form and the API agree exactly. Identity rules per §4.4. DTOs are the
-contract W04's settings tab is built against.
+contract W05's settings tab is built against.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1325,8 +1325,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   export function assertSendingDomainAllowed(domain: string): void;   // throws SendingDomainPolicyError
   export const PLATFORM_OWNED_DOMAINS: readonly ['2breeze.app', 'breezermm.com', 'lanternops.io'];
   ```
-- Consumes: `isConsumerEmailDomain` (`services/consumerEmailDomains.ts:79` — takes an **email address**, so it is called as `isConsumerEmailDomain('postmaster@' + domain)`), `isHosted` (`config/env.ts:321`), `getEmailDomainsConfig().denylist` (Task 5 — this task lands first, so read `process.env.EMAIL_DOMAINS_DENYLIST` directly here and leave a `TODO(W02a Task 5)`-free direct read; Task 5's config module re-exposes the same parse and this module switches to it in Task 5 Step 5).
-- Callers: W02b's `createSendingDomain`. Input is always an **already normalised** domain from `normalizeSendingDomain`.
+- Consumes: `isConsumerEmailDomain` (`services/consumerEmailDomains.ts:79` — takes an **email address**, so it is called as `isConsumerEmailDomain('postmaster@' + domain)`), `isHosted` (`config/env.ts:321`), `getEmailDomainsConfig().denylist` (Task 5 — this task lands first, so read `process.env.EMAIL_DOMAINS_DENYLIST` directly here and leave a `TODO(W02 Task 5)`-free direct read; Task 5's config module re-exposes the same parse and this module switches to it in Task 5 Step 5).
+- Callers: W03's `createSendingDomain`. Input is always an **already normalised** domain from `normalizeSendingDomain`.
 
 - [ ] **Step 1: Add the dependency**
 
@@ -1656,7 +1656,7 @@ introduced (`resend` with no key, `fake` in production) or a hosted-only rule
   ```
 - Consumes: `isHosted` (`config/env.ts:321`).
 - Callers: `providerRegistry.ts` (Task 6), all three adapters (Tasks 7-8),
-  `domainPolicy.ts` (Step 6), W02b's service and worker.
+  `domainPolicy.ts` (Step 6), W03's service and worker.
 
 - [ ] **Step 1: Write the failing deployment-mode matrix (spec §14)**
 
@@ -2254,7 +2254,7 @@ describe (`:289`), copying its four-axis template:
  * compose file maps is a silent no-op — setting it in .env does nothing and the
  * feature just stays dark, which is indistinguishable from "not configured yet".
  */
-describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02a)', () => {
+describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02)', () => {
   const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
   const PROD_COMPOSE = readFileSync(path.join(REPO_ROOT, 'deploy/docker-compose.prod.yml'), 'utf8');
   const EMAIL_DOMAINS_VARS = [
@@ -2344,12 +2344,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   §5.1 (the four cases: nothing found → create; found with a provider
   `createdAt` newer than `provision_attempted_at` → ours from a crashed attempt;
   found and older → pre-existing, `provider_managed = false`; ambiguous →
-  not managed). That is **orchestration, and W02b's `syncSendingDomain` performs
+  not managed). That is **orchestration, and W03's `syncSendingDomain` performs
   it** using `findDomainByName`, `createDomain` and `ProviderDomain.createdAt`.
-  W02a's only obligation is that the adapter methods return what that logic
+  W02's only obligation is that the adapter methods return what that logic
   needs: `findDomainByName` returns `null` when the provider has no such domain
   and a `ProviderDomain` with a populated `createdAt` when it does (or
-  `createdAt: undefined` when the provider does not report one, which W02b must
+  `createdAt: undefined` when the provider does not report one, which W03 must
   treat as the ambiguous case → `provider_managed = false`).
 
 - [ ] **Step 1: Write `provider.ts`**
@@ -2365,7 +2365,7 @@ import { PARTNER_MAIL_STREAMS } from '@breeze/shared';
  * Adapters are PURE with respect to Breeze's database: they never read or write
  * a table. They take what they need as arguments and return provider facts.
  * Orchestration — which row moves to which status, when to create versus adopt
- * — belongs to W02b's syncSendingDomain.
+ * — belongs to W03's syncSendingDomain.
  */
 
 /** Compile-time parity: @breeze/shared's PARTNER_MAIL_STREAMS must equal W01's union. */
@@ -2395,7 +2395,7 @@ export interface ProviderDomain {
   providerDomainId: string | null;   // null for `static`
   region?: string;
   /**
-   * Provider-side creation time, when the provider reports one. W02b compares
+   * Provider-side creation time, when the provider reports one. W03 compares
    * it with the row's committed `provision_attempted_at` to tell "ours from a
    * crashed attempt" from "pre-existing" (§5.1 cases 3 and 4). `undefined` is
    * the AMBIGUOUS case and must resolve to provider_managed = false: leaking a
@@ -2505,7 +2505,7 @@ afterEach(() => {
 });
 
 describe('getEmailDomainProvider', () => {
-  it('returns null when EMAIL_DOMAINS_PROVIDER is unset — the switch that keeps W02a dark', () => {
+  it('returns null when EMAIL_DOMAINS_PROVIDER is unset — the switch that keeps W02 dark', () => {
     expect(getEmailDomainProvider()).toBeNull();
   });
 
@@ -2834,7 +2834,7 @@ describe('findDomainByName', () => {
   });
 
   it('propagates a list failure instead of reporting "not found"', async () => {
-    // Reporting null here would make W02b CREATE a domain that already exists.
+    // Reporting null here would make W03 CREATE a domain that already exists.
     domainsList.mockResolvedValue({ data: null, error: { name: 'restricted_api_key', statusCode: 401, message: 'This API key is restricted to only send emails.' } });
     await expect(createResendDomainProvider().findDomainByName('acme.com')).rejects.toThrow(/restricted/i);
   });
@@ -2956,7 +2956,7 @@ import type { PartnerLaneSendError } from '../provider';
  *
  * Spec §0.2 lists the exact error Resend returns for a send from an unverified
  * domain as NOT VERIFIED against the live API. These entries are the best
- * current reading of the SDK's error codes; W02b's lab step (a real send from a
+ * current reading of the SDK's error codes; W03's lab step (a real send from a
  * pending domain on the partner-lane account) REPLACES the `error` payloads
  * below with what the API actually returned and, if a classification is wrong,
  * fixes classifyResendSendError rather than the expectation.
@@ -3253,7 +3253,7 @@ export function createResendDomainProvider(): EmailDomainProvider {
     async findDomainByName(domain: string): Promise<ProviderDomain | null> {
       const { data, error } = await management.domains.list();
       if (error) {
-        // Reporting "not found" on a list failure would make W02b create a
+        // Reporting "not found" on a list failure would make W03 create a
         // domain the account already holds, which is the one call that can
         // trigger Resend's cross-team claim flow. Throw instead.
         throw new Error(`[emailDomains/resend] listDomains failed: ${error.name}: ${error.message}`);
@@ -3332,7 +3332,7 @@ SDK type omits, ttl as a string, and the {data,error} envelope the SDK returns
 instead of throwing. Send errors classify into the four spec §5 kinds with
 ambiguous as the conservative default; the domain-refusal check runs before the
 validation_error rule so a not-verified refusal falls back rather than being
-lost. Recorded fixtures are the W02b lab step's refresh target.
+lost. Recorded fixtures are the W03 lab step's refresh target.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -3355,8 +3355,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   `EmailService | null`) and its **W01** method
   `deliverRaw(message: RawEmailMessage): Promise<void>`;
   `findStaticAllowedEntry` / `getEmailDomainsConfig` (Task 5); Task 6's types.
-- Contract notes for W02b, restated because W02a owns them:
-  - `static.verifiesByDns === false`, so W02b must never call
+- Contract notes for W03, restated because W02 owns them:
+  - `static.verifiesByDns === false`, so W03 must never call
     `requestVerification` on it and must treat a `pending` result from
     `getDomain`/`findDomainByName` as **no change** — a `verified` static row
     stays verified. The adapter only ever reports `pending` (still listed) or
@@ -3442,7 +3442,7 @@ describe('findDomainByName / getDomain', () => {
     await expect(createStaticDomainProvider().getDomain('open.com')).resolves.toEqual({ providerDomainId: null, state: 'failed', records: [] });
   });
 
-  it('findDomainByName returns null for a delisted domain so W02b can tell "not there" from "broken"', async () => {
+  it('findDomainByName returns null for a delisted domain so W03 can tell "not there" from "broken"', async () => {
     process.env.EMAIL_DOMAINS_STATIC_ALLOWED = 'other.com';
     await expect(createStaticDomainProvider().findDomainByName('open.com')).resolves.toBeNull();
   });
@@ -3561,11 +3561,11 @@ import {
  * the domains this instance's mail relay may send as; Breeze cannot check that
  * the relay signs for them — SPF and DKIM are the operator's mail setup — so
  * there is no DNS wizard and nothing to poll. A row becomes `verified` only
- * when the relay ACCEPTS a test send (W02b's `test-send` job), which catches the
+ * when the relay ACCEPTS a test send (W03's `test-send` job), which catches the
  * common failure (the relay refusing the sender) at setup instead of on a
  * customer's invoice.
  *
- * CONTRACT FOR W02b: verifiesByDns === false, so this adapter never returns
+ * CONTRACT FOR W03: verifiesByDns === false, so this adapter never returns
  * `verified`. `pending` means "still listed — no change", `failed` means the
  * operator delisted it (spec §13). A verified row must stay verified when this
  * adapter reports `pending`.
@@ -3693,7 +3693,7 @@ export function createStaticDomainProvider(): EmailDomainProvider {
     },
 
     async requestVerification(): Promise<void> {
-      // No DNS to check. W02b must not call this (verifiesByDns === false); a
+      // No DNS to check. W03 must not call this (verifiesByDns === false); a
       // no-op rather than a throw so a future caller cannot break a sweep.
     },
 
@@ -3723,7 +3723,7 @@ export function createStaticDomainProvider(): EmailDomainProvider {
         throw new PartnerLaneSendFailure(classifyPlatformTransportError(err));
       }
       // The platform transports do not all surface a provider message id, and
-      // deliverRaw returns void, so the partner lane synthesises one. W05 has no
+      // deliverRaw returns void, so the partner lane synthesises one. W06 has no
       // webhook events for `static` anyway.
       return { providerMessageId: `static:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}` };
     }
@@ -3844,7 +3844,7 @@ export function createFakeDomainProvider(): EmailDomainProvider {
     async findDomainByName(domain: string): Promise<ProviderDomain | null> {
       // The `preexisting.` prefix drives §5.1 case 4 without any seeding: the
       // provider reports a domain OLDER than any provision_attempted_at, so
-      // W02b must adopt it with provider_managed = false and never delete it.
+      // W03 must adopt it with provider_managed = false and never delete it.
       if (domain.startsWith(FAKE_PREEXISTING_PREFIX)) {
         return domainFor(domain, PREEXISTING_CREATED_AT);
       }
@@ -3915,7 +3915,7 @@ platform transport with a custom From. Its send-error classifier puts
 sender-refusal text ahead of the bare SMTP code, so a 550 5.7.60 SendAs refusal
 falls back to EMAIL_FROM instead of losing the message. fake is deterministic on
 the domain name, including a preexisting.* prefix that drives the adopt-and-never-
-delete case W02b has to get right.
+delete case W03 has to get right.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -4083,7 +4083,7 @@ describe.each(ADAPTERS)('EmailDomainProvider contract — $name', (adapter) => {
   });
 });
 
-describe('find-then-create inputs W02b relies on (spec §5.1)', () => {
+describe('find-then-create inputs W03 relies on (spec §5.1)', () => {
   it('fake: a freshly created domain reports a createdAt NEWER than a just-recorded attempt time', async () => {
     const attemptedAt = new Date(Date.now() - 1000);
     const provider = createFakeDomainProvider();
@@ -4101,7 +4101,7 @@ describe('find-then-create inputs W02b relies on (spec §5.1)', () => {
     expect(found!.state).toBe('verified');
   });
 
-  it('resend: findDomainByName reports the provider createdAt so W02b can compare it', async () => {
+  it('resend: findDomainByName reports the provider createdAt so W03 can compare it', async () => {
     domainsList.mockResolvedValue({ data: { data: [{ id: 'dom_9', name: 'contract.example', status: 'verified', region: 'us-east-1', created_at: '2024-05-05T00:00:00.000Z' }], object: 'list', has_more: false }, error: null });
     domainsGet.mockResolvedValue({ data: { id: 'dom_9', name: 'contract.example', status: 'verified', region: 'us-east-1', created_at: '2024-05-05T00:00:00.000Z', records: [] }, error: null });
     const found = await createResendDomainProvider().findDomainByName('contract.example');
@@ -4123,7 +4123,7 @@ Properties every adapter must hold whatever it talks to: the declared id and
 verifiesByDns, a consumable ProviderDomain, fqdn on every record, null for an
 unheld name, 404-as-success on delete, and a PartnerLaneSendFailure carrying one
 of the four kinds rather than a bare Error. Plus the find-then-create inputs
-W02b's orchestration reads.
+W03's orchestration reads.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -4145,7 +4145,7 @@ which is the only compile error the change produces.
 - Modify: `apps/web/src/components/trust/TrustProbationBanner.tsx:30-35` (`CAPABILITY_LABELS`)
 
 **Interfaces:**
-- Produces: `GatedCapability` gains `'custom_sending_domain'`; `requireCapability('custom_sending_domain')` becomes available to W02b's write routes, and `evaluateCapabilityContinuationForState('custom_sending_domain', …)` to W03's `resolveSender`.
+- Produces: `GatedCapability` gains `'custom_sending_domain'`; `requireCapability('custom_sending_domain')` becomes available to W03's write routes, and `evaluateCapabilityContinuationForState('custom_sending_domain', …)` to W04's `resolveSender`.
 - Consumes: nothing new.
 - Verified behaviour (`partnerTrust.ts:200-223`): `decide` has a `default:` branch at `:220-221` and no exhaustiveness check, so the new value takes the default branch with **no** forced API compile error. `trusted` short-circuits to allow at `:205`; `probation` denies `TRUST_PROBATION`/`probation_default_deny`; `restricted` denies `TRUST_RESTRICTED`/**`restricted`** (a different reason string — do not assert one reason for both); `partnerTrustMode() === 'off'` returns `{ allow: true }` at `:226-227` before the partner row is even read, and `partnerTrustMode()` returns `'off'` whenever `!isHosted()` (`config/partnerTrustMode.ts:12`), so on self-hosted the gate is open with no configuration.
 
@@ -4581,7 +4581,7 @@ Then, inside `finalizePartnerOffboarding`, immediately after
 `services/orgArchive.ts` entry:
 
 ```ts
-  // --- partner sending domains (spec 2026-09-17 W02a) -----------------------
+  // --- partner sending domains (spec 2026-09-17 W02) -----------------------
   'services/emailDomains/domainRelease.ts': 'releaseSendingDomainsForPartner has no caller-facing surface at all: it is invoked only by cascadeDeletePartner and finalizePartnerOffboarding, both of which run in system context on a partner already being destroyed, and it takes the partner id from those functions rather than from any request. It writes exactly two things — an outbox row and provider_domain_id = NULL — and creates no partner-owned configuration, so there is no partner-wide policy decision for canManagePartnerWidePolicies to gate.',
 ```
 
@@ -5245,7 +5245,7 @@ Expected: this worktree's test stack is gone. Say in the PR what, if anything,
 was left running.
 
 PR body must contain:
-- `Closes #__W02A__`
+- `Closes #__W02__`
 - the three new tables with their tenancy shape and the justification spec §3.1
   requires for a partner-axis (not org-XOR-partner) config table: the From
   domain is the MSP's identity, a per-org sending domain is the internal
@@ -5280,7 +5280,7 @@ Every in-scope requirement, and the task that discharges it.
 | 14 | `normalizeSendingDomain` per §4.1 shared half, table-driven with complete case lists | 3 |
 | 15 | Identity rules of §4.4: `local_part` regex + consecutive dots + reserved names; `display_name` strip, 78 chars, no `@` or `://` | 3 |
 | 16 | Shared constants and Zod schemas under the index's exact names | 3 |
-| 17 | DTOs defined in full for W04's UI (domain row, identity, capability, list response, DNS record), including `SendingDomainDto.statusChangedAt` for the 72 h retry window and required `SenderIdentityDto.domain` / `.fromAddress`, pinned by a DTO-shape test | 3 |
+| 17 | DTOs defined in full for W05's UI (domain row, identity, capability, list response, DNS record), including `SendingDomainDto.statusChangedAt` for the 72 h retry window and required `SenderIdentityDto.domain` / `.fromAddress`, pinned by a DTO-shape test | 3 |
 | 18 | API-only rejections in `domainPolicy.ts`: hosted-only platform domains, consumer domains, public suffixes via `tldts`, `EMAIL_DOMAINS_DENYLIST` | 4 |
 | 19 | All ten `EMAIL_DOMAINS_*` vars of §11 declared and validated; `requireIf` keyed only on `EMAIL_DOMAINS_PROVIDER`; `fake` refused in production; `static` refused when hosted; identical keys refused when hosted; one info line self-hosted | 5 |
 | 20 | `services/emailDomains/config.ts`: `getEmailDomainsConfig`, `isPartnerLaneConfigured`, `EMAIL_DOMAINS_STATIC_ALLOWED` parsing (`domain` / `domain:partner-slug`), cap default 2000 hosted / unlimited self-hosted, `0` = unlimited | 5 |
@@ -5289,11 +5289,11 @@ Every in-scope requirement, and the task that discharges it.
 | 23 | `composeBindMounts.test.ts` checked (unaffected — it reads `volumes`, not `environment`) and an env-documentation contract test found (`envComposeParity.test.ts`) and satisfied | 5 (Steps 7, 8) |
 | 24 | `provider.ts`: spec §5 types verbatim + `PartnerLaneMessage = RawEmailMessage` + `PartnerLaneSendFailure` | 6 |
 | 25 | `providerRegistry.ts` with `getEmailDomainProvider` / `resetEmailDomainProviderForTests` | 6 |
-| 26 | Find-then-create is W02b orchestration; W02a only guarantees the adapter inputs — stated explicitly and covered by tests | 6 (Interfaces), 9 |
+| 26 | Find-then-create is W03 orchestration; W02 only guarantees the adapter inputs — stated explicitly and covered by tests | 6 (Interfaces), 9 |
 | 27 | `resend` adapter written against the REAL installed signatures, version cited | 7 |
 | 28 | Status mapping table §5.2 including unknown → `pending` + warning | 7 |
 | 29 | Record normalisation to `ProviderDnsRecord` including the computed `fqdn` | 7 |
-| 30 | Send-error classification into the four kinds over status code + error name, conservative `ambiguous` default, plus a recorded-fixture file W02b's lab step refreshes | 7 |
+| 30 | Send-error classification into the four kinds over status code + error name, conservative `ambiguous` default, plus a recorded-fixture file W03's lab step refreshes | 7 |
 | 31 | `static`: allow-list check with partner-slug binding, and how the slug reaches the adapter | 8 + amendment 4 |
 | 32 | `static.send` via `getEmailService().deliverRaw`; SMTP/Mailgun/Resend sender refusal (550 5.7.60, 553, "domain not verified") → `domain_unusable`; everything else `ambiguous` / `message_rejected` | 8 |
 | 33 | `fake`: deterministic `*.verify.test`, `*.fail.test`, `conflict.test`; `send` via `deliverRaw` | 8 |

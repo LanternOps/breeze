@@ -16,29 +16,31 @@ this index. `get_feature_status` before starting any wave.
 | Wave | Plan | Depends on |
 |---|---|---|
 | W01 (#__W01__) | [Sender contract: `MAIL_PURPOSES` registry, required `purpose` on `sendEmail`, raw `from` removed, every send site classified, `resolveSender` (platform lane only), `deliverRaw`, golden test](2026-09-17-partner-sending-domains-w01-sender-contract.md) | — |
-| W02a (#__W02A__) | [Foundation A: migration (three tables, RLS, release guard), Drizzle schema, allowlist registrations, shared validators, env + boot validation, `EmailDomainProvider` with `resend` / `static` / `fake` adapters, `custom_sending_domain` capability, provider-release hooks in `cascadeDeletePartner` / `finalizePartnerOffboarding`](2026-09-17-partner-sending-domains-w02a-data-model-and-adapters.md) | W01 (`deliverRaw`) |
-| W02b (#__W02B__) | [Foundation B: domain service, `sending-domains` worker and cadence, partner and admin routes, outbox drain, audit, status-transition mail, drift report](2026-09-17-partner-sending-domains-w02b-service-worker-routes.md) | W02a |
-| W03 (#__W03__) | [Partner lane: partner branch of `resolveSender`, partner-lane send with fallback semantics, daily cap, `X-Breeze-Outbound` and loop prevention](2026-09-17-partner-sending-domains-w03-partner-lane.md) | W01, W02b |
-| W04 (#__W04__) | [Web UI and docs: settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, self-hosting guide](2026-09-17-partner-sending-domains-w04-web-ui-and-docs.md) | W02b (UI), W03 (end-to-end) |
-| W05 (#__W05__) | [Feedback and abuse: delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics](2026-09-17-partner-sending-domains-w05-delivery-feedback-and-abuse.md) | W03 |
+| W02 (#__W02__) | [Foundation A: migration (three tables, RLS, release guard), Drizzle schema, allowlist registrations, shared validators, env + boot validation, `EmailDomainProvider` with `resend` / `static` / `fake` adapters, `custom_sending_domain` capability, provider-release hooks in `cascadeDeletePartner` / `finalizePartnerOffboarding`](2026-09-17-partner-sending-domains-w02-data-model-and-adapters.md) | W01 (`deliverRaw`) |
+| W03 (#__W03__) | [Foundation B: domain service, `sending-domains` worker and cadence, partner and admin routes, outbox drain, audit, status-transition mail, drift report](2026-09-17-partner-sending-domains-w03-service-worker-routes.md) | W02 |
+| W04 (#__W04__) | [Partner lane: partner branch of `resolveSender`, partner-lane send with fallback semantics, daily cap, `X-Breeze-Outbound` and loop prevention](2026-09-17-partner-sending-domains-w04-partner-lane.md) | W01, W03 |
+| W05 (#__W05__) | [Web UI and docs: settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, self-hosting guide](2026-09-17-partner-sending-domains-w05-web-ui-and-docs.md) | W03 (UI), W04 (end-to-end) |
+| W06 (#__W06__) | [Feedback and abuse: delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics](2026-09-17-partner-sending-domains-w06-delivery-feedback-and-abuse.md) | W04 |
 
-W01 → W02a → W02b → W03 are serial. W04 may start once W02b has merged (its
-E2E needs W03). W05 starts after W03. Hosted stays dark (provider unset) through
-W03; W04 enables allow-listed partners; W05 is the hosted GA gate (spec §15, §16).
+W01 → W02 → W03 → W04 are serial. W05 may start once W03 has merged (its
+E2E needs W04). W06 starts after W04. Hosted stays dark (provider unset) through
+W04; W05 enables allow-listed partners; W06 is the hosted GA gate (spec §15, §16).
 
 ## Spec amendments these plans apply
 
-1. **W02 is split into W02a and W02b.** The spec's W02 (three tables + RLS +
-   three adapters + worker + two route files + cascade hooks) is too large for
-   one review round on a tenancy surface. W02a is data model, config and
-   adapters; W02b is everything that calls them. Both land dark. The release
-   hooks ship in W02a with the `BEFORE DELETE` guard, so the guard never exists
-   without the path that satisfies it.
-2. **W01 and W02 are not parallel.** The spec (§15) calls them file-disjoint,
+1. **The spec's single Foundation wave is split into W02 and W03**, and the
+   waves are renumbered W01–W06 (the spec's §15 table has been updated to
+   match). The original Foundation wave (three tables + RLS + three adapters +
+   worker + two route files + cascade hooks) is too large for one review round
+   on a tenancy surface. W02 is data model, config and adapters; W03 is
+   everything that calls them. Both land dark. The release hooks ship in W02
+   with the `BEFORE DELETE` guard, so the guard never exists without the path
+   that satisfies it.
+2. **W01 and W02 are not parallel.** The spec's first draft called them file-disjoint,
    but the `static` and `fake` adapters and the `test-send` job hand a message
    with a custom From to the platform transport, and W01 removes `from` from
    `SendEmailParams`. W01 therefore adds the one sanctioned raw entry point,
-   `EmailService.deliverRaw`, and W02a consumes it. Serial order, no rebase
+   `EmailService.deliverRaw`, and W02 consumes it. Serial order, no rebase
    hazard.
 3. **`PartnerLaneSendError` is carried by a class.** The spec types the error as
    a union and says `send` "throws" it. Adapters throw
@@ -49,7 +51,7 @@ W03; W04 enables allow-listed partners; W05 is the hosted GA gate (spec §15, §
    pass it; see `SendEmailParams` below.
 5. **`sending_domain.test` is a tag value, not a registry entry.** The test send
    bypasses `sendEmail` (§6.1), and the registry asserts every purpose has a
-   send site. `staff.sending_domain_status` is added to the registry by W02b,
+   send site. `staff.sending_domain_status` is added to the registry by W03,
    together with its send site.
 6. **Existing behaviour pinned, not fixed:** the Mailgun branch of `sendEmail`
    drops `cc` today (`services/email.ts:275-284`). W01's golden test records
@@ -61,7 +63,7 @@ W03; W04 enables allow-listed partners; W05 is the hosted GA gate (spec §15, §
    `EmailPayload` a discriminated union carrying the purpose.
 8. **Two partner-lane sites have no partner id in hand** (`routes/portal/auth.ts`
    portal password reset; `services/reportDelivery.ts` `emailReportRun`). W01
-   passes `null` (no new reads in a byte-identical wave); **W03 widens both**, or
+   passes `null` (no new reads in a byte-identical wave); **W04 widens both**, or
    portal resets and the whole `general` stream could never use a partner domain.
 9. **Spec §3.5's "no other list applies" is wrong.** Two more contracts fire:
    `ALLOWED_WITHOUT_CAPABILITY_CHECK` in
@@ -85,8 +87,8 @@ W03; W04 enables allow-listed partners; W05 is the hosted GA gate (spec §15, §
     24 h `every` fails the schedule contract test and stampedes at 00:00 UTC).
 13. **Partner write routes also carry `canManagePartnerWidePolicies`**, as
     `PATCH /partners/me` (the stack §7 names) does inline.
-14. **Structured transport errors land in W03.** `deliverRaw` inherits today's
-    opaque throws, so W02a's `static` send-error classifier is text-based; W03
+14. **Structured transport errors land in W04.** `deliverRaw` inherits today's
+    opaque throws, so W02's `static` send-error classifier is text-based; W04
     adds `EmailTransportError` (message preserved) and upgrades the classifier.
 
 ## Migration slots reserved
@@ -97,12 +99,12 @@ slots through `2026-10-19-100100`. These plans take the `2026-10-20-10` block.
 
 | File | Wave |
 |---|---|
-| `2026-10-20-100000-partner-sending-domains.sql` | W02a |
-| `2026-10-20-100100-partner-sending-daily-stats.sql` | W05 |
+| `2026-10-20-100000-partner-sending-domains.sql` | W02 |
+| `2026-10-20-100100-partner-sending-daily-stats.sql` | W06 |
 
 Every executor re-checks `ls apps/api/migrations/*.sql | sort | tail -1` before
-committing and renames upward if main has moved past these names. W01, W02b,
-W03 and W04 need no migration.
+committing and renames upward if main has moved past these names. W01, W03,
+W04 and W05 need no migration.
 
 ## Cross-wave names that must not drift
 
@@ -130,8 +132,8 @@ export function mailPurposePolicy(purpose: MailPurpose): MailPurposePolicy;
 ```ts
 export type PlatformLaneReason =
   | 'platform_purpose' | 'no_partner' | 'lane_unconfigured'      // W01
-  | 'not_allowlisted' | 'partner_ineligible' | 'no_identity'     // W03
-  | 'domain_not_sendable' | 'over_cap';                          // W03
+  | 'not_allowlisted' | 'partner_ineligible' | 'no_identity'     // W04
+  | 'domain_not_sendable' | 'over_cap';                          // W04
 export type ResolvedSender =
   | { lane: 'platform'; from: string; reason: PlatformLaneReason }
   | { lane: 'partner'; from: string; replyTo: string | null; partnerId: string;
@@ -163,7 +165,7 @@ class EmailService {
 }
 ```
 
-### Defined in W02a
+### Defined in W02
 
 - Drizzle, `apps/api/src/db/schema/emailSendingDomains.ts`: `partnerSendingDomains`,
   `partnerSenderIdentities`, `emailProviderDomainReleases`. Column names exactly
@@ -196,7 +198,7 @@ class EmailService {
   calls), called first in `cascadeDeletePartner` and
   `finalizePartnerOffboarding`.
 
-### Defined in W02b
+### Defined in W03
 
 - `apps/api/src/services/emailDomains/sendingDomainService.ts`:
   `listSendingDomains`, `createSendingDomain`, `requestDomainCheck`,
@@ -220,7 +222,7 @@ class EmailService {
   `recordProviderKeyProbe`, `readProviderKeyProbe` (the probe verdict crosses
   api ↔ worker through Redis).
 
-### Defined in W03
+### Defined in W04
 
 - `apps/api/src/services/emailDomains/partnerLaneSend.ts`: `sendOnPartnerLane`.
 - `apps/api/src/services/emailDomains/sendCap.ts`:
@@ -229,9 +231,9 @@ class EmailService {
   (`services/emailDomains/outboundMarker.ts`), consumed by
   `services/inboundEmail/loopPrevention.ts`.
 - Provider tags on every partner-lane message: `partner_id`, `domain_id`,
-  `stream`, `purpose` (W05 attributes webhook events by them).
+  `stream`, `purpose` (W06 attributes webhook events by them).
 
-### Defined in W05
+### Defined in W06
 
 - Table `partner_sending_daily_stats`, Drizzle `partnerSendingDailyStats`
   (same schema file). Webhook route `POST /webhooks/email-provider/resend`.
@@ -239,10 +241,10 @@ class EmailService {
 
 ## Rules every wave inherits
 
-- Rigor is **high** for W02a, W02b, W03 and W05 (tenancy, partner cascade, send
+- Rigor is **high** for W02, W03, W04 and W06 (tenancy, partner cascade, send
   path, public webhook): red first on every task, contract suites
   (`vitest.config.rls.ts`, `vitest.integration.config.ts`) before the PR, one
-  independent review round. W01 and W04 are wide but low-risk: red first,
+  independent review round. W01 and W05 are wide but low-risk: red first,
   typecheck, affected tests.
 - Test commands: `cd apps/api && npx vitest run <path>` (never
   `pnpm --filter … test -- --run`); integration suites need

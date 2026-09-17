@@ -65,7 +65,7 @@ Verified against provider docs on 2026-09-17 unless marked otherwise.
 | `POST /domains` takes `name`, `region` (`us-east-1`, `eu-west-1`, `sa-east-1`, `ap-northeast-1`), `custom_return_path` (default `send`); returns `id` and `records[]` (`record`, `name`, `type`, `ttl`, `status`, `value`, `priority`). `POST /domains/:id/verify` is asynchronous. | Shapes the interface (§5). |
 | Domain statuses: `not_started`, `pending`, `verified`, `partially_verified`, `partially_failed`, `failed` (not detected within 72 h), `temporary_failure` (was verified, DNS vanished; rechecked for 72 h, then `failed`). Resend re-checks verified domains periodically. | Status mapping (§5.2). |
 | Limits: 10 req/s per team (sends and management share it). Domains: Pro 10, +100 for $20/mo, Scale 1,000. | All provider calls go through one rate-limited worker (§6). |
-| Webhooks exist: `domain.updated`, `email.bounced`, `email.complained`, `email.delivered`, `email.failed`, `email.suppressed`. | Delivery feedback in W05 (§9.3). |
+| Webhooks exist: `domain.updated`, `email.bounced`, `email.complained`, `email.delivered`, `email.failed`, `email.suppressed`. | Delivery feedback in W06 (§9.3). |
 | SES: domain identity by Easy DKIM (3 CNAMEs), optional custom MAIL FROM subdomain, identities are per region. SES *tenants* give per-tenant reputation tracking, automatic pausing, tenant-level suppression lists, and a `TenantName` on `SendEmail`. | The interface carries a partner reference so the SES adapter can map partner → SES tenant without a schema change. |
 
 Not verified, to be pinned by adapter contract tests in W02: the exact error
@@ -240,7 +240,7 @@ handled in one place, and every operation retries with backoff.
 | Partner-lane transport | Separate provider account (required) | Same or separate account (operator's choice) | The platform transport itself (`EMAIL_PROVIDER`) with the custom From | — |
 | Trust gating | `partnerTrustMode()`; GA requires `enforce` | `off` (the function returns `off` whenever `!isHosted()`), so every partner is eligible | `off` | — |
 | Caps, allowlist, auto-suspend | On | Off unless the operator sets them | Off unless set | — |
-| Delivery webhooks (W05) | Required for GA | Optional; polling alone is complete | Not applicable | — |
+| Delivery webhooks (W06) | Required for GA | Optional; polling alone is complete | Not applicable | — |
 | Behaviour after upgrade | — | Unchanged until opted in | Unchanged until opted in | Unchanged. Tab hidden, routes 404, worker not registered. |
 
 Why self-hosted needs more than "set `EMAIL_FROM`":
@@ -847,7 +847,7 @@ none. Tickets keep `{slug}@TICKETS_INBOUND_DOMAIN`; quotes and invoices keep
 
 ## 9. Abuse and deliverability controls
 
-### 9.1 Ships with the feature (W02–W03), before any hosted partner is enabled
+### 9.1 Ships with the feature (W02–W04), before any hosted partner is enabled
 
 - **Eligibility**: new `GatedCapability` `'custom_sending_domain'`. It takes
   the `default` branch in `partnerTrust.decide`: denied for `probation` and
@@ -872,7 +872,7 @@ none. Tickets keep `{slug}@TICKETS_INBOUND_DOMAIN`; quotes and invoices keep
 - **Domain hygiene**: §4.1 rejections.
 - **Audit**: every mutation and every status transition.
 
-### 9.2 Abuse signals (W05)
+### 9.2 Abuse signals (W06)
 
 A `ComputedSignal` producer under `services/abuseSignals/`, wired into
 `runAbuseSweep`: sending domain added (with the domain name, for human review
@@ -880,7 +880,7 @@ of lookalikes), repeated failed verifications, daily cap hit, bounce or
 complaint threshold crossed. The partner trust evidence card lists the
 partner's sending domains.
 
-### 9.3 Delivery feedback (W05) — required before general availability
+### 9.3 Delivery feedback (W06) — required before general availability
 
 - `POST /webhooks/email-provider/resend`, signature-verified (svix scheme),
   registered as a public route with its DB work in system context. Handles
@@ -895,9 +895,9 @@ partner's sending domains.
   partners share the account.
 - The admin list shows 7-day volume, bounce and complaint rates.
 
-Until W05 is live, hosted runs with the allowlist set.
+Until W06 is live, hosted runs with the allowlist set.
 
-W05 is a gate for **hosted** general availability, not a functional dependency.
+W06 is a gate for **hosted** general availability, not a functional dependency.
 Many self-hosted instances sit behind NAT or a VPN and cannot receive provider
 webhooks; polling (§6) is complete without them. On self-hosted the webhook
 endpoint is inert unless `EMAIL_DOMAINS_WEBHOOK_SECRET` is set, automatic
@@ -940,7 +940,7 @@ every shipped locale. Every interactive element has a `data-testid`.
 | `EMAIL_DOMAINS_DAILY_SEND_CAP` | `2000` hosted, unlimited self-hosted | `0` = unlimited. |
 | `EMAIL_DOMAINS_PARTNER_ALLOWLIST` | empty | Comma-separated partner ids. |
 | `EMAIL_DOMAINS_DENYLIST` | empty | Extra refused domains. |
-| `EMAIL_DOMAINS_WEBHOOK_SECRET` | — | W05. Unset = webhook endpoint inert. |
+| `EMAIL_DOMAINS_WEBHOOK_SECRET` | — | W06. Unset = webhook endpoint inert. |
 
 **Every variable is optional, and none is ever required by an upgrade.** With
 all of them unset a self-hosted instance boots and behaves exactly as before.
@@ -1075,17 +1075,23 @@ the decision. The alternatives are kept for the record.
 | Wave | Content | Hosted state after merge |
 |---|---|---|
 | **W01 — Sender contract** | `MAIL_PURPOSES` registry, required `purpose` on `sendEmail`, raw `from` removed, every send site classified per §8.2, registry property tests. `resolveSender` exists and always returns the platform lane. | **No behaviour change.** Every email is byte-identical to today. |
-| **W02 — Foundation** | Migration and schema (three tables, RLS, release guard), allowlist registrations, shared validators, `EmailDomainProvider` with `resend`, `static` and `fake` adapters, worker and cadence, partner and admin routes, `custom_sending_domain` capability, config, release hooks in `cascadeDeletePartner` and `finalizePartnerOffboarding`, audit. | Dark: provider unset. |
-| **W03 — Partner lane** | The partner-lane branch of `resolveSender`, partner-lane transport, fallback semantics, daily cap, `X-Breeze-Outbound` and the loop-prevention rules. | Dark: provider unset. |
-| **W04 — Web UI and docs** | Settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, and the self-hosting guide (§16.2). | Enabled for allow-listed partners only. Dogfood on OliveTech. Self-hosters can opt in from this release. |
-| **W05 — Feedback and abuse** | Delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics. | Allowlist removed: general availability for trusted partners. |
+| **W02 — Foundation A** | Migration and schema (three tables, RLS, release guard), allowlist registrations, shared validators and DTOs, env and boot validation, `EmailDomainProvider` with `resend`, `static` and `fake` adapters, `custom_sending_domain` capability, provider-release hooks in `cascadeDeletePartner` and `finalizePartnerOffboarding`. | Dark: provider unset. |
+| **W03 — Foundation B** | Domain service, `sending-domains` worker and cadence, partner and admin routes, outbox drain, audit, status-transition mail, drift report. | Dark: provider unset. |
+| **W04 — Partner lane** | The partner-lane branch of `resolveSender`, partner-lane transport, fallback semantics, daily cap, `X-Breeze-Outbound` and the loop-prevention rules. | Dark: provider unset. |
+| **W05 — Web UI and docs** | Settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, and the self-hosting guide (§16.2). | Enabled for allow-listed partners only. Dogfood on OliveTech. Self-hosters can opt in from this release. |
+| **W06 — Feedback and abuse** | Delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics. | Allowlist removed: general availability for trusted partners. |
 | **Later, own spec** | SES adapter, SES tenants per partner, regional cutover. | |
 
-W01 and W02 are file-disjoint and can run in parallel; W03 needs both. W01 has
-the widest diff and the lowest risk: its review artefact is the §8.2 table, and
-its acceptance test is that no rendered email changes. W02 and W03 touch
-tenancy, the partner cascade and the abuse surface: full rigor, contract suites
-before each PR.
+W01 → W02 → W03 → W04 are serial: W02's `static` and `fake` adapters hand a
+message with a custom From to the platform transport through the `deliverRaw`
+entry point W01 introduces, and W03 calls what W02 defines. W05 may start once
+W03 has merged (its E2E needs W04); W06 after W04. W01 has the widest diff and
+the lowest risk: its review artefact is the §8.2 table, and its acceptance test
+is that no rendered email changes. W02, W03, W04 and W06 touch tenancy, the
+partner cascade, the send path and the abuse surface: full rigor, contract
+suites before each PR. The wave split and numbering were settled with the
+implementation plans (`docs/superpowers/plans/integrations/2026-09-17-partner-sending-domains.md`),
+which supersede this table where they differ.
 
 ## 16. Rollout
 
@@ -1094,11 +1100,11 @@ before each PR.
 1. Create the partner-lane Resend teams (US, and EU in `eu-west-1`), Pro plan,
    `full_access` keys. Add the env vars to both droplets' `.env` **and** the
    compose `environment:` mapping.
-2. Merge W01–W04 with the provider unset. Nothing changes for any tenant.
+2. Merge W01–W05 with the provider unset. Nothing changes for any tenant.
 3. Confirm `PARTNER_TRUST_MODE=enforce` on both regions. Set the provider and
    an allowlist containing OliveTech. Run the lab check (§14) on a
    LanternOps-owned subdomain.
-4. Merge W05, watch one week of stats on the allow-listed partners, clear the
+4. Merge W06, watch one week of stats on the allow-listed partners, clear the
    allowlist.
 5. Close #4199 once the 2026-09-10 SPF/DMARC fix is confirmed against a fresh
    verification email. #3363 (no MX and no Reply-To on `2breeze.app`) is not
@@ -1126,7 +1132,7 @@ spec, so the guarantees have to hold without any action from them.
   sending-only key cannot manage domains. One account for both lanes is fine.
   A domain already verified in the account is adopted, shows as verified at
   once, and is never deleted by Breeze.
-- **Docs** (W04): a "Custom sender addresses" page under `apps/docs` deploy
+- **Docs** (W05): a "Custom sender addresses" page under `apps/docs` deploy
   docs, linked from `deploy/environment.mdx`, with the three setups side by
   side (one address via `EMAIL_FROM`; per-stream via `static`; DNS wizard via
   `resend`), plus the compose mapping lines for operators on a customised
