@@ -1,616 +1,460 @@
 # Billing profiles and work types — design
 
-Status: **draft, awaiting Todd's approval (Gate A)**.
+Status: **draft r2, awaiting Todd's approval (Gate A)**.
 Issues: LanternOps/breeze#4628 (billing profiles / rate cards, community, anchor) and
 LanternOps/breeze#4615 (activity-type codes on time entries) — **one spec for both**, per
 Todd's 2026-09-02 comment on #4628: the rate dimension is built once.
-Advisor quorum: Fable position formed first; independent read-only review by an Opus
-subagent, which verified its findings against the code. **Codex was unavailable** (flat-sub
-usage cap until 2026-09-19 11:38), so the usual Codex `xhigh` seat was substituted. Ten
-confirmed defects from the first draft are folded in. See §11 "Quorum record".
+Advisor quorum: Fable + an independent Opus read-only reviewer (Codex usage-capped until
+2026-09-19 11:38). See §11.
 
-One decision was made by Todd before this spec and is **not open**: the resolved billing
-terms are **stamped on the time entry**, and a later edit to a profile, a rule or an org's
-assignment never rewrites an existing entry.
+**r2 (2026-09-17) — consolidation rewrite.** Todd's review of r1: billing and ticketing
+settings are already sprawling; this feature must consolidate, not add. r1 kept all three
+existing places that price labour and added two more behind a six-step chain. r2 replaces
+them: **labour pricing lives in exactly one place.**
+
+Two decisions are Todd's and **not open**:
+
+1. Resolved billing terms are **stamped on the time entry**; a later edit to a profile or
+   an org's assignment never rewrites an existing entry.
+2. **Consolidate.** This feature may not increase the number of places labour pricing is
+   configured. It reduces them to one.
 
 ---
 
 ## 1. Problem
 
-An MSP runs several commercial models at once: standard T&M, negotiated T&M, and managed
-packages where some labour is included and the rest bills at package rates. Breeze can
-express none of that. Today's chain (`resolveTicketLink`,
-`apps/api/src/services/timeEntryService.ts:241-269`, ticketing-config spec D6) is:
+An MSP runs several commercial models at once: standard T&M, negotiated T&M, managed
+packages where some labour is included and the rest bills at package rates. Breeze cannot
+express that, and what it has is already scattered. Labour pricing is configured today in
+**three places**, merged by a chain (`resolveTicketLink`, `timeEntryService.ts:241-269`)
+that resolves the rate and the billable flag *independently*:
 
-> per-entry override → org blanket default (`org_ticket_settings`) → ticket-category
-> default (`ticket_categories`) → `false` / `NULL`
+| Where | Fields | Screen |
+|---|---|---|
+| Ticket category (partner-wide) | default billable, default rate, rate currency | Settings → Ticketing → Categories |
+| Org ticket settings (per org) | default billable, default rate, rate currency | Org settings → ticket settings, beside SLA overrides |
+| The time entry | billable, rate, billing status | ticket quick-add, timesheet |
 
-Three structural gaps:
+None of them can say "remote is included, on-site is $200 with a one-hour minimum". A rate
+hangs off the *ticket's category*, so one ticket cannot mix remote and on-site time
+(#4615). There are no minimums or rounding anywhere (`invoiceAssembly.ts:88-99` bills
+`duration / 60 × rate`). And any holder of `time_entries:write` can set any rate on any
+entry, so the technician has to know each customer's deal.
 
-1. **No work-type dimension.** A rate hangs off the *ticket's category*, so one ticket
-   cannot carry "1 h remote + 0.5 h on-site" at different rates (#4615). `time_entries.source`
-   is provenance (`manual | timer | remote_session | …`), not a labour classification.
-2. **The org default is one blanket number.** It cannot say "remote is included, on-site is
-   $200, after-hours is $300". Category defaults are partner-wide, so they cannot vary by
-   customer either. The only workaround is a duplicate category set per package.
-3. **No minimums or rounding anywhere.** `timeEntryToLineSpec`
-   (`services/invoiceAssembly.ts:88-99`) bills `duration_minutes / 60 × hourly_rate`, one
-   invoice line per entry. A one-hour on-site minimum is applied by hand at invoice review.
+The principle from #4628, adopted here: **technicians say what work they did; Breeze
+decides how the customer bought it.**
 
-And one governance gap: any holder of `time_entries:write` can set `hourlyRate`,
-`isBillable` and `billingStatus` on an entry (`updateTimeEntry`, no further check). A
-technician has to *know* the customer's commercial terms and can silently deviate from them.
+## 2. The whole design in five sentences
 
-The operating principle from #4628, adopted here: **technicians say what work they did;
-Breeze decides how the customer bought it.**
+1. A **work type** says what the labour was (Remote, On-site, Project, After-hours,
+   Emergency); the technician picks it on the time entry.
+2. A **billing profile** is a rate card: one row per work type plus a required **"All
+   other work"** row; each row is *Billable at $X*, *Included*, or *Non-billable*, with an
+   optional minimum.
+3. Every org uses **one** profile: the one assigned to it, otherwise the partner's default.
+4. Breeze looks up the row, **stamps** it on the entry, and never re-prices that entry when
+   the card changes.
+5. Deviating from the card on an entry needs a permission.
 
-## 2. Users and scope
+That is the entire model. There is no chain: *which card* is one lookup, *which row* is
+one lookup. The category and org rate fields are **converted into profiles and removed**
+(§3.6).
 
-| Actor | Does |
-|---|---|
-| Partner admin / billing manager | Defines work types and billing profiles once, partner-wide; assigns a profile to each org; overrides a stamped entry when the work was out of scope. |
-| Technician | Picks a work type when logging time. Sees the outcome ("Included in Silver", "$225/h · 1 h minimum"). Does not pick a rate. |
-| Approver | Reviews entries as today; the stamped source (`profile`, `manual`, …) tells them which entries deviate from the card. |
-| Org-scoped users | **Nothing.** Labour billing is partner-side: `time_entries` is partner-axis RLS and an org token fails `breeze_has_partner_access`. Every table here follows suit. |
-| Portal customers | No rates, no profiles. They *do* already see hours: `services/portal/supportUsage.ts` reads `time_entries` in system context and buckets `contract` entries as "covered by contract" — which is exactly where included work should land (§3.5, §3.6). |
-
-Partner-Wide First (epic #2135) is satisfied natively: both new config objects are
-**partner-owned and reused across orgs**. They are deliberately *not* `org_id XOR
-partner_id` dual-ownership — see §4.1 for the justification the rule asks for.
+| | Today | r1 draft | **r2** |
+|---|---|---|---|
+| Places labour pricing is configured | 3 | 5 | **1** |
+| Resolution steps | 3, rate and billable resolved separately | 6, mixed | **2 lookups, resolved as a unit** |
+| Settings fields | 6 | 6 + two new screens | **−6 fields, +1 screen, +2 selects** |
 
 ## 3. Proposed design
 
-### 3.1 Four primitives
+### 3.1 Work types
 
-1. **Work type** — partner-owned taxonomy of labour: Remote, On-site, Project, After-hours,
-   Emergency. Lives on the **time entry**, not the ticket, so one ticket can mix them.
-   Carries **no rates** (§3.3).
-2. **Billing profile** — partner-owned, reusable, cloneable rate card in **one currency**.
-   One profile per partner per currency may be the **default**.
-3. **Billing profile rule** — one row per (profile, work type): coverage `included |
-   billable`, hourly rate, minimum minutes, rounding increment, internal notes. Profiles are
-   **sparse**: a missing rule falls through the chain in §3.4.
-4. **Org assignment** — at most one profile per org.
+Partner-owned list. A label only — no rate, no default flag. Lives on the **time entry**,
+so one ticket can mix them. A ticket category may name a **default work type** (one select
+replacing the three pricing fields it loses) so the picker opens on the right value.
+`workTypeId` is optional everywhere: an entry with none is priced by the profile's "All
+other work" row, which is what keeps old mobile builds, the AI tools and the add-in
+correct with no client change.
 
-Ticket categories stay what they are — a classification of the *problem* (network, email,
-hardware) that drives SLA and routing. They gain one nullable column,
-`default_work_type_id`, so "Project" tickets default the picker to "Project Work". Their
-`default_hourly_rate` / `default_billable` remain as the legacy tail of the chain; nothing
-is migrated or removed.
+### 3.2 Billing profiles
 
-### 3.2 Work type on the entry
+Partner-owned, reusable, cloneable, in **one currency**. One profile per partner per
+currency may be the **default**. A profile carries:
 
-`time_entries.work_type_id`, nullable. Default when the caller sends none:
+- a **base row** ("All other work") — required, so a profile always answers;
+- zero or more **work-type rows**;
+- one **rounding increment** for the whole card ("we bill in 15-minute blocks") — a
+  property of how the MSP bills, not of a work type.
 
-> explicit `workTypeId` → ticket category's `default_work_type_id` → partner's default work
-> type (`work_types.is_default`) → `NULL`
+Each row has: **coverage** (`billable` | `included` | `non_billable`), **hourly rate**
+(optional — a billable row with no rate means "price at invoice review", the issue's
+"package-specific"), **minimum minutes** (billable rows only), internal **notes**.
 
-Every *creation* goes through `createTimeEntry` or `startTimer` (REST, office add-in, AI/MCP
-tools, suggestion confirm, `intentReleaseWorker`, mobile `create`), so the default chain
-makes **old clients safe**: a mobile build with no picker still gets a work type and
-therefore the right rule.
+"Customer ABC – Negotiated T&M" is a cloned profile assigned to one org. There are no
+org-owned profiles, no inheritance between profiles and no fall-through from one card to
+another: adding a work type later prices it by each card's base row until someone gives it
+a row, and the grid shows that ("uses All other work").
 
-**Timers resolve at start; the work type changes only by an explicit `PATCH workTypeId`.**
-There is no "work type at stop" in this design, for two verified reasons: `stopRunningEntry`
-(`timeEntryService.ts:565-582`) is a single-statement CAS that never reads the row and
-holds no ticket lock, so it cannot re-resolve without inverting the global tickets →
-time_entries lock order; and mobile never calls `/stop` — queue v2 replays a stop as
-`PATCH /time-entries/:id { endedAt }` (`apps/mobile/src/services/timeEntryReplay.ts`). All
-re-resolution therefore lives in `updateTimeEntry`, which already takes the locks in the
-right order. The technician who started remote and ended up on-site edits the entry.
+### 3.3 Resolution
 
-**A partner with zero work types behaves exactly as today.** No flag, no mode switch: with
-`work_type_id` NULL the resolver skips straight to the legacy chain (#4615 acceptance
-criterion "entries with no activity type bill exactly as today").
-
-### 3.3 Rates live only on profiles
-
-#4615 proposed a default rate on the activity type. Rejected: it would give "standard
-rates" two homes (the work type and the default profile) and an undefined winner. Instead
-the partner's **default profile is the standard rate card**, and the work type is a pure
-label. #4615's "partner can manage activity types with default rates" is met by work types
-+ the default profile.
-
-### 3.4 Resolution chain
-
-One pure function, `resolveBillingRule()` in a new
-`apps/api/src/services/billingRuleResolver.ts` — no DB, no I/O, the
-`contractAllowance.ts` pattern — so create, timer, edit, the UI prefill, the org preview
-and `aiTimeEntryProposal.ts` cannot disagree. For an entry in org **O** (currency **C**)
-with work type **W**:
-
-| # | Source | Hits when | `rate_source` |
-|---|---|---|---|
-| 1 | Per-entry override | an authorised caller sends billing fields that differ from what steps 2–6 resolve (§3.7) | `manual` |
-| 2 | O's assigned profile | it is active, its currency = C, and it has a rule for W | `profile` |
-| 3 | O's blanket default | `org_ticket_settings.default_hourly_rate` is set in currency C | `org_default` |
-| 4 | Partner default profile for C | it has a rule for W | `default_profile` |
-| 5 | Ticket category default | `default_hourly_rate` is set in currency C | `category_default` |
-| 6 | None | — (rate `NULL`) | `none` |
-
-- Steps 2 and 4 need W; with no work type they are skipped. Steps 3, 5, 6 resolve
-  `is_billable` with today's unchanged expression
-  (`org.defaultBillable ?? category.defaultBillable ?? false`), independently of where the
-  rate came from. That can yield a non-billable entry carrying a rate (org
-  `defaultBillable = false` + a default rate). It is today's behaviour and it is
-  deliberate for some orgs (all-inclusive client, rate kept for reporting); "fixing" it
-  here would start billing them. The legacy steps stay byte-for-byte legacy.
-- **Match-or-skip** (multi-currency spec §7) applies at the *profile* level: a profile in
-  the wrong currency is skipped whole, never converted. Assignment rejects a mismatched
-  profile up front (409 `PROFILE_CURRENCY_MISMATCH`); a mismatch that arises later is
-  skipped and bannered on the org page.
-- Step 3 sits **above** step 4 on purpose (Open Decision 1): an org that pays a negotiated
-  blanket $90 today must not jump to the standard card's $150 on-site rate the day the
-  partner creates a default profile.
-- Resolution keys on the **org**, not the ticket, so W06 org-linked suggestion entries
-  (no ticket) resolve too. Standalone entries (no org) keep today's behaviour; a work type
-  may still be set for reporting.
-
-### 3.5 What a rule stamps
-
-| Rule | Stamped on the entry |
-|---|---|
-| `billable`, rate R | `is_billable = true`, `billing_status = 'not_billed'`, `hourly_rate = R`, `minimum_minutes`, `rounding_increment_minutes` |
-| `billable`, no rate | same with `hourly_rate = NULL` → lands in invoice assembly's existing `missingRate` bucket; a human prices it ("package-specific" in the issue's Gold row) |
-| `included` | `is_billable = true`, `billing_status = 'contract'`, **`hourly_rate = NULL`**, `included_value_rate` = the rule's optional nominal rate, no minimum / increment |
-
-Always also: `work_type_id`, `billing_profile_id` (the profile that produced the rule,
-`NULL` for legacy sources), `rate_source`, **`coverage`** (`included | billable`, `NULL` on
-legacy sources) and the existing `currency_code` snapshot. `coverage` is stamped rather than
-inferred because `billing_status = 'contract'` has three writers — a profile, a block-hours
-close (`contract_line_id` set), and a technician by hand today
-(`assertRoutineBillingStatus` reserves only `billed`) — and because a billing manager may
-later flip an included entry to `not_billed` (§5a), after which "what did the card say" is
-unrecoverable from status alone.
-
-**Included = `is_billable` + `billing_status = 'contract'`** (Open Decision 2). `contract`
-already exists in the enum, already means "covered by the customer's contract", and the
-portal already shows it that way. It keeps included work distinguishable from internal
-non-billable time, which is what utilization and profitability reporting need.
-
-**The nominal rate gets its own column, never `hourly_rate`.** The first draft put it in
-`hourly_rate` on the claim that every money reader skips `contract`. That is false:
-`getTicketBillingSummary` (`timeEntryService.ts:1243-1258`), `listBillables` (+ the billing
-CSV, `routes/tickets/export.ts`) and the weekly-timesheet money loop all filter on
-`is_billable AND hourly_rate IS NOT NULL` with **no status predicate**. With
-`hourly_rate = NULL` on included work, every existing and future
-`is_billable + hourly_rate` reader is correct by construction, and
-`included_value_rate × hours` still lets a QBR say "we delivered $4,200 of included remote
-support" from a snapshot. It is denominated in the entry's `currency_code`; included only
-ever arises from a profile, which requires an org, so the currency is always stamped.
-The ticket billing summary gains an `includedMinutes` figure beside `billableMinutes`
-(which today counts every `is_billable` row regardless of status).
-
-### 3.6 Minimums and rounding
-
-Per **entry** (Open Decision 3), the ConnectWise / Autotask / Halo convention:
+One pure function, `resolveBillingRule()`, in a new
+`apps/api/src/services/billingRuleResolver.ts` (no DB, no I/O — the `contractAllowance.ts`
+pattern), shared by create, timer start, edit, the quick-add hint, the org preview and
+`aiTimeEntryProposal.ts`:
 
 ```
-billable_minutes = GREATEST(
-  COALESCE(minimum_minutes, 0),
+card = org's assigned profile, if active and in the org's currency
+       else the partner's default profile for the org's currency
+       else none
+row  = card's row for the entry's work type, else card's base row
+```
+
+- **No card** (nothing assigned, no default in that currency): billable, no rate. The
+  quick-add already warns on a missing rate (#5321) and invoice assembly already buckets it
+  as `missingRate`. Nothing is ever silently unbilled.
+- **Match-or-skip** (multi-currency spec §7) is a property of *which card*: a card in the
+  wrong currency is never used and never converted. Assignment rejects one up front (409
+  `PROFILE_CURRENCY_MISMATCH`); if an org's currency changes later the assignment is skipped
+  and bannered, and the currency-change readiness report says so beforehand.
+- Resolution keys on the **org**, so W06 org-linked suggestion entries (no ticket) resolve
+  too. Standalone entries (no org) are unpriced as today; a work type may still be set.
+
+### 3.4 What gets stamped
+
+| Row | Entry |
+|---|---|
+| `billable` @ R | `is_billable = true`, `billing_status = 'not_billed'`, `hourly_rate = R` (or `NULL`), `minimum_minutes`, `rounding_increment_minutes` |
+| `included` | `is_billable = true`, `billing_status = 'contract'`, `hourly_rate = NULL` |
+| `non_billable` | `is_billable = false`, `billing_status = 'not_billed'`, `hourly_rate = NULL` — exactly today's non-billable entry |
+
+Plus `work_type_id`, `billing_profile_id`, `coverage`, and the existing `currency_code`
+snapshot.
+
+**Included = `contract` status with no rate.** `contract` already exists, already means
+"covered by the customer's contract", and the portal already renders it that way
+(`services/portal/supportUsage.ts`). `hourly_rate` stays `NULL` on purpose:
+`getTicketBillingSummary`, `listBillables` (+ the billing CSV) and the timesheet money loop
+filter on `is_billable AND hourly_rate IS NOT NULL` with **no status predicate**, so a rate
+on an included entry would inflate all three. `coverage` is stamped rather than inferred
+because `contract` has three writers — a card, a block-hours close, and a technician by
+hand — and because a billing manager may later flip an included entry to `not_billed` to
+bill out-of-scope work. The ticket summary gains `includedMinutes`.
+
+r1's "nominal value rate" for included work is **cut** (one more knob, one more money
+column; a QBR can value included hours from the default card at report time).
+
+### 3.5 Minimums and rounding
+
+Per **entry** — the ConnectWise / Autotask / Halo convention:
+
+```
+billable_minutes = GREATEST(COALESCE(minimum_minutes, 0),
   CASE WHEN rounding_increment_minutes > 0
        THEN CEIL(duration_minutes::numeric / rounding_increment_minutes) * rounding_increment_minutes
        ELSE duration_minutes END)
 ```
 
-`billable_minutes` is a **plain column written by the service, pinned by a CHECK carrying
-the identical expression** (`billable_minutes IS NULL OR billable_minutes = GREATEST(…)`),
-`NULL` while a timer runs and on every pre-feature row. One TS pure function
-(`computeBillableMinutes`, needed anyway for the UI hint and the defaults endpoint) and one
-exported SQL fragment (for `stopRunningEntry`'s CAS, which computes duration in SQL from the
-row's own stamped terms — no ticket read needed); the CHECK makes drift between them a
-constraint violation, not a billing bug. A stored generated column was the first draft and
-is rejected: `ADD COLUMN … GENERATED … STORED` rewrites the whole table under ACCESS
-EXCLUSIVE on a hot billing table, the two existing generated columns in this database
-(`device_event_logs.search_vector`, `td_synnex_price_availability.search_text`) are both
-absent from the Drizzle schema, and `pnpm db:check-drift` cannot see this class of drift
-(`scripts/check-drift.ts` replays migrations; it does not compare Drizzle to the DB).
-The *terms* (`minimum_minutes`, `rounding_increment_minutes`) are the stamp; an authorised
-user adjusts the billed quantity by editing the terms, never the derived number.
+`billable_minutes` is a plain column written by the service and **pinned by a CHECK
+carrying the identical expression**; `NULL` while a timer runs and on pre-feature rows.
+One TS pure function plus one exported SQL fragment (`stopRunningEntry` is a single-
+statement CAS that computes duration in SQL); the CHECK turns drift between them into a
+constraint violation. Not a generated column: that rewrites a hot billing table under
+ACCESS EXCLUSIVE, and the two generated columns this database already has are invisible to
+Drizzle and to `db:check-drift`.
 
-Consumers switch from `duration_minutes` to `COALESCE(billable_minutes, duration_minutes)`
-for **money and billed quantity** only: `timeEntryToLineSpec`, `partitionTimeEntries`,
-`getTicketBillingSummary`, `listBillables`, the weekly-timesheet amounts, the billing CSV,
-and the portal's `supportUsage` billed / unbilled buckets (so the hours a customer sees
-match the hours on their invoice). Utilization and timesheet *durations* keep **actual**
-minutes. When the two differ the invoice line says so
-(`On-site Support — 0.50 h worked, 1.00 h minimum`). Lines stay one per entry.
+Money and billed quantity read `COALESCE(billable_minutes, duration_minutes)`:
+`timeEntryToLineSpec`, `partitionTimeEntries`, `getTicketBillingSummary`, `listBillables`,
+timesheet amounts, billing CSV, and the portal's billed / unbilled buckets (so a customer's
+hours match their invoice). Utilization and timesheet durations keep **actual** minutes.
+When they differ the invoice line says so (`On-site — 0.50 h worked, 1.00 h minimum`).
+Lines stay one per entry.
 
-### 3.7 Overrides, edits and re-resolution
+### 3.6 Removing the old pricing fields (the consolidation)
 
-**Never re-resolved by a config edit.** Editing a rule, archiving a profile, reassigning an
+**Removed from the product in the cut-over wave:** `ticket_categories.default_billable`,
+`default_hourly_rate`, `rate_currency` and `org_ticket_settings.default_billable`,
+`default_hourly_rate`, `rate_currency`. The category editor keeps one select (default work
+type); the org ticket-settings editor becomes SLA-only. The resolver stops reading the
+columns the day the conversion runs; the columns are dropped one release later.
+
+**A one-time, price-preserving conversion** turns the old data into profiles, per partner:
+
+1. *Pricing-relevant categories* — those with a rate, or with `default_billable = false`.
+   Each becomes a **work type of the same name** and the category's default work type.
+   (A partner who priced by category was using categories as work types; this keeps every
+   price and lets them rename or merge afterwards.)
+2. A **default profile per currency the partner's orgs use** ("Standard rates"), base row
+   *billable, no rate*. Each category from step 1 becomes a row: `billable @ rate` in the
+   currency its rate was entered in; `non_billable` in every currency if it was
+   non-billable.
+3. For each org whose ticket settings carry a rate or a billable flag: **clone** the
+   default profile for the org's currency, name it after the org, then overlay — a billable
+   flag sets every row's coverage; a rate (only if entered in the org's currency, per
+   match-or-skip) sets every row's rate — collapse rows equal to the base, and assign it.
+   This reproduces "org default beats category default" exactly.
+4. A partner with nothing configured gets nothing created.
+
+This is exact parity with the legacy chain with **one deliberate difference**: a ticket
+with *no category* in an org with *no defaults* resolves today to silently non-billable;
+after, it is billable with no rate and shows up in the missing-rate warning. §9 pins the
+rest with a parity test.
+
+The conversion writes rows on billing data — high blast radius. It is one idempotent SQL
+migration (`WHERE NOT EXISTS` on the partner having any profile), opening with
+`SELECT set_config('breeze.scope','system',true);`, reporting every count through
+`RAISE WARNING`, never joining the `migrationRlsScope.test.ts` baseline. Existing time
+entries are **not touched**: their stamped rate, billable flag and status are already
+snapshots. The plan's first task is a read-only count on both regions of how many
+partners, categories and orgs carry these fields, to size it.
+
+### 3.7 Overrides and edits
+
+**Never re-priced by a config edit.** Editing a row, archiving a profile, reassigning an
 org — none touches an existing entry.
 
-**Re-resolved by an edit to the entry itself** — in `updateTimeEntry` only — while
-`billing_status <> 'billed'` and `rate_source <> 'manual'`: changing `workTypeId`;
-relinking `ticketId` (today a relink keeps the old org's rate — a latent bug this closes).
-An authorised `resetBilling: true` on PATCH clears a manual override and re-resolves.
-`billable_minutes` is recomputed whenever duration or the terms change, including at stop. Any edit
-still clears approval (existing spec §3). `work_type_id`, the two term columns and
-`billing_profile_id` join `BILLED_LOCKED_ENTRY_FIELDS`.
+**Re-priced by an edit to the entry itself**, in `updateTimeEntry` only, while the entry
+is not billed and not overridden: changing `workTypeId`, or relinking `ticketId` (today a
+relink keeps the old org's rate — a latent bug this closes). Timers are priced at start;
+there is no "work type at stop", because `stopRunningEntry` takes no ticket lock and mobile
+replays a stop as `PATCH { endedAt }` — the technician who started remote and ended
+on-site edits the entry. Any edit still clears approval. The new columns join
+`BILLED_LOCKED_ENTRY_FIELDS`.
 
-**Override gate** (Open Decision 4). New permission `time_entries:manage_billing`,
-**enforced in the service, not the route**: `TimeEntryActor` gains `manageBilling: boolean`
-(the `manageAll` precedent, `timeEntryService.ts:79-95`), defaulting to `false` in every
-actor builder. A route-level gate would be bypassed by the non-route callers that pass
-billing fields straight through today — `aiToolsTicketing.ts:1005-1013` (`hourlyRate`),
-`:1055-1062` (`isBillable`), the office add-in, `intentReleaseWorker`. It is required to set
-`hourlyRate`, `billingStatus`, `minimumMinutes`, `roundingIncrementMinutes` or
-`resetBilling` to a value that **differs from the resolved one** on an entry **governed by
-a card** (`rate_source IN ('profile','default_profile')`, or would be after the edit).
-Two deliberate softenings:
+**One permission: `time_entries:manage_billing`.** Required to set `hourlyRate`,
+`billingStatus` or `minimumMinutes` to something the card did not resolve, or to reset an
+override. Setting it marks the entry `billing_overridden = true`, which is what the
+approval queue highlights.
 
-- *Echo is not an override.* `TicketTimeBilling` prefills the rate and posts it back; a
-  value equal to the resolved one keeps its resolved `rate_source`. Compared as
-  **normalised numerics** (`'225'` = `'225.00'` = `225`), never as strings.
-- *`isBillable` and `workTypeId` stay technician-editable.* Both answer "what work was
-  this", which is the technician's knowledge and the feature's own principle. Changing a
-  work type re-prices the entry, but only ever to **another card price**, and creation is
-  open anyway (gating the edit would be defeated by delete-and-recreate). The control is
-  the existing one: every edit clears approval, and the approval queue shows work type,
-  coverage and source.
+- Enforced **in the service** via `manageBilling` on `TimeEntryActor` (the `manageAll`
+  precedent), because the AI tool (`aiToolsTicketing.ts:1005-1013`), the add-in and
+  `intentReleaseWorker` pass billing fields straight through and would bypass a route gate.
+- *Echo is not an override*: the quick-add posts back the prefilled rate; a value equal to
+  the resolved one (compared as normalised numerics) is not a deviation.
+- `isBillable` and `workTypeId` stay technician-editable — both answer "what work was
+  this", a work-type change only ever lands on another *card* price, and an edit gate would
+  be defeated by delete-and-recreate. Approval is the control.
+- Partner Admin role copies hold `*:*` and pass with no data change; other roles get it in
+  the role editor. No role-reconcile migration.
 
-Legacy-mode entries (`org_default`, `category_default`, `none`) keep today's open
-behaviour, so nothing changes for a partner until they create a profile.
+Because the gate applies to every org-linked entry (there is no "legacy mode" left), the
+release note says so: technicians who typed rates by hand will need the permission or a
+card.
 
-**Who holds it.** Partner roles are per-partner *copies* snapshotted at creation
-(`services/partnerCreate.ts:149-175`); `seedRoles` reconciles only the global templates.
-Partner Admin copies hold `*:*` and pass with no data change. This feature ships **no
-row-writing reconcile migration**: the permission joins the catalogue and the templates for
-new partners, and an existing partner grants it through the role editor. (The first draft
-nominated "Partner Billing" — that role holds no `time_entries:read/write` at all, so it
-could not use the grant.) If Todd wants it pushed to existing non-admin roles, that is a
-separate migration that INSERTs `role_permissions`, must open with
-`SELECT set_config('breeze.scope','system',true);`, and must not join the
-`migrationRlsScope.test.ts` baseline.
-
-### 3.8 Invoice behaviour
-
-Included entries never reach an invoice (status `contract`). Billable entries arrive with
-the customer-specific rate and billed quantity already stamped, so assembly needs review,
-not re-rating. `blockedByCurrency` and `missingRate` behave as today. Time lines keep
-`catalogItemId: null`; mapping a work type to a catalog / QuickBooks service item is a
-follow-up (§8).
-
-## 4. Tenancy and data model impact
+## 4. Tenancy and data model
 
 ### 4.1 Why partner-axis, not dual-ownership
 
-The Partner-Wide First rule asks every new config table to justify not being `org_id XOR
-partner_id`. Justification: a work type is picked by a technician working *across* orgs and
-referenced by partner-owned rules, so an org-owned work type is unreachable by design; and
-an "org-specific rate card" is exactly a partner-owned profile assigned to one org (clone
-→ rename → assign), which is the issue's own "Customer ABC – Negotiated T&M" example.
-Precedent: `ticket_categories` (partner-axis) beside `org_ticket_settings` (org-axis).
-There is no org-scoped reader of *rates*: org tokens (including org-scoped API keys,
-`middleware/apiKeyAuth.ts`) fail `breeze_has_partner_access`, so they cannot read or write
-`time_entries` today, and the portal reads entries in system context without ever touching
-a rate card. These tables must **not** be added to `DUAL_AXIS_TENANT_TABLES` or
-`PARTNER_WIDE_SELECT_BRANCH_EXEMPT` (the latter is a shrink-only ratchet at ceiling 0 — any
-new entry fails CI).
+Partner-Wide First asks a new config table to justify not being `org_id XOR partner_id`.
+A work type is picked by technicians working *across* orgs; an "org-specific rate card" is
+a partner-owned profile assigned to one org. There is no org-scoped reader of rates: org
+tokens and org-scoped API keys fail `breeze_has_partner_access`, so they cannot read
+`time_entries` today, and the portal reads entries in system context without touching a
+card. Precedent: `ticket_categories`. None of these tables may be added to
+`DUAL_AXIS_TENANT_TABLES` or `PARTNER_WIDE_SELECT_BRANCH_EXEMPT` (a shrink-only ratchet at
+ceiling 0).
 
-### 4.2 `work_types` — shape 3 (partner-axis)
+### 4.2 Tables (all shape 3, `breeze_has_partner_access(partner_id)`, ENABLE + FORCE in the creating migration)
 
-`id`, `partner_id` NOT NULL → `partners`, `name` varchar(100), `description`, `sort_order`,
-`is_active` (archive, never hard-delete once referenced), `is_default`, timestamps.
-`UNIQUE (partner_id, lower(name))`; `UNIQUE (id, partner_id)` (composite-FK target);
-partial unique `(partner_id) WHERE is_default AND is_active`.
-Policy: `breeze_has_partner_access(partner_id)`, ENABLE + FORCE, in the creating migration.
-Register in `PARTNER_TENANT_TABLES`.
+**`work_types`** — `id`, `partner_id`, `name`, `sort_order`, `is_active`, timestamps.
+`UNIQUE (partner_id, lower(name))`, `UNIQUE (id, partner_id)`.
 
-### 4.3 `billing_profiles` — shape 3
+**`billing_profiles`** — `id`, `partner_id`, `name`, `notes`, `currency_code` →
+`supported_currencies` (immutable once any row has a rate), `is_default`, `is_active`,
+`rounding_increment_minutes` (NULL or 1–480), and the base row inline:
+`base_coverage` NOT NULL, `base_hourly_rate`, `base_minimum_minutes`.
+`UNIQUE (partner_id, lower(name))`, `UNIQUE (id, partner_id)`, partial unique
+`(partner_id, currency_code) WHERE is_default AND is_active`. The base row is columns, not
+a NULL-work-type row, so "every profile answers" is a NOT NULL, not a convention.
 
-`id`, `partner_id` NOT NULL, `name`, `description` (internal), `currency_code` char(3) NOT
-NULL → `supported_currencies`, `is_default`, `is_active`, `created_by`, timestamps.
-`UNIQUE (partner_id, lower(name))`; `UNIQUE (id, partner_id)`; partial unique
-`(partner_id, currency_code) WHERE is_default AND is_active`. `currency_code` is immutable
-once the profile has a rule with a rate (same lock idea as a document with a monetary line).
+**`billing_profile_rules`** — `id`, `partner_id`, `billing_profile_id`, `work_type_id`,
+`coverage`, `hourly_rate`, `minimum_minutes`, `notes`.
+`UNIQUE (billing_profile_id, work_type_id)`; CHECK coverage in the three values; CHECK a
+rate or minimum only on a `billable` row. Composite FKs
+`(billing_profile_id, partner_id) → billing_profiles ON DELETE CASCADE` and
+`(work_type_id, partner_id) → work_types` — FK checks bypass RLS, so same-partner
+integrity has to be structural.
 
-### 4.4 `billing_profile_rules` — shape 3, owner column copied
+**`org_billing_profile_assignments`** — `id`, `org_id` **UNIQUE**, `partner_id`,
+`billing_profile_id`, `assigned_by`, timestamps.
+`(org_id, partner_id) → organizations(id, partner_id)` **DEFERRABLE INITIALLY IMMEDIATE**
+(org-merge contract); `(billing_profile_id, partner_id) → billing_profiles`.
+Plain partner-axis policy with the org axis applied app-layer (`orgAxisSql` /
+`entryOrgAllowed`), exactly as `time_entries` does it. *Not* `partner AND
+breeze_has_org_access(org_id)`: accessible-org ids exclude suspended and archived orgs even
+for `orgAccess = 'all'` (`middleware/auth.ts:410-420`), so those assignments would vanish.
+A table rather than a column on `org_ticket_settings` because that row is org-token-
+readable, has no `partner_id` to hang a composite FK on, and — the point of this rewrite —
+is exactly the row pricing is being moved *out* of.
 
-`id`, `partner_id` NOT NULL, `billing_profile_id`, `work_type_id`, `coverage` varchar(16)
-CHECK `IN ('included','billable')`, `hourly_rate` numeric(10,2) NULL (for an `included` rule
-this is the nominal value rate, stamped to `included_value_rate`), `minimum_minutes` int
-NULL CHECK `> 0`, `rounding_increment_minutes` int NULL CHECK `BETWEEN 1 AND 480`, `notes`,
-timestamps. `UNIQUE (billing_profile_id, work_type_id)`.
-CHECK `coverage = 'billable' OR (minimum_minutes IS NULL AND rounding_increment_minutes IS NULL)`.
-Composite FKs `(billing_profile_id, partner_id) → billing_profiles(id, partner_id) ON
-DELETE CASCADE` and `(work_type_id, partner_id) → work_types(id, partner_id)` (NO ACTION) —
-a rule can never join a profile and a work type from different partners. FK checks bypass
-RLS, so this must be structural, not app-layer.
+### 4.3 Columns on existing tables
 
-### 4.5 `org_billing_profile_assignments` — shape 3 with a denormalized `org_id`
+`time_entries` (+7, all nullable or defaulted, no table rewrite): `work_type_id`,
+`billing_profile_id` (composite `(…, partner_id)` FKs), `coverage`, `billing_overridden`
+boolean NOT NULL DEFAULT false, `minimum_minutes`, `rounding_increment_minutes`,
+`billable_minutes` + the §3.5 CHECK (`NOT VALID`, then validated — every existing row is
+NULL). `ticket_categories`: `default_work_type_id` (composite FK). Six columns leave
+(§3.6) one release after the cut-over.
 
-`id`, `org_id` NOT NULL **UNIQUE**, `partner_id` NOT NULL, `billing_profile_id` NOT NULL,
-`assigned_by`, timestamps.
-
-- `(org_id, partner_id) → organizations(id, partner_id)` — **`DEFERRABLE INITIALLY
-  IMMEDIATE`** (org-merge contract; mirrors `time_entries_org_partner_fk`).
-- `(billing_profile_id, partner_id) → billing_profiles(id, partner_id)` (NO ACTION — a
-  profile in use is archived, not deleted).
-- Policy: plain `breeze_has_partner_access(partner_id)` — exactly how `time_entries` solves
-  the same problem. The org axis is applied **app-layer** (`orgAxisSql` /
-  `entryOrgAllowed`, `timeEntryService.ts:718-733`) so a `selected`-org partner user never
-  sees an ungranted org's assignment. The first draft used a conjunctive
-  `partner AND breeze_has_org_access(org_id)` policy; rejected because
-  `breeze.accessible_org_ids` is built with `status IN ('active','trial') AND deleted_at IS
-  NULL` even for `orgAccess = 'all'` (`middleware/auth.ts:410-420`), so the assignment of
-  every suspended or archived org would silently vanish — "Used by N orgs" undercounts and
-  a request-context UPDATE matches zero rows — while that org's `time_entries` stay visible.
-  An org token still cannot read or write the table: it fails the partner predicate.
-
-**Why a table and not `org_ticket_settings.billing_profile_id`** (Open Decision 6).
-(i) `org_ticket_settings` is org-axis and org-token-readable; an MSP's commercial terms do
-not belong on a row the customer's own token can reach. (ii) FK checks bypass RLS, so
-same-partner integrity has to be structural; this table gets it from two composite FKs,
-whereas `org_ticket_settings` has no `partner_id` to build one on. (iii) Effective-dated
-assignment ("Bronze → Silver on 1 October") becomes additive later: relax the unique to
-`(org_id, effective_from)`.
-
-### 4.6 New columns on existing tables
-
-`time_entries`: `work_type_id`, `billing_profile_id` (both with composite
-`(…, partner_id)` FKs to their shape-3 parents, NO ACTION), `rate_source` varchar(24) CHECK
-`IN ('manual','profile','default_profile','org_default','category_default','none')`
-(NULL = pre-feature row), `coverage` varchar(16) CHECK `IN ('included','billable')`,
-`included_value_rate` numeric(10,2), `minimum_minutes`, `rounding_increment_minutes`,
-`billable_minutes` int + the §3.6 CHECK (added `NOT VALID` then validated; every existing
-row is `NULL` and passes). All nullable, no default, so **no table rewrite**. CHECK
-`included_value_rate IS NULL OR coverage = 'included'`. Indexes on
-`(partner_id, work_type_id)` and `(billing_profile_id)`. No backfill — old rows stay NULL
-and read as "legacy".
-
-`ticket_categories`: `default_work_type_id` with a composite `(…, partner_id)` FK.
-
-### 4.7 Registration lists
+### 4.4 Registration lists
 
 | List | Owes |
 |---|---|
-| `PARTNER_TENANT_TABLES` (`rls-coverage.integration.test.ts`) | all four new tables |
-| `ORG_AXIS_POLICY_EXCLUDED_TABLES` (same file, `:124`) | `org_billing_profile_assignments` — it carries `org_id` under a partner-axis policy, the "dual-list trap" the file's own comments name; `time_entries` is the precedent |
-| `CORE_ORG_CASCADE_DELETE_ORDER` (`tenantCascade.ts`) | `org_billing_profile_assignments` (alphabetical; it is an FK *child* of `organizations` only) |
-| `CORE_TENANT_EXPORT_POLICY` | the new assignment table **and the eight new `time_entries` columns** (`ADD COLUMN` on a registered table fires this). All `included`; no jsonb anywhere in this design. Partner-axis tables with no `org_id` need no entry |
-| Audit log | work type, profile, rule and assignment mutations each record an audit event with before / after values. Stamping makes "what did the card say on 3 March" answerable **only** if rule edits are recorded — this is what an MSP is asked to prove in a billing dispute |
-| `orgMergeRegistry.ts` | `org_billing_profile_assignments: { kind: 'keep-survivor' }` — same as `org_ticket_settings` (unique `org_id`) |
-| `TICKET_ORG_DENORMALIZED_TABLES` / `CUSTOM_ORG_REWRITE_TABLES` | nothing new — `time_entries` is already there; the new columns are partner-keyed and survive an org move. The stamp is **not** re-resolved by an org move (snapshot rule, same as currency) |
-| Device cascade lists | n/a (no `device_id`) |
-| Partner erasure | **not-checked.** `tenantCascade.ts` exports no partner-level list; `time_entries` and `ticket_categories` now reference `work_types` / `billing_profiles` with NO ACTION FKs, so the plan must find where `ticket_categories` is removed on partner deletion and order the new tables after their referrers |
-
-### 4.8 Migrations
-
-DDL only, idempotent, no row writes (so no `breeze.scope` election is needed) and **no
-seeding in SQL** — the standard five work types come from an explicit "Add standard work
-types" button (`POST /work-types/seed-standard`). Filenames must sort after the newest
-committed migration at authoring time (`2026-10-17-140000-…` as of this spec).
+| `PARTNER_TENANT_TABLES` | all four tables |
+| `ORG_AXIS_POLICY_EXCLUDED_TABLES` (`rls-coverage…:124`) | `org_billing_profile_assignments` — `org_id` under a partner-axis policy, the file's own "dual-list trap"; `time_entries` is the precedent |
+| `CORE_ORG_CASCADE_DELETE_ORDER` | `org_billing_profile_assignments` |
+| `CORE_TENANT_EXPORT_POLICY` | the assignment table, the seven new `time_entries` columns (`ADD COLUMN` fires this), and later the removal of the six dropped columns. All `included`; no jsonb in this design |
+| `orgMergeRegistry.ts` | `org_billing_profile_assignments: { kind: 'keep-survivor' }` (unique `org_id`, like `org_ticket_settings`) |
+| Ticket / device org-move lists | nothing — `time_entries` is already registered; the stamp is not re-priced by an org move (snapshot rule, same as currency) |
+| Audit log | work type, profile, row and assignment mutations record before / after. Stamping makes "what did the card say on 3 March" answerable only if card edits are recorded |
+| Partner erasure | **not-checked** — `tenantCascade.ts` has no partner-level list; the plan finds where `ticket_categories` is removed and orders the new NO ACTION FKs after their referrers |
 
 ## 5. Cross-spec contracts
 
-- **Block hours (#4547, approved, not yet planned).** Two amendments, cheap now:
-  (a) `contract` is **terminal only when `contract_line_id IS NOT NULL`** (absorbed by a
-  block at close). A profile-included entry (`contract_line_id IS NULL`) stays editable by a
-  billing manager — flipping it to `not_billed` is how out-of-scope work gets billed.
-  (b) Drawdown reads `COALESCE(billable_minutes, duration_minutes)`, so a one-hour minimum
-  draws one hour.
-  (c) **Asserted here, say if wrong:** for an org with both an hour block and an `included`
-  rule, included hours **do not draw the block** — they are born `contract`, so they never
-  meet block eligibility (`is_billable AND not_billed`). "Included" means covered by the
-  flat fee; the block absorbs only work the card prices. The portal shows both as covered.
-  (d) (a) reopens the very flip block hours closed, so the `billingStatus` gate in §3.7 is
-  load-bearing. Hand-set `contract` entries (`rate_source` NULL) stay ungated, as today.
-  These amendments live only in this document until the block-hours spec on
-  `spec/4547-block-hours` is amended — a named next step at approval, not an assumption.
-  Per-work-type blocks remain out of scope there and here.
-- **Multi-currency.** Match-or-skip at profile level; all arithmetic via
-  `multiplyToCurrency` / `toCents`; snapshots never restamped. **Org currency change:** the
-  readiness report (`orgCurrencyService.ts:212-258`) gains a line when the org's assigned
-  profile will stop matching — after the change the assignment is skipped and bannered until
-  a profile in the new currency is assigned. Included entries carry no `hourly_rate`, so
-  they strand no billable money; value reporting groups by the entry's `currency_code`.
-- **Business reports (#3198).** R2 gains a `work type` group-by and a `billing profile`
-  filter; "included minutes" becomes a first-class column. Its spec anticipated neither —
-  a note goes on #3198 at registration. No cost-rate work here.
-- **Agreements IA.** No "agreement" wording anywhere in this feature. UI noun: **Billing
-  profile**; "rate card" appears only as helper text.
+- **Block hours (#4547, approved, unplanned)** — two amendments: (a) `contract` is
+  terminal only when `contract_line_id IS NOT NULL`; a card-included entry stays editable by
+  a billing manager, which is how out-of-scope work gets billed. (b) Drawdown reads
+  `COALESCE(billable_minutes, duration_minutes)`. And one assertion to confirm: included
+  hours **do not draw a block** — they are born `contract`, so they never meet block
+  eligibility; "included" means covered by the flat fee. These live only here until the
+  block-hours spec on `spec/4547-block-hours` is amended — a named step at approval.
+- **Multi-currency** — match-or-skip per card; arithmetic via `multiplyToCurrency` /
+  `toCents`; snapshots never restamped.
+- **Business reports (#3198)** — R2 gains a work-type group-by and an included-minutes
+  column; note goes on #3198 at registration.
+- **Vocabulary** — never "agreement". UI noun: **Rates** (the screen), **billing profile**
+  (a card).
 
 ## 6. API surface
 
-All routes partner-scope only (`requireScope('partner','system')`), `authMiddleware` first.
+Partner scope only; `authMiddleware` first.
 
-- `routes/workTypes.ts` — `GET/POST /work-types`, `PATCH/DELETE /work-types/:id` (delete =
-  archive when referenced), `POST /work-types/seed-standard`. Permission: same as ticket
-  categories (`tickets:read` / `tickets:write`).
-- `routes/billingProfiles.ts` — CRUD, `PUT /billing-profiles/:id/rules` (whole-grid upsert
-  in one transaction), `POST /billing-profiles/:id/clone`, `GET
-  /billing-profiles/:id/organizations`. New permissions `billing_profiles:read|write`.
-  (`billing:manage` exists; the plan confirms what it gates today before reusing it.)
-- Org: `GET/PUT/DELETE /organizations/:orgId/billing-profile`, `GET
-  /organizations/:orgId/billing-profile/effective-rates` (the resolver run per active work
-  type, with the winning source per row).
-- Time entries: `workTypeId` on create / start / stop / update; `resetBilling` on update;
-  `minimumMinutes` / `roundingIncrementMinutes` on update (gated);
-  `GET /tickets/:id/time-entry-defaults?workTypeId=` returns the full resolved rule and
-  **stays on `time_entries:read`** — putting it behind `billing_profiles:read` would break
-  the technician's picker.
-- AI / MCP: the time tools accept `workType` (id or name) and a read-only
-  `list_work_types`; a tool is never weaker than its route (#6096 / #6110 rule), and the
-  service-level `manageBilling` gate (§3.7) covers the tool path by construction. No AI
-  write access to profiles or assignments in this feature.
+- `routes/billingProfiles.ts` — work types and profiles together, because they are one
+  screen: `GET/POST/PATCH/DELETE /work-types`; profile CRUD; `PUT
+  /billing-profiles/:id/rows` (whole card, one transaction); `POST …/:id/clone`.
+  Permissions `billing_profiles:read|write`.
+- `GET/PUT/DELETE /organizations/:orgId/billing-profile`.
+- Time entries: `workTypeId` on create / start / update; `minimumMinutes` and
+  `resetBilling` on update (gated). `GET /tickets/:id/time-entry-defaults?workTypeId=`
+  returns the resolved row and **stays on `time_entries:read`**.
+- Category and org-ticket-settings APIs stop accepting the six removed fields (ignored with
+  a deprecation warning for one release, then rejected).
+- AI / MCP: time tools accept `workType` (id or name); read-only `list_work_types`. The
+  service-level gate covers the tool path by construction. No AI writes to cards.
 
-## 7. Web UI
+## 7. Web UI — one screen
 
-- **Settings → Ticketing → Work types** tab (`TicketingSettingsTabs`): list, reorder,
-  default, archive, "Add standard work types". Category editor gains "Default work type".
-- **Settings → Billing → Billing profiles**: list (currency, Default badge, "Used by N
-  orgs") and a grid editor — rows = active work types; columns = Coverage, Rate, Minimum,
-  Round up to, Notes; an empty row reads "falls through to …". Clone. Tab state in
-  `location.hash`.
-- **Org record → Billing tab** (`OrgBillingTab.tsx`): profile selector, the effective-rates
-  table with source chips, a banner when the blanket default rate shadows the default
-  profile or the assigned profile's currency no longer matches.
-- **`TicketTimeBilling`**: work type select first; a live hint from the defaults endpoint;
-  rate input read-only without `time_entries:manage_billing` on a governed entry. Feed
-  comment says `(included)` / `(billable)`.
-- **`TimerWidget`** (work type at start; "change work type" is a PATCH, running or
-  stopped), **`TimesheetPage`** (column + edit), billables
-  list (source chip, "min applied" marker).
-- All mutations via `runAction`; new i18n keys need real translations in every locale.
-- Mobile and the office add-in get pickers in the last wave; until then the server-side
-  default chain covers them.
+**Settings → Billing → Rates.** The issue's own table, literally: **rows are billing
+profiles, columns are work types**, plus an "All other work" column. A cell reads `$150`,
+`Included`, `Non-billable` or `$225 · 1 h min`; click to edit. Column header menu: rename /
+archive / add work type. Row menu: clone, set default, archive, "used by N orgs". Rounding
+and currency sit on the row. Work types are *not* a second tab under Ticketing.
+
+Everything else shrinks or stays put:
+
+- **Org billing settings** (`OrgBillingSettings`, beside currency): one "Billing profile"
+  select showing the resolved card, read-only rates underneath, a banner on currency
+  mismatch. This is the only place an assignment is edited.
+- **Category editor**: three pricing fields out, one "Default work type" select in.
+- **Org ticket-settings editor**: billing section deleted; SLA only.
+- **Ticket quick-add / timer / timesheet**: a work-type select; a one-line outcome
+  ("Included in Silver", "$225/h · 1 h minimum"); the rate input is read-only without
+  `manage_billing`.
+- Mutations through `runAction`; new i18n keys translated in every locale; mobile and the
+  add-in get pickers in the last wave (the base row covers them until then).
 
 ## 8. Out of scope
 
-- **Fixed surcharge / call-out fee** (Open Decision 5) — a per-entry surcharge
-  double-charges a visit logged as two entries; `ticket_parts` already bills a call-out
-  once as a catalog item.
-- Effective-dated / scheduled assignment; contract-linked profiles; per-site profiles.
-- Per-work-type hour blocks (block hours punts on it too).
-- Auto-selecting After-hours / Emergency from the clock and org business hours.
-- Work type → catalog item / QuickBooks service item / tax category mapping.
-- Bulk "re-rate unbilled entries" tool (per-entry `resetBilling` only).
-- Cost rates and margin by work type; hiding rates from technicians entirely;
-  showing included work as $0 lines on invoices (the portal already shows covered hours).
-- Migrating existing category / org default rates into profiles.
+Fixed surcharge / call-out fee (a per-entry surcharge double-charges a split visit; ticket
+parts already bill a call-out once) · effective-dated or contract-linked assignment ·
+per-site profiles · per-work-type hour blocks · auto-selecting After-hours from the clock ·
+work type → catalog / QuickBooks item mapping · bulk re-rate tool · cost rates and margin ·
+hiding rates from technicians · $0 "included" lines on invoices · valuing included work.
+
+A wider billing + ticketing **settings consolidation** (partner billing defaults, org
+billing, ticketing tabs) is worth its own audit; this spec only guarantees it does not add
+to the pile and removes six fields from it.
 
 ## 9. Test and rollout notes
 
-- **Resolver**: table-driven unit suite over the §3.4 matrix — every source, currency
-  skip at each profile step, no work type, no org, sparse profile, inactive profile.
-- **Stamp immunity** (integration, real Postgres): create entry → edit rule, archive
-  profile, reassign org → entry unchanged; `resetBilling` re-resolves; billed entry locked.
-- **Tenancy**: `billingProfilesPartnerRls.integration.test.ts` — cross-partner forge 42501
-  on all four tables; composite-FK 23503 for a rule / assignment / entry joining two
-  partners; **org-scoped token cannot read or write the assignment table**; a `selected`-org
-  partner user cannot see an ungranted org's assignment (app-layer); the assignment of a
-  **suspended** org stays readable and writable by its partner. Then verify by hand as
-  `breeze_app`.
-- **Contracts**: `rls-coverage`, `tenantCascade`, both export-policy suites,
-  `orgLifecycleFoundations` (merge contract — deferrable FK), org-merge keep-survivor.
-  None run under `pnpm test`; `pnpm test-stack up` first.
-- **`billable_minutes`**: property test that `computeBillableMinutes` and the SQL fragment
-  agree over a grid of (duration, minimum, increment); an integration test that a
-  hand-written wrong value violates the CHECK; stop-via-CAS and stop-via-PATCH (the mobile
-  path) both land the right number.
-- **Money readers**: included entries carry `hourly_rate = NULL`, so
-  `getTicketBillingSummary`, `listBillables`, the billing CSV and the timesheet loop stay
-  correct untouched — assert it with an included entry in each suite rather than trusting
-  the construction. `includedMinutes` is new on the summary.
-- **Override gate**: enforced through the service for the REST route, the AI tool
-  (`aiToolsTicketing`), the office add-in and `intentReleaseWorker`; numeric-normalised
-  echo (`'225'` vs `'225.00'`).
-- **Invoice assembly**: minimum and rounding cases; description suffix; `missingRate` for
-  a rate-less billable rule.
-- **Rollout**: no flag. Zero work types = today's behaviour byte-for-byte; the override
-  gate only binds entries governed by a card.
-- **Suggested waves** (the plan finalises): **W01** work types + `work_type_id` + web
-  pickers + AI param (delivers #4615's taxonomy; rates untouched) · **W02** profiles, rules,
-  assignment, resolver, stamping (`coverage`, `included_value_rate`), included → `contract`,
-  `includedMinutes`, org preview, service-level override gate, config audit events ·
-  **W03** minimum / rounding, `billable_minutes`, money + portal readers, invoice lines · **W04**
-  mobile + office add-in pickers, report / CSV dimensions, docs.
+- **Conversion parity** (integration, real Postgres) — the gate for the cut-over. Seed
+  partners covering every legacy shape (category rate / non-billable category / org rate /
+  org billable-only / wrong-currency org rate / wrong-currency category rate / nothing).
+  For every (org, category ∪ none) pair assert legacy-resolver output == new-resolver
+  output after conversion, with the single §3.6 exception asserted explicitly. The legacy
+  resolver survives as a test-only fixture. Re-running the migration is a no-op.
+- **Resolver** — table-driven: assigned / default / none, currency skip, work-type row vs
+  base row, inactive card, no work type, no org.
+- **Stamp immunity** — edit a row, archive a card, reassign the org → entry unchanged;
+  `resetBilling` re-prices; billed entry locked.
+- **Tenancy** — `billingProfilesPartnerRls.integration.test.ts`: cross-partner forge 42501
+  on all four tables; composite-FK 23503 joining two partners; org token cannot read or
+  write assignments; `selected`-org partner user cannot see an ungranted org's assignment;
+  a **suspended** org's assignment stays readable. Then by hand as `breeze_app`.
+- **Contracts** — `rls-coverage`, `tenantCascade`, both export-policy suites,
+  `orgLifecycleFoundations` (deferrable FK), org-merge keep-survivor. `pnpm test-stack up`.
+- **`billable_minutes`** — TS function and SQL fragment agree over a grid; a wrong
+  hand-written value violates the CHECK; stop-via-CAS and stop-via-PATCH both land it.
+- **Money readers** — an included entry in each of the three summary suites; assert it
+  adds no money.
+- **Override gate** — through the REST route, the AI tool, the add-in and the worker;
+  numeric echo (`'225'` vs `'225.00'`).
+- **Waves** (the plan finalises): **W01** tables, API, work type on entries + pickers, AI
+  param — dark for pricing, delivers #4615's dimension · **W02 cut-over, one PR**: Rates
+  screen, org select, resolver switch, stamping, conversion migration + parity test,
+  override gate, legacy fields out of the UI and API · **W03** minimums / rounding,
+  `billable_minutes`, money + portal readers, invoice lines · **W04** mobile + add-in
+  pickers, report / CSV dimensions, docs, drop the six columns.
 
 ## 10. Open Decisions
 
-1. **Where does an org's existing blanket default rate sit?**
-   - **A — above the partner default profile**: no org is silently re-rated the day a
-     default profile appears; con: an org with a blanket rate ignores the standard card
-     until it is assigned a profile (the org page banners this).
-   - **B — below it**: one mental model ("cards win"); con: creating a default profile
-     re-prices every negotiated org at once.
-   **Recommend A** — rollout must never change what a customer is charged.
+Three are yours. The rest were settled by the quorum; say if you disagree.
 
-2. **How is "included" stored on the entry?**
-   - **A — `is_billable = true`, `billing_status = 'contract'`, `hourly_rate = NULL`,
-     nominal value in its own `included_value_rate`, `coverage` stamped**: reuses the enum
-     value that means exactly this and that the portal already renders; no money reader can
-     mis-count it. Con: needs the §5(a) terminality amendment to block hours.
-   - **B — `is_billable = false`**: simplest; con: indistinguishable from internal time
-     without reading `rate_source`, and utilization undercounts customer work.
-   - **C — new enum value `included`**: explicit; con: every `billing_status` switch,
-     validator, filter and report grows a case for a distinction `contract_line_id IS
-     NULL` already draws.
+1. **Clean cut or coexistence?**
+   - **A — convert and remove the old category / org rate fields in the cut-over wave**
+     (§3.6): one place, one rule; con: a row-writing migration on billing data, gated by
+     the parity test, and one behaviour difference (uncategorised + no defaults becomes
+     "billable, needs a rate" instead of silently non-billable).
+   - **B — keep the old fields as a fallback under the cards** (r1): no data migration;
+     con: five places, a six-step chain, and the retrofit later anyway.
    **Recommend A.**
 
-3. **Minimum billing: per entry or per visit?**
-   - **A — per entry**: deterministic, stamped, industry convention; con: a visit split
-     into two entries bills two minimums (approver clears one).
-   - **B — per ticket per day per work type**: matches "one visit"; con: needs an org
-     timezone, a cross-entry recompute on every edit / delete, and breaks stamp-once.
-   **Recommend A.**
+2. **The override permission now binds everyone.**
+   - **A — `time_entries:manage_billing` required to deviate from the card on any
+     org-linked entry; admins hold it via `*:*`, others by role edit**: con: technicians
+     who type rates today lose that on release day unless granted.
+   - **B — also push the grant to every existing role that has `time_entries:write`** (a
+     second row-writing migration): zero behaviour change on day one; con: the gate is
+     decorative until someone removes grants.
+   **Recommend A**, called out in the release notes.
 
-4. **Who may deviate from the card?**
-   - **A — new `time_entries:manage_billing`, service-enforced, binding only card-governed
-     entries; `isBillable` and `workTypeId` stay open**: the issue's "authorised override"
-     without changing anything for partners who never create a profile. Admins (`*:*`) hold
-     it on day one; other roles are granted it in the role editor (no data migration).
-   - **B — no gate in v1**: stamp `manual` and rely on approval review.
-   - **C — gate every entry for every partner**: consistent; con: behaviour change for all
-     existing technicians on release day.
-   **Recommend A.**
+3. **Confirm:** included hours do not draw down an hour block, and the two block-hours
+   amendments in §5 are acceptable.
 
-5. **Fixed surcharge / call-out fee in this feature?**
-   - **A — defer**; call-outs stay a ticket part (catalog item, billed once).
-   - **B — per-entry stamped surcharge, sibling invoice line**; con: double-charges split
-     visits, second money column to currency-guard.
-   **Recommend A.**
-
-6. **Org → profile assignment storage.**
-   - **A — new partner-axis `org_billing_profile_assignments`, one current row per org**:
-     DB-enforced same-partner integrity; commercial terms off the org-readable row; dating
-     additive later; con: one more table in five lists.
-   - **B — column on `org_ticket_settings`**: no new table; con: an MSP's rate-card choice
-     sits on an org-token-readable row, and same-partner integrity is app-layer only.
-   - **C — table with `effective_from` now**: scheduled package changes and back-dated
-     entries resolve correctly; con: more UI and resolver surface than anyone has asked for.
-   **Recommend A.**
+**Settled by quorum:** included = `contract` status, no rate, `coverage` stamped · minimum
+per entry, rounding per card · dedicated partner-axis assignment table · surcharge deferred
+· service-written `billable_minutes` + CHECK · timers priced at start.
 
 ## 11. Quorum record (2026-09-17)
 
-Seats: Fable (position formed and drafted first) and an **Opus** read-only reviewer that
-checked each claim against the code and the approved block-hours spec. The usual Codex
-`xhigh` seat was unavailable (usage cap until 2026-09-19 11:38); if Todd wants the Codex
-opinion as well, it is a re-run after that date, not a blocker. Load-bearing reviewer
-claims were re-read by the orchestrator before being folded in (D1, D2, D3, D5, D8).
+Seats: Fable (drafted first) and an **Opus** read-only reviewer that checked claims against
+the code and the block-hours spec; Codex `xhigh` unavailable (usage cap). The orchestrator
+re-read the load-bearing reviewer claims before adopting them.
 
-**Accepted — first-draft defects, now fixed in the text above**
+**r1 defects found by review, fixed:** a nominal rate in `hourly_rate` would have inflated
+three summaries with no status predicate · "portal sees nothing" was false
+(`supportUsage.ts`) · a conjunctive RLS policy hides suspended orgs' assignments · the RLS
+allowlist is `ORG_AXIS_POLICY_EXCLUDED_TABLES` · a generated column rewrites the table and
+is invisible to Drizzle and `check-drift` · a route-level gate is bypassed by the AI tool,
+add-in and worker · tenant role copies are not reconciled by the seed and "Partner Billing"
+holds no time-entry permissions · `stopRunningEntry` is a lock-free CAS and mobile stops
+are PATCHes · coverage must be stamped · included-vs-block interplay made explicit.
 
-1. *Nominal rate in `hourly_rate`.* "Every money reader skips `contract`" was false —
-   `getTicketBillingSummary`, `listBillables` / billing CSV and the timesheet loop have no
-   status predicate. → own column `included_value_rate`; `hourly_rate` NULL when included.
-2. *"Org / portal users see nothing."* The portal already reads `time_entries`
-   (`supportUsage.ts`) and shows `contract` hours; it also joins the §3.6 reader sweep.
-3. *Conjunctive RLS policy.* `breeze_has_org_access` excludes suspended / archived orgs
-   even for `orgAccess = 'all'` → assignments would vanish. → plain shape 3 + app-layer org
-   allowlist, the `time_entries` precedent.
-4. *RLS allowlist guess.* The mechanism is `ORG_AXIS_POLICY_EXCLUDED_TABLES`; now named.
-5. *Generated column.* Not the first in the DB, invisible to Drizzle, a full-table rewrite,
-   and `db:check-drift` cannot verify it. → service-written column + identical CHECK.
-6. *Route-level gate.* Bypassed by the AI tool, add-in and worker callers. → service-level
-   `manageBilling` on `TimeEntryActor`.
-7. *Role seeding.* Tenant role copies are not reconciled by the seed, and "Partner Billing"
-   has no time-entry permissions. → no data migration; admins pass via `*:*`.
-8. *Work type at stop.* `stopRunningEntry` is a lock-free CAS and mobile stops are PATCHes.
-   → resolve at start, re-resolve only in `updateTimeEntry`.
-9. *Coverage not stamped.* Inference from status breaks after an included → `not_billed`
-   flip and cannot separate three `contract` writers. → `coverage` column.
-10. *Included vs hour blocks* was asserted in a subordinate clause. → explicit §5(c)/(d),
-    plus the cross-branch risk that the block-hours spec does not yet carry the amendments.
+**Reviewer points not adopted:** gating `workTypeId` edits (defeated by delete-and-
+recreate; approval is the control); forcing `is_billable` when an org default rate wins
+(moot in r2 — a row now carries coverage and rate together, which removes the incoherence
+the reviewer identified at its root).
 
-Also accepted: numeric-normalised echo comparison; audit events for config edits; the
-defaults endpoint stays on `time_entries:read`; org-currency-change interplay; explicit
-"do not add to `DUAL_AXIS_TENANT_TABLES` / `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`".
-
-**Disagreements, resolved on the merits**
-
-- *Reviewer: gate `workTypeId` changes on card-governed entries (it is the largest price
-  lever).* **Not adopted.** Creation is open, so an edit gate is defeated by
-  delete-and-recreate; a work-type change only ever lands on another *card* price; and
-  "what work was this" is the technician's call by the feature's own principle. The control
-  is approval: every edit clears it, and the queue shows work type, coverage and source.
-  If Todd wants it tighter, the lever is approval policy, not this gate (Open Decision 4).
-- *Reviewer: when the org blanket default wins the rate, force `is_billable = true`.*
-  **Not adopted.** It would start billing orgs configured `defaultBillable = false` with a
-  reporting rate. Legacy steps stay legacy (§3.4).
-
-**Agreement without argument:** Open Decisions 1, 3, 5 as recommended; 2, 4, 6 as
-recommended with the corrections above; partner-axis ownership (§4.1) — no org-scoped
-reader of rates exists, including org-scoped API keys.
+**r2 (consolidation)** was prompted by Todd, not by the quorum: both seats had accepted a
+six-step chain layered over the legacy fields. r2's conversion rules (§3.6) get a focused
+second review because they write billing data.
