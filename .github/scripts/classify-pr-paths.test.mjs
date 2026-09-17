@@ -94,7 +94,7 @@ test('classifier: app output — the CI-plumbing allowlist is app=false, everyth
 
 test('classifier: agent output — agent/** and the CI plumbing that gates it are agent=true, everything else agent=false', () => {
   for (const [paths, expected] of [
-    [['agent/internal/discovery/scanner.go'], 'agent=true'],
+    [['agent/internal/backup/client.go'], 'agent=true'],
     [['agent/go.mod'], 'agent=true'],
     [['.github/workflows/ci.yml'], 'agent=true'],
     [['.github/scripts/classify-pr-paths.sh'], 'agent=true'],
@@ -535,6 +535,8 @@ for (const path of [
   'scripts/release/verify-release-images.sh',
   // mobile-native-changes' paths-filter lists it to trigger the native iOS build.
   '.github/scripts/mobile-native-ci.test.mjs',
+  // its drift test (agent/cmd/breeze-backup/ci_gate_test.go) runs in test-agent.
+  '.github/scripts/qemu-gate-paths.txt',
 ]) {
   test(`classifier: ${path} is executed by a heavy job, so it is an app change`, () => {
     const r = classify([path]);
@@ -552,6 +554,7 @@ test('every explicit app=true carve-out in the classifier is still referenced by
     '.github/scripts/classify-pr-paths.sh',
     '.github/scripts/prepare-ci-apt-sources.mjs',
     '.github/scripts/mobile-native-ci.test.mjs',
+    '.github/scripts/qemu-gate-paths.txt',
     'scripts/security/check-agent-binary-signatures.sh',
     'scripts/release/verify-release-images.sh',
   ]) {
@@ -568,4 +571,74 @@ test('the tooling-only path still validates workflow files: lint runs the workfl
   const lint = job('lint');
   assert.match(lint, /^    if: needs\.changes\.outputs\.code == 'true'$/m);
   assert.match(lint, /run: pnpm test:workflow-security$/m);
+});
+
+// ---- QEMU gate narrowed to the backup/recovery dependency set --------------
+// The Recovery media E2E job builds exactly two Go commands (breeze-backup and
+// breeze-recovery-fakeserver) and the recovery-media/ scripts. Only the
+// packages those commands import can change its outcome. The set is pinned in
+// qemu-gate-paths.txt (the classifier runs in a sparse checkout with no Go
+// toolchain, so it cannot compute it) and agent/cmd/breeze-backup/ci_gate_test.go
+// recomputes it with `go list -deps` and fails when the pinned file drifts.
+const qemuGatePaths = readFileSync(new URL('./qemu-gate-paths.txt', import.meta.url), 'utf8')
+  .split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+
+test('qemu gate list: non-empty, repo-relative agent paths, directories end with /', () => {
+  assert.ok(qemuGatePaths.length >= 10, 'suspiciously short gate list');
+  for (const p of qemuGatePaths) {
+    assert.match(p, /^agent\/[A-Za-z0-9_./-]+$/, p);
+    assert.ok(!p.includes('..'), p);
+  }
+  for (const must of ['agent/cmd/breeze-backup/', 'agent/cmd/breeze-recovery-fakeserver/', 'agent/internal/backup/', 'agent/internal/recoveryconsole/', 'agent/recovery-media/', 'agent/go.mod', 'agent/go.sum']) {
+    assert.ok(qemuGatePaths.includes(must), `gate list must contain ${must}`);
+  }
+});
+
+test('classifier: agent output follows the pinned QEMU dependency set, not all of agent/', () => {
+  for (const [paths, expected] of [
+    [['agent/internal/backup/client.go'], 'agent=true'],
+    [['agent/cmd/breeze-backup/main.go'], 'agent=true'],
+    [['agent/internal/recoveryconsole/console.go'], 'agent=true'],
+    [['agent/recovery-media/build.sh'], 'agent=true'],
+    [['agent/recovery-media/e2e/run-qemu.sh'], 'agent=true'],
+    [['agent/go.sum'], 'agent=true'],
+    [['agent/go.mod'], 'agent=true'],
+    // Nested under a gated directory still counts.
+    [['agent/internal/backup/sub/deep.go'], 'agent=true'],
+    // Agent code the recovery media never links: SNMP, heartbeat, remote desktop, PAM.
+    [['agent/internal/snmppoll/poller.go'], 'agent=false'],
+    [['agent/internal/heartbeat/heartbeat.go'], 'agent=false'],
+    [['agent/internal/remote/session.go'], 'agent=false'],
+    [['agent/cmd/breeze-agent/main.go'], 'agent=false'],
+    [['agent/Makefile'], 'agent=false'],
+    // A prefix that merely LOOKS like a gated dir must not match.
+    [['agent/internal/backupipc-extra/x.go'], 'agent=false'],
+    [['agent/internal/backup2/x.go'], 'agent=false'],
+    // The list itself is CI plumbing for this gate.
+    [['.github/scripts/qemu-gate-paths.txt'], 'agent=true'],
+  ]) {
+    const r = classify(paths);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`^${expected}$`, 'm'), `${paths.join(',')} → ${r.stdout}`);
+  }
+});
+
+test('classifier: a missing or empty QEMU gate list fails closed to agent=true', () => {
+  const script = readFileSync(new URL('./classify-pr-paths.sh', import.meta.url), 'utf8');
+  const dir = mkdtempSync(join(tmpdir(), 'qemu-gate-'));
+  const copy = join(dir, 'classify-pr-paths.sh');
+  writeFileSync(copy, script);
+  // Without the list, ANY agent/ path must run the job — including one that the
+  // pinned list would have excluded. A non-agent path is still agent=false: it
+  // never could have affected the job, list or no list.
+  const snmp = spawnSync('bash', [copy], { encoding: 'utf8', input: 'agent/internal/snmppoll/poller.go\n' });
+  assert.equal(snmp.status, 0, snmp.stderr);
+  assert.match(snmp.stdout, /^agent=true$/m, 'no gate list: every agent/ change must run the job');
+  assert.match(snmp.stderr, /qemu-gate-paths/);
+  const web = spawnSync('bash', [copy], { encoding: 'utf8', input: 'apps/web/src/x.ts\n' });
+  assert.match(web.stdout, /^agent=false$/m);
+  // An empty list (comments only) is the same as a missing one.
+  writeFileSync(join(dir, 'qemu-gate-paths.txt'), '# nothing pinned\n');
+  const empty = spawnSync('bash', [copy], { encoding: 'utf8', input: 'agent/internal/snmppoll/poller.go\n' });
+  assert.match(empty.stdout, /^agent=true$/m, 'empty gate list must fail closed');
 });

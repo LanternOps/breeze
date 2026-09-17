@@ -1928,10 +1928,17 @@ jobs:
   recovery-media-e2e:
     name: Recovery media E2E (QEMU)
     needs: [changes]
-    # Only exercises agent/** (see the Toolchain/Build/Seed steps below), so it
-    # additionally requires the classifier's `agent` output — a web-only or
-    # api-only PR skips this ~35-40 min job entirely. Fail-closed: `agent` is
-    # `true` on an empty/unresolvable classification (see classify-pr-paths.sh).
+    # Builds exactly two Go commands (breeze-backup, breeze-recovery-fakeserver)
+    # plus recovery-media/, so it additionally requires the classifier's `agent`
+    # output — true only when a changed path is in the pinned dependency set,
+    # .github/scripts/qemu-gate-paths.txt (those commands' transitive
+    # module-internal imports: 13 of the module's 60+ dirs, plus go.mod/go.sum
+    # and recovery-media/), or in the CI plumbing that decides this gate. A
+    # change to the SNMP poller or remote desktop does not spend ~40 min here;
+    # a change to internal/backup or internal/securefs does.
+    # agent/cmd/breeze-backup/ci_gate_test.go fails when that list drifts from
+    # `go list -deps`. Fail-closed: `agent` is `true` on an empty/unresolvable
+    # classification, and on a missing or empty gate list for ANY agent/ path.
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.agent == 'true'
     runs-on: ubuntu-latest
     # ~7 min ISO build + up to 40 min QEMU rebuild cycle (see run-qemu.sh).
