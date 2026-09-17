@@ -32,7 +32,6 @@ export interface QuoteEmailParams {
 export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
   const number = params.quoteNumber.trim();
   const pdfAttached = params.pdfAttached ?? true;
-  const introSuffix = pdfAttached ? ' A PDF copy is attached.' : '';
   const note = params.message?.trim();
   const signature = params.signature?.trim();
   const pdfBlock = pdfAttached
@@ -76,7 +75,7 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
   const support = getSupportEmail(params.supportEmail);
   const text = [
     'Hi there,',
-    `${params.partnerName} has sent you proposal ${number} for ${params.total}.${introSuffix}`,
+    `${params.partnerName} has sent you proposal ${number} for ${params.total}.${pdfAttached ? ' A PDF copy is attached.' : ''}`,
     note || null,
     `Review & accept: ${params.acceptUrl}`,
     params.expiryDate ? `Valid until ${params.expiryDate}.` : null,

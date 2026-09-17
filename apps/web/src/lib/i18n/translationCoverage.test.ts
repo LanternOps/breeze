@@ -142,7 +142,8 @@ const namespaceDuplicateBaselines = {
     // +2 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
     // ("Sandbox") and .script ("Script") — both are the standard loanwords in
     // pt-BR, and translating them would read as invented jargon.
-    'settings.json': 126,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in pt-BR.
+    'settings.json': 127,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -272,7 +273,8 @@ const namespaceDuplicateBaselines = {
     // +1 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.script
     // — "Script" is the standard loanword in es-419. (`status` is translated
     // here as "Entorno aislado" and is NOT a duplicate.)
-    'settings.json': 128,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in es-419.
+    'settings.json': 129,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -426,7 +428,8 @@ const namespaceDuplicateBaselines = {
     // "Script" is the loanword in French (same acceptance as scriptRejected).
     // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
     // — "Modules" spells identically in French.
-    'settings.json': 175,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in French.
+    'settings.json': 176,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -576,7 +579,8 @@ const namespaceDuplicateBaselines = {
     // "Script" is the loanword in Canadian French too.
     // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
     // — "Modules" spells identically in Canadian French too.
-    'settings.json': 181,
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in Canadian French.
+    'settings.json': 182,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
