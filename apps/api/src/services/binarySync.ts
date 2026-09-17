@@ -92,9 +92,17 @@ const RELEASE_FETCH_TIMEOUT_MS = 30_000;
 //   - `POST /agent-versions/sync-github` is registered in
 //     `SELF_MANAGED_DB_CONTEXT_ROUTES` so `authMiddleware` doesn't open one
 //     either.
-// `withSystemDbAccessContext` reuses an already-open ambient context rather
-// than nesting (see `withDbAccessContext`'s early-return), so this is also
-// safe for any future caller that still wraps a call in its own context.
+// CAUTION for the next caller: `withSystemDbAccessContext` reuses whatever
+// ambient context is ALREADY open rather than nesting (`withDbAccessContext`
+// early-returns on any live store — it does not check the store is
+// system-scoped). So a future caller that wraps one of these functions in its
+// OWN context — even a narrower one — makes the write silently run at that
+// caller's scope instead of escalating to system, and re-pins a pooled
+// connection across the network round-trip, reintroducing the #6098 hazard
+// this file fixes. Neither live caller does this today (both boot and
+// POST /agent-versions/sync-github are contextless), but don't add one that
+// does; see persistAuditLog's `runOutsideDbContext` pairing in
+// services/auditService.ts for the pattern that actually forces escalation.
 
 /**
  * Render an outbound-fetch failure for an operator.
