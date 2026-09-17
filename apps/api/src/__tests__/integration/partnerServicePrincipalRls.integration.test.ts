@@ -17,6 +17,7 @@ import {
 } from '../../db';
 import { partnerServicePrincipalKeys, partnerServicePrincipals } from '../../db/schema';
 import { createPartner, createUser } from './db-utils';
+import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -28,10 +29,7 @@ const SCOPE_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-10-08-101600-enrollment-keys-scope.sql',
 );
-const CONTRACT_SCOPE_MIGRATION_FILE = join(
-  __dirname,
-  '../../../migrations/2026-10-17-130000-partner-api-contract-scopes.sql',
-);
+const CONTRACT_SCOPE_MIGRATION = '2026-10-17-140100-partner-api-contract-scopes.sql';
 const READ_SCOPES = [
   'organizations:read',
   'sites:read',
@@ -139,14 +137,13 @@ describe('partner-service-principal database contract', () => {
     const adminDb = getTestDb();
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
     const scopeMigration = readFileSync(SCOPE_MIGRATION_FILE, 'utf8');
-    const contractScopeMigration = readFileSync(CONTRACT_SCOPE_MIGRATION_FILE, 'utf8');
 
     await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(adminDb.execute(sql.raw(scopeMigration))).resolves.toBeDefined();
     await expect(adminDb.execute(sql.raw(scopeMigration))).resolves.toBeDefined();
-    await expect(adminDb.execute(sql.raw(contractScopeMigration))).resolves.toBeDefined();
-    await expect(adminDb.execute(sql.raw(contractScopeMigration))).resolves.toBeDefined();
+    await expect(replayMigration(CONTRACT_SCOPE_MIGRATION)).resolves.toBeUndefined();
+    await expect(replayMigration(CONTRACT_SCOPE_MIGRATION)).resolves.toBeUndefined();
   });
 
   runDb('scope migration accepts enrollment-keys:write only with expiry and source CIDRs', async () => {

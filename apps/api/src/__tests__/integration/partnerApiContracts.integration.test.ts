@@ -1,8 +1,6 @@
 import './setup';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { Hono } from 'hono';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import type { Database } from '../../db';
 import {
@@ -26,14 +24,9 @@ vi.mock('../../config/env', async (importOriginal) => {
 });
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
-const SCOPE_MIGRATION_FILE = join(
-  __dirname,
-  '../../../migrations/2026-10-17-130000-partner-api-contract-scopes.sql',
-);
 
 describe('partner API contract writes', () => {
   runDb('mints a key, creates a contract, patches quantity, reads it back, and refuses a foreign org', async () => {
-    await applyContractScopeMigration();
     const partner = await createPartner();
     const user = await createUser({ partnerId: partner.id });
     const org = await createOrganization({ partnerId: partner.id });
@@ -118,8 +111,118 @@ describe('partner API contract writes', () => {
     expect((await foreign.json() as { code: string }).code).toBe('ORG_DENIED');
   });
 
+  runDb('refuses GET and PATCH of a contract in an org outside the principal set', async () => {
+    const partner = await createPartner();
+    const user = await createUser({ partnerId: partner.id });
+    await createOrganization({ partnerId: partner.id });
+    const otherPartner = await createPartner();
+    const foreignOrg = await createOrganization({ partnerId: otherPartner.id });
+    const admin = getTestDb();
+    const [foreignContract] = await admin.insert(contracts).values({
+      partnerId: otherPartner.id,
+      orgId: foreignOrg.id,
+      name: 'Foreign contract',
+      status: 'draft',
+      billingTiming: 'advance',
+      intervalMonths: 1,
+      startDate: '2026-09-01',
+      currencyCode: 'USD',
+      createdBy: null,
+    }).returning({ id: contracts.id });
+    if (!foreignContract) throw new Error('foreign contract seed failed');
+
+    const rawKey = await issueKey(partner.id, user.id, ['contracts:write']);
+    const app = partnerApp();
+    const got = await app.request(`/contracts/${foreignContract.id}`, {
+      headers: { 'X-API-Key': rawKey },
+    });
+    expect([403, 404]).toContain(got.status);
+
+    const patched = await app.request(`/contracts/${foreignContract.id}`, {
+      method: 'PATCH',
+      headers: jsonHeaders(rawKey),
+      body: JSON.stringify({ name: 'Should not land' }),
+    });
+    expect([403, 404]).toContain(patched.status);
+    const [unchanged] = await admin.select({ name: contracts.name })
+      .from(contracts).where(eq(contracts.id, foreignContract.id));
+    expect(unchanged?.name).toBe('Foreign contract');
+  });
+
+  runDb('refuses a lineId that belongs to a different contract', async () => {
+    const partner = await createPartner();
+    const user = await createUser({ partnerId: partner.id });
+    const org = await createOrganization({ partnerId: partner.id });
+    const rawKey = await issueKey(partner.id, user.id, ['contracts:write']);
+    const app = partnerApp();
+
+    const a = await app.request('/contracts', {
+      method: 'POST',
+      headers: jsonHeaders(rawKey),
+      body: JSON.stringify({
+        orgId: org.id,
+        name: 'Contract A',
+        billingTiming: 'advance',
+        intervalMonths: 1,
+        startDate: '2026-09-01',
+      }),
+    });
+    expect(a.status, await a.clone().text()).toBe(201);
+    const contractA = (await a.json() as { data: { id: string } }).data.id;
+
+    const b = await app.request('/contracts', {
+      method: 'POST',
+      headers: jsonHeaders(rawKey),
+      body: JSON.stringify({
+        orgId: org.id,
+        name: 'Contract B',
+        billingTiming: 'advance',
+        intervalMonths: 1,
+        startDate: '2026-09-01',
+      }),
+    });
+    expect(b.status, await b.clone().text()).toBe(201);
+    const contractB = (await b.json() as { data: { id: string } }).data.id;
+
+    const added = await app.request(`/contracts/${contractA}/lines`, {
+      method: 'POST',
+      headers: jsonHeaders(rawKey),
+      body: JSON.stringify({
+        lineType: 'manual',
+        description: 'A-only line',
+        unitPrice: '10.00',
+        taxable: false,
+        manualQuantity: '1',
+      }),
+    });
+    expect(added.status, await added.clone().text()).toBe(201);
+    const lineA = (await added.json() as { data: { id: string } }).data.id;
+
+    const patched = await app.request(`/contracts/${contractB}/lines/${lineA}`, {
+      method: 'PATCH',
+      headers: jsonHeaders(rawKey),
+      body: JSON.stringify({ manualQuantity: '9' }),
+    });
+    expect(patched.status).toBe(404);
+    expect((await patched.json() as { code: string }).code).toBe('LINE_NOT_FOUND');
+
+    const removed = await app.request(`/contracts/${contractB}/lines/${lineA}`, {
+      method: 'DELETE',
+      headers: jsonHeaders(rawKey),
+    });
+    expect(removed.status).toBe(404);
+    expect((await removed.json() as { code: string }).code).toBe('LINE_NOT_FOUND');
+
+    const [stillThere] = await getTestDb().select({
+      id: contractLines.id,
+      contractId: contractLines.contractId,
+      manualQuantity: contractLines.manualQuantity,
+    }).from(contractLines).where(eq(contractLines.id, lineA));
+    expect(stillThere?.contractId).toBe(contractA);
+    expect(stillThere?.manualQuantity).toBe('1.00');
+  });
+
   runDb('refuses a principal without contracts:write', async () => {
-    await applyContractScopeMigration();
     const partner = await createPartner();
     const user = await createUser({ partnerId: partner.id });
     const org = await createOrganization({ partnerId: partner.id });
@@ -140,7 +243,6 @@ describe('partner API contract writes', () => {
   });
 
   runDb('still returns 401 when the same key hits /api/v1/contracts', async () => {
-    await applyContractScopeMigration();
     const partner = await createPartner();
     const user = await createUser({ partnerId: partner.id });
     const rawKey = await issueKey(partner.id, user.id, ['contracts:write']);
@@ -152,11 +254,6 @@ describe('partner API contract writes', () => {
     expect(res.status).toBe(401);
   });
 });
-
-async function applyContractScopeMigration(): Promise<void> {
-  const sqlText = readFileSync(SCOPE_MIGRATION_FILE, 'utf8');
-  await getTestDb().execute(sql.raw(sqlText));
-}
 
 function partnerApp(): Hono {
   const app = new Hono();

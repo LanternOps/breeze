@@ -214,10 +214,17 @@ Each route requires the listed scope on the principal.
 | `POST` | `/partner-api/organizations` | `organizations:write` | Create an organization under the principal's partner. Enforces the partner's `maxOrganizations` cap (409 when reached). Body: `name`, `slug`, `type?`, `status?` (`active`/`trial`). |
 | `POST` | `/partner-api/sites` | `sites:write` | Create a site. `orgId` must be in the principal's accessible organizations (403 otherwise). Body: `orgId`, `name`, `timezone?`, `address?`, `contact?`. |
 | `POST` | `/partner-api/enrollment-keys` | `enrollment-keys:write` | Create an enrollment key. Body: `orgId`, `name`, `siteId?`, `maxUsage?`, `issueEnrollmentSecret?`, and `ttlMinutes` **or** `expiresAt` (never both). The raw key is returned once in the 201 body. `issueEnrollmentSecret: true` additionally mints a per-key `enrollmentSecret`, returned once; omitted, the key enrolls with the global `AGENT_ENROLLMENT_SECRET`. Supports `X-Idempotency-Key`. |
+| `POST` | `/partner-api/contracts` | `contracts:write` | Create a draft contract. `orgId` must be in the principal's accessible organizations. |
+| `GET` | `/partner-api/contracts/:id` | `contracts:write` | Read one contract and its lines. |
+| `PATCH` | `/partner-api/contracts/:id` | `contracts:write` | Update header fields. Schedule fields (`billingTiming`, `intervalMonths`, `startDate`) are draft-only. |
+| `POST` | `/partner-api/contracts/:id/lines` | `contracts:write` | Add a line. Same field rules as the human editor. |
+| `PATCH` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Patch a line, including `manualQuantity`. |
+| `DELETE` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Remove a line. This is contract contents, not tenancy deletion. |
 
-Provisioning is deliberately **create-only**: there are no `DELETE` routes on
-this surface, and organization deletion remains a human, MFA-gated action on
-the main API. `partnerId` never appears in any write body — it always comes
+Tenancy provisioning is deliberately **create-only**: there are no `DELETE` routes
+for organizations, sites, or enrollment keys, and organization deletion remains
+a human, MFA-gated action on the main API. Contract line `DELETE` is contents
+only. `partnerId` never appears in any write body — it always comes
 from the authenticated principal. Writes share the principal's hourly rate
 limit but are additionally capped by a tighter per-principal write budget
 (120/hour), and every write is attributed to the service principal in the
