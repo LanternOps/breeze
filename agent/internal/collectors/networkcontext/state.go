@@ -19,6 +19,7 @@ import (
 var ErrEpochRequired = errors.New("server producer epoch required")
 
 type Receipt struct {
+	ReportSequence       string    `json:"reportSequence,omitempty"`
 	ProducerEpoch        string    `json:"producerEpoch"`
 	AcceptedSequence     string    `json:"acceptedSequence"`
 	ContentDigest        string    `json:"contentDigest"`
@@ -139,11 +140,14 @@ func (s *State) AcceptReport(receipt Receipt) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.data.Pending
-	if receipt.ProducerEpoch != s.data.ProducerEpoch || p == nil || receipt.AcceptedSequence != p.Sequence {
+	if receipt.ProducerEpoch != s.data.ProducerEpoch || p == nil {
 		return errors.New("receipt does not match pending capture")
 	}
 	next := s.data
-	if receipt.Reason == "full_snapshot_required" {
+	if receipt.Reason == "full_snapshot_required" || receipt.Reason == "invalid_capture_time" {
+		if receipt.ReportSequence != p.Sequence {
+			return errors.New("rejection does not match pending capture")
+		}
 		next.BaseSnapshotID = ""
 		next.ContentDigest = ""
 		next.Pending = nil
@@ -152,7 +156,7 @@ func (s *State) AcceptReport(receipt Receipt) error {
 	if receipt.Reason != "" {
 		return fmt.Errorf("report rejected: %s", receipt.Reason)
 	}
-	if receipt.ContentDigest != p.ContentDigest || receipt.BaseSnapshotID == "" {
+	if receipt.AcceptedSequence != p.Sequence || receipt.ContentDigest != p.ContentDigest || receipt.BaseSnapshotID == "" {
 		return errors.New("receipt digest mismatch")
 	}
 	if p.ReportKind == "full" && receipt.BaseSnapshotID != p.SnapshotID && !(receipt.BaseSnapshotID == s.data.BaseSnapshotID && receipt.ContentDigest == s.data.ContentDigest) {

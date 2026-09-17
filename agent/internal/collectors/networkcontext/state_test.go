@@ -110,3 +110,46 @@ func TestSchedulerDebounceAndConcurrentAdmission(t *testing.T) {
 		t.Fatal("periodic")
 	}
 }
+
+func TestReceiptRejectionRequestsFreshFullWithoutResettingSequence(t *testing.T) {
+	for _, reason := range []string{"full_snapshot_required", "invalid_capture_time"} {
+		t.Run(reason, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state")
+			s, _ := OpenState(path)
+			if err := s.InstallEpoch("p", "e"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.AllocateSequence(); err != nil {
+				t.Fatal(err)
+			}
+			report := Report{Version: 1, ProducerEpoch: "e", Sequence: "1", ReportKind: "unchanged", BaseSnapshotID: "base", ContentDigest: "digest"}
+			if err := s.StoreReport(report); err != nil {
+				t.Fatal(err)
+			}
+			// A reboot loses monotonic age; the exact rejected capture must be replaced.
+			s, err := OpenState(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, wrong := range []Receipt{{ProducerEpoch: "other", ReportSequence: "1", Reason: reason}, {ProducerEpoch: "e", ReportSequence: "0", Reason: reason}, {ProducerEpoch: "e", AcceptedSequence: "1", Reason: reason}} {
+				if err := s.AcceptReport(wrong); err == nil || s.Snapshot().Pending == nil {
+					t.Fatal("foreign rejection cleared capture", err)
+				}
+			}
+			if err := s.AcceptReport(Receipt{ProducerEpoch: "e", ReportSequence: "1", Reason: reason}); err != nil {
+				t.Fatal(err)
+			}
+			next, err := OpenState(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := next.Snapshot()
+			if state.Pending != nil || state.Sequence != 1 || state.BaseSnapshotID != "" || state.ContentDigest != "" {
+				t.Fatal(state)
+			}
+			if sequence, err := next.AllocateSequence(); sequence != 2 || err != nil {
+				t.Fatal(sequence, err)
+			}
+		})
+	}
+}
