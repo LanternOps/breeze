@@ -263,6 +263,58 @@ test('ci-success asserts recovery-media-e2e with the three-branch AGENT_CHANGED 
   );
 });
 
+// ─── Item 2: Test API sharded 4 ways ─────────────────────────────────
+// ~2470 vitest files import-time dominated, ~26-34 min unsharded. Only the
+// main `test:run` invocation is actually split; every other named step in
+// this job (extension-sdk, ee/workspace, tz, load-static, compat fixture,
+// site-scope/integration-suite coverage, rls) is a single-DB-independent
+// contract check that must run exactly once, so it is pinned to shard 1.
+
+const testApiStep = (name) => {
+  const body = job('test-api');
+  const match = body.match(new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n      - name:|\\n\\n  [a-z]|$)`, 'u'));
+  assert.ok(match, `Missing test-api step "${name}"`);
+  return match[1];
+};
+
+test('test-api has a 4-way shard matrix', () => {
+  const body = job('test-api');
+  assert.match(body, /^    name: Test API \(shard \$\{\{ matrix\.shard \}\}\/4\)$/mu);
+  assert.match(body, /^    strategy:\n      fail-fast: false\n      matrix:\n        shard: \[1, 2, 3, 4\]$/mu);
+  assert.match(body, /^    timeout-minutes: 30$/mu);
+});
+
+test('test-api runs the main vitest split with --shard and no bare "--"', () => {
+  const step = testApiStep('Run API tests');
+  assert.match(step, /run: pnpm --filter=@breeze\/api test:run --shard=\$\{\{ matrix\.shard \}\}\/4$/mu);
+  assert.doesNotMatch(step, /pnpm --filter=@breeze\/api test:run -- /u, 'a bare "--" makes pnpm forward it literally and vitest silently ignores --shard');
+});
+
+test('test-api pins every non-sharded step to shard 1', () => {
+  for (const name of [
+    'Test extension SDK',
+    'Type-check extension SDK',
+    'Test workspace \\(ee\\)',
+    'Type-check workspace \\(ee\\)',
+    'Run API tests \\(auth/SSO, pinned non-UTC TZ\\)',
+    'Run load-test static contract tests',
+    'Gate SDK v1 compatibility fixture',
+    'Run site-scope coverage contract test',
+    'Run integration-suite coverage contract test',
+    'Run RLS session-context contract test',
+  ]) {
+    const step = testApiStep(name);
+    assert.match(step, /^        if: matrix\.shard == 1$/mu, `${name} must be pinned to shard 1`);
+  }
+});
+
+test('test-api setup steps run on every shard (no shard-1 guard)', () => {
+  for (const name of ['Checkout', 'Setup pnpm', 'Setup Node\\.js', 'Install dependencies']) {
+    const step = testApiStep(name);
+    assert.doesNotMatch(step, /if: matrix\.shard == 1/u, `${name} must run on every shard`);
+  }
+});
+
 // Execute the real summary shell. The bypass may only fire on the literal
 // `false` from a SUCCESSFUL classifier; every other shape must stay red.
 const summaryScript = summary.split('        run: |\n')[1]
