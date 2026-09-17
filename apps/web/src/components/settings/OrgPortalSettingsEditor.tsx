@@ -19,6 +19,7 @@ type PortalSettings = {
   enableService: boolean;
   enableDocuments: boolean;
   enableLifecycle: boolean;
+  enableNetworkVisibility: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -59,7 +60,8 @@ type VisibilityToggleKey =
   | 'enableSupportUsage'
   | 'enableService'
   | 'enableDocuments'
-  | 'enableLifecycle';
+  | 'enableLifecycle'
+  | 'enableNetworkVisibility';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
@@ -110,6 +112,11 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableLifecycle',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableLifecycle.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableLifecycle.description',
+  },
+  {
+    key: 'enableNetworkVisibility',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableNetworkVisibility.description',
   },
 ];
 
@@ -162,6 +169,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     enableService: true,
     enableDocuments: true,
     enableLifecycle: true,
+    enableNetworkVisibility: true,
   });
 
   const save = useCallback(async () => {
@@ -185,6 +193,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableService: draft.enableService,
             enableDocuments: draft.enableDocuments,
             enableLifecycle: draft.enableLifecycle,
+            enableNetworkVisibility: draft.enableNetworkVisibility,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,

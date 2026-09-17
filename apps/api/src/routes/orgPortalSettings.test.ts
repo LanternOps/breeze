@@ -81,6 +81,10 @@ vi.mock('../db/schema', () => ({
     enableBackups: 'enableBackups',
     enableReports: 'enableReports',
     enableSupportUsage: 'enableSupportUsage',
+    enableService: 'enableService',
+    enableDocuments: 'enableDocuments',
+    enableLifecycle: 'enableLifecycle',
+    enableNetworkVisibility: 'enableNetworkVisibility',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
     welcomeMessage: 'welcomeMessage',
@@ -116,6 +120,7 @@ const FULL_ROW = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  enableNetworkVisibility: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome',
@@ -172,6 +177,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      enableNetworkVisibility: false,
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
@@ -204,6 +210,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      enableNetworkVisibility: false,
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
@@ -227,7 +234,8 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableSecurity: false,
       enableBackups: false,
       enableReports: false,
-      enableSupportUsage: false
+      enableSupportUsage: false,
+      enableNetworkVisibility: false
     });
   });
 
@@ -340,14 +348,16 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableReports: true,
       enableService: true,
       enableDocuments: false,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     }]);
 
     const res = await patch({
       enableDashboard: true,
       enableReports: true,
       enableService: true,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     });
 
     expect(res.status).toBe(200);
@@ -359,7 +369,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableSupportUsage: false,
       enableService: true,
       enableDocuments: false,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     });
     expect(onPortalFlagsChanged).toHaveBeenCalledWith({
       orgId: ORG_ID,
@@ -368,7 +379,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableDashboard: true,
         enableReports: true,
         enableService: true,
-        enableLifecycle: true
+        enableLifecycle: true,
+        enableNetworkVisibility: true
       },
       current: {
         enableDashboard: true,
@@ -378,7 +390,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableSupportUsage: false,
         enableService: true,
         enableDocuments: false,
-        enableLifecycle: true
+        enableLifecycle: true,
+        enableNetworkVisibility: true
       }
     });
   });

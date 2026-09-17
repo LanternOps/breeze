@@ -1174,6 +1174,10 @@
         "enableLifecycle": {
           "label": "Ciclo de vida del hardware",
           "description": "Muestra el plan de reemplazo actualizado de los equipos de tu cliente."
+        },
+        "enableNetworkVisibility": {
+          "label": "Visibilidad de red",
+          "description": "Muestra en el portal del cliente el estado de la red y los activos detectados en modo de solo lectura."
         }
       }
     },

@@ -25,6 +25,9 @@ export default defineConfig({
       // Co-located real-DB integration test for the contract renewal sweep
       // service. Follows the same pattern as the inboundEmail test above.
       'src/services/contractRenewal.integration.test.ts',
+      // #5861 Customer Portal Network Visibility: real-Postgres proof of
+      // org isolation and partner-wide monitor result scoping.
+      'src/services/portal/networkVisibilityReadModel.integration.test.ts',
       // Co-located real-DB integration test for the platform-admin bootstrap
       // (#2655): the mocked unit suite executes no SQL, so it never caught the
       // prod-bundle `= ANY(::text[])` array-literal failure. This drives the

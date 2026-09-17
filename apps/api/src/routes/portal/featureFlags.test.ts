@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { PortalVisibilityFlag } from '../../services/portal/portalFlags';
 
 // DB mock: select().from().where().limit() resolves the next queued row set.
 // Only one read happens per gate check, so a single `rows` slot (rather than
@@ -31,7 +30,10 @@ import { createPortalFeatureGateAny, createPortalFeatureGateStrict } from './fea
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
-function createTestApp(flag: PortalVisibilityFlag, withAuth = true) {
+function createTestApp(
+  flag: Parameters<typeof createPortalFeatureGateStrict>[0],
+  withAuth = true,
+) {
   const a = new Hono();
   if (withAuth) {
     a.use('*', async (c, next) => {
