@@ -23,7 +23,7 @@ const classify = (paths) =>
     input: paths.join('\n') + (paths.length ? '\n' : ''),
   });
 
-test('classifier: docs-only path sets report code=false docs=true', () => {
+test('classifier: docs-only path sets report code=false docs=true agent=false', () => {
   for (const paths of [
     ['docs/guide.md'],
     ['apps/docs/src/content/docs/agent.mdx'],
@@ -32,17 +32,17 @@ test('classifier: docs-only path sets report code=false docs=true', () => {
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
-    assert.equal(run.stdout.trim(), 'code=false\ndocs=true', paths.join(', '));
+    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false', paths.join(', '));
   }
 });
 
 test('classifier: any non-docs path reports code=true; docs=true only when a docs path is present', () => {
   for (const [paths, expected] of [
-    [['apps/api/src/index.ts'], 'code=true\ndocs=false'],
-    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true'],
-    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true'],
-    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false'],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false'],
+    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false'],
+    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false'],
+    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true'],
+    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false'],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false'],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
@@ -50,11 +50,29 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
   }
 });
 
-test('classifier: an empty file list fails closed to code=true docs=true', () => {
+test('classifier: an empty file list fails closed to code=true docs=true agent=true', () => {
   const run = classify([]);
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout.trim(), 'code=true\ndocs=true');
+  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true');
   assert.match(run.stderr, /fail-closed/u);
+});
+
+test('classifier: agent output — agent/** and the CI plumbing that gates it are agent=true, everything else agent=false', () => {
+  for (const [paths, expected] of [
+    [['agent/internal/discovery/scanner.go'], 'agent=true'],
+    [['agent/go.mod'], 'agent=true'],
+    [['.github/workflows/ci.yml'], 'agent=true'],
+    [['.github/scripts/classify-pr-paths.sh'], 'agent=true'],
+    [['apps/web/src/App.tsx'], 'agent=false'],
+    [['apps/api/src/index.ts', 'apps/web/src/App.tsx'], 'agent=false'],
+    [['docs/guide.md'], 'agent=false'],
+    [['agentless-thing/foo.ts'], 'agent=false'],
+  ]) {
+    const run = classify(paths);
+    assert.equal(run.status, 0, run.stderr);
+    const agentLine = run.stdout.trim().split('\n').find((l) => l.startsWith('agent='));
+    assert.equal(agentLine, expected, paths.join(', '));
+  }
 });
 
 // ─── merge_group classification ──────────────────────────────────────
@@ -121,7 +139,7 @@ test('merge_group: a docs-only entry is classified docs-only', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/docs/src/content/docs/agent.mdx': 'b\n', 'README.md': 'c\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=false\ndocs=true');
+  assert.equal(output, 'code=false\ndocs=true\nagent=false');
 });
 
 test('merge_group: a mixed entry is classified as code', () => {
@@ -130,7 +148,7 @@ test('merge_group: a mixed entry is classified as code', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true');
+  assert.equal(output, 'code=true\ndocs=true\nagent=false');
 });
 
 test('merge_group: a code-only entry is classified as code', () => {
@@ -139,7 +157,16 @@ test('merge_group: a code-only entry is classified as code', () => {
     { seed: { 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false');
+});
+
+test('merge_group: an agent-only entry is classified as code and agent', () => {
+  const { execution, output } = runClassifier(
+    { EVENT_NAME: 'merge_group' },
+    { seed: { 'agent/internal/foo.go': 'b\n' } },
+  );
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  assert.equal(output, 'code=true\ndocs=false\nagent=true');
 });
 
 test('merge_group: an unresolvable base sha fails safe to the full suite', () => {
@@ -151,21 +178,21 @@ test('merge_group: an unresolvable base sha fails safe to the full suite', () =>
   ]) {
     const { execution, output } = runClassifier(env, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true', JSON.stringify(env));
+    assert.equal(output, 'code=true\ndocs=true\nagent=true', JSON.stringify(env));
   }
 });
 
 test('merge_group: an empty diff fails closed to the full suite', () => {
   const { execution, output } = runClassifier({ EVENT_NAME: 'merge_group' });
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true');
+  assert.equal(output, 'code=true\ndocs=true\nagent=true');
 });
 
 test('workflow_dispatch and any other event still run the full suite', () => {
   for (const EVENT_NAME of ['workflow_dispatch', 'push', 'schedule']) {
     const { execution, output } = runClassifier({ EVENT_NAME }, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true', EVENT_NAME);
+    assert.equal(output, 'code=true\ndocs=true\nagent=true', EVENT_NAME);
   }
 });
 
@@ -197,6 +224,7 @@ test('every code job is gated on the classifier', () => {
     'main-red-alert', // workflow_dispatch on main only
     'docs-check', // gated on the `docs` output instead — it is the one job a docs-only PR must run
     'build-mobile-ios', // inherits the gate through mobile-native-changes (pinned by mobile-native-ci.test.mjs)
+    'recovery-media-e2e', // compound gate (code AND agent) — asserted separately below
   ]);
   for (const name of jobs) {
     if (exempt.has(name)) continue;
@@ -206,6 +234,35 @@ test('every code job is gated on the classifier', () => {
   }
 });
 
+test('recovery-media-e2e is gated on both the code and agent classifier outputs', () => {
+  const body = job('recovery-media-e2e');
+  assert.match(body, /^    needs: \[[^\]]*\bchanges\b[^\]]*\]$/mu);
+  assert.match(
+    body,
+    /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.agent == 'true'$/mu,
+    'recovery-media-e2e must require BOTH code and agent — it must still be skipped on a docs-only PR',
+  );
+});
+
+test('the changes job exposes an agent output from the classifier', () => {
+  const body = job('changes');
+  assert.match(body, /^      agent: \$\{\{ steps\.classify\.outputs\.agent \}\}$/mu);
+});
+
+test('ci-success asserts recovery-media-e2e with the three-branch AGENT_CHANGED pattern', () => {
+  assert.match(summary, /AGENT_CHANGED: \$\{\{ needs\.changes\.outputs\.agent \}\}/u);
+  assert.match(
+    summary,
+    /\{ \[\[ "\$\{AGENT_CHANGED\}" == "true" \]\] && \[\[ "\$\{RECOVERY_MEDIA_E2E_RESULT\}" != "success" \]\]; \} \|\| \\\n\s*\{ \[\[ "\$\{AGENT_CHANGED\}" != "true" \]\] && \[\[ "\$\{AGENT_CHANGED\}" != "false" \]\]; \} \|\| \\\n\s*\{ \[\[ "\$\{AGENT_CHANGED\}" == "false" \]\] && \[\[ "\$\{RECOVERY_MEDIA_E2E_RESULT\}" != "skipped" \]\]; \} \|\|/u,
+    'ci-success must assert AGENT_CHANGED true→success, false→skipped, anything else→fail (mirrors MOBILE_NATIVE_REQUIRED)',
+  );
+  assert.doesNotMatch(
+    summary,
+    /^\s*\[\[ "\$\{RECOVERY_MEDIA_E2E_RESULT\}" != "success" \]\] \|\| \\$/mu,
+    'the old unconditional RECOVERY_MEDIA_E2E_RESULT clause must be replaced by the three-branch pattern',
+  );
+});
+
 // Execute the real summary shell. The bypass may only fire on the literal
 // `false` from a SUCCESSFUL classifier; every other shape must stay red.
 const summaryScript = summary.split('        run: |\n')[1]
@@ -213,9 +270,11 @@ const summaryScript = summary.split('        run: |\n')[1]
   .map((line) => line.slice(10)).join('\n');
 const resultVars = [...summary.matchAll(/^          (\w+_RESULT):/gmu)].map((m) => m[1]);
 const allOf = (value) => Object.fromEntries(resultVars.map((v) => [v, value]));
-const passing = { ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped' };
+const passing = {
+  ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', AGENT_CHANGED: 'true',
+};
 const docsOnlySkipped = {
-  ...allOf('skipped'), CHANGES_RESULT: 'success', MOBILE_NATIVE_REQUIRED: '', DOCS_CHANGED: 'true', DOCS_CHECK_RESULT: 'success',
+  ...allOf('skipped'), CHANGES_RESULT: 'success', MOBILE_NATIVE_REQUIRED: '', AGENT_CHANGED: '', DOCS_CHANGED: 'true', DOCS_CHECK_RESULT: 'success',
 };
 
 for (const [label, env, passes] of [
@@ -232,6 +291,14 @@ for (const [label, env, passes] of [
   ['classifier skipped', { ...docsOnlySkipped, CHANGES_RESULT: 'skipped', CODE_CHANGED: '' }, false],
   ['classifier says false but reported failure', { ...docsOnlySkipped, CHANGES_RESULT: 'failure', CODE_CHANGED: 'false' }, false],
   ['classifier output is not a boolean', { ...docsOnlySkipped, CODE_CHANGED: 'no' }, false],
+  // ─── AGENT_CHANGED / recovery-media-e2e three-branch gate ───────────
+  ['agent changed, recovery-media-e2e green', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: 'true', RECOVERY_MEDIA_E2E_RESULT: 'success' }, true],
+  ['agent changed, recovery-media-e2e red', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: 'true', RECOVERY_MEDIA_E2E_RESULT: 'failure' }, false],
+  ['agent changed, recovery-media-e2e unexpectedly skipped', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: 'true', RECOVERY_MEDIA_E2E_RESULT: 'skipped' }, false],
+  ['agent not changed, recovery-media-e2e correctly skipped', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: 'false', RECOVERY_MEDIA_E2E_RESULT: 'skipped' }, true],
+  ['agent not changed, recovery-media-e2e unexpectedly ran', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: 'false', RECOVERY_MEDIA_E2E_RESULT: 'success' }, false],
+  ['agent_changed output empty', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: '', RECOVERY_MEDIA_E2E_RESULT: 'skipped' }, false],
+  ['agent_changed output not a boolean', { ...passing, CODE_CHANGED: 'true', DOCS_CHANGED: 'true', AGENT_CHANGED: 'maybe', RECOVERY_MEDIA_E2E_RESULT: 'skipped' }, false],
 ]) {
   test(`CI Success: ${label}`, () => {
     const execution = spawnSync('bash', ['-e', '-c', summaryScript], {

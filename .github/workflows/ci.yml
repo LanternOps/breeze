@@ -68,6 +68,7 @@ jobs:
     outputs:
       code: ${{ steps.classify.outputs.code }}
       docs: ${{ steps.classify.outputs.docs }}
+      agent: ${{ steps.classify.outputs.agent }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -100,7 +101,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nagent=true\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too.
@@ -1896,7 +1897,11 @@ jobs:
   recovery-media-e2e:
     name: Recovery media E2E (QEMU)
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    # Only exercises agent/** (see the Toolchain/Build/Seed steps below), so it
+    # additionally requires the classifier's `agent` output — a web-only or
+    # api-only PR skips this ~35-40 min job entirely. Fail-closed: `agent` is
+    # `true` on an empty/unresolvable classification (see classify-pr-paths.sh).
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.agent == 'true'
     runs-on: ubuntu-latest
     # ~7 min ISO build + up to 40 min QEMU rebuild cycle (see run-qemu.sh).
     timeout-minutes: 60
@@ -3594,6 +3599,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
           DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
+          AGENT_CHANGED: ${{ needs.changes.outputs.agent }}
           DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
           WORKSPACE_RUNTIME_RESULT: ${{ needs.workspace-runtime.result }}
           LINT_RESULT: ${{ needs.lint.result }}
@@ -3678,7 +3684,9 @@ jobs:
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] || \
-             [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]] || \
+             { [[ "${AGENT_CHANGED}" == "true" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CHANGED}" != "true" ]] && [[ "${AGENT_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CHANGED}" == "false" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "skipped" ]]; } || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \
