@@ -1,0 +1,26 @@
+# GOOS=windows 'go vet' unsafeptr findings, per file (#3046).
+# Format: <file> <count>. Regenerate with scripts/check-windows-vet.sh --update
+#
+# These are pre-existing, pending per-call-site adjudication. They are
+# overwhelmingly COM vtable dispatch, where a uintptr holds a
+# COM-allocated address the Go GC does not own — the known unsafeptr
+# false-positive class. Do NOT add a line here to silence a NEW finding
+# in your own code without adjudicating the call site first.
+#
+# Adjudicated so far: internal/backup/vss/vss_windows.go (all 3 sites,
+# see the comments there).
+internal/agentapp/service_windows.go 1
+internal/backup/vss/vss_windows.go 3
+internal/etwlua/etwlua_windows.go 1
+internal/remote/clipboard/clipboard_windows.go 1
+internal/remote/desktop/amf_types_windows.go 2
+internal/remote/desktop/audio_windows.go 2
+internal/remote/desktop/comutil_windows.go 4
+internal/remote/desktop/dxgi_capture_windows.go 4
+internal/remote/desktop/dxgi_windows.go 2
+internal/remote/desktop/encoder_amf_windows.go 1
+internal/remote/desktop/encoder_nvenc_windows.go 1
+internal/remote/desktop/gpu_convert_windows.go 3
+internal/remote/desktop/mft_encode_windows.go 8
+internal/remote/desktop/mft_windows.go 3
+internal/terminal/conpty_windows.go 1
