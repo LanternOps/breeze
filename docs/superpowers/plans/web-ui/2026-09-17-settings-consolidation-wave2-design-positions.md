@@ -18,6 +18,11 @@ Proposed wave split (each an independently shippable PR):
 
 M15 is #4628 (its own feature). M20 (partner portal template) is optional and unscheduled.
 
+**Sequencing.** None of Wave 2 is on the critical path `#6164 W01 → #4628 W02 → #4547 block
+hours (p1)`. W03 and block-hours overage billing both touch the invoice issue path
+(`invoiceService.ts`), so W03–W05 are scheduled **after #4547** and must be re-read against
+the code as it stands then.
+
 ## W03 — M17 invoice presentation snapshot
 
 Facts:
