@@ -17,6 +17,7 @@
     "./m365/commsDigests": "./src/m365/commsDigests.ts",
     "./m365/commsPlanVectors": "./src/m365/commsPlanVectors.ts",
     "./pgErrors": "./src/pgErrors/index.ts",
+    "./testing/topologyFleet": "./src/testing/topologyFleet.ts",
     "./validators/topology": "./src/validators/topology.ts",
     "./validators/topologyConfiguration": "./src/validators/topologyConfiguration.ts",
     "./validators/topologyDiagnostics": "./src/validators/topologyDiagnostics.ts"

@@ -46,3 +46,12 @@ export function configurationLayersFixture() {
     site: { targets: {}, policies: {} },
   };
 }
+
+/** Fleet-scale fixtures (graph stress, visible projections, ingest fleet). */
+export {
+  TOPOLOGY_FIXTURE_SEED, buildTopologyFixture, topologyGraphFixture, topologyIngestFixture,
+} from './topologyFleet';
+export type {
+  TopologyFixture, TopologyFixtureName, TopologyGraphFixture, TopologyIngestFixture,
+  TopologyFixtureNode, TopologyFixtureEdge, TopologyFixtureAgent,
+} from './topologyFleet';

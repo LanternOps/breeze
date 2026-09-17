@@ -4,6 +4,7 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
+      "@breeze/shared/testing/*": ["../../packages/shared/src/testing/*"],
       "@breeze/shared/validators/*": ["../../packages/shared/src/validators/*"],
       "@breeze/shared": ["../../packages/shared/src"],
       "@breeze/shared/reportPdf": ["../../packages/shared/src/reportPdf"],
