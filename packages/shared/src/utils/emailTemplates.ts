@@ -134,7 +134,8 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
     html:
       `<p>Your ticket has a new reply. Sign in to the portal to view it.</p>
 <p>{{email_only_hint}}</p>
-<p>{{cta_button}}</p>`,
+<p>{{cta_button}}</p>
+<p>You can also reply to this email.</p>`,
   },
   ticket_autoresponse: {
     subject: '[{{ticket_number}}] We received your request: {{ticket_subject}}',
@@ -151,6 +152,7 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
     html:
       `<p>Your ticket has been resolved.</p>
 <p>{{resolution_note}}</p>
+<p>{{email_only_hint}}</p>
 <p>{{cta_button}}</p>`,
   },
   quote_send: {

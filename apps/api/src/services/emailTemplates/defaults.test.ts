@@ -4,17 +4,24 @@ import { defaultButtonLabel, defaultHeading, defaultHtml, defaultSubject } from 
 
 describe('email template defaults', () => {
   it('uses the shared catalog copy for heading, button, and html', () => {
+    const filled = {
+      resolution_note: 'note',
+      requester_name: 'Tess',
+      org_name: 'Acme',
+      due_date: '2026-09-01',
+      expiry_date: '2026-07-01',
+      email_only_hint: 'Reply to this email instead.',
+    };
     for (const id of EMAIL_TEMPLATE_IDS) {
       const shared = emailTemplateFieldDefaults(id);
-      expect(defaultHeading(id)).toBe(shared.heading);
+      expect(defaultHeading(id, filled)).toBe(shared.heading);
       expect(defaultButtonLabel(id)).toBe(shared.buttonLabel);
-      expect(defaultHtml(id, {
-        resolution_note: 'note',
-        requester_name: 'Tess',
-        due_date: '2026-09-01',
-        expiry_date: '2026-07-01',
-      })).toBe(shared.html);
+      expect(defaultHtml(id, filled)).toBe(shared.html);
     }
+  });
+
+  it('falls back to a generic portal heading when org name is empty', () => {
+    expect(defaultHeading('portal_invite', { org_name: '' })).toBe('Join your support portal');
   });
 
   it('drops the PDF sentence from invoice default html when the PDF is not attached', () => {

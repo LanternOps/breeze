@@ -23,7 +23,12 @@ vi.mock('../common/RichTextEditor', () => ({
   ),
 }));
 
-import { emailTemplateFieldDefaults } from '@breeze/shared';
+import {
+  EMAIL_TEMPLATE_IDS,
+  emailTemplateFieldDefaults,
+  emailTemplateHasCta,
+  varsForEmailTemplate,
+} from '@breeze/shared';
 import EmailTemplateEditor from './EmailTemplateEditor';
 
 function jsonRes(body: unknown, ok = true, status = 200) {
@@ -216,20 +221,7 @@ describe('EmailTemplateEditor', () => {
     expect(screen.getByTestId('email-template-subject')).toBeTruthy();
   });
 
-  it.each([
-    {
-      id: 'quote_send' as const,
-      chips: ['quote_number', 'partner_name', 'total', 'expiry_date', 'accept_url', 'cta_button'] as const,
-    },
-    {
-      id: 'invoice_send' as const,
-      chips: ['invoice_number', 'partner_name', 'total', 'due_date', 'portal_url', 'cta_button'] as const,
-    },
-    {
-      id: 'portal_invite' as const,
-      chips: ['requester_name', 'partner_name', 'invite_url', 'org_name', 'cta_button'] as const,
-    },
-  ])('shows merge chips and a button label for $id', ({ id, chips }) => {
+  it.each([...EMAIL_TEMPLATE_IDS])('shows every catalog insert chip for %s', (id) => {
     render(
       <EmailTemplateEditor
         templateId={id}
@@ -239,11 +231,16 @@ describe('EmailTemplateEditor', () => {
       />,
     );
 
-    expect(screen.getByTestId('email-template-button-label')).toBeTruthy();
-    for (const key of chips) {
+    for (const key of varsForEmailTemplate(id)) {
       expect(screen.getByTestId(`email-template-var-${key}`)).toBeTruthy();
     }
-    expect(screen.queryByTestId('email-template-var-ticket_number')).toBeNull();
+    if (emailTemplateHasCta(id)) {
+      expect(screen.getByTestId('email-template-button-label')).toBeTruthy();
+      expect(screen.getByTestId('email-template-var-cta_button')).toBeTruthy();
+    } else {
+      expect(screen.queryByTestId('email-template-button-label')).toBeNull();
+      expect(screen.queryByTestId('email-template-var-cta_button')).toBeNull();
+    }
   });
 
   it('previews substituted html in a read-only prose div without running scripts', () => {

@@ -102,8 +102,55 @@ describe('emailTemplateFieldDefaults', () => {
       html:
         `<p>Your ticket has a new reply. Sign in to the portal to view it.</p>
 <p>{{email_only_hint}}</p>
-<p>{{cta_button}}</p>`,
+<p>{{cta_button}}</p>
+<p>You can also reply to this email.</p>`,
     });
+  });
+
+  it('every merge token in default copy is an insert chip', () => {
+    const tokenRe = /\{\{\s*([a-z0-9_]+)\s*\}\}/g;
+    for (const id of EMAIL_TEMPLATE_IDS) {
+      const fields = emailTemplateFieldDefaults(id);
+      const chips = new Set(varsForEmailTemplate(id));
+      const blob = `${fields.subject}\n${fields.heading}\n${fields.html}`;
+      for (const match of blob.matchAll(tokenRe)) {
+        expect(chips, `${id} is missing insert chip {{${match[1]}}}`).toContain(match[1]);
+      }
+    }
+  });
+
+  it('default bodies include the customer-facing copy for every template', () => {
+    const comment = emailTemplateFieldDefaults('ticket_comment_notification');
+    expect(comment.html).toContain('Your ticket has a new reply. Sign in to the portal to view it.');
+    expect(comment.html).toContain('{{email_only_hint}}');
+    expect(comment.html).toContain('{{cta_button}}');
+    expect(comment.html).toContain('You can also reply to this email.');
+
+    const ack = emailTemplateFieldDefaults('ticket_autoresponse');
+    expect(ack.html).toContain("we've received your request and opened ticket");
+    expect(ack.html).toContain('{{ticket_number}}');
+    expect(ack.html).not.toContain('{{cta_button}}');
+
+    const resolved = emailTemplateFieldDefaults('ticket_resolved');
+    expect(resolved.html).toContain('Your ticket has been resolved.');
+    expect(resolved.html).toContain('{{resolution_note}}');
+    expect(resolved.html).toContain('{{email_only_hint}}');
+    expect(resolved.html).toContain('{{cta_button}}');
+
+    const quote = emailTemplateFieldDefaults('quote_send');
+    expect(quote.html).toContain('{{partner_name}} has sent you proposal');
+    expect(quote.html).toContain('{{total}}');
+    expect(quote.html).toContain('A PDF copy is attached.');
+    expect(quote.html).toContain('This proposal is valid until');
+    expect(quote.html).toContain('{{cta_button}}');
+    expect(quote.buttonLabel).toBe('Review & accept');
+
+    const invite = emailTemplateFieldDefaults('portal_invite');
+    expect(invite.html).toContain('{{requester_name}} invited you');
+    expect(invite.html).toContain('{{org_name}} support portal');
+    expect(invite.html).toContain('expires in 7 days');
+    expect(invite.html).toContain('{{cta_button}}');
+    expect(invite.buttonLabel).toBe('Set your password');
   });
 
   it('covers every catalog id with a subject, heading, and html body', () => {

@@ -15,7 +15,7 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
 };
 
 const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
-  ticket_comment_notification: 'You can also reply to this email.',
+  ticket_comment_notification: undefined,
   ticket_autoresponse: undefined,
   ticket_resolved: undefined,
   quote_send: undefined,
@@ -31,7 +31,10 @@ function tidyDefaultCopy(value: string): string {
     .trim();
 }
 
-export function defaultHeading(id: EmailTemplateId, _vars: Record<string, string> = {}): string {
+export function defaultHeading(id: EmailTemplateId, vars: Record<string, string> = {}): string {
+  if (id === 'portal_invite' && !vars.org_name?.trim()) {
+    return 'Join your support portal';
+  }
   return emailTemplateFieldDefaults(id).heading;
 }
 
@@ -47,11 +50,16 @@ export function defaultFooter(id: EmailTemplateId): string | undefined {
   return FOOTER_BY_ID[id];
 }
 
+function omitEmptySoloParagraphs(html: string, vars: Record<string, string>): string {
+  return html.replace(/<p>\{\{(\w+)\}\}<\/p>\n?/g, (full, key: string) => {
+    if (key === 'cta_button') return full;
+    if (Object.prototype.hasOwnProperty.call(vars, key) && !vars[key]?.trim()) return '';
+    return full;
+  });
+}
+
 export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = {}): string {
   let html = emailTemplateFieldDefaults(id).html;
-  if (id === 'ticket_resolved' && !vars.resolution_note?.trim()) {
-    html = html.replace('<p>{{resolution_note}}</p>\n', '');
-  }
   if ((id === 'invoice_send' || id === 'quote_send') && vars.pdf_attached === '0') {
     html = html.replace(' A PDF copy is attached to this email.', '');
     html = html.replace(' A PDF copy is attached.', '');
@@ -65,7 +73,10 @@ export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = 
   if (id === 'portal_invite' && !vars.requester_name?.trim()) {
     html = html.replace('{{requester_name}} invited you to', 'You have been invited to');
   }
-  return html;
+  if (id === 'portal_invite' && !vars.org_name?.trim()) {
+    html = html.replace('the {{org_name}} support portal', 'your support portal');
+  }
+  return omitEmptySoloParagraphs(html, vars);
 }
 
 export function defaultSubject(
