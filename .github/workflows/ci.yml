@@ -272,7 +272,11 @@ jobs:
       # tsc on the full apps/api project (dense Drizzle types) + astro check
       # exceed Node's default heap on the type-heaviest branches. Give the
       # type checker a larger old-space so it doesn't OOM. See release-prep OOM.
-      NODE_OPTIONS: --max-old-space-size=8192
+      # 8192 was the ceiling, not headroom: apps/api alone measured 8.7 GB on
+      # main-plus-topology-M0 and 9.4 GB with M1 (tsc --extendedDiagnostics), so
+      # the next large PR aborted with "heap out of memory". ubuntu-latest has
+      # 16 GB on a public repo; 12288 leaves room for the OS and the runner.
+      NODE_OPTIONS: --max-old-space-size=12288
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
