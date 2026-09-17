@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/netip"
 	"regexp"
@@ -251,5 +250,5 @@ func commandError(err error) string {
 	if errors.Is(err, ErrUnsupportedContext) {
 		return "unsupported_context"
 	}
-	return fmt.Sprintf("execution_error")
+	return "execution_error"
 }

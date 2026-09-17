@@ -282,17 +282,17 @@ func writeJournalWithOps(path string, data []byte, ops journalFileOps) error {
 		return e
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if e = f.Chmod(0600); e != nil {
-		f.Close()
+		_ = f.Close()
 		return e
 	}
 	if _, e = ops.write(f, data); e != nil {
-		f.Close()
+		_ = f.Close()
 		return e
 	}
 	if e = ops.sync(f); e != nil {
-		f.Close()
+		_ = f.Close()
 		return e
 	}
 	if e = f.Close(); e != nil {

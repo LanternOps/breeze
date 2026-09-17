@@ -217,7 +217,7 @@ func (r Report) MarshalJSON() ([]byte, error) {
 		if len(r.Capabilities) == 0 {
 			fields["capabilities"] = json.RawMessage("[]")
 		}
-		if r.Sections == nil || len(r.Sections) == 0 {
+		if len(r.Sections) == 0 {
 			fields["sections"] = json.RawMessage("[]")
 		}
 		if r.ContextManifest == nil {

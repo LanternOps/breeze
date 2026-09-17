@@ -15,6 +15,6 @@ func replaceStateFile(from, to string) error {
 	if e != nil {
 		return e
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	return dir.Sync()
 }

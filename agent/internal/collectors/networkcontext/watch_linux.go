@@ -13,7 +13,7 @@ func WatchChanges(ctx context.Context, notify func()) error {
 	if e != nil {
 		return e
 	}
-	defer syscall.Close(fd)
+	defer func() { _ = syscall.Close(fd) }()
 	// Link/address/route notifications in the current namespace only.
 	if e = syscall.Bind(fd, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK, Groups: 1 | 0x10 | 0x40 | 0x100 | 0x400}); e != nil {
 		return e

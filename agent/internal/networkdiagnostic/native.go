@@ -114,7 +114,7 @@ func (n *NativeIO) TCP(ctx context.Context, ip netip.Addr, port uint16, route ne
 	if e != nil {
 		return Details{}, e
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ms := float64(time.Since(started).Microseconds()) / 1000
 	return Details{LatencyMS: &ms}, nil
 }
@@ -135,7 +135,7 @@ func (n *NativeIO) HTTPS(ctx context.Context, ip netip.Addr, target TargetDefini
 		}
 		secured := tls.Client(raw, tlsConfig)
 		if e = secured.HandshakeContext(ctx); e != nil {
-			raw.Close()
+			_ = raw.Close()
 			return nil, e
 		}
 		return secured, nil
@@ -145,7 +145,7 @@ func (n *NativeIO) HTTPS(ctx context.Context, ip netip.Addr, target TargetDefini
 		if e != nil {
 			return Details{}, e
 		}
-		conn.Close()
+		_ = conn.Close()
 		ms := float64(time.Since(started).Microseconds()) / 1000
 		return Details{LatencyMS: &ms}, nil
 	}
@@ -182,7 +182,7 @@ func (n *NativeIO) HTTPS(ctx context.Context, ip netip.Addr, target TargetDefini
 	if e != nil {
 		return Details{}, e
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if responseLimit <= 0 || responseLimit > 65536 {
 		return Details{}, errors.New("invalid response limit")
 	}
@@ -288,10 +288,10 @@ func (n *NativeIO) queryDNS(ctx context.Context, name dnsmessage.Name, typ dnsme
 	if e != nil {
 		return nil, e
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	deadline, _ := ctx.Deadline()
 	_ = conn.SetDeadline(deadline)
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	if _, e = conn.Write(wire); e != nil {
 		return nil, e
@@ -336,8 +336,8 @@ func (n *NativeIO) ICMP(ctx context.Context, ip netip.Addr, route networkcontext
 	if e != nil {
 		return Details{}, ErrUnsupportedContext
 	}
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer func() { _ = conn.Close() }()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	var token [2]byte
 	if _, e = rand.Read(token[:]); e != nil {

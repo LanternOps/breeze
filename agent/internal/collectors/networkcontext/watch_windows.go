@@ -22,7 +22,7 @@ func WatchChanges(ctx context.Context, notify func()) error {
 	handles := []windows.Handle{}
 	defer func() {
 		for _, handle := range handles {
-			cancel.Call(uintptr(handle))
+			_, _, _ = cancel.Call(uintptr(handle))
 		}
 	}()
 	for _, name := range []string{"NotifyRouteChange2", "NotifyUnicastIpAddressChange", "NotifyIpInterfaceChange"} {

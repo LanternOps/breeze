@@ -227,7 +227,7 @@ func readLinuxDNS(ctx context.Context) (ResolverSection, error) {
 	if e != nil {
 		return ResolverSection{}, e
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	b, e := io.ReadAll(io.LimitReader(f, 1024*1024+1))
 	if e != nil {
 		return ResolverSection{}, e

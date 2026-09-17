@@ -68,7 +68,7 @@ func (r *LinuxReader) LookupRoute(parent context.Context, request RouteLookupReq
 	if e != nil {
 		return RouteSelection{}, e
 	}
-	defer syscall.Close(fd)
+	defer func() { _ = syscall.Close(fd) }()
 	if e = syscall.Bind(fd, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); e != nil {
 		return RouteSelection{}, e
 	}
