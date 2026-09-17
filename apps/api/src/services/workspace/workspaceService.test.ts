@@ -43,6 +43,8 @@ vi.mock('../aiCostTracker', () => ({
 
 vi.mock('../aiAgents/runProgress', () => ({ emitRunProgress: vi.fn(async () => {}) }));
 
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+
 vi.mock('./workspaceBreaker', () => ({
   isWorkspaceBreakerOpen: vi.fn(async () => false),
   recordWorkspaceCreateFailure: vi.fn(async () => {}),
@@ -163,12 +165,17 @@ function seedArtifact(id: string, orgId: string, runId: string | null, name: str
   artifacts.set(id, { id, orgId, runId, name, bytes: body.length, body });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   dbCalls.inserted.length = 0;
   dbCalls.updated.length = 0;
   artifacts.clear();
   created.length = 0;
   vi.mocked(emitRunProgress).mockClear();
+  const { recordWorkspaceCreateFailure, recordWorkspaceCreateSuccess } = await import('./workspaceBreaker');
+  vi.mocked(recordWorkspaceCreateFailure).mockClear();
+  vi.mocked(recordWorkspaceCreateSuccess).mockClear();
+  const { captureException } = await import('../sentry');
+  vi.mocked(captureException).mockClear();
   process.env.BREEZE_REGION = 'eu';
   process.env.AI_WORKSPACE_BACKEND = 'fake';
 });
@@ -284,6 +291,18 @@ describe('WorkspaceService lifecycle', () => {
     expect(dbCalls.updated).toContainEqual(expect.objectContaining({ providerRef: 'sbx-1' }));
     expect(backend.destroyCount).toBe(1);
     await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+  });
+
+  it('opens the breaker on a bootstrap failure and never records success', async () => {
+    const { recordWorkspaceCreateFailure, recordWorkspaceCreateSuccess } = await import('./workspaceBreaker');
+    const { captureException } = await import('../sentry');
+    const backend = new RecordingBackend();
+    backend.nextExec = { exitCode: 1 };
+    const svc = new WorkspaceService(ctxFor(), backend);
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+    expect(recordWorkspaceCreateFailure).toHaveBeenCalledWith('fake');
+    expect(recordWorkspaceCreateSuccess).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalled();
   });
 
   it('persists a bootstrap orphan identity and retries its deletion at finalize', async () => {

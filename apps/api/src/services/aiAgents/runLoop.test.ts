@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import {
@@ -361,7 +361,8 @@ vi.mock('../aiBudgetReservations', () => ({
 // the red-team suite (Task 5). Here we assert the loop never imports it by
 // asserting on the guardrail path it DOES take.
 import {
-  computeRunVerdict, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun, PROPOSAL_RECORDED_TEXT,
+  computeRunVerdict, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun,
+  PROPOSAL_RECORDED_TEXT, __setResourceScopeRecheckClockForTests,
 } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
@@ -581,8 +582,31 @@ function finalTransition(): { from: unknown; to: string; patch: Record<string, u
   return { from: last[1], to: last[2] as string, patch: (last[3] ?? {}) as Record<string, unknown> };
 }
 
+// The run loop resolves its agent's CURRENT policy at most once per
+// RESOURCE_SCOPE_RECHECK_TTL_MS, so "how many times did a run re-resolve" is a
+// function of wall-clock time. Freezing it makes every test in this file
+// deterministic (no expiry unless a test asks for one) and lets the narrowing
+// tests below step over the TTL boundary without global fake timers, which the
+// SDK-generator harness does not survive.
+let scopeRecheckNow = 0;
+
+/**
+ * Advance the scope-recheck clock past the TTL exactly once, at the moment the
+ * SDK is asked for its turn — i.e. AFTER the start gate and BEFORE the first
+ * tool call. Call it after `scriptQuery`, which it wraps.
+ */
+function expireScopeRecheckTtlBeforeFirstToolCall(): void {
+  const scripted = queryMock.getMockImplementation()!;
+  queryMock.mockImplementation((params) => {
+    scopeRecheckNow += 10_000;
+    return scripted(params);
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  scopeRecheckNow = 0;
+  __setResourceScopeRecheckClockForTests(() => scopeRecheckNow);
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.rowQueues = {};
   dbMockState.lastRow = {};
@@ -634,6 +658,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+afterAll(() => {
+  __setResourceScopeRecheckClockForTests(null);
 });
 
 // ---------------------------------------------------------------------------
@@ -1448,18 +1476,55 @@ describe('executeAgentRun', () => {
   });
 
   it('denies the next tool when resource scope is narrowed during a run', async () => {
+    // The run is org-wide (no device); the edit adds a site filter, which no
+    // device-less run can satisfy. Narrowing MUST reach an in-flight run.
     seedRows({ deviceId: null });
-    const unrestricted = snapshot(policy());
     const scoped = policy();
     scoped.triggers.siteIds = [SITE_ID];
     resolveEffectiveAgentSystem
-      .mockResolvedValueOnce(unrestricted)
-      .mockResolvedValueOnce(unrestricted)
+      .mockResolvedValueOnce(snapshot(policy()))
       .mockResolvedValue(snapshot(scoped));
     scriptQuery({ toolCalls: [{ tool: 'query_devices', input: {} }] });
+    expireScopeRecheckTtlBeforeFirstToolCall();
     await executeAgentRun(RUN_ID);
     expect(preVerdicts[0]).toMatchObject({ allowed: false, error: expect.stringContaining('resource scope') });
     expect(startToolExecution).not.toHaveBeenCalled();
+    // Once for the start gate (shared with `isStoppedBeforeStart`), once for
+    // the tool call that crossed the TTL — never twice in the same gate.
+    expect(resolveEffectiveAgentSystem).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves the current policy ONCE for the whole start gate and an unscoped run', async () => {
+    // `resolveEffectiveAgentSystem` is four queries and a system transaction.
+    // An unscoped run must not pay it per tool call, and the gate must not pay
+    // it twice back to back (`isStoppedBeforeStart` already resolved it).
+    seedRows();
+    scriptQuery({
+      toolCalls: [
+        { tool: 'query_devices', input: {} },
+        { tool: 'get_device_details', input: { deviceId: DEVICE_ID } },
+      ],
+    });
+    await executeAgentRun(RUN_ID);
+    expect(preVerdicts.map((verdict) => verdict.allowed)).toEqual([true, true]);
+    expect(resolveEffectiveAgentSystem).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT deny a tool call when the live policy flips to mode off mid-run', async () => {
+    // The loop runs on the run's immutable snapshot; `isStoppedBeforeStart`
+    // owns enabled/mode/identity and decides only WHETHER to start. Enforcing
+    // them per tool call would hard-deny the next call of a remediation
+    // already in flight — a half-applied change, which is worse than either
+    // finishing or never starting.
+    seedRows();
+    resolveEffectiveAgentSystem
+      .mockResolvedValueOnce(snapshot(policy()))
+      .mockResolvedValue(snapshot(policy({ mode: 'off', enabled: false })));
+    scriptQuery({ toolCalls: [{ tool: 'query_devices', input: {} }] });
+    expireScopeRecheckTtlBeforeFirstToolCall();
+    await executeAgentRun(RUN_ID);
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    expect(finalTransition()!.to).toBe('completed');
   });
 
   it('policy revoked between admission and start => skipped, no SDK call', async () => {

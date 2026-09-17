@@ -2123,7 +2123,8 @@
           "attach": "Adjuntar {{name}} como nota interna",
           "ticketIdPlaceholder": "ID del ticket",
           "attachedToTicket": "Adjuntado al ticket como nota interna",
-          "attachFailed": "No se pudo adjuntar el archivo a ese ticket"
+          "attachFailed": "No se pudo adjuntar el archivo a ese ticket",
+          "attachedButCommentFailed": "Se adjuntó el archivo, pero no se pudo agregar la nota al ticket"
         },
         "workspace": {
           "title": "Lo que se ejecutó en el entorno aislado",

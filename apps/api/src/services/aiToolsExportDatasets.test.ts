@@ -109,14 +109,21 @@ describe('dataset adapters', () => {
       expect(generateDeviceInventoryReport).not.toHaveBeenCalled();
     });
 
-    it('denies a cross-organization request before reading inventory', async () => {
-      await expect(DATASET_ADAPTERS[dataset].createPager({ ...request, orgId: 'org-other' })).rejects.toThrow('frozen device scope');
+    it('denies a cross-organization request before reading inventory, without throwing', async () => {
+      const pager = await DATASET_ADAPTERS[dataset].createPager({ ...request, orgId: 'org-other' });
+      expect((await pager(null)).rows).toEqual([]);
       expect(readDeviceInventoryRows).not.toHaveBeenCalled();
       expect(readSoftwareInventoryRows).not.toHaveBeenCalled();
     });
 
-    it.each([[], null])('denies an absent or empty frozen device set', async (runTargets) => {
-      await expect(DATASET_ADAPTERS[dataset].createPager({ ...request, runTargets })).rejects.toThrow('frozen device scope');
+    // A device-less run frame (ticket/anomaly/design principals never freeze
+    // `runTargets`) must yield an empty export, not a hard error — a thrown
+    // error here previously broke every non-`analysis` ai_agent run.
+    it.each([[], null])('yields an empty pager for an absent or empty frozen device set, without throwing', async (runTargets) => {
+      const pager = await DATASET_ADAPTERS[dataset].createPager({ ...request, runTargets });
+      expect((await pager(null)).rows).toEqual([]);
+      expect(readDeviceInventoryRows).not.toHaveBeenCalled();
+      expect(readSoftwareInventoryRows).not.toHaveBeenCalled();
     });
 
     it('never treats an empty requested device set as unrestricted', async () => {

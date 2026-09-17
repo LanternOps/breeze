@@ -60,7 +60,10 @@ export default function AttachArtifactToTicket({
             body: JSON.stringify({ content: '', isPublic: false, attachmentIds: [attachmentId] }),
           }),
         successMessage: t('aiAgentsPage.runs.detail.artifacts.attachedToTicket'),
-        errorFallback: t('aiAgentsPage.runs.detail.artifacts.attachFailed'),
+        // The file is already attached by this point (the upload above
+        // succeeded) — only the internal-note comment failed. "attachFailed"
+        // would be a false claim here; it is reserved for the staging call.
+        errorFallback: t('aiAgentsPage.runs.detail.artifacts.attachedButCommentFailed'),
         onUnauthorized: handleSessionExpired,
       });
       pending.current.delete(id);

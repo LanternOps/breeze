@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TOOL_TIERS, createBreezeMcpServer } from '../aiAgentSdkTools';
 import { TOOL_CAPABILITY } from '../aiAgents/agentToolCatalog';
@@ -7,92 +7,81 @@ import { AGENT_HUMAN_ONLY_TOOLS, TOOL_PERMISSIONS } from '../aiGuardrails';
 import { toolInputSchemas } from '../aiToolSchemas';
 import { aiTools, getAllRegisteredToolNames, getToolTier, requiresLiveSession } from '../aiTools';
 import { hasCoreAiToolName } from '../aiToolNames';
-import { WORKSPACE_LAUNCH_TOOL_NAME } from './workspaceLaunchTool';
+import { WORKSPACE_LAUNCH_TOOL_NAME } from './workspaceLaunchLimits';
 
 const SDK_TOOLS_SOURCE = readFileSync(join(__dirname, '..', 'aiAgentSdkTools.ts'), 'utf8');
 
-describe('workspace_launch_analysis registration (spec §5.3, §5.5)', () => {
-  it('is a RESERVED name and a recognized tool, but NOT in the aiTools execution map', () => {
-    // The session-only shape, mirroring m365_lookup_user. A map entry would
-    // make it headless-executable with no chat session — precisely what the
-    // session-aware registration exists to prevent.
+/**
+ * #6086 — chat-initiated background launches are WITHDRAWN, not merely
+ * refused: a chat launch would run a background agent under a delegated
+ * authorization this codebase cannot yet preserve for the length of a run.
+ *
+ * A half-deregistered tool is worse than either end state. While the name kept
+ * a tier but had no `aiTools` entry, `requiresLiveSession()` reported TRUE,
+ * so the durable intent-release worker would have answered a stale intent with
+ * `session_required` — "retry me from a chat session" — instead of a terminal
+ * refusal. (No such intent can exist: the name was Tier 1, and only tier >= 2
+ * tools mint durable intents. That is why there is nothing left to keep the
+ * stub alive for.) These assertions pin the name as absent from EVERY
+ * registration surface; the only survivors are the reserved name itself and
+ * the goal cap, which `runnerPrompt.ts` still uses to truncate a recorded goal.
+ */
+describe('workspace_launch_analysis is fully deregistered (#6086)', () => {
+  it('is not an executable tool and not a reserved name', () => {
     expect(aiTools.has(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(false);
-    expect(hasCoreAiToolName(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(true);
-    expect(getAllRegisteredToolNames()).toContain(WORKSPACE_LAUNCH_TOOL_NAME);
+    expect(hasCoreAiToolName(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(false);
+    expect(getAllRegisteredToolNames()).not.toContain(WORKSPACE_LAUNCH_TOOL_NAME);
   });
 
-  it('resolves a tier through getToolTier — otherwise checkGuardrails refuses it as unknown', () => {
-    expect(getToolTier(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(1);
-  });
-
-  it('requires a live session, so a durable release answers session_required not Unknown tool', () => {
-    expect(requiresLiveSession(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(true);
-  });
-
-  it('is absent from the SDK chat allowlist', () => {
+  it('resolves no tier, so checkAgentGuardrails refuses it as an unknown tool', () => {
+    expect(getToolTier(WORKSPACE_LAUNCH_TOOL_NAME)).toBeUndefined();
     expect(TOOL_TIERS[WORKSPACE_LAUNCH_TOOL_NAME]).toBeUndefined();
   });
 
-  it('is NOT in TOOL_CAPABILITY — that map is the headless agent surface, and this tool is not on it', () => {
-    // The W05 plan called for a `workspace` entry here, but the shipped
-    // `agentToolCatalog.contract.test.ts` asserts `Object.keys(TOOL_CAPABILITY)`
-    // EQUALS `[...aiTools.keys()]` — the headless execution map. A session-only
-    // tool is not in that map, so an entry would break the contract for every
-    // tool. That is the right answer and not a gap: TOOL_CAPABILITY exists to
-    // compute which tools an `ai_agent` principal can reach, and this tool is
-    // in AGENT_HUMAN_ONLY_TOOLS precisely so that it can reach none. Every
-    // session-only tool already sits outside it — `m365_lookup_user` included.
-    expect(TOOL_CAPABILITY[WORKSPACE_LAUNCH_TOOL_NAME]).toBeUndefined();
-    expect(TOOL_CAPABILITY.m365_lookup_user).toBeUndefined();
+  it('does NOT report session_required — a stale intent gets a terminal unknown-tool failure', () => {
+    expect(requiresLiveSession(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(false);
   });
 
-  it('is absent from the actual MCP tool registry while worker tools remain', () => {
+  it('is absent from TOOL_CAPABILITY, the headless agent surface', () => {
+    expect(TOOL_CAPABILITY[WORKSPACE_LAUNCH_TOOL_NAME]).toBeUndefined();
+  });
+
+  it('is absent from the MCP tool registry while the workspace worker tools remain', () => {
     const server = createBreezeMcpServer(() => ({}) as never);
     const instance = server.instance as unknown as { _registeredTools: Record<string, unknown> };
     expect(instance._registeredTools[WORKSPACE_LAUNCH_TOOL_NAME]).toBeUndefined();
-    expect(SDK_TOOLS_SOURCE).not.toContain(`makeSessionAwareHandler('${WORKSPACE_LAUNCH_TOOL_NAME}'`);
+    expect(SDK_TOOLS_SOURCE).not.toContain(WORKSPACE_LAUNCH_TOOL_NAME);
     for (const name of ['workspace_stage', 'workspace_run', 'workspace_collect', 'workspace_cancel']) {
       expect(aiTools.has(name)).toBe(true);
     }
   });
 
-  it('has an input schema — without one, every call fails validation', () => {
-    expect(toolInputSchemas[WORKSPACE_LAUNCH_TOOL_NAME]).toBeDefined();
-    const parsed = toolInputSchemas[WORKSPACE_LAUNCH_TOOL_NAME]!.safeParse({
-      goal: 'find failed logons',
-    });
-    expect(parsed.success).toBe(true);
+  it('has no input schema and no RBAC mapping', () => {
+    expect(toolInputSchemas[WORKSPACE_LAUNCH_TOOL_NAME]).toBeUndefined();
+    expect(TOOL_PERMISSIONS[WORKSPACE_LAUNCH_TOOL_NAME]).toBeUndefined();
   });
 
-  it('rejects a goal longer than the documented cap', () => {
-    const parsed = toolInputSchemas[WORKSPACE_LAUNCH_TOOL_NAME]!.safeParse({
-      goal: 'x'.repeat(2001),
-    });
-    expect(parsed.success).toBe(false);
-  });
-
-  it('has an RBAC mapping', () => {
-    expect(TOOL_PERMISSIONS[WORKSPACE_LAUNCH_TOOL_NAME]).toEqual({
-      resource: 'ai_agents',
-      action: 'write',
-    });
-  });
-
-  it('is human-only — an ai_agent principal may never spawn a run', () => {
+  it('stays in AGENT_HUMAN_ONLY_TOOLS — an unconditional deny outranks an unknown-tool error', () => {
+    // Belt and braces, and the thing that must survive a re-registration: if
+    // the name is ever wired up again, `checkAgentGuardrails` denies it for an
+    // `ai_agent` principal ABOVE the allowlist, before any tier resolution.
     expect(AGENT_HUMAN_ONLY_TOOLS.has(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(true);
   });
 
-  it('puts no identity field on ToolExecutionContext and reads no capture scope', () => {
+  it('has no handler module left to call', () => {
+    // The refusal stub had no importer outside its own test. A dead handler
+    // that still parses is how a withdrawn tool gets quietly re-wired.
+    expect(existsSync(join(__dirname, 'workspaceLaunchTool.ts'))).toBe(false);
+    const limitsSource = readFileSync(join(__dirname, 'workspaceLaunchLimits.ts'), 'utf8');
+    expect(limitsSource).not.toContain('workspaceLaunchToolTiers');
+  });
+
+  it('puts no identity field on ToolExecutionContext', () => {
     // The withdrawn R4 design threaded the chat session through
-    // `ToolExecutionContext.chatSessionId` and W01's capture scope. That type's
-    // docstring reserves it for per-invocation EXECUTION INPUTS, explicitly not
-    // caller identity; a session id is identity. This asserts the design stayed
-    // withdrawn — the grep is the contract, because the alternative compiles.
+    // `ToolExecutionContext.chatSessionId`. That type's docstring reserves it
+    // for per-invocation EXECUTION INPUTS, explicitly not caller identity; a
+    // session id is identity. The grep is the contract — the alternative compiles.
     const contextSource = readFileSync(join(__dirname, '..', 'toolExecutionContext.ts'), 'utf8');
     expect(contextSource).not.toContain('chatSessionId');
-    const toolSource = readFileSync(join(__dirname, 'workspaceLaunchTool.ts'), 'utf8');
-    expect(toolSource).not.toContain('captureScopeFor');
-    expect(toolSource).not.toContain('CaptureScope');
-    expect(toolSource).not.toContain('chatSessionId');
   });
 });

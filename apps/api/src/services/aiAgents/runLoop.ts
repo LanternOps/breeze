@@ -95,7 +95,7 @@ import {
 } from './actRevalidation';
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
-import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { resolveEffectiveAgentSystem, type ResolvedAgent } from './effectivePolicy';
 import { agentRunMatchesResourceScope, hasAgentResourceScope, RESOURCE_SCOPED_AGENT_TOOLS } from './runResourceScope';
 import { loadTicketContext, type TicketRunContext } from './ticketContext';
 import { loadAnomalyContext, type AnomalyRunContext } from './anomalyContext';
@@ -798,8 +798,8 @@ export function createAgentRunPreToolUse(args: {
   }
 
   return async (toolName, input) => {
-    if (args.revalidateResourceScope
-      && !(await args.revalidateResourceScope(toolName).catch(() => false))) {
+    // No `.catch` — `isRunResourceScopeCurrent` already fails closed on a throw.
+    if (args.revalidateResourceScope && !(await args.revalidateResourceScope(toolName))) {
       const reason = 'Agent resource scope was revoked or could not be verified. Stop and do not retry.';
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
@@ -1563,7 +1563,11 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
   };
 }
 
-async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<LoopResult> {
+async function driveSdkLoop(
+  ctx: RunContext,
+  effective: AiAgentPolicy,
+  readCurrentPolicy: CurrentPolicyReader,
+): Promise<LoopResult> {
   const { run } = ctx;
   const limits = effective.limits;
   // Phase 2 wave P2-1 (alert verdicts). Computed FIRST — before
@@ -1817,7 +1821,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
     actReservation, deadlineMs, design: designRefs, patch: patchRefs,
-    revalidateResourceScope: (toolName) => isRunResourceScopeCurrent(ctx, toolName),
+    revalidateResourceScope: (toolName) => isRunResourceScopeCurrent(ctx, readCurrentPolicy, toolName),
     // W03 seeds the run frame from the single-device runs that exist today.
     // W04's `analysis` profile replaces both values with the admission-frozen
     // target set and the profile's `analysisMaxStagedBytesPerRun`. An empty
@@ -2123,8 +2127,12 @@ export async function executeAgentRun(runId: string): Promise<void> {
   //    switch or the operator's policy may have changed since. This decides
   //    only WHETHER to start — the loop itself runs on the run's immutable
   //    snapshot (see driveSdkLoop).
-  const stopped = await isStoppedBeforeStart(run.orgId, agent.kind, run.agentId);
-  if (stopped || !(await isRunResourceScopeCurrent(ctx))) {
+  const { stopped, current } = await isStoppedBeforeStart(run.orgId, agent.kind, run.agentId);
+  // ONE resolution of the current policy for the whole gate, then reused (under
+  // a short TTL) by every per-tool-call resource-scope recheck below — the gate
+  // used to resolve it twice back to back, and the pre-tool hook once per call.
+  const readCurrentPolicy = createCurrentPolicyReader(ctx, current);
+  if (stopped || !(await isRunResourceScopeCurrent(ctx, readCurrentPolicy))) {
     await transitionRunStatus(runId, 'running', 'skipped', {
       errorCode: 'policy_revoked_before_start',
       finishedAt: new Date(),
@@ -2157,7 +2165,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
   };
 
   try {
-    const result = await driveSdkLoop(ctx, effective);
+    const result = await driveSdkLoop(ctx, effective, readCurrentPolicy);
     const { outcome, intentIds } = result;
     loopOutcome = outcome;
     // Computed once here so every terminal path below (failure, ceiling, or
@@ -2712,18 +2720,84 @@ async function cleanupExecutionLedger(
   }
 }
 
-/** Recheck both admission scope and live scope; edits may narrow, never widen a run. */
-async function isRunResourceScopeCurrent(ctx: RunContext, toolName?: string): Promise<boolean> {
+/**
+ * How long a run may reuse one resolution of its agent's CURRENT policy.
+ *
+ * `resolveEffectiveAgentSystem` is four queries and a system transaction.
+ * Resolving it per tool call taxed every run — scoped or not — for a narrowing
+ * edit that is rare and, at 5s, still lands well inside a run. The bound is
+ * what makes it safe to skip: a widening edit can never take effect (the run
+ * is also matched against its own immutable snapshot, below), so the only
+ * thing staleness can delay is a narrowing, by at most this long.
+ */
+const RESOURCE_SCOPE_RECHECK_TTL_MS = 5_000;
+
+/** Overridable ONLY so the TTL boundary is testable without global fake timers. */
+let resourceScopeRecheckClock: () => number = () => Date.now();
+export function __setResourceScopeRecheckClockForTests(clock: (() => number) | null): void {
+  resourceScopeRecheckClock = clock ?? (() => Date.now());
+}
+
+type CurrentPolicyReader = () => Promise<ResolvedAgent | null>;
+
+/**
+ * A per-run, TTL-bounded reader for the agent's current effective policy.
+ * Seeded with the resolution `isStoppedBeforeStart` already paid for, so the
+ * start gate resolves once rather than twice.
+ *
+ * Errors are NOT cached: a failed resolution reports `null`, every caller
+ * fails closed on it, and the next call retries.
+ */
+function createCurrentPolicyReader(ctx: RunContext, seed: ResolvedAgent | null): CurrentPolicyReader {
+  let cached: ResolvedAgent | null = seed;
+  let cachedAt = resourceScopeRecheckClock();
+  return async () => {
+    const now = resourceScopeRecheckClock();
+    if (cached && now - cachedAt < RESOURCE_SCOPE_RECHECK_TTL_MS) return cached;
+    cached = await resolveEffectiveAgentSystem(ctx.run.orgId, ctx.agent.kind)
+      .catch((error: unknown) => {
+        console.error('[aiAgentRunLoop] could not re-resolve the effective policy for scope recheck', {
+          runId: ctx.run.id, orgId: ctx.run.orgId, error,
+        });
+        return null;
+      });
+    cachedAt = now;
+    return cached;
+  };
+}
+
+/**
+ * Recheck the run's RESOURCE SCOPE — admission scope AND live scope — because a
+ * policy edit may NARROW a run's scope mid-run, never widen it (the snapshot
+ * half is what makes a widening edit unreachable).
+ *
+ * Deliberately NOT a second kill switch. `enabled`, `mode` and agent identity
+ * belong to `isStoppedBeforeStart`, which decides only WHETHER to start;
+ * rechecking them here would break the invariant that the loop runs on the
+ * run's immutable snapshot, hard-denying the next tool call of a remediation
+ * already in flight because someone flipped the agent to shadow. A `null`
+ * current policy means the scope could not be VERIFIED, not that the agent is
+ * disabled — fail closed either way.
+ */
+async function isRunResourceScopeCurrent(
+  ctx: RunContext,
+  readCurrentPolicy: CurrentPolicyReader,
+  toolName?: string,
+): Promise<boolean> {
+  const snapshotTriggers = ctx.run.policySnapshot.effective.triggers;
   try {
-    const current = await resolveEffectiveAgentSystem(ctx.run.orgId, ctx.agent.kind);
-    if (!current || current.agentId !== ctx.run.agentId
-      || !current.effective.enabled || current.effective.mode === 'off') return false;
-    if (toolName && (hasAgentResourceScope(ctx.run.policySnapshot.effective.triggers)
-      || hasAgentResourceScope(current.effective.triggers))
+    const current = await readCurrentPolicy();
+    if (!current) return false;
+    const scoped = hasAgentResourceScope(snapshotTriggers)
+      || hasAgentResourceScope(current.effective.triggers);
+    // An unscoped run pays nothing beyond the (cached) read above: no tool
+    // fence, no device lookups.
+    if (!scoped) return true;
+    if (toolName
       && !RESOURCE_SCOPED_AGENT_TOOLS.has(toolName)
       && !(outcomeToolsForRun(ctx.run) as readonly string[]).includes(toolName)) return false;
     return await agentRunMatchesResourceScope(
-      ctx.run.policySnapshot.effective.triggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
+      snapshotTriggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
     ) && await agentRunMatchesResourceScope(
       current.effective.triggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
     );
@@ -2751,8 +2825,8 @@ async function isStoppedBeforeStart(
   orgId: string,
   kind: AiAgentKind,
   agentId: string,
-): Promise<boolean> {
-  if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return true;
+): Promise<{ stopped: boolean; current: ResolvedAgent | null }> {
+  if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return { stopped: true, current: null };
 
   // Wave 5A Task 2 (#3827): refresh the DB kill-state cache here, at
   // admission, so the run's whole tool-dispatch loop — which reads the
@@ -2767,22 +2841,27 @@ async function isStoppedBeforeStart(
     console.warn('[aiAgentRunLoop] AI kill switch is engaged — refusing to start', {
       orgId, kind, agentId, epoch: killState.epoch,
     });
-    return true;
+    return { stopped: true, current: null };
   }
 
   try {
+    // Returned to the caller so the resource-scope recheck can reuse it rather
+    // than resolving the same policy a second time in the same gate.
     const current = await resolveEffectiveAgentSystem(orgId, kind);
-    if (!current) return true;
+    if (!current) return { stopped: true, current: null };
     if (current.agentId !== agentId) {
       console.warn('[aiAgentRunLoop] the run\'s agent is no longer the effective agent', {
         orgId, kind, runAgentId: agentId, currentAgentId: current.agentId,
       });
-      return true;
+      return { stopped: true, current };
     }
-    return !current.effective.enabled || current.effective.mode === 'off';
+    return {
+      stopped: !current.effective.enabled || current.effective.mode === 'off',
+      current,
+    };
   } catch (error) {
     console.error('[aiAgentRunLoop] could not re-resolve the effective policy', { orgId, kind, error });
-    return true;
+    return { stopped: true, current: null };
   }
 }
 

@@ -166,16 +166,49 @@ describe('createArtifact', () => {
     ['data.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
     ['report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
     ['unknown.bin', 'application/octet-stream'],
-  ])('stores %s with an appropriate MIME type and no binary preview', async (name, contentType) => {
+  ])('stores %s with an appropriate MIME type and no preview when the content is real binary', async (name, contentType) => {
     mocks.insertRows.push([row()]);
-    const read = vi.spyOn(blobs, 'openStream');
+    // Real binary bytes (PDF magic + invalid UTF-8 tail), not text wearing a
+    // binary name — previews are gated on CONTENT now, not the type label.
+    const binary = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x01]);
     await createArtifact({
       orgId: ORG, runId: RUN, kind: 'output', name, contentType: 'application/octet-stream',
-      body: Readable.from([Buffer.from('binary file data')]), maxBytes: 1024,
+      body: Readable.from([binary]), maxBytes: 1024,
       createdByTool: 'workspace_collect', region: 'us',
     });
     expect(mocks.insertValues[0]).toMatchObject({ contentType, headPreview: '', tailPreview: '' });
-    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('gives an application/octet-stream artifact a preview when its content is UTF-8 text', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'findings', contentType: 'application/octet-stream',
+      body: Buffer.from('alpha finding: high risk'), maxBytes: 1024,
+      createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({
+      contentType: 'application/octet-stream', headPreview: 'alpha finding: high risk',
+    });
+  });
+
+  it('gives no preview to an application/octet-stream artifact containing NUL bytes', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'blob1', contentType: 'application/octet-stream',
+      body: Buffer.from('lead-in trail'), maxBytes: 1024,
+      createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({ headPreview: '', tailPreview: '' });
+  });
+
+  it('gives no preview to an application/octet-stream artifact with real binary (PDF magic) content', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'blob2', contentType: 'application/octet-stream',
+      body: Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x01]),
+      maxBytes: 1024, createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({ headPreview: '', tailPreview: '' });
   });
 
   it('preserves previews for generic workspace CSV outputs', async () => {

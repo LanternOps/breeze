@@ -61,12 +61,23 @@ describe('AttachArtifactToTicket', () => {
   });
 
   it('retries a failed comment with the same pending id rather than uploading again', async () => {
+    // No `error` body on the comment failure, so the toast falls through to
+    // the caller's `errorFallback` — proving what message that fallback is.
     fetchWithAuth.mockResolvedValueOnce(response({ data: { id: 'att1' } }))
-      .mockResolvedValueOnce(response({ error: 'Comment unavailable' }, 500))
+      .mockResolvedValueOnce(response({}, 500))
       .mockResolvedValueOnce(response({ data: { id: 'comment1' } }));
     const view = form();
     view.submit();
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    // The file WAS attached — only the ticket comment failed — so the message
+    // must not claim "attach failed" (that key covers the pre-attachment
+    // staging failure, asserted separately above).
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: 'aiAgentsPage.runs.detail.artifacts.attachedButCommentFailed',
+    }));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({
+      message: 'aiAgentsPage.runs.detail.artifacts.attachFailed',
+    }));
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
     view.submit();
     await waitFor(() => expect(view.queryByTestId('attach-artifact-ticket-a1')).toBeNull());

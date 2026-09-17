@@ -2123,7 +2123,8 @@
           "attach": "{{name}} dosyasını dahili not olarak ekle",
           "ticketIdPlaceholder": "Bilet No",
           "attachedToTicket": "Bilete dahili not olarak eklendi",
-          "attachFailed": "Dosya bu bilete eklenemedi"
+          "attachFailed": "Dosya bu bilete eklenemedi",
+          "attachedButCommentFailed": "Dosya eklendi, ancak bilete not eklenemedi"
         },
         "workspace": {
           "title": "Korumalı alanda ne çalıştı",

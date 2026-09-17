@@ -198,6 +198,11 @@ jobs:
             dockerfile: docker/Dockerfile.api
           - image: web-compose
             dockerfile: docker/Dockerfile.web
+          # --- Never published, but executes model-authored code, so it is
+          # scanned anyway. Built from docker/ai-workspace, not the repo root.
+          - image: ai-workspace
+            dockerfile: docker/ai-workspace/Dockerfile
+            context: docker/ai-workspace
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -208,7 +213,8 @@ jobs:
         env:
           DOCKERFILE: ${{ matrix.dockerfile }}
           IMAGE: ${{ matrix.image }}
-        run: docker build -f "$DOCKERFILE" -t "breeze-${IMAGE}:security-scan" .
+          CONTEXT: ${{ matrix.context || '.' }}
+        run: docker build -f "$DOCKERFILE" -t "breeze-${IMAGE}:security-scan" "$CONTEXT"
 
       - name: Scan image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

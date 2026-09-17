@@ -1,11 +1,11 @@
 import type { MouseEvent } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn(), handleSessionExpired: vi.fn() }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('./downloadBlob', () => ({ downloadBlob: vi.fn() }));
 
-import { fetchWithAuth } from '@/stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
 import { showToast } from '@/components/shared/Toast';
 import { downloadBlob } from './downloadBlob';
 import { downloadArtifact } from './downloadArtifact';
@@ -40,11 +40,19 @@ describe('authenticated artifact download', () => {
     expect(downloadBlob).toHaveBeenCalledWith(blob, 'report.csv');
   });
 
-  it.each([401, 404, 503])('shows a failure and never downloads an HTTP %i error body', async (status) => {
+  it.each([404, 503])('shows a failure and never downloads an HTTP %i error body', async (status) => {
     vi.mocked(fetchWithAuth).mockResolvedValue({ ok: false, status } as Response);
     await downloadArtifact(click('report.csv'));
     expect(downloadBlob).not.toHaveBeenCalled();
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('routes a 401 to session-expiry handling instead of a generic failure toast', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: false, status: 401 } as Response);
+    await downloadArtifact(click('report.csv'));
+    expect(downloadBlob).not.toHaveBeenCalled();
+    expect(handleSessionExpired).toHaveBeenCalledOnce();
+    expect(showToast).not.toHaveBeenCalled();
   });
 
   it('surfaces network failures without an unhandled rejection', async () => {

@@ -1,6 +1,8 @@
 import type { AiAgentTriggers } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import {
+  db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext,
+} from '../../db';
 import { devices, deviceGroupMemberships } from '../../db/schema/devices';
 
 /** Resource filters are an execution boundary even for manual runs. */
@@ -34,7 +36,7 @@ export async function agentRunMatchesResourceScope(
   if ([triggers.siteIds, triggers.deviceTags, triggers.deviceGroupIds]
     .some((values) => values !== undefined && values.length === 0)) return false;
 
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const check = async (): Promise<boolean> => {
     const [device] = await db.select({ siteId: devices.siteId, tags: devices.tags })
       .from(devices).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).limit(1);
     if (!device) return false;
@@ -51,5 +53,15 @@ export async function agentRunMatchesResourceScope(
       if (!memberships.some((row) => triggers.deviceGroupIds!.includes(row.groupId))) return false;
     }
     return true;
-  }));
+  };
+
+  // Already system-scoped (a BullMQ worker that opened its own system context):
+  // read straight through. Re-entering would open a SECOND pooled connection
+  // while the first is still held, for no visibility gain — same skip branch,
+  // same reason, as `resolveEffectiveAgentSystem` (#1105).
+  if (getCurrentDbAccessContext()?.scope === 'system') return check();
+
+  // Load-bearing: a bare system wrapper is a no-op inside an ambient request
+  // context, so exit that context before establishing system visibility.
+  return runOutsideDbContext(() => withSystemDbAccessContext(check));
 }

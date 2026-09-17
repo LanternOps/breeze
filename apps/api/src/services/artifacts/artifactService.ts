@@ -161,9 +161,13 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
     maxBytes: input.maxBytes,
   });
 
-  const previewSource = !isTextArtifactContentType(contentType)
-    ? Buffer.alloc(0)
-    : Buffer.isBuffer(input.body)
+  // Previews are gated by CONTENT, not the content-type label —
+  // `buildPreviews` already refuses non-UTF-8/NUL bytes. `workspace_collect`
+  // stores unknown extensions as `application/octet-stream`, so gating by
+  // name here would permanently blank previews for legitimate text outputs
+  // (`findings`, `summary.out`, …). `isTextArtifactContentType` remains a
+  // render-time gate only (see `toArtifactDto`).
+  const previewSource = Buffer.isBuffer(input.body)
     ? input.body
     // A stream was consumed by `put`; re-read the head/tail from the stored
     // object rather than guessing. Small and bounded: two 2 KiB slices.

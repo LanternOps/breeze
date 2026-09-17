@@ -2123,7 +2123,8 @@
           "attach": "Joindre {{name}} comme note interne",
           "ticketIdPlaceholder": "ID du billet",
           "attachedToTicket": "Joint au billet comme note interne",
-          "attachFailed": "Impossible de joindre le fichier à ce billet"
+          "attachFailed": "Impossible de joindre le fichier à ce billet",
+          "attachedButCommentFailed": "Le fichier a été joint, mais la note n'a pas pu être ajoutée au billet"
         },
         "workspace": {
           "title": "Ce qui s’est exécuté dans le bac à sable",

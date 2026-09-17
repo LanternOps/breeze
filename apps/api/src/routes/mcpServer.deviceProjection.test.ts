@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { getTableColumns } from 'drizzle-orm';
 import { devices } from '../db/schema/devices';
 import {
@@ -52,6 +54,25 @@ describe('SR-008 — safe device resource projection', () => {
     expect(new Set(keys)).toEqual(new Set(SAFE_DEVICE_RESOURCE_FIELDS));
     for (const sensitive of KNOWN_SENSITIVE_COLUMNS) {
       expect(keys).not.toContain(sensitive);
+    }
+  });
+});
+
+// #6086 — `deviceSiteDenied(auth, siteId, deviceId)` denies an EXACT-DEVICE
+// caller (`auth.allowedDeviceIds`, set only by a resource-scoped agent run:
+// services/aiAgents/agentAuthContext.ts) whenever the device id is missing,
+// because a site alone cannot establish membership in an exact device scope.
+// A 2-argument call therefore denies such a caller its OWN device. No caller
+// reaches this route with `allowedDeviceIds` today, so the mistake is
+// fail-closed and unreachable — which is exactly why only a source contract
+// can hold the line for the next one.
+describe('deviceSiteDenied call sites in mcpServer.ts', () => {
+  it('always pass the device id as the third argument', () => {
+    const source = readFileSync(join(__dirname, 'mcpServer.ts'), 'utf8');
+    const calls = source.match(/deviceSiteDenied\([^)]*\)/g) ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.split(',')).toHaveLength(3);
     }
   });
 });

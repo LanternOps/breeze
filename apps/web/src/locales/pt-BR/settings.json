@@ -2123,7 +2123,8 @@
           "attach": "Anexar {{name}} como nota interna",
           "ticketIdPlaceholder": "ID do chamado",
           "attachedToTicket": "Anexado ao chamado como nota interna",
-          "attachFailed": "Não foi possível anexar o arquivo a esse chamado"
+          "attachFailed": "Não foi possível anexar o arquivo a esse chamado",
+          "attachedButCommentFailed": "O arquivo foi anexado, mas não foi possível adicionar a nota ao chamado"
         },
         "workspace": {
           "title": "O que foi executado na sandbox",

@@ -1,15 +1,13 @@
 /**
- * Reserved chat-launch metadata for historical records and schema validation.
- * Chat launches and MCP exposure are disabled pending delegated authorization
- * design (#6086); retaining this name does not enable execution.
+ * Reserved chat-launch metadata. `workspace_launch_analysis` is FULLY
+ * deregistered (#6086): no tier, no input schema, no handler and no MCP
+ * declaration — chat-initiated background launches are withdrawn until a run
+ * can preserve its caller's authorization. What survives is the reserved NAME,
+ * so the deregistration contract (workspaceLaunchTool.registration.test.ts)
+ * and the `AGENT_HUMAN_ONLY_TOOLS` deny can both refer to it without a string
+ * literal, and the goal cap, which `aiAgents/runnerPrompt.ts` still applies
+ * when it records an analysis goal.
  */
 export const WORKSPACE_LAUNCH_TOOL_NAME = 'workspace_launch_analysis';
 
 export const WORKSPACE_LAUNCH_MAX_GOAL_CHARS = 2000;
-export const WORKSPACE_LAUNCH_MAX_INPUT_HANDLES = 20;
-export const WORKSPACE_LAUNCH_MAX_INPUT_DEVICES = 200;
-
-/** Compatibility tier for the reserved name; absent from the SDK chat allowlist. */
-export const workspaceLaunchToolTiers: Record<string, 1 | 3> = {
-  [WORKSPACE_LAUNCH_TOOL_NAME]: 1,
-};

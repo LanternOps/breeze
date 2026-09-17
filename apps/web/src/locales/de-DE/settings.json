@@ -2123,7 +2123,8 @@
           "attach": "{{name}} als interne Notiz anhängen",
           "ticketIdPlaceholder": "Ticket-ID",
           "attachedToTicket": "Als interne Notiz an das Ticket angehängt",
-          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden"
+          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden",
+          "attachedButCommentFailed": "Die Datei wurde angehängt, aber die Notiz konnte nicht zum Ticket hinzugefügt werden"
         },
         "workspace": {
           "title": "Was in der Sandbox ausgeführt wurde",

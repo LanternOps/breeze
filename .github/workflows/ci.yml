@@ -3522,12 +3522,16 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      - name: Check requirements.lock matches requirements.in
+        run: python3 docker/ai-workspace/check-lock.py
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -3620,7 +3624,6 @@ jobs:
           if [[ "${CHANGES_RESULT}" != "success" ]] || \
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
-             [[ "${WORKSPACE_RUNTIME_RESULT}" != "success" ]] || \
              [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
@@ -3662,6 +3665,12 @@ jobs:
           if [[ "${CODE_CHANGED}" == "false" ]]; then
             echo "Docs-only PR: code jobs skipped, docs-check passed; the merge queue runs the full suite before merge."
             exit 0
+          fi
+          # Workspace runtime image: non-blocking on PRs (continue-on-error), required
+          # in the merge queue and manual main validation — same policy as the smoke suites.
+          if [[ "${IS_PR}" != "true" ]] && [[ "${WORKSPACE_RUNTIME_RESULT}" != "success" ]]; then
+            echo "Workspace runtime smoke failed during merge-queue or manual validation"
+            exit 1
           fi
           # The shared producer has the same policy as its smoke consumers.
           if [[ "${IS_PR}" != "true" ]] && [[ "${BUILD_SMOKE_IMAGES_RESULT}" != "success" ]]; then

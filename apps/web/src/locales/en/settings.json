@@ -2123,7 +2123,8 @@
           "attach": "Attach {{name}} as internal note",
           "ticketIdPlaceholder": "Ticket ID",
           "attachedToTicket": "Attached to the ticket as an internal note",
-          "attachFailed": "Could not attach the file to that ticket"
+          "attachFailed": "Could not attach the file to that ticket",
+          "attachedButCommentFailed": "The file was attached, but the ticket note could not be added"
         },
         "workspace": {
           "title": "What ran in the workspace",

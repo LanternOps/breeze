@@ -2123,7 +2123,8 @@
           "attach": "Allega {{name}} come nota interna",
           "ticketIdPlaceholder": "ID ticket",
           "attachedToTicket": "Allegato al ticket come nota interna",
-          "attachFailed": "Impossibile allegare il file a quel ticket"
+          "attachFailed": "Impossibile allegare il file a quel ticket",
+          "attachedButCommentFailed": "Il file è stato allegato, ma non è stato possibile aggiungere la nota al ticket"
         },
         "workspace": {
           "title": "Cosa è stato eseguito nella sandbox",

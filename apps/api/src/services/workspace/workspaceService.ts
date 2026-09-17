@@ -274,7 +274,6 @@ export class WorkspaceService {
 
     this.handle = handle;
     this.everCreated = true;
-    await recordWorkspaceCreateSuccess(this.backendName);
     this.readyAt = new Date();
     // `important`: this patch is the ONLY thing that replaces the
     // `(creating)` placeholder with the real provider ref. If it is lost, the
@@ -289,13 +288,17 @@ export class WorkspaceService {
       const result = await this.backend.exec(handle, ['mkdir', '-p', WORKSPACE_IN_DIR, WORKSPACE_OUT_DIR, WORKSPACE_TMP_DIR], {
         timeoutMs: 10_000, maxStdoutBytes: 4096,
       });
-      if (result.exitCode !== 0 || result.timedOut) throw new Error('Workspace directory bootstrap failed');
+      if (result.exitCode !== 0 || result.timedOut) {
+        throw new Error(`Workspace directory bootstrap failed (exit ${result.exitCode}, timedOut=${result.timedOut}): ${result.stderr.subarray(0, 512).toString('utf8')}`);
+      }
     } catch (error) {
       this.terminal = 'workspace_unavailable';
       await this.destroyHandle();
+      await recordWorkspaceCreateFailure(this.backendName);
+      captureException(error instanceof Error ? error : new Error(String(error)));
       throw new WorkspaceToolError('workspace_unavailable', 'The compute workspace could not be initialized.');
     }
-
+    await recordWorkspaceCreateSuccess(this.backendName);
   }
 
   /**

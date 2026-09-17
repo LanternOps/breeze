@@ -1,5 +1,5 @@
 import type { MouseEvent } from 'react';
-import { fetchWithAuth } from '@/stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
 import { showToast } from '@/components/shared/Toast';
 import { downloadBlob } from './downloadBlob';
 import { i18n } from './i18n';
@@ -12,7 +12,16 @@ export async function downloadArtifact(event: MouseEvent<HTMLAnchorElement>): Pr
   if (!path) return;
   try {
     const response = await fetchWithAuth(path);
-    if (!response.ok) throw new Error(`Artifact download failed (${response.status})`);
+    if (!response.ok) {
+      // A 401 means the auth redirect is already handling this — a generic
+      // "download failed" toast on top of it is misleading and, per the
+      // sibling `fetchWithAuth` callers' convention, never shown.
+      if (response.status === 401) {
+        handleSessionExpired();
+        return;
+      }
+      throw new Error(`Artifact download failed (${response.status})`);
+    }
     // The API sanitizes this quoted filename; transcript links do not otherwise
     // know the original script/stdout filename.
     const filename = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/i)?.[1];

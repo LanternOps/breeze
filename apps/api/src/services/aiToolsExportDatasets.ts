@@ -123,10 +123,17 @@ async function scopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
 const emptyPager: ExportPager = async () => ({ rows: [], nextCursor: null });
 
 /** Agent attribution ids are not human report principals. Keep their export
- * inside the intersection of the authenticated ceiling and frozen run frame. */
+ * inside the intersection of the authenticated ceiling and frozen run frame.
+ *
+ * A missing org match, allowlist, or frozen run frame is NOT an error case —
+ * `runTargets` is only ever populated inside an `analysis` run frame (spec
+ * §8). A ticket/anomaly/design ai_agent principal never carries one, and that
+ * is an ordinary device-less call, not a caller bug: it must resolve to an
+ * empty export exactly like the other zero-in-scope branches below, never a
+ * thrown error that would surface as a tool failure on every such run. */
 async function agentInventoryPager(req: DatasetRequest, software: boolean): Promise<ExportPager> {
   if (req.auth.orgId !== req.orgId || !req.auth.allowedDeviceIds?.length || !req.runTargets?.length) {
-    throw new Error('Agent inventory export requires an organization and frozen device scope');
+    return emptyPager;
   }
   const frame = new Set(req.runTargets);
   const requested = req.deviceIds === null ? null : new Set(req.deviceIds);
