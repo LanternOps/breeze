@@ -16,8 +16,8 @@ this index. `get_feature_status` before starting any wave.
 | Wave | Plan | Depends on |
 |---|---|---|
 | W01 (#__W01__) | [Sender contract: `MAIL_PURPOSES` registry, required `purpose` on `sendEmail`, raw `from` removed, every send site classified, `resolveSender` (platform lane only), `deliverRaw`, golden test](2026-09-17-partner-sending-domains-w01-sender-contract.md) | — |
-| W02a (#__W02A__) | [Foundation A: migration (three tables, RLS, release guard), Drizzle schema, allowlist registrations, shared validators, env + boot validation, `EmailDomainProvider` with `resend` / `static` / `fake` adapters, `custom_sending_domain` capability](2026-09-17-partner-sending-domains-w02a-data-model-and-adapters.md) | W01 (`deliverRaw`) |
-| W02b (#__W02B__) | [Foundation B: domain service, `sending-domains` worker and cadence, partner and admin routes, release hooks in `cascadeDeletePartner` / `finalizePartnerOffboarding`, audit, status-transition mail, drift report](2026-09-17-partner-sending-domains-w02b-service-worker-routes.md) | W02a |
+| W02a (#__W02A__) | [Foundation A: migration (three tables, RLS, release guard), Drizzle schema, allowlist registrations, shared validators, env + boot validation, `EmailDomainProvider` with `resend` / `static` / `fake` adapters, `custom_sending_domain` capability, provider-release hooks in `cascadeDeletePartner` / `finalizePartnerOffboarding`](2026-09-17-partner-sending-domains-w02a-data-model-and-adapters.md) | W01 (`deliverRaw`) |
+| W02b (#__W02B__) | [Foundation B: domain service, `sending-domains` worker and cadence, partner and admin routes, outbox drain, audit, status-transition mail, drift report](2026-09-17-partner-sending-domains-w02b-service-worker-routes.md) | W02a |
 | W03 (#__W03__) | [Partner lane: partner branch of `resolveSender`, partner-lane send with fallback semantics, daily cap, `X-Breeze-Outbound` and loop prevention](2026-09-17-partner-sending-domains-w03-partner-lane.md) | W01, W02b |
 | W04 (#__W04__) | [Web UI and docs: settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, self-hosting guide](2026-09-17-partner-sending-domains-w04-web-ui-and-docs.md) | W02b (UI), W03 (end-to-end) |
 | W05 (#__W05__) | [Feedback and abuse: delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics](2026-09-17-partner-sending-domains-w05-delivery-feedback-and-abuse.md) | W03 |
@@ -31,7 +31,9 @@ W03; W04 enables allow-listed partners; W05 is the hosted GA gate (spec §15, §
 1. **W02 is split into W02a and W02b.** The spec's W02 (three tables + RLS +
    three adapters + worker + two route files + cascade hooks) is too large for
    one review round on a tenancy surface. W02a is data model, config and
-   adapters; W02b is everything that calls them. Both land dark.
+   adapters; W02b is everything that calls them. Both land dark. The release
+   hooks ship in W02a with the `BEFORE DELETE` guard, so the guard never exists
+   without the path that satisfies it.
 2. **W01 and W02 are not parallel.** The spec (§15) calls them file-disjoint,
    but the `static` and `fake` adapters and the `test-send` job hand a message
    with a custom From to the platform transport, and W01 removes `from` from
@@ -153,6 +155,11 @@ class EmailService {
   `createResendDomainProvider`, `createStaticDomainProvider`,
   `createFakeDomainProvider`.
 - `GatedCapability` gains `'custom_sending_domain'` (`services/partnerTrust.ts`).
+- `apps/api/src/services/emailDomains/domainRelease.ts`:
+  `releaseSendingDomainsForPartner(partnerId: string): Promise<number>` (writes
+  outbox rows for managed domains, nulls `provider_domain_id`; no provider
+  calls), called first in `cascadeDeletePartner` and
+  `finalizePartnerOffboarding`.
 
 ### Defined in W02b
 
@@ -161,8 +168,6 @@ class EmailService {
   `requestDomainRemoval`, `upsertSenderIdentity`, `deleteSenderIdentity`,
   `suspendSendingDomain`, `unsuspendSendingDomain`, `forceReleaseSendingDomain`,
   `getSendingDomainsCapability`.
-- `apps/api/src/services/emailDomains/domainRelease.ts`:
-  `releaseSendingDomainsForPartner(partnerId: string): Promise<number>`.
 - `apps/api/src/services/emailDomains/domainSync.ts`: `syncSendingDomain(domainId, opts?)`,
   `nextCheckDelayMs(status, checkAttempts)`.
 - `apps/api/src/jobs/sendingDomainsWorker.ts`: queue name `sending-domains`;
