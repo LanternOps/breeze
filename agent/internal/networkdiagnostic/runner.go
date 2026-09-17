@@ -140,7 +140,17 @@ func Run(parent context.Context, command Command, journal *Journal, io ProbeIO) 
 		result.StartedAt = &now
 		started, e := journal.StartStep(key, result)
 		if e != nil || !started {
-			output.Steps = append(output.Steps, failStep(result, "execution_error", "journal_unavailable"))
+			// A refusal the journal can name is that outcome, not an
+			// unavailable journal: `journal_unavailable` stays reserved for a
+			// genuine journal failure.
+			state, reason := "execution_error", "journal_unavailable"
+			switch {
+			case errors.Is(e, ErrCancelled):
+				state, reason = "cancelled", "cancelled"
+			case errors.Is(e, ErrExpired):
+				state, reason = "timeout", "execution_deadline"
+			}
+			output.Steps = append(output.Steps, failStep(result, state, reason))
 			continue
 		}
 		if ctx.Err() != nil {

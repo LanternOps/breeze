@@ -47,6 +47,7 @@ type fakeProbe struct {
 	journal                           *Journal
 	command                           Command
 	routeChanged                      bool
+	onResolve                         func()
 }
 
 func (f *fakeProbe) LookupRoute(_ context.Context, r networkcontext.RouteLookupRequest) (networkcontext.RouteSelection, error) {
@@ -57,6 +58,9 @@ func (f *fakeProbe) Resolvers(context.Context) ([]networkcontext.ResolverRow, er
 }
 func (f *fakeProbe) Resolve(context.Context, string, string, []networkcontext.ResolverRow, networkcontext.RouteSelection, int) (DNSResolution, error) {
 	f.resolveCalls++
+	if f.onResolve != nil {
+		f.onResolve()
+	}
 	if _, exists := f.journal.Result(f.command.StepKey(dnsStepID)); !exists {
 		panic("DNS before intent")
 	}
@@ -137,5 +141,44 @@ func TestCancellationPersistsTerminalSteps(t *testing.T) {
 	Run(context.Background(), c, j, io)
 	if io.resolveCalls != 0 || io.httpCalls != 0 {
 		t.Fatal("cancelled replay probed")
+	}
+}
+
+// A journal that refuses to open a step because the run was cancelled or has
+// already expired is a real, known outcome — not an unavailable journal.
+func TestStartStepRefusalKeepsItsOwnTerminalState(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		interrupt     func(*Journal, Command)
+		state, reason string
+	}{
+		{
+			name:      "cancelled",
+			interrupt: func(j *Journal, c Command) { _ = j.Cancel(c.CommandID, c.RunID, c.AttemptID) },
+			state:     "cancelled", reason: "cancelled",
+		},
+		{
+			name: "expired",
+			interrupt: func(j *Journal, c Command) {
+				j.clock = func() time.Time { return c.ExpiresAt.Add(time.Second) }
+			},
+			state: "timeout", reason: "execution_deadline",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, j, io := fakeRun(t, "192.0.2.20")
+			io.onResolve = func() { tc.interrupt(j, c) }
+			result := Run(context.Background(), c, j, io)
+			if len(result.Steps) != 2 {
+				t.Fatalf("expected both steps, got %v", result.Steps)
+			}
+			step := result.Steps[1]
+			if step.State != tc.state || step.Reason == nil || *step.Reason != tc.reason {
+				t.Fatalf("got %s/%v want %s/%s", step.State, step.Reason, tc.state, tc.reason)
+			}
+			if io.httpCalls != 0 {
+				t.Fatal("refused step still probed")
+			}
+		})
 	}
 }

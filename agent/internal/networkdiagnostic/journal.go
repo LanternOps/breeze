@@ -12,6 +12,7 @@ import (
 var ErrJournalFull = errors.New("diagnostic journal full")
 var ErrCancelled = errors.New("diagnostic cancelled")
 var ErrJournalConflict = errors.New("diagnostic identity conflict")
+var ErrExpired = errors.New("diagnostic expired")
 
 type journalCommand struct {
 	Cancelled bool      `json:"cancelled,omitempty"`
@@ -175,7 +176,7 @@ func (j *Journal) StartStep(key StepKey, initial ...StepResult) (bool, error) {
 		return false, ErrCancelled
 	}
 	if !j.clock().Before(command.ExpiresAt) {
-		return false, errors.New("diagnostic expired")
+		return false, ErrExpired
 	}
 	next := cloneJournal(j.data)
 	j.cleanup(&next, j.clock())
