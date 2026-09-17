@@ -13,7 +13,7 @@ import { vi } from 'vitest';
 import { networkContextFixture } from '../../../../../packages/shared/src/testing/topologyFixtures';
 import { TOPOLOGY_FIXTURE_SEED, topologyIngestFixture } from '../../../../../packages/shared/src/testing/topologyFleet';
 import type { NetworkContextFull } from '@breeze/shared';
-import { db, withDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { createOrganization, createPartner, createSite } from '../integration/db-utils';
 import { orgContext } from '../integration/topology-fixtures';
 import { negotiateTopologyContext } from '../../services/topology/collectionAuthority';
@@ -217,7 +217,10 @@ export async function seedTopologyFleetFixture(name: 'I10K' = 'I10K', seed: stri
       let deleted = 0;
       for (const siteId of tenant.sites) {
         for (;;) {
-          const result = await scoped(tenant.orgId, () => expireTopologyEvidence({ orgId: tenant.orgId, siteId }, clock.now));
+          // The retention worker's own context: only a system scope can tell a
+          // deleted producer from one that merely moved (collectionRetention.ts).
+          const result = await runOutsideDbContext(() => withSystemDbAccessContext(
+            () => expireTopologyEvidence({ orgId: tenant.orgId, siteId }, clock.now)));
           deleted += result.deletedDetails;
           if (!result.deletedDetails) break;
         }
