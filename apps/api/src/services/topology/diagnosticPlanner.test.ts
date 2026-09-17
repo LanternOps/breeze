@@ -564,6 +564,32 @@ describe('plan identity and budgets', () => {
     ).not.toBe(plan.digest);
   });
 
+  it('digests the normalized plan the agent actually receives', () => {
+    // A stored target definition the validators normalize (hostname case and
+    // the trailing root dot) must not leave a shipped plan whose bytes
+    // disagree with its own digest — the agent refuses that as
+    // plan_digest_mismatch.
+    const plan = compile(
+      request({ recipeId: 'internet_basic' }),
+      snapshot({
+        targets: [
+          target(ids.targetHttps, {
+            ...httpsTarget,
+            hostname: 'Status.Example.COM.',
+          }),
+        ],
+      }),
+    );
+    const destination = plan.destinations[0]!.target;
+    expect(destination.kind).toBe('configured_target');
+    if (destination.kind === 'configured_target') {
+      expect(destination.definition).toMatchObject({
+        hostname: 'status.example.com',
+      });
+    }
+    expect(topologyDiagnosticPlanDigest(plan)).toBe(plan.digest);
+  });
+
   it('agrees with the frozen cross-language digest vectors', () => {
     const file = join(
       dirname(fileURLToPath(import.meta.url)),

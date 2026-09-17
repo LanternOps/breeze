@@ -32,7 +32,10 @@ export function compileTopologyDiagnosticPlan({request,snapshot,now,newId}:Diagn
  const plan:TopologyDiagnosticPlan={version:1,recipeId:request.recipeId,recipeVersion:1,scope:{orgId:snapshot.settings.binding?.orgId??'',siteId:origin.siteId},subject:request.subject,origin,family,graphRevision:snapshot.graphRevision,settingsRevision:snapshot.settings.settingsRevision,contextRevision:origin.sequence,
  templateVersions:{partner:snapshot.settings.layers.partner?.versionId??null,org:snapshot.settings.layers.organization?.versionId??null,defaults:snapshot.settings.layers.defaultsVersion,resolver:snapshot.settings.layers.resolverVersion},
  destinations:[],steps:[],limits:{maxConcurrentSteps:2,maxTargetAddresses:4,maxResolvers:2,queueTimeoutSeconds:30,executionTimeoutSeconds:90,lifetimeSeconds:120},acceptedAt:now.toISOString(),queueDeadline:new Date(now.getTime()+30_000).toISOString(),deadline:new Date(now.getTime()+120_000).toISOString(),digest:'0'.repeat(64),reasons:[]};
- const finish=(reason?:string)=>{if(reason){plan.reasons=[reason];plan.steps=[];plan.destinations=[];}plan.digest=topologyDiagnosticPlanDigest(plan);return topologyDiagnosticPlanSchema.parse(plan);};
+ // Normalize FIRST, then seal: the digest must cover the exact bytes the agent
+ // receives, or a validator transform (hostname case/trailing dot, IPv6
+ // re-serialization) ships a plan the agent rejects as plan_digest_mismatch.
+ const finish=(reason?:string)=>{if(reason){plan.reasons=[reason];plan.steps=[];plan.destinations=[];}const normalized=topologyDiagnosticPlanSchema.parse(plan);return {...normalized,digest:topologyDiagnosticPlanDigest(normalized)};};
  if(Object.values(snapshot.settings.templateRevisions).some(value=>value.endsWith(':revoked')))return finish('template_revoked');
  if(request.recipeId==='gateway_basic'){
   const gateways=candidate.gatewayEvidence.filter(row=>familyOf(row.address)===family&&row.interfaceId===origin.interfaceId);
