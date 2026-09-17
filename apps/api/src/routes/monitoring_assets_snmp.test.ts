@@ -951,4 +951,77 @@ describe('monitoring routes', () => {
       });
     });
   });
+
+  describe('PATCH /monitoring/assets/:id/snmp — template auto-apply on an already-configured device (#6099)', () => {
+    // Every save after the first goes through PATCH (the web form only PUTs
+    // on create), so this is the path most real edits actually take.
+    function mockPatchChain(existing: Record<string, unknown>) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([{
+                id: ASSET_ID, orgId: ORG_ID, siteId: SITE_ALLOWED, hostname: 'xerox-01', ipAddress: '10.0.0.5',
+                assetType: 'printer', snmpData: { sysObjectId: '.1.3.6.1.4.1.253.8.62.1.37.1.4.1.1' },
+              }]) }),
+            }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([existing]) }),
+            }),
+          }),
+        } as never);
+    }
+
+    const patch = (body: unknown) => app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      body: JSON.stringify(body),
+    });
+
+    it('applies a suggestion and echoes templateSuggestion when templateId is omitted on a device row with no template', async () => {
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: null, isActive: true });
+      vi.mocked(suggestTemplate).mockResolvedValue({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer', reason: 'Detected Xerox printer, using Xerox Printer',
+      });
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: 'tpl-xerox', pollingInterval: 600, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      // No `templateId` key — the shape the fixed web form sends when the
+      // user never touches the template selector on an existing device.
+      const res = await patch({ pollingInterval: 600 });
+
+      expect(res.status).toBe(200);
+      expect(suggestTemplate).toHaveBeenCalled();
+      expect(updateSet.mock.calls[0]?.[0]).toMatchObject({ templateId: 'tpl-xerox' });
+      expect((await res.json()).templateSuggestion).toEqual({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer',
+        reason: 'Detected Xerox printer, using Xerox Printer', applied: true,
+      });
+    });
+
+    it('does not suggest, and leaves the template alone, when the device already has one and templateId is omitted', async () => {
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'tpl-chosen', isActive: true });
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: 'tpl-chosen', pollingInterval: 600, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await patch({ pollingInterval: 600 });
+
+      expect(res.status).toBe(200);
+      expect(suggestTemplate).not.toHaveBeenCalled();
+      expect(updateSet.mock.calls[0]?.[0]).not.toHaveProperty('templateId');
+      expect((await res.json()).templateSuggestion).toBeNull();
+    });
+  });
 });

@@ -760,6 +760,23 @@ monitoringRoutes.patch(
       if (isMaskedSnmpSecret(body.privPassword)) delete setValues.privPassword;
       else setValues.privPassword = encryptSnmpSecret(body.privPassword);
     }
+
+    // Same absent-vs-null contract as PUT above (#6099): `templateId` ABSENT
+    // on a row that has no template yet means "choose for me" — auto-apply a
+    // suggestion. This is the only mutation path most saves ever take once a
+    // device row exists (the web form only PUTs on the very first save), so
+    // without this branch auto-apply was reachable only on create.
+    let templateSuggestion: TemplateSuggestion | null = null;
+    const templateIdProvided = Object.prototype.hasOwnProperty.call(body, 'templateId');
+    if (!templateIdProvided && !existing.templateId) {
+      templateSuggestion = await suggestTemplate({
+        sysObjectId: readSysObjectId(asset.snmpData),
+        assetType: asset.assetType ?? null,
+        orgId: asset.orgId,
+      });
+      if (templateSuggestion) setValues.templateId = templateSuggestion.templateId;
+    }
+
     if (Object.keys(setValues).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
     // Captured before the scheduler fields below are mixed in, so the audit
@@ -788,7 +805,10 @@ monitoringRoutes.patch(
 
     return c.json({
       success: true,
-      snmpDevice: serializeSnmpDevice(updated)
+      snmpDevice: serializeSnmpDevice(updated),
+      templateSuggestion: templateSuggestion
+        ? { ...templateSuggestion, applied: updated.templateId === templateSuggestion.templateId }
+        : null
     });
   }
 );
