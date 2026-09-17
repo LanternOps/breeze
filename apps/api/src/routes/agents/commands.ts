@@ -138,7 +138,8 @@ function buildStoredCommandResult(
 function normalizeCriticalResultIfNeeded(
   commandType: string,
   commandId: string,
-  data: z.infer<typeof commandResultSchema>
+  data: z.infer<typeof commandResultSchema>,
+  commandPayload?: unknown
 ) {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -158,7 +159,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: data.durationMs,
       error: data.error,
       result: data.result,
-    });
+    }, { commandPayload });
 
     if (!validated) {
       return {
@@ -409,7 +410,7 @@ commandsRoutes.post(
       normalizedData: rawNormalizedData,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, commandId, data);
+    } = normalizeCriticalResultIfNeeded(command.type, commandId, data, command.payload);
 
     // #2434 chokepoint (REST twin of agentWs.processCommandResult): redact
     // agent-supplied error/stderr ONCE before the device_commands write and

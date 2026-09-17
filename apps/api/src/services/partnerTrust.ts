@@ -116,6 +116,8 @@ export const GATED_COMMAND_TYPES = [
   'mssql_discover',
   'mssql_restore',
   'mssql_verify',
+  'network_diagnostic',
+  'network_diagnostic_cancel',
   'network_discovery',
   'network_dns_check',
   'network_http_check',

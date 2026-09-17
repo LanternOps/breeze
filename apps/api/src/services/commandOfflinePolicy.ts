@@ -134,6 +134,11 @@ const LIVE: readonly string[] = [
   // Addressed to a RELAY agent on the target's LAN — that relay must be online.
   C.WAKE_ON_LAN,
   C.CAPTURE_PPROF,
+  // A diagnostic plan carries its own absolute expiry and is bound to the
+  // origin's CURRENT context. Persisting one as future execution would deliver
+  // a probe authorized against a network state that no longer exists, so an
+  // offline origin is a hard rejection rather than a queued row.
+  C.NETWORK_DIAGNOSTIC,
   // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
   // which waits for the result synchronously (`waitForCommandResult`) — the one
   // combination the design forbids pairing with `queue` (#5128 §A). The two

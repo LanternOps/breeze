@@ -175,6 +175,11 @@ export const CommandTypes = {
   VAULT_SYNC: 'vault_sync',
   VAULT_STATUS: 'vault_status',
   VAULT_CONFIGURE: 'vault_configure',
+  // Explicitly requested, bounded network topology diagnostics (M1). The
+  // payload is a server-compiled, digest-sealed plan with an absolute expiry;
+  // the agent runs it and nothing else. There is no recurring variant in M1.
+  NETWORK_DIAGNOSTIC: 'network_diagnostic',
+
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',
   EXECUTE_CONTAINMENT: 'execute_containment',

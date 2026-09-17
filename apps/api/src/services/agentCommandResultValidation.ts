@@ -1,6 +1,15 @@
 import { z } from 'zod';
+import {
+  topologyDiagnosticCommandSchema,
+  topologyDiagnosticResultSchema,
+} from '@breeze/shared';
 
-export type CriticalResultFamily = 'restore' | 'verification' | 'vault' | 'dr';
+export type CriticalResultFamily =
+  | 'restore'
+  | 'verification'
+  | 'vault'
+  | 'dr'
+  | 'topology_diagnostic';
 
 export type GenericCommandResultEnvelope = {
   commandId: string;
@@ -32,6 +41,7 @@ const DR_COMMAND_TYPES = new Set([
 ]);
 
 const VERIFICATION_COMMAND_TYPES = new Set(['backup_verify', 'backup_test_restore']);
+const TOPOLOGY_DIAGNOSTIC_COMMAND_TYPES = new Set(['network_diagnostic']);
 const VAULT_COMMAND_TYPES = new Set(['vault_sync']);
 
 const warningListSchema = z.union([
@@ -104,6 +114,7 @@ function byteLength(value?: string): number {
 }
 
 function detectCriticalFamily(commandType: string): CriticalResultFamily | null {
+  if (TOPOLOGY_DIAGNOSTIC_COMMAND_TYPES.has(commandType)) return 'topology_diagnostic';
   if (VERIFICATION_COMMAND_TYPES.has(commandType)) return 'verification';
   if (VAULT_COMMAND_TYPES.has(commandType)) return 'vault';
   if (DR_COMMAND_TYPES.has(commandType)) return 'dr';
@@ -169,7 +180,8 @@ function ensureObjectLike(commandType: string, value: unknown): Record<string, u
 
 export function validateCriticalCommandResult(
   commandType: string,
-  envelope: GenericCommandResultEnvelope
+  envelope: GenericCommandResultEnvelope,
+  options: { commandPayload?: unknown } = {}
 ): CriticalCommandValidation {
   const family = detectCriticalFamily(commandType);
   if (!family) return null;
@@ -177,6 +189,38 @@ export function validateCriticalCommandResult(
   ensureCriticalResultSizeLimits(envelope);
 
   const parsed = parseStructuredResult(envelope);
+
+  if (family === 'topology_diagnostic') {
+    if (envelope.status !== 'completed' && parsed === undefined) {
+      return { family, structuredResult: {}, normalizedStdout: envelope.stdout, serializedResultBytes: 0 };
+    }
+    if (parsed === undefined) {
+      throw new Error(`critical ${commandType} result is missing structured diagnostic data`);
+    }
+    const validated = topologyDiagnosticResultSchema.parse(ensureObjectLike(commandType, parsed));
+    // A digest is an integrity seal, never authorization: the ids and digest a
+    // result claims must equal the ones the SERVER pinned into the delivered
+    // command, so a result cannot be re-pointed at another run or attempt.
+    const command = topologyDiagnosticCommandSchema.safeParse(options.commandPayload);
+    if (!command.success) {
+      throw new Error(`critical ${commandType} result has no pinned command authority`);
+    }
+    if (
+      validated.runId !== command.data.runId ||
+      validated.attemptId !== command.data.attemptId ||
+      validated.commandId !== command.data.commandId ||
+      validated.planDigest !== command.data.planDigest
+    ) {
+      throw new Error(`critical ${commandType} result does not match its accepted plan`);
+    }
+    const normalizedStdout = JSON.stringify(validated);
+    return {
+      family,
+      structuredResult: validated as unknown as Record<string, unknown>,
+      normalizedStdout,
+      serializedResultBytes: Buffer.byteLength(normalizedStdout, 'utf8'),
+    };
+  }
 
   if (family === 'verification') {
     if (envelope.status !== 'completed' && parsed === undefined) {

@@ -762,7 +762,8 @@ function rejectMalformedCriticalResult(
 
 function normalizeCriticalResultIfNeeded(
   commandType: string,
-  result: AgentCommandResult
+  result: AgentCommandResult,
+  commandPayload?: unknown
 ): { normalizedResult: AgentCommandResult; stdout: string | undefined; validationError: string | null } {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -782,7 +783,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: result.durationMs,
       error: result.error,
       result: result.result,
-    });
+    }, { commandPayload });
     if (!validated) {
       return {
         normalizedResult: result,
@@ -2092,7 +2093,7 @@ async function processCommandResult(
       normalizedResult: rawNormalizedResult,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, result);
+    } = normalizeCriticalResultIfNeeded(command.type, result, command.payload);
 
     // #3409 PR4a — exact-value redaction against the secrets THIS command
     // carried, before either the device_commands.result write below or (via
