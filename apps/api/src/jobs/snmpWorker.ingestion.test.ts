@@ -288,8 +288,8 @@ describe('processPollResults — protocol 2 ingestion (spec §7.3)', () => {
       // A real value did arrive, so the poll still counts as a success...
       expect(captured.updateSets[0]).toMatchObject({ lastStatus: 'online', consecutiveFailures: 0 });
       // ...but the loss is recorded rather than silent.
-      expect(String(captured.updateSets[0]!.lastError)).toContain('instance');
-      expect(String(captured.updateSets[0]!.lastError)).toContain('1');
+      expect(String(captured.updateSets[0]!.lastError)).toContain('Dropped 1 unstorable metric row');
+      expect(String(captured.updateSets[0]!.lastError)).toContain('instance is 245 chars (max 200)');
       expect(captured.updateSets[0]!.lastErrorAt).toBeInstanceOf(Date);
       expect(String(captured.updateSets[0]!.lastError).length).toBeLessThanOrEqual(500);
     });
