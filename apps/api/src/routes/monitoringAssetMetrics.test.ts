@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const ORG_ID = 'org-111';
 const ASSET_ID = '11111111-1111-1111-1111-111111111111';
@@ -11,6 +13,7 @@ const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
+    selectDistinctOn: vi.fn(),
   },
 }));
 
@@ -74,7 +77,7 @@ vi.mock('../services/permissions', () => ({
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
 }));
 
-import { monitoringAssetMetricsRoutes } from './monitoringAssetMetrics';
+import { MAX_INSTANCES_PER_OID, monitoringAssetMetricsRoutes } from './monitoringAssetMetrics';
 import { db } from '../db';
 import { MAX_RANGE_DAYS, MAX_POINTS_PER_SERIES, MAX_SERIES } from '../services/metricBucketing';
 
@@ -103,14 +106,36 @@ function snmpDeviceChain(rows: unknown[]) {
 }
 
 /** snmpMetrics bucketed-rows query shape: from().where().groupBy().orderBy() */
-function metricsChain(rows: unknown[]) {
+const pointsWhere = vi.fn();
+const seriesLimit = vi.fn();
+
+function metricsChain(rows: MetricRow[]) {
+  const distinct = Array.from(new Map(rows.map((row) => [
+    `${row.baseOid}|${row.instance}`, { baseOid: row.baseOid, instance: row.instance },
+  ])).values());
+  vi.mocked(db.selectDistinctOn).mockReturnValueOnce({
+    from: () => ({ where: () => ({ orderBy: () => ({
+      limit: (limit: number) => {
+        seriesLimit(limit);
+        return Promise.resolve(distinct.slice(0, limit));
+      },
+    }) }) }),
+  } as any);
   return {
     from: () => ({
-      where: () => ({
-        groupBy: () => ({
-          orderBy: () => Promise.resolve(rows),
-        }),
-      }),
+      where: (condition: SQL) => {
+        pointsWhere(condition);
+        // Mock schema fields are bound strings too; remove them before
+        // matching the adjacent base-OID / instance parameter pairs.
+        const params = new PgDialect().sqlToQuery(condition).params.filter(
+          (value) => typeof value !== 'string' || !value.startsWith('snmpMetrics.'),
+        );
+        const retainedRows = rows.filter((row) => params.some((value, index) =>
+          value === row.baseOid && params[index + 1] === row.instance));
+        return {
+          groupBy: () => ({ orderBy: () => Promise.resolve(retainedRows) }),
+        };
+      },
     }),
   };
 }
@@ -151,7 +176,7 @@ describe('GET /monitoring/assets/:id/metrics', () => {
   let app: Hono;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     app = new Hono();
     app.route('/monitoring', monitoringAssetMetricsRoutes);
   });
@@ -262,6 +287,7 @@ describe('GET /monitoring/assets/:id/metrics', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.series).toHaveLength(2);
+    expect(body.truncatedSeries).toBe(false);
 
     const port1 = body.series.find((s: any) => s.instance === '1');
     const port2 = body.series.find((s: any) => s.instance === '2');
@@ -299,6 +325,7 @@ describe('GET /monitoring/assets/:id/metrics', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.series).toHaveLength(2);
+    expect(body.truncatedSeries).toBe(false);
 
     const counterSeries = body.series.find((s: any) => s.oid === '1.3.6.1.2.1.2.2.1.10');
     const gaugeSeries = body.series.find((s: any) => s.oid === '1.3.6.1.4.1.9999.1.1');
@@ -338,15 +365,11 @@ describe('GET /monitoring/assets/:id/metrics', () => {
     ]);
   });
 
-  it('caps the response at MAX_SERIES after grouping, even for a single requested base OID', async () => {
-    // The request-side check (`oids.length > MAX_SERIES`, tested above) only
-    // counts the OIDs in the query string — one here. A table walk against
-    // that single base OID can still explode into far more than MAX_SERIES
-    // distinct (oid, instance) series after grouping, so the cap must also
-    // apply post-grouping (routes/monitoringAssetMetrics.ts `.slice(0, MAX_SERIES)`).
+  it.each([0, MAX_INSTANCES_PER_OID, MAX_INSTANCES_PER_OID + 10])(
+    'bounds the points query for %i instances and reports truncation', async (count) => {
     vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow()]) as any);
     vi.mocked(db.select).mockReturnValueOnce(snmpDeviceChain([snmpDeviceRow()]) as any);
-    const rows = Array.from({ length: MAX_SERIES + 10 }, (_, i) =>
+    const rows = Array.from({ length: count }, (_, i) =>
       metricRow({
         oid: `1.3.6.1.2.1.2.2.1.10.${i + 1}`,
         baseOid: '1.3.6.1.2.1.2.2.1.10',
@@ -361,7 +384,47 @@ describe('GET /monitoring/assets/:id/metrics', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.series).toHaveLength(MAX_SERIES);
+    expect(MAX_INSTANCES_PER_OID).toBe(64);
+    expect(body.series).toHaveLength(Math.min(count, MAX_SERIES, MAX_INSTANCES_PER_OID));
+    expect(db.selectDistinctOn).toHaveBeenCalledTimes(1);
+    expect(seriesLimit).toHaveBeenCalledWith(MAX_SERIES + 1);
+    expect(body.truncatedSeries).toBe(count > MAX_SERIES || count > MAX_INSTANCES_PER_OID);
+    if (count === 0) {
+      expect(pointsWhere).not.toHaveBeenCalled();
+      expect(db.select).toHaveBeenCalledTimes(2);
+      return;
+    }
+    expect(pointsWhere).toHaveBeenCalledTimes(1);
+    const pointsQuery = new PgDialect().sqlToQuery(pointsWhere.mock.calls[0]![0]);
+    for (let i = 1; i <= MAX_SERIES; i++) expect(pointsQuery.params).toContain(String(i));
+    for (let i = MAX_SERIES + 1; i <= count; i++) {
+      expect(pointsQuery.params).not.toContain(String(i));
+    }
+  });
+
+  it('caps instances per base OID so one large table does not starve a sibling', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bases = ['1.3.6.1.2.1.2.2.1.10', '1.3.6.1.2.1.2.2.1.16'];
+    const perBaseCap = Math.max(1, Math.floor(MAX_SERIES / bases.length));
+    vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow()]) as any);
+    vi.mocked(db.select).mockReturnValueOnce(snmpDeviceChain([snmpDeviceRow()]) as any);
+    vi.mocked(db.select).mockReturnValueOnce(metricsChain(bases.flatMap((baseOid, index) =>
+      Array.from({ length: index === 0 ? 70 : 5 }, (_, i) => metricRow({
+        oid: `${baseOid}.${i + 1}`, baseOid, instance: String(i + 1),
+        bucket: '2026-09-15T10:00:00.000Z', avgValue: '1', maxValue: '1',
+      })))) as any);
+
+    const res = await get(`?oid=${bases.join(',')}`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.series.filter((s: any) => s.oid.startsWith(`${bases[1]}.`))).toHaveLength(5);
+    expect(body.series.filter((s: any) => s.oid.startsWith(`${bases[0]}.`))).toHaveLength(perBaseCap);
+    expect(body.truncatedSeries).toBe(true);
+    expect(seriesLimit).toHaveBeenCalledWith(MAX_SERIES * bases.length + 1);
+    expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      assetId: ASSET_ID, seriesCount: perBaseCap + 5, cap: perBaseCap,
+    }));
+    warn.mockRestore();
   });
 
   it('matches an instance oid as well as a base oid', async () => {

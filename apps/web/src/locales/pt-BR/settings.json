@@ -211,7 +211,8 @@
       "actionPlan": "Plano de ação",
       "autoApprove": "Aprovar automaticamente",
       "hybridPlan": "Plano híbrido"
-    }
+    },
+    "overridesOrgTab": "Os campos definidos aqui substituem e bloqueiam o mesmo campo na aba de IA de cada organização."
   },
   "aiBudgetThresholds": {
     "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
@@ -1133,6 +1134,10 @@
       "description": "Escolha quais informações de serviço este cliente pode ver no portal.",
       "enableAll": "Ativar toda a visibilidade",
       "toggles": {
+        "enableDevices": {
+          "label": "Dispositivos",
+          "description": "Mostrar a página Dispositivos. O autoatendimento também permite acessar esta página."
+        },
         "enableDashboard": {
           "label": "Painel",
           "description": "Mostra um resumo da saúde do serviço ao entrar."
@@ -1444,7 +1449,7 @@
     "completeReview": "Concluir revisão"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Uso e orçamento de IA",
+    "aIUsageBudget": "Uso de IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitore o uso do assistente de IA e configure limites de orçamento",
     "budgetConfiguration": "Configuração de orçamento",
     "aIEnabled": "IA habilitada",
@@ -1494,7 +1499,19 @@
     "untitled": "Sem título",
     "billedToPartnerKey": "Cobrado na sua chave — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
     "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}}: o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
-    "creditsRemaining": "Créditos de IA Breeze restantes"
+    "creditsRemaining": "Créditos de IA Breeze restantes",
+    "defaultValue": "Padrão ({{value}})",
+    "viewPartnerWideBudgets": "Orçamentos de IA do parceiro",
+    "monitorAIAssistantUsage": "Monitorar o uso do assistente de IA",
+    "effectiveBudget": "Orçamento vigente",
+    "effectiveBudgetHelp": "Os limites em vigor para esta organização agora, e onde cada um foi definido.",
+    "effectiveBudgetUnavailable": "Não foi possível carregar o orçamento efetivo. Recarregue a página para tentar novamente.",
+    "sourcePartner": "Definido pelo parceiro",
+    "sourceOrganization": "Definido pela organização",
+    "sourceDefault": "Padrão",
+    "selectOrgForEffectiveBudget": "Selecione uma organização para ver seu orçamento vigente, ou edite os valores padrão em todo o parceiro.",
+    "editPartnerWideDefaults": "Editar valores padrão em todo o parceiro",
+    "thresholdsOff": "Desativado"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4081,6 +4098,7 @@
     "languageLoadFailed": "Preferência salva, mas o idioma não foi carregado — exibindo em inglês. Verifique sua conexão e tente novamente."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Registro de tempo padrão (minutos)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "Os minutos de SLA e a taxa horária devem ser números.",
     "categoryUpdated": "Categoria atualizada",
     "ticketing": "Chamados",
@@ -4336,6 +4354,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Orçamento de IA",
+    "description": "Limites de gastos, limites de frequência e modo de aprovação do assistente de IA nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
+    "selectOrganization": "Selecione uma organização para configurar seu orçamento de IA."
+  },
   "orgSettingsPage": {
     "loading": "Carregando configurações da organização...",
     "confirmDiscard": "Você tem alterações não salvas nesta seção. A troca irá descartá-los. Continuar?",
@@ -4389,7 +4412,9 @@
       "notifications": "Notificações",
       "notificationsDescription": "E-mail, Slack, webhooks",
       "ticketing": "Chamados",
-      "ticketingDescription": "SLA e substituições de faturamento"
+      "ticketingDescription": "SLA e substituições de faturamento",
+      "ai": "IA",
+      "aiDescription": "Orçamento do assistente de IA, limites de frequência e modo de aprovação"
     },
     "overview": {
       "title": "Visão geral da organização",
@@ -5216,6 +5241,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "As variáveis de cada organização são listadas na respectiva organização.",
     "title": "Variáveis",
     "description": "Defina um valor uma única vez — um token de site de fornecedor, a URL de um repositório interno — e faça referência a ele nos scripts em vez de fixá-lo para cada cliente.",
     "loading": "Carregando variáveis…",

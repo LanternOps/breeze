@@ -159,4 +159,35 @@ describe('getOrCreate — tenant tool resolution degrades on failure', () => {
     expect(session.tenantTools.size).toBe(1);
     expect(session.tenantTools.has('hudu__get_asset')).toBe(true);
   });
+
+  // #6023: a partner-scoped chat session couldn't reach an org-owned tool
+  // source because resolveTenantTools was called with only `toolAuth`,
+  // never the session's pinned org. Pin the wiring: the session's own
+  // dbSession.orgId must be forwarded as resolveTenantTools' targetOrgId.
+  it('passes the session\'s pinned org as targetOrgId to resolveTenantTools for a partner-scoped session', async () => {
+    resolveTenantToolsMock.mockResolvedValue([]);
+    const partnerAuth: AuthContext = {
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'partner-1',
+      accessibleOrgIds: [ORG_ID],
+      ...buildOrgAccessClosures([ORG_ID]),
+      user: { id: USER_ID, email: 'tech@msp.example' },
+    } as unknown as AuthContext;
+
+    await manager.getOrCreate(
+      'sess-partner-target-org',
+      DB_SESSION,
+      partnerAuth,
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    expect(resolveTenantToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'partner', partnerId: 'partner-1' }),
+      ORG_ID,
+    );
+  });
 });

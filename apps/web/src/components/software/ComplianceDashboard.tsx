@@ -451,34 +451,31 @@ export default function ComplianceDashboard({
   };
   const handleCheckCompliance = async (policy: Policy) => {
     try {
-      const res = await fetchWithAuth(`/software-policies/${policy.id}/check`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) {
-        throw new Error(
-          i18n.t(
-            "policies:software.complianceDashboard.failedToScheduleComplianceCheck",
-          ),
-        );
-      }
-      const data = (await res.json()) as {
-        jobId?: string;
-      };
-      showToast({
-        type: "success",
-        message: `Compliance check scheduled${data.jobId ? ` (Job: ${data.jobId})` : ""}`,
+      await runAction({
+        request: () => fetchWithAuth(`/software-policies/${policy.id}/check`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+        errorFallback: i18n.t(
+          "policies:software.complianceDashboard.failedToScheduleComplianceCheck",
+        ),
+        successMessage: i18n.t(
+          "policies:software.complianceDashboard.complianceCheckQueued",
+        ),
       });
     } catch (err) {
-      showToast({
-        type: "error",
-        message:
-          err instanceof Error
-            ? err.message
-            : "Failed to schedule compliance check",
-      });
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: "error",
+          message: i18n.t(
+            "policies:software.complianceDashboard.failedToScheduleComplianceCheck",
+          ),
+        });
+      }
     }
   };
+
   const handleRemediate = async (policy: Policy) => {
     try {
       const res = await fetchWithAuth(
@@ -640,8 +637,16 @@ export default function ComplianceDashboard({
               {policies.map((policy) => (
                 <tr key={policy.id} className="border-t">
                   <td className="px-4 py-3 font-medium">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span>{policy.name}</span>
+                      {policy.enforceMode && policy.remediationOptions?.autoInstall && (
+                        <span
+                          data-testid="policy-autoinstall-badge"
+                          className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-300"
+                        >
+                          {i18n.t("policies:software.complianceDashboard.autoInstallArmed")}
+                        </span>
+                      )}
                       {policy.orgId === null && (
                         <span
                           className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
@@ -676,6 +681,7 @@ export default function ComplianceDashboard({
                     <div className="flex items-center justify-end gap-1">
                       <button
                         type="button"
+                        data-testid={`policy-check-compliance-${policy.id}`}
                         onClick={() => handleCheckCompliance(policy)}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
                         title={i18n.t(

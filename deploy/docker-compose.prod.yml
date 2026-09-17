@@ -37,6 +37,16 @@ x-api-env: &api-env
   DB_POOL_HEALTH_MIN_TIMEOUTS: ${DB_POOL_HEALTH_MIN_TIMEOUTS:-}
   DB_POOL_HEALTH_PROBE_TIMEOUT_MS: ${DB_POOL_HEALTH_PROBE_TIMEOUT_MS:-}
   DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: ${DB_POOL_HEALTH_CAPTURE_THROTTLE_MS:-}
+  # #6048 — RLS GUC prologue deadline + wedged-backend detector/reclaimer.
+  DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS: ${DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS:-}
+  DB_WEDGED_BACKEND_SCAN_DISABLED: ${DB_WEDGED_BACKEND_SCAN_DISABLED:-}
+  DB_WEDGED_BACKEND_SCAN_INTERVAL_MS: ${DB_WEDGED_BACKEND_SCAN_INTERVAL_MS:-}
+  DB_WEDGED_BACKEND_MIN_AGE_MS: ${DB_WEDGED_BACKEND_MIN_AGE_MS:-}
+  DB_WEDGED_BACKEND_RECLAIM_DISABLED: ${DB_WEDGED_BACKEND_RECLAIM_DISABLED:-}
+  DB_WEDGED_BACKEND_RECLAIM_MIN_INTERVAL_MS: ${DB_WEDGED_BACKEND_RECLAIM_MIN_INTERVAL_MS:-}
+  DB_WEDGED_BACKEND_RECLAIM_MAX_PER_PASS: ${DB_WEDGED_BACKEND_RECLAIM_MAX_PER_PASS:-}
+  DB_WEDGED_BACKEND_RECLAIM_TIMEOUT_MS: ${DB_WEDGED_BACKEND_RECLAIM_TIMEOUT_MS:-}
+  DB_WEDGED_BACKEND_CONFIRM_DELAY_MS: ${DB_WEDGED_BACKEND_CONFIRM_DELAY_MS:-}
   # Event-loop lag monitor (#3024). Same reasoning as the pool-health block
   # above: deploy/environment.mdx documents these as working knobs, and an
   # unmapped var set in .env is silently inert. The monitor runs on its
@@ -270,6 +280,14 @@ x-api-env: &api-env
   # attemptPolicyDecision; default off (dark-ship). See .env.example.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
   BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED: ${BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED:-false}
+
+  # BYO-MCP tool catalog (#5216 W01) — dark-shipped, default OFF. Mapped here
+  # because Compose interpolates only what this block names; without it the
+  # Tool Sources page and every /tool-sources route stay invisible in every
+  # deployment (same trap as AI_OPERATOR_* above).
+  TOOL_SOURCES_ENABLED: ${TOOL_SOURCES_ENABLED:-false}
+  # Self-hosted only: let a tool source point at a private/loopback address.
+  TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: ${TOOL_SOURCES_ALLOW_PRIVATE_EGRESS:-false}
   # AI execution plane (W01). Hosted-only; all optional. Empty strings are
   # treated as unset by the readers (config/env.ts, services/artifacts/blobStorage.ts).
   BREEZE_AI_WORKSPACE_ENABLED: ${BREEZE_AI_WORKSPACE_ENABLED:-false}
@@ -317,6 +335,14 @@ x-api-env: &api-env
   # until #3239, so this whole class was exempt from it and never reached
   # the container. Same `${VAR:-}` reasoning as the block above.
   MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
+  # WebAuthn / passkeys (services/passkeys.ts). All optional: RP ID and origin
+  # default to PUBLIC_APP_URL's hostname/origin. Mapped so a deployment that
+  # serves the web app on a different host than PUBLIC_APP_URL (local stacks,
+  # reverse-proxied installs) can pin them — a value in .env alone never
+  # reaches the container.
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+  WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-}
+  WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-}
   LOGIN_ACCOUNT_LOCKOUT_MAX: ${LOGIN_ACCOUNT_LOCKOUT_MAX:-}
   LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS: ${LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS:-}
   AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-}

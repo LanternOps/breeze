@@ -839,6 +839,20 @@ func callVtable(obj uintptr, index uintptr, args ...uintptr) (uintptr, error) {
 	if obj == 0 {
 		return 0, fmt.Errorf("vss: vtable[%d] called on nil object", index)
 	}
+	// Adjudicated (#3046): `go vet` reports "possible misuse of unsafe.Pointer"
+	// on both conversions below. Both are sound, and the reason is the same:
+	// `obj` is a COM interface pointer handed to us by the VSS runtime, so it
+	// addresses COM-allocated (CoTaskMemAlloc / IMalloc) memory. That memory is
+	// outside the Go heap, so the GC neither moves nor frees it, and the
+	// uintptr cannot go stale between the conversion and the dereference. The
+	// vtable it points to has the same lifetime as the object.
+	//
+	// vet's unsafeptr analyser cannot express that distinction — it flags every
+	// uintptr→unsafe.Pointer conversion because it cannot prove the uintptr is
+	// not a stale Go-heap address. This is that known false positive, not the
+	// hazard from #2999/#3005. That hazard was the opposite direction —
+	// GO-owned out-params travelling through callVtable's variadic slice — and
+	// is handled by the //go:uintptrescapes directive documented above.
 	vtablePtr := *(*uintptr)(unsafe.Pointer(obj))
 	fnPtr := *(*uintptr)(unsafe.Pointer(vtablePtr + index*unsafe.Sizeof(uintptr(0))))
 
@@ -1117,6 +1131,20 @@ func utf16PtrToString(p uintptr) string {
 	if p == 0 {
 		return ""
 	}
+	// Adjudicated (#3046): `go vet` reports "possible misuse of
+	// unsafe.Pointer" here. Sound for the same reason as callVtable's vtable
+	// walk: both production callers pass a COM-allocated out-param — a
+	// VSS_PWSZ from GetSnapshotProperties (freed by freeSnapshotProperties)
+	// and a BSTR from GetWriterStatus (freed by freeBSTR) — so `p` addresses
+	// non-Go memory the GC cannot move or collect. The string is copied out
+	// before this returns; nothing retains the pointer.
+	//
+	// The one caller that passes Go-owned memory is the round-trip unit test,
+	// where the conversion and the read happen in a single expression with the
+	// backing array still live. Do not copy that pattern into production code:
+	// holding a Go pointer as a uintptr across a statement boundary is the
+	// real misuse vet is guessing at, and the GC could relocate it underneath
+	// the read.
 	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(p)))
 }
 

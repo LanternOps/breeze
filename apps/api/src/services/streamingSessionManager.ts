@@ -897,7 +897,12 @@ export class StreamingSessionManager {
     let tenantDescriptors: TenantToolDescriptor[] = [];
     if (!mcpServerFactory) {
       try {
-        tenantDescriptors = await resolveTenantTools(toolAuth);
+        // `dbSession.orgId` is this session's pinned, already-access-checked
+        // org (see the device-bound comment above) — passed as `targetOrgId`
+        // so a partner-scoped tech's session can resolve that org's own tool
+        // sources too, not just partner-wide ones (#6023). A no-op for
+        // org-scoped `toolAuth`, which ignores `targetOrgId`.
+        tenantDescriptors = await resolveTenantTools(toolAuth, dbSession.orgId);
       } catch (err) {
         captureException(err);
         console.error('[StreamingSessionManager] Failed to resolve tenant tools, degrading to none:', err);
@@ -978,7 +983,17 @@ export class StreamingSessionManager {
         preToolUse,
         postToolUse,
         () => session,
-        buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.orgId),
+        // `session.orgId` is set ONCE at session creation and never refreshed
+        // on reuse (unlike `session.toolAuth`, which the reuse branch above
+        // re-narrows to the CURRENT device org every turn, #3087). Since
+        // `execute.ts` now threads this org through the dispatch-time
+        // OWNER-predicate reload (#6023), a stale `session.orgId` would let a
+        // device-bound session keep dispatching a tool under its OLD org's
+        // credentials after the device moved — read `session.toolAuth.orgId`
+        // (fresh every turn for a device-bound session) and fall back to
+        // `session.orgId` only when `toolAuth` carries none (non-device
+        // sessions, whose org doesn't drift the same way).
+        buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
       );
     }
     session.mcpServer = mcpServer;

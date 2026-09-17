@@ -90,5 +90,24 @@
       "approvedPromoteFailed": "Approuvé, mais la demande de préautorisation n’a pas pu être envoyée. Réessayez depuis les paramètres de l’agent.",
       "policyDecideDisabled": "Approuvé. La préautorisation n’a pas pu être demandée, car elle est désactivée pour ce déploiement."
     }
+  },
+  "recent": {
+    "title": "Récentes",
+    "subtitle": "Déjà décidées ou terminées",
+    "loading": "Chargement des approbations récentes…",
+    "error": "Impossible de charger les approbations récentes.",
+    "retry": "Réessayer",
+    "empty": "Rien ne s’est terminé récemment.",
+    "status": {
+      "failed": "Échec",
+      "rejected": "Refusée",
+      "expired": "Expirée",
+      "cancelled": "Annulée",
+      "completed": "Terminée",
+      "denied": "Refusée",
+      "approved": "Approuvée",
+      "reported": "Signalée",
+      "unknown": "Inconnu"
+    }
   }
 }

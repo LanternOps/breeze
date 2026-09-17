@@ -28,8 +28,9 @@ export interface RunActionOptions<T> {
   /** Maps a machine error token to user-facing copy. Called with `body.code`
    *  when present, otherwise with `body.error` — routes that only emit a bare
    *  `{ error: 'some_token' }` (e.g. the approvals decide route's
-   *  `step_up_required`) would otherwise toast the raw token verbatim. */
-  friendly?: (code: string) => string | undefined;
+   *  `step_up_required`) would otherwise toast the raw token verbatim.
+   *  The second argument includes parsed details for local copy cleanup. */
+  friendly?: (code: string, message: string) => string | undefined;
   onUnauthorized?: () => void;
   /**
    * Opt in to treating a 401 as a normal, toastable failure instead of "your
@@ -88,7 +89,7 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       message = i18n.t(/* i18n-dynamic */ `errors:${code}`);
     }
     if (friendlyKey && opts.friendly) {
-      const friendly = opts.friendly(friendlyKey);
+      const friendly = opts.friendly(friendlyKey, message);
       if (friendly) message = friendly;
     }
     if (response.status === 403 && isTrustDenial(data)) {

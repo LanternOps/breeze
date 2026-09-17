@@ -68,6 +68,78 @@ describe('MonitorEditor (#5289)', () => {
     fetchMock.mockImplementation(async (input: string) => defaultFetchImpl(input));
   });
 
+  it.each([
+    { orgId: null, partnerId: 'partner-1', label: 'Partner-wide' },
+    { orgId: 'org-1', partnerId: null, label: 'Organization' },
+  ])('shows the saved monitor owner in the detail header ($label)', async ({ orgId, partnerId, label }) => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/monitor-definitions/m1') return json({ data: { ...MONITOR_M1_FIXTURE, orgId, partnerId } });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+    expect(screen.getByTestId('scope-badge')).toHaveTextContent(label);
+  });
+
+  const escalationPolicies = [
+    { id: 'partner-policy', name: 'Partner policy', orgId: null, partnerId: 'partner-1' },
+    { id: 'org-policy', name: 'Organization policy', orgId: 'org-1', partnerId: null },
+    { id: 'other-org-policy', name: 'Other organization policy', orgId: 'org-2', partnerId: null },
+  ];
+
+  it.each([
+    { orgId: null, partnerId: 'partner-1', expected: ['', 'partner-policy'] },
+    { orgId: 'org-1', partnerId: null, expected: ['', 'partner-policy', 'org-policy'] },
+  ])('offers only owner-compatible escalation policies for a saved monitor ($orgId, $partnerId)', async ({ orgId, partnerId, expected }) => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/monitor-definitions/m1') return json({ data: { ...MONITOR_M1_FIXTURE, orgId, partnerId } });
+      if (input === '/alerts/policies') return json({ data: escalationPolicies });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+    const picker = screen.getByTestId('monitor-editor-escalation-policy') as HTMLSelectElement;
+    expect(Array.from(picker.options, (option) => option.value)).toEqual(expected);
+  });
+
+  it('clears an incompatible escalation policy when a new monitor switches to partner ownership', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/alerts/policies') return json({ data: escalationPolicies });
+      if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id: 'new-1' } });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor />);
+    const picker = screen.getByTestId('monitor-editor-escalation-policy') as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(picker.options, (option) => option.value)).toContain('org-policy'));
+    fireEvent.change(picker, { target: { value: 'org-policy' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-owner-partner'));
+    expect(Array.from(picker.options, (option) => option.value)).toEqual(['', 'partner-policy']);
+    expect(picker).toHaveValue('');
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Shared monitor' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(navMock).toHaveBeenCalled());
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && (init as RequestInit)?.method === 'POST');
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({ ownerScope: 'partner', escalationPolicyId: null });
+  });
+
+  it.each([
+    { error: 'INVALID_MONITOR', details: 'Choose a compatible escalation policy.', expected: 'Choose a compatible escalation policy.' },
+    { error: 'INVALID_MONITOR: Choose a compatible escalation policy.', expected: 'Choose a compatible escalation policy.' },
+    { error: 'Permission denied', expected: 'Permission denied' },
+  ])('shows save errors without a leading monitor machine code ($error)', async ({ expected, ...body }) => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && init?.method === 'PATCH') return json(body, false, 400);
+      if (input === '/monitor-definitions/m1') return json({ data: MONITOR_M1_FIXTURE });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith({ type: 'error', message: expected }));
+    expect(screen.getByTestId('monitor-editor-error')).toHaveTextContent(expected);
+    expect(screen.getByTestId('monitor-editor-error')).not.toHaveTextContent('INVALID_MONITOR:');
+  });
+
   it('create mode: switching kind to disk renders its fields with defaults and submits the right condition + ownerScope', async () => {
     fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
       if (init?.method === 'POST' && input === '/monitor-definitions') return json({ data: { id: 'new-1' } }, true, 201);

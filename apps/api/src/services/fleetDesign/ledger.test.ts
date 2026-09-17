@@ -259,3 +259,23 @@ describe('loadLedger', () => {
     expect(calls.selects[0]!.orderBy).toBeDefined();
   });
 });
+
+describe('explicit apply ledger executor', () => {
+  it('records, refreshes and finds the group on the supplied savepoint', async () => {
+    const ambient = makeExec([]);
+    holder.exec = ambient.exec;
+    const tx = makeExec([
+      [{ id: 'ledger-row' }],
+      [{ createdRefs: { groupId: 'group-1' } }],
+      [{ id: 'group-1' }],
+    ]);
+    const executor = tx.exec as unknown as NonNullable<Parameters<typeof recordApplied>[1]>;
+    await recordApplied({ orgId: ORG, reportRunId: RUN, itemRef: 'functions:file_server', itemKind: 'function', step: 1, userId: USER }, executor);
+    await updateCreatedRefs('ledger-row', ORG, { groupId: 'group-1' }, executor);
+    expect(await findReusableGroup(ORG, 'file_server', executor)).toEqual({ groupId: 'group-1' });
+    expect(tx.calls.inserts).toHaveLength(1);
+    expect(tx.calls.updates).toHaveLength(1);
+    expect(tx.calls.selects).toHaveLength(2);
+    expect(ambient.calls).toEqual({ selects: [], inserts: [], updates: [] });
+  });
+});

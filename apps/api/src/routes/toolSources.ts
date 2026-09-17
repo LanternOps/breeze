@@ -16,13 +16,15 @@ import { z } from 'zod';
 import {
   bulkEnableToolsSchema,
   createToolSourceSchema,
+  createToolSourceSchemaWithHttp,
   patchToolSourceToolSchema,
   qualifiedToolName,
   testToolCallSchema,
   updateToolSourceSchema,
+  updateToolSourceSchemaWithHttp,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
-import { toolSourcesEnabled } from '../config/env';
+import { toolSourcesAllowPrivateEgress, toolSourcesEnabled } from '../config/env';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -81,42 +83,60 @@ toolSourcesRoutes.get(
   },
 );
 
+// Select per request: a lazy Zod schema caches its first resolved schema.
+function toolSourceValidator<T extends z.ZodType>(httpsSchema: T, httpSchema: T) {
+  const validate = zValidator('json', httpsSchema);
+  const middleware: typeof validate = (c, next) =>
+    zValidator('json', toolSourcesAllowPrivateEgress() ? httpSchema : httpsSchema)(c, next);
+  return middleware;
+}
+
 toolSourcesRoutes.post(
   '/',
   requireToolSourcesWrite,
   requireMfa(),
-  zValidator('json', createToolSourceSchema),
+  toolSourceValidator(createToolSourceSchema, createToolSourceSchemaWithHttp),
   async (c) => {
     const auth = c.get('auth');
     const payload = c.req.valid('json');
 
-    const ownerResult = await resolveToolSourceOwner(auth, { ownerScope: payload.ownerScope, orgId: payload.orgId });
-    if ('error' in ownerResult) {
-      return c.json({ error: ownerResult.error }, ownerResult.status as 400 | 403);
-    }
-    const { owner } = ownerResult;
-
-    if (owner.orgId) {
-      const shadows = await slugShadowsPartnerSource(owner.orgId, payload.slug);
-      if (shadows) {
-        return c.json(
-          { error: 'This slug is already used by a partner-wide tool source', code: 'slug_shadows_partner_source' },
-          409,
-        );
+    const result = await withAuthDbAccessContext(auth, async () => {
+      const ownerResult = await resolveToolSourceOwner(auth, { ownerScope: payload.ownerScope, orgId: payload.orgId });
+      if ('error' in ownerResult) {
+        return c.json({ error: ownerResult.error }, ownerResult.status as 400 | 403);
       }
-    }
+      const { owner } = ownerResult;
 
-    const row = await createToolSourceRow(owner, payload, auth.user.id);
-    await enqueueToolSourceDiscovery(row.id);
+      if (owner.orgId) {
+        const shadows = await slugShadowsPartnerSource(owner.orgId, payload.slug);
+        if (shadows) {
+          return c.json(
+            { error: 'This slug is already used by a partner-wide tool source', code: 'slug_shadows_partner_source' },
+            409,
+          );
+        }
+      }
 
-    writeRouteAudit(c, {
-      orgId: row.orgId,
-      action: 'tool_source.created',
-      resourceType: 'tool_source',
-      resourceId: row.id,
-      resourceName: row.name,
-      details: { kind: row.kind, authKind: row.authKind, ownerScope: payload.ownerScope ?? 'organization' },
+      const row = await createToolSourceRow(owner, payload, auth.user.id);
+
+      writeRouteAudit(c, {
+        orgId: row.orgId,
+        action: 'tool_source.created',
+        resourceType: 'tool_source',
+        resourceId: row.id,
+        resourceName: row.name,
+        details: { kind: row.kind, authKind: row.authKind, ownerScope: payload.ownerScope ?? 'organization' },
+      });
+      return row;
     });
+    if (result instanceof Response) return result;
+    const row = result;
+    try {
+      await enqueueToolSourceDiscovery(row.id);
+    } catch {
+      const source = toToolSourceDto(row);
+      return c.json({ success: true, source, data: source, warning: 'discovery_not_queued' }, 202);
+    }
 
     return c.json({ data: toToolSourceDto(row) }, 201);
   },
@@ -143,30 +163,42 @@ toolSourcesRoutes.patch(
   requireToolSourcesWrite,
   requireMfa(),
   zValidator('param', idParamSchema),
-  zValidator('json', updateToolSourceSchema),
+  toolSourceValidator(updateToolSourceSchema, updateToolSourceSchemaWithHttp),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
-    const existing = await getToolSourceWithAccess(auth, id);
-    if (!existing) return c.json({ error: 'Tool source not found' }, 404);
+    const result = await withAuthDbAccessContext(auth, async () => {
+      const existing = await getToolSourceWithAccess(auth, id);
+      if (!existing) return c.json({ error: 'Tool source not found' }, 404);
 
-    if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
-    }
+      if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
 
-    const { row, discoveryTriggered } = await updateToolSourceRow(existing, payload);
-    if (discoveryTriggered) await enqueueToolSourceDiscovery(row.id);
+      const { row, discoveryTriggered } = await updateToolSourceRow(existing, payload);
 
-    writeRouteAudit(c, {
-      orgId: row.orgId,
-      action: 'tool_source.updated',
-      resourceType: 'tool_source',
-      resourceId: row.id,
-      resourceName: row.name,
-      details: { updatedFields: Object.keys(payload), discoveryTriggered },
+      writeRouteAudit(c, {
+        orgId: row.orgId,
+        action: 'tool_source.updated',
+        resourceType: 'tool_source',
+        resourceId: row.id,
+        resourceName: row.name,
+        details: { updatedFields: Object.keys(payload), discoveryTriggered },
+      });
+      return { row, discoveryTriggered };
     });
+    if (result instanceof Response) return result;
+    const { row, discoveryTriggered } = result;
+    if (discoveryTriggered) {
+      try {
+        await enqueueToolSourceDiscovery(row.id);
+      } catch {
+        const source = toToolSourceDto(row);
+        return c.json({ success: true, source, data: source, warning: 'discovery_not_queued' }, 202);
+      }
+    }
 
     return c.json({ data: toToolSourceDto(row) });
   },
@@ -210,22 +242,30 @@ toolSourcesRoutes.post(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
 
-    const existing = await getToolSourceWithAccess(auth, id);
-    if (!existing) return c.json({ error: 'Tool source not found' }, 404);
+    const result = await withAuthDbAccessContext(auth, async () => {
+      const existing = await getToolSourceWithAccess(auth, id);
+      if (!existing) return c.json({ error: 'Tool source not found' }, 404);
 
-    if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
-    }
+      if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
 
-    await enqueueToolSourceDiscovery(existing.id);
 
-    writeRouteAudit(c, {
-      orgId: existing.orgId,
-      action: 'tool_source.discover',
-      resourceType: 'tool_source',
-      resourceId: existing.id,
-      resourceName: existing.name,
+      writeRouteAudit(c, {
+        orgId: existing.orgId,
+        action: 'tool_source.discover',
+        resourceType: 'tool_source',
+        resourceId: existing.id,
+        resourceName: existing.name,
+      });
+      return existing;
     });
+    if (result instanceof Response) return result;
+    try {
+      await enqueueToolSourceDiscovery(result.id);
+    } catch {
+      return c.json({ success: true, source: toToolSourceDto(result), data: { queued: false }, warning: 'discovery_not_queued' }, 202);
+    }
 
     return c.json({ data: { queued: true } }, 202);
   },
@@ -343,8 +383,13 @@ toolSourcesRoutes.post(
       return c.json({ error: 'Only Tier 1 (read-only) tools can be test-called from this route' }, 403);
     }
 
+    // `source.orgId` is the validated request org — `getSourceAndToolWithAccess`
+    // above already confirmed `auth` can access this source (org-owned or
+    // partner-wide) — passed as `targetOrgId` so a partner-scoped session
+    // resolving an org-owned source's tool doesn't fall through to only the
+    // partner-wide branch (#6023). `null` (partner-wide source) is a no-op.
     const qualifiedName = qualifiedToolName(source.slug, tool.name);
-    const descriptor = await resolveTenantToolByName(auth, qualifiedName);
+    const descriptor = await resolveTenantToolByName(auth, qualifiedName, source.orgId);
     if (!descriptor) return c.json({ error: 'Tool is not currently available' }, 404);
 
     const start = Date.now();
@@ -353,7 +398,10 @@ toolSourcesRoutes.post(
     // `success: false` as a failure (CLAUDE.md, "Web Mutation Handlers") — a
     // bare 200 with the failure text buried in `result` would surface as
     // "Test call succeeded" in the UI that lands in PR C.
-    const { isError, text } = await executeTenantToolDetailed(descriptor, input, auth, { surface: 'test' });
+    const { isError, text } = await executeTenantToolDetailed(descriptor, input, auth, {
+      surface: 'test',
+      orgId: source.orgId,
+    });
     const durationMs = Date.now() - start;
 
     return c.json({

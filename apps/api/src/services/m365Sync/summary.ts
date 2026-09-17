@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { M365_SYNC_DOMAINS, type M365SyncDomain } from '@breeze/shared/m365';
 import { isM365TenantSyncEnabled } from '../../config/env';
 import { db } from '../../db';
@@ -61,6 +61,111 @@ function isUnlicensed(domain: M365SyncDomain, sources: unknown): boolean {
 }
 
 /**
+ * Raw per-domain freshness, as a report generator needs it (#5784 W03/W06).
+ *
+ * Why not reuse `loadSyncSummary`: it returns `null` outright when the sync flag
+ * is off and shapes its output for the UI card, iterating ALL domains. A report
+ * generator needs the freshness of the two or three domains it actually reads,
+ * and needs to tell "sync disabled" from "never ran" so its data-gap line can
+ * say which — so the flag check stays with the caller here.
+ *
+ * `asOf` is `last_complete_snapshot_at` and NOTHING else. `last_success_at`
+ * also advances for a `partial` outcome — a run that succeeded without
+ * enumerating the tenant — so quoting it would claim a freshness the data does
+ * not have. `sources` is returned verbatim (normalized to a string map) so a
+ * caller can name the actual gap (`needs_consent`, `throttled`) instead of
+ * printing zeros for an unmeasured population.
+ *
+ * Read on the REQUEST's own DB context: shape-1 RLS is the tenant boundary, and
+ * the statement is also keyed on the org.
+ */
+export interface DomainFreshness {
+  asOf: string | null;
+  lastStatus: string | null;
+  truncated: boolean;
+  sources: Record<string, string> | null;
+  /** The domain's OWN primary source came back 'unlicensed'. */
+  unlicensed: boolean;
+}
+
+type SyncStateRow = {
+  domain: unknown;
+  lastStatus: unknown;
+  lastSuccessAt: Date | string | null;
+  lastCompleteSnapshotAt: Date | string | null;
+  truncated: unknown;
+  sources: unknown;
+};
+
+/**
+ * The ONE m365_sync_state read both public readers below share. Kept private so
+ * neither caller can drift onto its own column list — `lastSuccessAt` is
+ * selected here for `loadSyncSummary`'s card only and is deliberately absent
+ * from `DomainFreshness`.
+ *
+ * Read on the REQUEST's own DB context, so shape-1 RLS is the tenant boundary;
+ * every statement is also keyed on the org.
+ */
+async function selectSyncStateRows(
+  orgId: string,
+  domains?: readonly M365SyncDomain[],
+): Promise<SyncStateRow[]> {
+  const where = domains
+    ? and(eq(m365SyncState.orgId, orgId), inArray(m365SyncState.domain, [...domains]))
+    : eq(m365SyncState.orgId, orgId);
+  return db
+    .select({
+      domain: m365SyncState.domain,
+      lastStatus: m365SyncState.lastStatus,
+      lastSuccessAt: m365SyncState.lastSuccessAt,
+      lastCompleteSnapshotAt: m365SyncState.lastCompleteSnapshotAt,
+      truncated: m365SyncState.truncated,
+      sources: m365SyncState.sources,
+    })
+    .from(m365SyncState)
+    .where(where) as unknown as Promise<SyncStateRow[]>;
+}
+
+function sourceMap(value: unknown): Record<string, string> | null {
+  if (value === null || typeof value !== 'object') return null;
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') out[key] = entry;
+  }
+  return out;
+}
+
+/**
+ * Per-domain freshness for the domains a caller actually reads (#5784 W03/W06).
+ *
+ * TOTAL over `domains`: a domain with no state row comes back as
+ * `asOf: null`, never as a missing key, so a caller cannot mistake
+ * "never scheduled" for "fresh and empty". Unlike `loadSyncSummary` this does
+ * NOT short-circuit on `isM365TenantSyncEnabled()` — a report generator has to
+ * tell "sync is switched off" from "scheduled but never completed" and says so
+ * in its own data-gap line, so it checks the flag itself.
+ */
+export async function loadDomainFreshness(
+  orgId: string,
+  domains: readonly M365SyncDomain[],
+): Promise<Record<M365SyncDomain, DomainFreshness>> {
+  const rows = domains.length === 0 ? [] : await selectSyncStateRows(orgId, domains);
+  const byDomain = new Map(rows.map((row) => [row.domain as M365SyncDomain, row]));
+  const out = {} as Record<M365SyncDomain, DomainFreshness>;
+  for (const domain of domains) {
+    const row = byDomain.get(domain);
+    out[domain] = {
+      asOf: iso(row?.lastCompleteSnapshotAt ?? null),
+      lastStatus: typeof row?.lastStatus === 'string' ? row.lastStatus : null,
+      truncated: row?.truncated === true,
+      sources: sourceMap(row?.sources ?? null),
+      unlicensed: isUnlicensed(domain, row?.sources ?? null),
+    };
+  }
+  return out;
+}
+
+/**
  * Per-domain freshness for the Customer Graph Read card. Read on the REQUEST's
  * own DB context, so shape-1 RLS is the tenant boundary — no system context,
  * no cross-org read — and every statement is also keyed on the org.
@@ -79,17 +184,7 @@ function isUnlicensed(domain: M365SyncDomain, sources: unknown): boolean {
 export async function loadSyncSummary(orgId: string, tenantId: string | null): Promise<M365SyncSummary | null> {
   if (!isM365TenantSyncEnabled()) return null;
 
-  const rows = await db
-    .select({
-      domain: m365SyncState.domain,
-      lastStatus: m365SyncState.lastStatus,
-      lastSuccessAt: m365SyncState.lastSuccessAt,
-      lastCompleteSnapshotAt: m365SyncState.lastCompleteSnapshotAt,
-      truncated: m365SyncState.truncated,
-      sources: m365SyncState.sources,
-    })
-    .from(m365SyncState)
-    .where(eq(m365SyncState.orgId, orgId));
+  const rows = await selectSyncStateRows(orgId);
 
   if (rows.length === 0) return null;
 

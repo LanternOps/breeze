@@ -43,11 +43,29 @@ export const portalAssetCheckoutEnabledMiddleware = createPortalFeatureGate({
   code: 'PORTAL_ASSET_CHECKOUT_DISABLED',
 });
 
-export const portalSelfServiceEnabledMiddleware = createPortalFeatureGate({
-  setting: 'enableSelfService',
-  error: 'Self-service device access is not enabled for this portal',
-  code: 'PORTAL_SELF_SERVICE_DISABLED',
-});
+// Devices visibility is independent of self-service. Keep the legacy default
+// (missing settings = self-service enabled) for existing portals.
+export const portalDevicesEnabledMiddleware: MiddlewareHandler = async (c, next) => {
+  const auth = c.get('portalAuth');
+  if (!auth) return c.json({ error: 'Authentication required' }, 401);
+
+  const [row] = await db
+    .select({
+      enableDevices: portalBranding.enableDevices,
+      enableSelfService: portalBranding.enableSelfService,
+    })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, auth.user.orgId))
+    .limit(1);
+
+  if (row?.enableDevices !== true && row?.enableSelfService === false) {
+    return c.json({
+      error: 'Device visibility is not enabled for this portal',
+      code: 'PORTAL_SELF_SERVICE_DISABLED',
+    }, 403);
+  }
+  return next();
+};
 
 // Strict W03 visibility gates (Task 3.3): unlike createPortalFeatureGate above
 // (missing row/default = enabled), these fail CLOSED — a missing

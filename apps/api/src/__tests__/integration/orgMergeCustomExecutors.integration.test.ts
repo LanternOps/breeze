@@ -1187,8 +1187,8 @@ describe('org merge engine SQL against real Postgres', () => {
           VALUES (${conn}::uuid, ${P}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD'),
                  (${connQ}::uuid, ${Q}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD')`);
         await db.execute(sql`
-          INSERT INTO catalog_items (id, partner_id, item_type, name, unit_price, cost_currency)
-          VALUES (${item}::uuid, ${P}::uuid, 'service', 'Managed Service', 100.00, 'USD')`);
+          INSERT INTO catalog_items (id, partner_id, item_type, name, cost_currency)
+          VALUES (${item}::uuid, ${P}::uuid, 'service', 'Managed Service', 'USD')`);
 
         // A SECOND, unrelated partner (Q) with its own ALREADY-orphaned invoice
         // mapping (source invoice deleted up front, before the merge under

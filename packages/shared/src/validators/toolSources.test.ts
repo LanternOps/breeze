@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createToolSourceSchema, patchToolSourceToolSchema, qualifiedToolName, splitQualifiedToolName,
+  createToolSourceSchemaWithHttp, updateToolSourceSchemaWithHttp, updateToolSourceSchema, createToolSourceSchema, patchToolSourceToolSchema, qualifiedToolName, splitQualifiedToolName,
   isTenantToolName, TOOL_SOURCE_SLUG_RE, RESERVED_TOOL_SOURCE_SLUGS,
 } from './toolSources';
 
@@ -43,5 +43,21 @@ describe('toolSources validators', () => {
     expect(isTenantToolName('hudu__get_asset')).toBe(true);
     expect(isTenantToolName('__x')).toBe(false);
     expect(isTenantToolName('hu-du__x')).toBe(false);
+  });
+});
+
+describe('explicit HTTP allowance', () => {
+  it.each(['http://host.example/mcp', 'https://host.example/mcp'])('accepts %s only in the appropriate schemas', (endpointUrl) => {
+    expect(createToolSourceSchemaWithHttp.safeParse({ ...base, endpointUrl }).success).toBe(true);
+    expect(updateToolSourceSchemaWithHttp.safeParse({ endpointUrl }).success).toBe(true);
+    expect(createToolSourceSchema.safeParse({ ...base, endpointUrl }).success).toBe(endpointUrl.startsWith('https:'));
+    expect(updateToolSourceSchema.safeParse({ endpointUrl }).success).toBe(endpointUrl.startsWith('https:'));
+  });
+  it.each(['ftp://host.example/mcp', 'file:///tmp/mcp', 'invalid'])('still rejects %s', (endpointUrl) => {
+    expect(createToolSourceSchemaWithHttp.safeParse({ ...base, endpointUrl }).success).toBe(false);
+    expect(updateToolSourceSchemaWithHttp.safeParse({ endpointUrl }).success).toBe(false);
+  });
+  it('does not relax OAuth token URL validation', () => {
+    expect(createToolSourceSchemaWithHttp.safeParse({ ...base, authKind: 'oauth2_client_credentials', authConfig: { tokenUrl: 'http://host.example/token', clientId: 'id', clientSecret: 'secret' } }).success).toBe(false);
   });
 });

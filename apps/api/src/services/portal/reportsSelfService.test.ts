@@ -118,7 +118,12 @@ describe('provisionPortalReportDefinitions', () => {
       { type: 'executive_summary' },
       { type: 'security_compliance_posture' },
       { type: 'hardware_lifecycle' },
+      { type: 'threat_detection_review' },
+      { type: 'endpoint_management_review' },
+      { type: 'vulnerability_management' },
+      { type: 'identity_access_review' },
     ]);
+
     state.insertReturning.mockResolvedValue([]);
     state.updateReturning.mockResolvedValue([]);
     state.generateReport.mockReset();
@@ -136,7 +141,21 @@ describe('provisionPortalReportDefinitions', () => {
     state.execute.mockResolvedValue([{ prior_ms: 0 }]);
   });
 
-  it('inserts the three fixed customer-safe definitions idempotently', async () => {
+  it('provisions an endpoint management definition for an org enabling portal reports', async () => {
+    await provisionPortalReportDefinitions({ orgId: ORG_ID, createdBy: USER_ID });
+    const inserted = state.inserted.mock.calls[0]?.[0] as Array<{ type: string }>;
+    expect(inserted.map((r) => r.type)).toContain('endpoint_management_review');
+  });
+
+  it('keeps the provisioned config byte-identical to the managed-evidence registry default', async () => {
+    const { MANAGED_EVIDENCE_REGISTRY } = await import('../managedEvidenceRegistry');
+    await provisionPortalReportDefinitions({ orgId: ORG_ID, createdBy: USER_ID });
+    const inserted = state.inserted.mock.calls[0]?.[0] as Array<{ type: string; config: unknown }>;
+    const row = inserted.find((r) => r.type === 'endpoint_management_review');
+    expect(row?.config).toEqual(MANAGED_EVIDENCE_REGISTRY.endpoint_management_review.defaultConfig);
+  });
+
+  it('inserts the fixed customer-safe definitions plus the managed-evidence ones idempotently', async () => {
     await provisionPortalReportDefinitions({
       orgId: ORG_ID,
       createdBy: USER_ID,
@@ -179,8 +198,82 @@ describe('provisionPortalReportDefinitions', () => {
         executionScopeUserId: USER_ID,
         executionScopePrincipalKind: 'user',
       }),
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Service evidence — Threat detection review',
+        type: 'threat_detection_review',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
+      // #5784 W03 — managed evidence: provisioned as a definition so a
+      // delivered run is listable, but absent from PORTAL_REPORT_TYPES so the
+      // portal offers no generate button.
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Service evidence — Endpoint management review',
+        type: 'endpoint_management_review',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
+      // #5784 W04 — provisioned, but never portal-generatable.
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Service evidence — Vulnerability management',
+        type: 'vulnerability_management',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
+      // #5784 W06 — managed evidence, provisioned but never self-service.
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Service evidence — Identity and access review',
+        type: 'identity_access_review',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
     ]);
     expect(state.conflict).toHaveBeenCalledOnce();
+  });
+
+  // #5784 W06.
+  it('provisions an identity access definition for an org enabling portal reports', async () => {
+    await provisionPortalReportDefinitions({ orgId: ORG_ID, createdBy: USER_ID });
+    const values = vi.mocked(state.inserted).mock.calls[0]?.[0] as Array<{ type: string; portalSelfService: boolean; name: string; config: Record<string, unknown> }>;
+    const row = values.find((v) => v.type === 'identity_access_review');
+    expect(row).toBeTruthy();
+    expect(row?.portalSelfService).toBe(true);
+    expect(row?.name).toBe('Service evidence — Identity and access review');
+    // No `sites` key: the report is org-wide by construction (OD-8 = A).
+    expect(row?.config).toEqual({ dormantDays: 45, homeCountries: [], adminDetail: true });
+  });
+
+  it('provisions a threat detection definition for an org enabling portal reports', async () => {
+    await provisionPortalReportDefinitions({ orgId: ORG_ID, createdBy: USER_ID });
+    const values = vi.mocked(state.inserted).mock.calls[0]?.[0] as Array<{ type: string; portalSelfService: boolean; name: string }>;
+    const row = values.find((v) => v.type === 'threat_detection_review');
+    expect(row).toBeTruthy();
+    expect(row?.portalSelfService).toBe(true);
+    expect(row?.name).toBe('Service evidence — Threat detection review');
   });
 
   it('compiles the partial-index conflict arbiter with a literal true predicate', () => {
@@ -307,6 +400,20 @@ describe('portal report SQL scope', () => {
   });
 });
 
+describe('threat_detection_review portal provisioning (#5784 W02)', () => {
+  it('keeps threat_detection_review OUT of the portal generate allowlist (OD-10 = A)', () => {
+    expect(PORTAL_REPORT_TYPES as readonly string[]).not.toContain('threat_detection_review');
+  });
+});
+
+describe('identity_access_review portal provisioning (#5784 W06)', () => {
+  it('keeps identity_access_review OUT of the portal generate allowlist (OD-10 = A)', () => {
+    // A customer generating an identity report on demand would be a new compute
+    // surface AND a new PII surface (user principal names, IP addresses).
+    expect(PORTAL_REPORT_TYPES as readonly string[]).not.toContain('identity_access_review');
+  });
+});
+
 describe('PORTAL_REPORT_TYPES', () => {
   it('carries hardware_lifecycle as the third self-service member', () => {
     expect(PORTAL_REPORT_TYPES).toEqual([
@@ -314,6 +421,20 @@ describe('PORTAL_REPORT_TYPES', () => {
       'executive_summary',
       'hardware_lifecycle',
     ]);
+  });
+
+  // OD-10 = A (#5784 W03): a managed evidence type is provisioned as a portal
+  // DEFINITION so delivered runs can be listed and downloaded, but the portal
+  // user may never generate one on demand — the artifact is the MSP's evidence,
+  // produced by the sweep on the occurrence's schedule.
+  it('keeps endpoint_management_review OUT of the portal generate allowlist', () => {
+    expect(PORTAL_REPORT_TYPES).not.toContain('endpoint_management_review');
+  });
+
+  // #5784 W04, OD-10 = A. Being provisioned as a definition is NOT being
+  // self-servable: a portal user must never be able to run this on demand.
+  it('keeps vulnerability_management OUT of the portal generate allowlist', () => {
+    expect(PORTAL_REPORT_TYPES).not.toContain('vulnerability_management');
   });
 });
 
@@ -932,28 +1053,29 @@ describe('latestPortalHardwareLifecycleRun', () => {
     ).rejects.toBeInstanceOf(PortalReportNotFoundError);
   });
 
-  // #5880: LifecyclePlanTable links a device row's Computer cell to
-  // /portal/devices, but that route itself redirects home when the org's
-  // enable_self_service flag is off — so the portal page needs the flag to
-  // know whether the link is safe to render at all.
-  it("includes the org's enable_self_service flag in the DTO when it is on", async () => {
+  // The legacy DTO field controls device deep-links, so either Devices grant
+  // must enable it even when self-service actions are disabled.
+  it.each([[true, false], [false, true], [true, true]])(
+    'enables device links with enableDevices=%s and enableSelfService=%s',
+    async (enableDevices, enableSelfService) => {
+      state.selected
+        .mockReset()
+        .mockResolvedValueOnce([{ enableLifecycle: true, enableDevices, enableSelfService }])
+        .mockResolvedValue([{
+          id: RUN_ID,
+          result: { summary: {} },
+          completedAt: new Date('2026-09-02T18:00:00.000Z'),
+        }]);
+
+      const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+      expect(dto.enableSelfService).toBe(true);
+    },
+  );
+
+  it('disables device links when both Devices grants are off', async () => {
     state.selected
       .mockReset()
-      .mockResolvedValueOnce([{ enableLifecycle: true, enableSelfService: true }])
-      .mockResolvedValue([{
-        id: RUN_ID,
-        result: { summary: {} },
-        completedAt: new Date('2026-09-02T18:00:00.000Z'),
-      }]);
-
-    const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
-    expect(dto.enableSelfService).toBe(true);
-  });
-
-  it('reports enableSelfService as false when the org has self-service off', async () => {
-    state.selected
-      .mockReset()
-      .mockResolvedValueOnce([{ enableLifecycle: true, enableSelfService: false }])
+      .mockResolvedValueOnce([{ enableLifecycle: true, enableDevices: false, enableSelfService: false }])
       .mockResolvedValue([{
         id: RUN_ID,
         result: { summary: {} },

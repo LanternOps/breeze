@@ -78,21 +78,27 @@ const RESOLVE_TOOL_ROW_SELECTION = {
 
 /**
  * The dual-axis owner predicate for `tool_source_tools`, derived EXPLICITLY
- * from `auth` (never a bare/ambient read — see module doc). Returns `null`
- * when no predicate is derivable (system scope, or a scope missing the id it
- * needs), which callers treat as "resolve to nothing".
+ * from `auth` (never a bare/ambient read — see module doc) plus an optional
+ * `targetOrgId` a caller passes for an org-targeted partner session. Returns
+ * `null` when no predicate is derivable (system scope, or a scope missing the
+ * id it needs), which callers treat as "resolve to nothing".
  *
  * - organization scope: the org's own tools, OR the org's partner's
  *   partner-wide tools (partner id resolved live via a correlated subquery —
  *   `auth.partnerId` is trusted for RBAC but the ownership check here is
  *   re-derived from `organizations` so a stale/forged claim can't shadow a
- *   partner's real tools).
- * - partner scope: the partner's partner-wide tools, plus — when the partner
- *   session is targeting one org (an "org-targeted partner session") — that
- *   org's own tools too.
+ *   partner's real tools). `targetOrgId` is ignored here — an org session is
+ *   already pinned to its one org.
+ * - partner scope: the partner's partner-wide tools, plus — when the caller
+ *   passes `targetOrgId` (the validated `orgId` request param, resolved AFTER
+ *   the route's own access check, never `auth.orgId`) — that org's own tools
+ *   too, but only once `targetOrgId`'s partner is re-derived LIVE from
+ *   `organizations` and found to match this token's partner. `targetOrgId` is
+ *   caller-supplied and must never be trusted directly, same reasoning as the
+ *   org-scope branch above.
  * - system scope: no tenant to resolve against.
  */
-function ownerPredicate(auth: AuthContext): SQL | null {
+function ownerPredicate(auth: AuthContext, targetOrgId?: string | null): SQL | null {
   if (auth.scope === 'system') return null;
 
   if (auth.scope === 'organization') {
@@ -109,10 +115,12 @@ function ownerPredicate(auth: AuthContext): SQL | null {
   // partner scope
   if (!auth.partnerId) return null;
   const partnerWide = and(isNull(toolSourceTools.orgId), eq(toolSourceTools.partnerId, auth.partnerId));
-  if (auth.orgId) {
-    return or(eq(toolSourceTools.orgId, auth.orgId), partnerWide) ?? null;
-  }
-  return partnerWide ?? null;
+  if (!targetOrgId) return partnerWide ?? null;
+
+  const targetOrgsPartnerId = sql<string>`(select ${organizations.partnerId} from ${organizations} where ${organizations.id} = ${targetOrgId})`;
+  return (
+    or(and(eq(toolSourceTools.orgId, targetOrgId), eq(targetOrgsPartnerId, auth.partnerId)), partnerWide) ?? null
+  );
 }
 
 /**
@@ -123,8 +131,8 @@ function ownerPredicate(auth: AuthContext): SQL | null {
  * predicate. Returns `null` when `ownerPredicate` finds nothing to resolve
  * against (system scope, or a scope missing its id).
  */
-export function buildResolveTenantToolsQuery(auth: AuthContext) {
-  const predicate = ownerPredicate(auth);
+export function buildResolveTenantToolsQuery(auth: AuthContext, targetOrgId?: string | null) {
+  const predicate = ownerPredicate(auth, targetOrgId);
   if (!predicate) return null;
 
   return db
@@ -241,16 +249,21 @@ function dedupeByQualifiedName(descriptors: TenantToolDescriptor[]): TenantToolD
 /**
  * Every tenant tool `auth` may currently see. `[]` when `toolSourcesEnabled()`
  * is false (dark-ship kill switch) or when the caller's scope resolves no
- * owner predicate (system scope).
+ * owner predicate (system scope). `targetOrgId` — the validated request org
+ * (after the caller's own access check), NEVER `auth.orgId` — additionally
+ * surfaces one org's own tools to a partner-scoped caller; see `ownerPredicate`.
  */
-export async function resolveTenantTools(auth: AuthContext): Promise<TenantToolDescriptor[]> {
+export async function resolveTenantTools(
+  auth: AuthContext,
+  targetOrgId?: string | null,
+): Promise<TenantToolDescriptor[]> {
   if (!toolSourcesEnabled()) return [];
 
   // Short-circuit BEFORE opening a DB context: a system-scoped caller (and any
   // scope missing its owner id) has no tenant to resolve against, and must not
   // cost a connection. `ownerPredicate` only builds SQL fragments — it never
   // touches the `db` proxy.
-  if (!ownerPredicate(auth)) return [];
+  if (!ownerPredicate(auth, targetOrgId)) return [];
 
   // The query MUST be built inside the system context, not outside it. `db` is
   // a proxy that binds to whatever transaction is active at PROPERTY-ACCESS
@@ -260,7 +273,7 @@ export async function resolveTenantTools(auth: AuthContext): Promise<TenantToolD
   // a mocked unit test cannot see it).
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
-      const query = buildResolveTenantToolsQuery(auth);
+      const query = buildResolveTenantToolsQuery(auth, targetOrgId);
       return query ? await query : [];
     }, 'resolveTenantTools'),
   );
@@ -277,8 +290,9 @@ export async function resolveTenantTools(auth: AuthContext): Promise<TenantToolD
 export async function resolveTenantToolByName(
   auth: AuthContext,
   qualifiedName: string,
+  targetOrgId?: string | null,
 ): Promise<TenantToolDescriptor | null> {
-  const all = await resolveTenantTools(auth);
+  const all = await resolveTenantTools(auth, targetOrgId);
   return all.find((d) => d.qualifiedName === qualifiedName) ?? null;
 }
 
@@ -312,8 +326,12 @@ export async function resolveTenantToolByName(
  * entirely (the admin/system path) always builds a query with no owner
  * predicate.
  */
-export function buildLoadTenantToolForExecutionQuery(toolId: string, auth?: AuthContext) {
-  const owner = auth ? ownerPredicate(auth) : undefined;
+export function buildLoadTenantToolForExecutionQuery(
+  toolId: string,
+  auth?: AuthContext,
+  targetOrgId?: string | null,
+) {
+  const owner = auth ? ownerPredicate(auth, targetOrgId) : undefined;
   if (auth && !owner) return null;
 
   return db
@@ -379,6 +397,7 @@ export async function loadTenantToolBindingState(toolId: string): Promise<{
 export async function loadTenantToolForExecution(
   toolId: string,
   auth?: AuthContext,
+  targetOrgId?: string | null,
 ): Promise<{ descriptor: TenantToolDescriptor; source: ToolSourceRow } | null> {
   // The kill switch is re-checked HERE, not only at session-start resolution
   // (`resolveTenantTools`, routes, and the discovery worker): a chat
@@ -393,7 +412,7 @@ export async function loadTenantToolForExecution(
 
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
-      const query = buildLoadTenantToolForExecutionQuery(toolId, auth);
+      const query = buildLoadTenantToolForExecutionQuery(toolId, auth, targetOrgId);
       return query ? await query : [];
     }, 'loadTenantToolForExecution'),
   );

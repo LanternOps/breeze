@@ -211,7 +211,8 @@
       "actionPlan": "Eylem Planı",
       "autoApprove": "Otomatik Onayla",
       "hybridPlan": "Hibrit Plan"
-    }
+    },
+    "overridesOrgTab": "Burada belirlediğiniz alanlar, her kuruluşun yapay zeka sekmesindeki aynı alanın üzerine yazar ve onu kilitler."
   },
   "aiBudgetThresholds": {
     "invalid": "1 ile 99 arasında, virgülle ayrılmış en fazla beş tam sayı girin."
@@ -1133,6 +1134,10 @@
       "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
       "enableAll": "Tüm görünürlüğü etkinleştir",
       "toggles": {
+        "enableDevices": {
+          "label": "Cihazlar",
+          "description": "Cihazlar sayfasını göster. Self servis de bu sayfaya erişim sağlar."
+        },
         "enableDashboard": {
           "label": "Pano",
           "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."
@@ -1444,7 +1449,7 @@
     "completeReview": "İncelemeyi Tamamla"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
+    "aIUsageBudget": "Yapay Zeka Kullanımı",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "AI asistanının kullanımını izleyin ve bütçe sınırlarını yapılandırın",
     "budgetConfiguration": "Bütçe Yapılandırması",
     "aIEnabled": "Yapay Zeka Etkin",
@@ -1494,7 +1499,19 @@
     "untitled": "Başlıksız",
     "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
     "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır: yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
-    "creditsRemaining": "Kalan Breeze yapay zeka kredisi"
+    "creditsRemaining": "Kalan Breeze yapay zeka kredisi",
+    "defaultValue": "Varsayılan ({{value}})",
+    "viewPartnerWideBudgets": "İş ortağı yapay zeka bütçeleri",
+    "monitorAIAssistantUsage": "Yapay zeka asistanı kullanımını izleyin",
+    "effectiveBudget": "Geçerli bütçe",
+    "effectiveBudgetHelp": "Bu kuruluş için şu anda geçerli olan sınırlar ve her birinin nerede belirlendiği.",
+    "effectiveBudgetUnavailable": "Geçerli bütçe yüklenemedi. Yeniden denemek için sayfayı yeniden yükleyin.",
+    "sourcePartner": "İş ortağı tarafından belirlendi",
+    "sourceOrganization": "Kuruluş tarafından belirlendi",
+    "sourceDefault": "Varsayılan",
+    "selectOrgForEffectiveBudget": "Geçerli bütçesini görmek için bir kuruluş seçin veya iş ortağı çapındaki varsayılan ayarları düzenleyin.",
+    "editPartnerWideDefaults": "İş ortağı çapındaki varsayılan ayarları düzenle",
+    "thresholdsOff": "Kapalı"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4081,6 +4098,7 @@
     "languageLoadFailed": "Tercih kaydedildi, ancak dil yüklenemedi; İngilizce gösteriliyor. Bağlantınızı kontrol edip tekrar deneyin."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Varsayılan süre kaydı (dakika)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA dakika ve saatlik ücret rakam olmalıdır.",
     "categoryUpdated": "Kategori güncellendi",
     "ticketing": "Biletleme",
@@ -4336,6 +4354,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Yapay zeka bütçesi",
+    "description": "Bu kuruluşta yapay zeka asistanı için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
+  },
   "orgSettingsPage": {
     "loading": "Organizasyon ayarları yükleniyor...",
     "confirmDiscard": "Bu bölümde kaydedilmemiş değişiklikleriniz var. Geçiş yapmak onları ortadan kaldıracaktır. Devam etmek?",
@@ -4389,7 +4412,9 @@
       "notifications": "Bildirimler",
       "notificationsDescription": "E-posta, Slack, web kancaları",
       "ticketing": "Biletleme",
-      "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma"
+      "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma",
+      "ai": "Yapay Zeka",
+      "aiDescription": "Yapay zeka asistanı bütçesi, hız sınırları ve onay modu"
     },
     "overview": {
       "title": "Organizasyona genel bakış",
@@ -5216,6 +5241,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Kuruluşa ait değişkenler ilgili kuruluşun altında listelenir.",
     "title": "Değişkenler",
     "description": "Bir satıcı site belirteci, dahili bir depo URL'si gibi bir değeri bir kez tanımlayın ve bunu müşteri başına sabit kodlamak yerine komut dosyalarından referans alın.",
     "loading": "Değişkenler yükleniyor…",

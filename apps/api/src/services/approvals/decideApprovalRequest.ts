@@ -238,6 +238,21 @@ export function serialize(
    * `customerTenant`'s batching); this function stays I/O-free.
    */
   orgName: string | null = null,
+  /**
+   * The linked intent's TERMINAL outcome (#6022) — its status, `error_code`
+   * and a display reason — or null when the intent is still live or absent.
+   *
+   * Only the `?view=recent` listing passes it; every other surface keeps the
+   * unchanged, additive-by-default `null`. Without it a failed intent had no
+   * UI home at all: `/approvals` listed pending rows only, so the operator
+   * could not see that the platform had refused the action.
+   */
+  intentOutcome: {
+    status: string;
+    errorCode: string | null;
+    reason: string | null;
+    executedAt: string | null;
+  } | null = null,
 ) {
   const isAgentOriginated = attribution?.requestingAgentRunId != null;
   const actionArguments = r.actionArguments as Record<string, unknown> | null;
@@ -270,6 +285,7 @@ export function serialize(
     approvalScope,
     isRecursive: r.isRecursive,
     createdAt: r.createdAt.toISOString(),
+    intentOutcome,
   };
 }
 

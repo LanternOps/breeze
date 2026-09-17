@@ -29,7 +29,7 @@ import { ActionError } from '../../lib/runAction';
 const fetcher = vi.fn();
 
 function ok(body: unknown, status = 200): Response {
-  return { ok: status < 400, status, json: async () => body } as Response;
+  return new Response(JSON.stringify(body), { status });
 }
 
 beforeEach(() => {
@@ -37,6 +37,19 @@ beforeEach(() => {
 });
 
 describe('tool sources API client', () => {
+  it('preserves discovery warnings on create, update, and re-discover', async () => {
+    fetcher.mockImplementation(async () => ok({
+      success: true, data: { id: 's-1' }, source: { id: 's-1' }, warning: 'discovery_not_queued',
+    }, 202));
+    const body = {
+      ownerScope: 'partner' as const, name: 'Hudu', slug: 'hudu', kind: 'mcp' as const,
+      endpointUrl: 'https://hudu.example.test/mcp', rateLimitPerMinute: 120, authKind: 'none' as const,
+    };
+    await expect(createToolSource(fetcher, body)).resolves.toMatchObject({ id: 's-1', warning: 'discovery_not_queued' });
+    await expect(updateToolSource(fetcher, 's-1', {})).resolves.toMatchObject({ id: 's-1', warning: 'discovery_not_queued' });
+    await expect(discoverToolSource(fetcher, 's-1')).resolves.toMatchObject({ warning: 'discovery_not_queued' });
+  });
+
   it('lists sources and unwraps the data envelope', async () => {
     fetcher.mockResolvedValueOnce(ok({ data: [{ id: 's-1' }], pagination: { total: 1, limit: 50, offset: 0 } }));
     await expect(listToolSources(fetcher)).resolves.toEqual([{ id: 's-1' }]);
@@ -98,7 +111,7 @@ describe('tool sources API client', () => {
   });
 
   it('routes the rest of the surface at the paths the API mounts', async () => {
-    fetcher.mockResolvedValue(ok({ data: {} }));
+    fetcher.mockImplementation(async () => ok({ data: {} }));
     await getToolSource(fetcher, 's-1');
     await updateToolSource(fetcher, 's-1', { name: 'New' });
     await deleteToolSource(fetcher, 's-1');
@@ -115,6 +128,23 @@ describe('tool sources API client', () => {
       ['/tool-sources/s-1/tools/bulk', 'POST'],
     ]);
     expect(JSON.parse(fetcher.mock.calls[5]![1].body as string)).toEqual({ mode: 'enable_reads' });
+  });
+
+  it('resolves a successful delete even though the route answers {success,id}, not a data envelope', async () => {
+    // DELETE /tool-sources/:id returns `{ success: true, id }` like every
+    // other delete route (CLAUDE.md delete-route convention) — it never
+    // carries a `data` envelope. Running it through `unwrapData` would throw
+    // "missing data envelope" on a successful delete.
+    fetcher.mockResolvedValueOnce(ok({ success: true, id: 's-1' }));
+    await expect(deleteToolSource(fetcher, 's-1')).resolves.toBeUndefined();
+  });
+
+  it('rejects a failed delete with the server-provided error', async () => {
+    fetcher.mockResolvedValueOnce(ok({ error: 'Partner-wide sources require partner-policy access' }, 403));
+    await expect(deleteToolSource(fetcher, 's-1')).rejects.toMatchObject({
+      status: 403,
+      message: 'Partner-wide sources require partner-policy access',
+    });
   });
 
   it('ids are URL-encoded, so a hostile id cannot escape the path', async () => {

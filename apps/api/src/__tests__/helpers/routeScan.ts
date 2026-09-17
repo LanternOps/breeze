@@ -47,6 +47,33 @@ export interface RouteInfo {
    */
   touchesDeviceData: boolean;
   /**
+   * True iff the scanner stopped reading this handler before its region ended:
+   * the distance from the route definition to the next one exceeds
+   * {@link HANDLER_SLICE_BYTES}, so {@link usesSiteScopeGate} and
+   * {@link sitePermsGateDead} were computed over a PREFIX of the handler.
+   *
+   * Truncation is not silent-unsafe for {@link touchesDeviceData} (that signal
+   * reads the whole region), and a gate that falls past the cap only makes the
+   * route flag as an offender — the safe direction. It IS unsafe for the
+   * dead-gate detector, which needs to see the `permissions` read: a
+   * fail-open `allowedSiteIds` check sitting past the cap is invisible. So the
+   * scanner announces where it stopped instead of quietly answering `false`.
+   * See #4019.
+   */
+  handlerWindowTruncated: boolean;
+  /**
+   * True iff the perms-sourced site-gate shape ({@link sitePermsGateDead}'s
+   * input) appears in the handler's region but NOT in the capped window the
+   * dead-gate detector actually reads — i.e. the scanner stopped reading
+   * before the site check. This is the one direction where truncation is
+   * silently UNSAFE: a fail-open `permissions.allowedSiteIds` guard sitting
+   * past the cap simply never gets evaluated by the detector, so a dead gate
+   * reads as "no gate here at all". The site-scope suite asserts this is
+   * always false; a new hit means the handler must be split (or the cap
+   * raised) before the dead-gate detector can be trusted for it. See #4019.
+   */
+  permsSiteGateBeyondWindow: boolean;
+  /**
    * True iff the handler gates site access through the request-scoped
    * `permissions` context (`c.get('permissions')` → `canAccessSite` /
    * `allowedSiteIds`), directly or via a file-local helper, but has NO live
@@ -83,6 +110,255 @@ const SCHEMA_DIR = path.resolve(__dirname, '../../db/schema');
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Identifier-ish characters (identifier, number, `$`, `_`). */
+const WORD_CHAR = /[A-Za-z0-9_$]/;
+
+/** Keywords after which a `/` opens a REGEX literal rather than dividing. */
+const REGEX_AFTER_KEYWORD = new Set([
+  'return',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'new',
+  'delete',
+  'void',
+  'throw',
+  'case',
+  'do',
+  'else',
+  'yield',
+  'await',
+]);
+
+/**
+ * Characters after which a `/` opens a REGEX literal. Everything NOT listed
+ * here — an identifier, a number, a string/template quote, `)` or `]` — ends a
+ * VALUE, so a following `/` is division. `}` is treated as regex-permitting
+ * (it far more often closes a block than an object literal in expression
+ * position).
+ */
+const REGEX_AFTER_PUNCT = new Set([
+  '',
+  '(',
+  ',',
+  '=',
+  ':',
+  '[',
+  '!',
+  '&',
+  '|',
+  '?',
+  '{',
+  '}',
+  ';',
+  '+',
+  '-',
+  '*',
+  '%',
+  '~',
+  '^',
+  '<',
+  '>',
+  '/',
+  '\n',
+]);
+
+/**
+ * Remove `//` line comments and block comments from TypeScript source while
+ * preserving the file's LINE structure: every newline inside a stripped block
+ * comment is re-emitted, so `text.slice(0, i).split('\n').length` on the
+ * stripped text still yields the real 1-based line number of offset `i`.
+ * Byte offsets shrink; line numbers do not move.
+ *
+ * The whole scanner runs on the stripped text, because comments are hostile to
+ * a static security scanner in BOTH directions (#4019):
+ *
+ *  - Prose competes with code for {@link HANDLER_SLICE_BYTES}. A long
+ *    explanatory comment inside a handler pushes the handler's real
+ *    device-table access past the window, and the scanner then cannot tell
+ *    "this handler touches no device data" from "I stopped reading first".
+ *    A comment could evict a route from the scan entirely.
+ *  - Prose can FAKE a signal. `// TODO: call canAccessSite here` makes a
+ *    gateless handler read as gated, and a gate name in a helper's doc comment
+ *    promotes that helper to a bogus "local gate wrapper" that then vouches
+ *    for every route calling it.
+ *
+ * String and template literals are tracked so a `//` inside a string is not
+ * mistaken for a comment, and regex literals are recognised so an unescaped
+ * `/` inside a character class (`/^(?:[A-Za-z0-9+/]{4})*$/`, several of which
+ * live under `routes/`) cannot open a phantom comment that swallows real code.
+ * `routeScan.parseGuard.test.ts` re-parses every stripped route file with the
+ * TypeScript parser to prove the stripper never removes code.
+ */
+export function stripComments(text: string): string {
+  const n = text.length;
+  let out = '';
+  let i = 0;
+  // Last non-whitespace character of emitted code, and the identifier token
+  // that ended there. Together they decide regex-vs-division for a bare `/`.
+  let prevChar = '';
+  let prevWord = '';
+  // Mode stack. A template literal pushes `template`; each `${` inside it
+  // pushes a fresh `code` frame whose brace counter finds the matching `}`.
+  const stack: Array<{ kind: 'code' | 'template'; braces: number }> = [
+    { kind: 'code', braces: 0 },
+  ];
+
+  while (i < n) {
+    const frame = stack[stack.length - 1]!;
+    const ch = text[i]!;
+
+    if (frame.kind === 'template') {
+      if (ch === '\\') {
+        out += text.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === '`') {
+        out += ch;
+        i++;
+        stack.pop();
+        prevChar = '`';
+        prevWord = '';
+        continue;
+      }
+      if (ch === '$' && text[i + 1] === '{') {
+        out += '${';
+        i += 2;
+        stack.push({ kind: 'code', braces: 0 });
+        prevChar = '{';
+        prevWord = '';
+        continue;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+
+    // --- comments ----------------------------------------------------------
+    if (ch === '/' && text[i + 1] === '/') {
+      while (i < n && text[i] !== '\n') i++;
+      continue; // the newline itself is emitted on the next iteration
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2);
+      const stop = close === -1 ? n : close + 2;
+      const newlines = text.slice(i, stop).split('\n').length - 1;
+      // Keep the line structure. An inline comment collapses to a single space
+      // so `canAcc/* x */essSite` cannot fuse into one identifier.
+      out += newlines > 0 ? '\n'.repeat(newlines) : ' ';
+      i = stop;
+      continue;
+    }
+
+    // --- string literals ---------------------------------------------------
+    if (ch === '"' || ch === "'") {
+      const start = i;
+      i++;
+      while (i < n) {
+        const c = text[i]!;
+        if (c === '\\') {
+          i += 2;
+          continue;
+        }
+        if (c === ch) {
+          i++;
+          break;
+        }
+        if (c === '\n') break; // unterminated: stop at the line end, never eat the file
+        i++;
+      }
+      out += text.slice(start, i);
+      prevChar = ch;
+      prevWord = '';
+      continue;
+    }
+
+    if (ch === '`') {
+      out += ch;
+      i++;
+      stack.push({ kind: 'template', braces: 0 });
+      continue;
+    }
+
+    // --- regex literal vs. division ---------------------------------------
+    if (ch === '/') {
+      const isRegex = REGEX_AFTER_PUNCT.has(prevChar) || REGEX_AFTER_KEYWORD.has(prevWord);
+      if (isRegex) {
+        let j = i + 1;
+        let inClass = false;
+        let closed = false;
+        while (j < n) {
+          const c = text[j]!;
+          if (c === '\\') {
+            j += 2;
+            continue;
+          }
+          if (c === '\n') break; // a regex literal cannot span lines
+          if (c === '[') inClass = true;
+          else if (c === ']') inClass = false;
+          else if (c === '/' && !inClass) {
+            j++;
+            closed = true;
+            break;
+          }
+          j++;
+        }
+        if (closed) {
+          while (j < n && WORD_CHAR.test(text[j]!)) j++; // flags
+          out += text.slice(i, j);
+          i = j;
+          prevChar = '/';
+          prevWord = '';
+          continue;
+        }
+        // Not a regex after all — fall through and emit `/` as an operator.
+      }
+      out += ch;
+      i++;
+      prevChar = '/';
+      prevWord = '';
+      continue;
+    }
+
+    // --- identifiers / numbers --------------------------------------------
+    if (WORD_CHAR.test(ch)) {
+      let j = i;
+      while (j < n && WORD_CHAR.test(text[j]!)) j++;
+      const word = text.slice(i, j);
+      out += word;
+      i = j;
+      prevChar = word[word.length - 1]!;
+      prevWord = word;
+      continue;
+    }
+
+    // --- everything else ---------------------------------------------------
+    if (ch === '{') frame.braces++;
+    else if (ch === '}') {
+      if (frame.braces === 0 && stack.length > 1) {
+        out += ch;
+        i++;
+        stack.pop(); // back into the enclosing template literal
+        prevChar = '}';
+        prevWord = '';
+        continue;
+      }
+      if (frame.braces > 0) frame.braces--;
+    }
+    out += ch;
+    i++;
+    if (ch !== ' ' && ch !== '\t' && ch !== '\r') {
+      prevChar = ch;
+      prevWord = '';
+    }
+    continue;
+  }
+
+  return out;
 }
 
 // A join to the devices table exposes device rows alongside child-table data,
@@ -206,10 +482,23 @@ const DEVICE_PARAM_IN_URL = /:device(?:Id|Ids|_id)\b/i;
 // `:id` route across the codebase.
 const SITE_PARAM_IN_URL = /\/sites\/:\w+\b/i;
 
-/** Maximum bytes of source we inspect for each handler body. Per-route
- *  slices are additionally truncated at the next top-level route definition
- *  so a handler that drops its gate cannot be "rescued" by a sibling
- *  handler's gate spilling into the window. */
+/** Maximum bytes of source we inspect for each handler body when looking for
+ *  a GATE. Per-route slices are additionally truncated at the next top-level
+ *  route definition so a handler that drops its gate cannot be "rescued" by a
+ *  sibling handler's gate spilling into the window — and the cap keeps the
+ *  LAST route in a file (whose region runs to EOF) from being rescued by a
+ *  trailing helper's gate reference the same way.
+ *
+ *  The cap applies to the gate/dead-gate signals only. {@link RouteInfo
+ *  .touchesDeviceData} deliberately reads the WHOLE region: capping it made a
+ *  handler whose device-table access sat past the cap read as "touches no
+ *  device data", dropping the route out of `findRoutesTouchingDeviceData()`
+ *  entirely and staling any allowlist entry for it (#4019). Widening the
+ *  data-access detector can only tighten the scan; widening the gate detector
+ *  would loosen it.
+ *
+ *  Byte counts are measured on COMMENT-STRIPPED source (see
+ *  {@link stripComments}), so prose can never consume the code budget. */
 const HANDLER_SLICE_BYTES = 4000;
 
 /** Pattern for top-level helper declarations whose body we want to scan for
@@ -283,6 +572,17 @@ async function listTsFiles(dir: string): Promise<string[]> {
 
 type LocalDecl = { index: number; name: string };
 
+/** Byte offsets of every TOP-LEVEL function/arrow declaration, ascending. */
+function topLevelDeclIndices(text: string): number[] {
+  const out: number[] = [];
+  LOCAL_HELPER_DECL.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = LOCAL_HELPER_DECL.exec(text)) !== null) {
+    if (m[1] || m[2]) out.push(m.index);
+  }
+  return out;
+}
+
 /**
  * Collect every top-level function/arrow declaration with its body window.
  * The window starts at the declaration and ends at either HANDLER_SLICE_BYTES
@@ -354,9 +654,15 @@ function findPermsContextGateHelpers(text: string): string[] {
  */
 export function analyzeRouteSource(
   relFile: string,
-  text: string,
+  rawText: string,
   deviceTables: ReadonlySet<string>,
 ): RouteInfo[] {
+  // Every signal below is computed on comment-stripped source: comments must
+  // neither consume a handler's byte budget nor supply a gate name the code
+  // does not actually call (#4019). Line structure is preserved, so the
+  // reported line numbers are still the real ones in the raw file.
+  const text = stripComments(rawText);
+
   // File-local helpers that wrap a canonical gate (e.g. `assertDeviceAccess`).
   const localGateNames = findLocalGateWrappers(text);
   const gatePatterns = [
@@ -392,12 +698,11 @@ export function analyzeRouteSource(
   // Detect it once per file. Only pure-wildcard paths ('*', '/*', '/') count —
   // `.use('/specific', X)` does not cover all routes and must not suppress the
   // dead-gate check.
-  const hasFileLevelLivePermsSource = text.split('\n').some((ln) => {
-    const trimmed = ln.trim();
-    // Skip comment lines so a commented-out `.use(...)` can't suppress the check.
-    if (trimmed.startsWith('//') || trimmed.startsWith('*')) return false;
-    return /\.use\(\s*(['"`])[/*]+\1\s*,/.test(ln) && livePermsPattern.test(ln);
-  });
+  // (Comments are already gone — a commented-out `.use(...)` cannot suppress
+  // the check because `stripComments` removed it before we got here.)
+  const hasFileLevelLivePermsSource = text
+    .split('\n')
+    .some((ln) => /\.use\(\s*(['"`])[/*]+\1\s*,/.test(ln) && livePermsPattern.test(ln));
 
   // File-level: a non-user-session auth guard anywhere in the file implies the
   // router authenticates a non-user principal (agent/helper/portal/viewer/admin).
@@ -417,6 +722,8 @@ export function analyzeRouteSource(
           `\\b(${[...deviceTables].map(escapeRegExp).join('|')})\\.(?:deviceId|siteId)\\b`,
         )
       : null;
+
+  const declIndices = topLevelDeclIndices(text);
 
   type RouteMatch = { index: number; method: string; urlPattern: string };
   const routeMatches: RouteMatch[] = [];
@@ -439,13 +746,24 @@ export function analyzeRouteSource(
     const nextStart = routeMatches[i + 1]?.index ?? text.length;
     const sliceEnd = Math.min(cur.index + HANDLER_SLICE_BYTES, nextStart);
     const slice = text.slice(cur.index, sliceEnd);
+    // The handler's OWN extent, uncapped, for device-data detection: bounded by
+    // the next route definition and by the next TOP-LEVEL declaration, since a
+    // helper declared between two routes belongs to neither handler (the
+    // scanner has never attributed helper bodies to their callers — see the
+    // resolveOwnedMobileDeviceId note in the site-scope suite). Clamped to be
+    // never SHORTER than the gate slice, so removing the cap here can only add
+    // device-data detections, never drop one.
+    const nextDecl = declIndices.find((d) => d > cur.index) ?? text.length;
+    const regionEnd = Math.max(sliceEnd, Math.min(nextStart, nextDecl));
+    const region = text.slice(cur.index, regionEnd);
+    const handlerWindowTruncated = nextStart - cur.index > HANDLER_SLICE_BYTES;
 
     const usesSiteScopeGate = gatePatterns.some((re) => re.test(slice));
     const deviceOrSiteUrlParam =
       DEVICE_PARAM_IN_URL.test(cur.urlPattern) || SITE_PARAM_IN_URL.test(cur.urlPattern);
     const touchesDeviceData =
-      (tableColPattern !== null && tableColPattern.test(slice)) ||
-      JOIN_DEVICES_PATTERN.test(slice);
+      (tableColPattern !== null && tableColPattern.test(region)) ||
+      JOIN_DEVICES_PATTERN.test(region);
 
     // Dead permissions-sourced site gate: the handler gates on the
     // `permissions` context (directly or via a perms-context helper) but the
@@ -454,8 +772,25 @@ export function analyzeRouteSource(
     const permsSiteGate =
       (PERMS_CONTEXT_READ.test(slice) && PERMS_SITE_TOKEN.test(slice)) ||
       (permsHelperCallPattern !== null && permsHelperCallPattern.test(slice));
+    // Same shape, measured over the whole region the data detector reads: if it
+    // matches there but not in the capped window, the dead-gate detector is
+    // blind for this handler and must say so rather than answer `false`.
+    const permsSiteGateInRegion =
+      (PERMS_CONTEXT_READ.test(region) && PERMS_SITE_TOKEN.test(region)) ||
+      (permsHelperCallPattern !== null && permsHelperCallPattern.test(region));
     const sitePermsGateDead =
       permsSiteGate &&
+      !livePermsPattern.test(slice) &&
+      !hasFileLevelLivePermsSource &&
+      !FAIL_CLOSED_PERMS.test(slice);
+
+    // Truncation alarm, narrowed to the case where it would have CHANGED the
+    // answer: the gate shape is in the region but not the window, and nothing
+    // inside the window makes it live — so had the scanner read that far it
+    // would have reported a DEAD gate, and instead it reported nothing.
+    const permsSiteGateBeyondWindow =
+      permsSiteGateInRegion &&
+      !permsSiteGate &&
       !livePermsPattern.test(slice) &&
       !hasFileLevelLivePermsSource &&
       !FAIL_CLOSED_PERMS.test(slice);
@@ -469,6 +804,8 @@ export function analyzeRouteSource(
       usesSiteScopeGate,
       deviceOrSiteUrlParam,
       touchesDeviceData,
+      handlerWindowTruncated,
+      permsSiteGateBeyondWindow,
       sitePermsGateDead,
       referencesNonUserAuthGuard,
     });
@@ -535,6 +872,27 @@ export async function findRoutesTouchingDevices(): Promise<RouteInfo[]> {
  */
 export async function findRoutesTouchingDeviceData(): Promise<RouteInfo[]> {
   return (await scanAllRoutes()).filter((r) => r.touchesDeviceData);
+}
+
+/**
+ * Routes whose handler region is longer than {@link HANDLER_SLICE_BYTES}, so
+ * the gate / dead-gate signals were computed over a prefix of the handler
+ * ({@link RouteInfo.handlerWindowTruncated}). Backs the truncation guard test:
+ * the scanner must say where it stopped reading instead of silently answering
+ * "no gate evidence here". See #4019.
+ */
+export async function findRoutesWithTruncatedHandlerWindow(): Promise<RouteInfo[]> {
+  return (await scanAllRoutes()).filter((r) => r.handlerWindowTruncated);
+}
+
+/**
+ * Routes where the scanner stopped reading BEFORE a perms-sourced site gate
+ * ({@link RouteInfo.permsSiteGateBeyondWindow}) — the one truncation direction
+ * that silently weakens a detector rather than merely over-flagging. Backs the
+ * truncation guard test. See #4019.
+ */
+export async function findRoutesWithGateBeyondWindow(): Promise<RouteInfo[]> {
+  return (await scanAllRoutes()).filter((r) => r.permsSiteGateBeyondWindow);
 }
 
 /**

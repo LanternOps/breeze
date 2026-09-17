@@ -602,10 +602,10 @@ func TestParseValue_OctetStringSanitization(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildMetrics — ValueEncoding declaration
+// buildGetMetrics — ValueEncoding declaration
 // ---------------------------------------------------------------------------
 
-func TestBuildMetrics_ValueEncoding(t *testing.T) {
+func TestBuildGetMetrics_ValueEncoding(t *testing.T) {
 	tests := []struct {
 		name         string
 		pdu          gosnmp.SnmpPDU
@@ -693,9 +693,9 @@ func TestBuildMetrics_ValueEncoding(t *testing.T) {
 	stamp := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildMetrics([]gosnmp.SnmpPDU{tt.pdu}, stamp)
+			got := buildGetMetrics(nil, []gosnmp.SnmpPDU{tt.pdu}, stamp)
 			if len(got) != 1 {
-				t.Fatalf("buildMetrics() returned %d metrics, want 1", len(got))
+				t.Fatalf("buildGetMetrics() returned %d metrics, want 1", len(got))
 			}
 			m := got[0]
 			if m.Value != tt.wantValue {
@@ -734,13 +734,13 @@ func TestBuildMetrics_ValueEncoding(t *testing.T) {
 	}
 }
 
-func TestBuildMetrics_EmptyPDUsYieldsEmptySlice(t *testing.T) {
-	got := buildMetrics(nil, time.Now().UTC())
+func TestBuildGetMetrics_EmptyPDUsYieldsEmptySlice(t *testing.T) {
+	got := buildGetMetrics(nil, nil, time.Now().UTC())
 	if got == nil {
-		t.Fatal("buildMetrics(nil) = nil, want non-nil empty slice")
+		t.Fatal("buildGetMetrics(nil) = nil, want non-nil empty slice")
 	}
 	if len(got) != 0 {
-		t.Fatalf("buildMetrics(nil) returned %d metrics, want 0", len(got))
+		t.Fatalf("buildGetMetrics(nil) returned %d metrics, want 0", len(got))
 	}
 }
 

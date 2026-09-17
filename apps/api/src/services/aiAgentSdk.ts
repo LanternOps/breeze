@@ -44,6 +44,7 @@ import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import {
   createActionIntent,
   waitForIntentDecision,
+  waitForIntentTerminalOutcome,
   transitionIntent,
   type ActionIntentTransitionPatch,
 } from './actionIntents/intentService';
@@ -51,7 +52,13 @@ import { buildActionLabel } from './actionIntents/actionLabel';
 import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
-import { approvedExecutingDenial } from './aiToolHandoff';
+import {
+  APPROVED_FAILED_STATUS,
+  describeIntentOutcome,
+  handoffDenialForOutcome,
+  type HandoffOutcome,
+  type ToolHandoffStatus,
+} from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -86,6 +93,19 @@ const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
  * can still decide it and the durable release worker executes it (spec §6.1).
  */
 export const APPROVAL_WAIT_BUDGET_MS = 300_000;
+
+/**
+ * How long a handoff exit will wait for the durable worker to terminalize the
+ * intent before answering "approved, outcome not yet confirmed" (#6022).
+ *
+ * Small on purpose. It exists to catch outcomes that are effectively already
+ * decided — a guardrail refusal (#5934) terminalizes the intent in
+ * milliseconds — not to shadow the worker's real runtime, which can be
+ * minutes. It is additionally clamped by the cycle's REMAINING shared
+ * approval-wait budget, so it can never extend a turn past
+ * `APPROVAL_WAIT_BUDGET_MS`.
+ */
+export const TERMINAL_READBACK_BUDGET_MS = 3_000;
 
 /**
  * Begin an approval wait for this session's current assistant cycle.
@@ -987,6 +1007,73 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         return result;
       };
 
+      /**
+       * Hand the action off to the durable release worker AND report what it
+       * actually did, if it is already known (#6022).
+       *
+       * Both handoff exits used to return `approvedExecutingDenial()`
+       * unconditionally: "approved and running, the outcome is reported
+       * separately". Nothing reported it. When the worker's execution FAILED —
+       * the #5934 autoInstall guardrail refusing the call, leaving the intent
+       * `failed` / `tool_returned_error` — the chat still said "Approved ·
+       * running" and the model told the operator the arming had succeeded.
+       *
+       * So before answering, spend a SHORT slice of the cycle's shared
+       * approval-wait budget reading the intent's terminal outcome back. A
+       * guardrail refusal terminalizes in milliseconds, so the common failure
+       * becomes a truthful tool error; genuinely long-running work times out
+       * and still reports "approved, outcome not yet confirmed" — which is now
+       * what the message says, instead of promising a report that never comes.
+       *
+       * The read-back is an OBSERVER ONLY (`waitForIntentTerminalOutcome`
+       * never writes): this branch still returns BEFORE/without owning the
+       * `approved -> executing` CAS, so the worker's claim stays available and
+       * the COORDINATION INVARIANT is untouched. The wait is registered with
+       * `beginApprovalWait` so a new user message or an interrupt settles it
+       * (#3089) and it can never outlive the turn.
+       */
+      const releaseHandoffDenial = async (
+        intentId: string,
+      ): Promise<{ allowed: false; error: string; handoff: ToolHandoffStatus }> => {
+        const readBack = beginApprovalWait(session);
+        let outcome: HandoffOutcome;
+        try {
+          outcome = describeIntentOutcome(
+            await waitForIntentTerminalOutcome(
+              intentId,
+              Math.min(readBack.timeoutMs, TERMINAL_READBACK_BUDGET_MS),
+              readBack.signal,
+            ),
+          );
+        } catch (err) {
+          // An unreadable outcome is NOT evidence the action failed — say
+          // "still running" rather than inventing a failure.
+          //
+          // Captured, not just logged: `waitForIntentTerminalOutcome` already
+          // swallows every expected DB-poll failure internally, so anything
+          // reaching here is an unexpected bug in the read-back itself. Left
+          // on console only, a regression would degrade this whole feature
+          // back to "approved, running" forever — silently, which is the bug
+          // class #6022 is about.
+          console.error(`[AI-SDK] terminal read-back failed for intent ${intentId}:`, err);
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            area: 'ai_intent_terminal_readback',
+            intent_id: intentId,
+            tool_name: toolName,
+          });
+          outcome = describeIntentOutcome(null);
+        } finally {
+          readBack.end();
+        }
+
+        return await failMatchedPlanStep(
+          handoffDenialForOutcome(outcome),
+          // Only a confirmed failure stops the plan; an action that is still
+          // running (or completed) has not derailed it.
+          outcome.handoff === APPROVED_FAILED_STATUS ? ' The plan has been stopped.' : undefined,
+        );
+      };
+
       if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
         if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName)) {
@@ -1438,7 +1525,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // `approved -> executing` CAS below, so the worker's claim remains
           // available and the intent is never stranded in `executing`.
           if (requiresDurableRelease(toolName)) {
-            return await failMatchedPlanStep(approvedExecutingDenial());
+            return await releaseHandoffDenial(intent.id);
           }
 
           // COORDINATION INVARIANT (CRITICAL — prevents double execution): the
@@ -1478,7 +1565,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // Nothing about the invariant changes: the CAS was attempted and
             // lost, we still refuse to execute inline, and we still do not
             // touch the intent (the winner owns every subsequent transition).
-            return await failMatchedPlanStep(approvedExecutingDenial());
+            return await releaseHandoffDenial(intent.id);
           }
 
           // Won the CAS: record the intent id so the outer catch can
@@ -2458,7 +2545,18 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         actorEmail: session.auth.user.email,
         initiatedBy: 'ai',
         ...(isError
-          ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 500) }
+          ? {
+              result: 'failure' as const,
+              // `message` is the handoff payload's field — #6022's
+              // `approved_failed` carries the worker's reason there, not in
+              // `error` — so read it before falling back to the raw output.
+              errorMessage:
+                typeof parsedOutput.error === 'string'
+                  ? parsedOutput.error
+                  : typeof parsedOutput.message === 'string'
+                    ? parsedOutput.message
+                    : safeOutput.slice(0, 500),
+            }
           : handoffStatus
             ? { result: 'dispatched' as const }
             : {}),

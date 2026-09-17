@@ -215,8 +215,11 @@ import {
   getDbPoolHealthMinTimeouts,
   getDbPoolHealthWindowMs,
   startDbPoolHealthMonitor,
+  startWedgedBackendMonitor,
+  stopWedgedBackendMonitor,
   stopDbPoolHealthMonitor,
 } from './db/dbPoolHealthMonitor';
+import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -1347,6 +1350,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // which would report `database-unreachable` about a process that is simply
   // shutting down.
   stopDbPoolHealthMonitor();
+  stopWedgedBackendMonitor();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1637,6 +1641,23 @@ async function bootstrap(): Promise<void> {
       `[db-pool-health] Watchdog started (interval ${dbPoolHealthIntervalMs}ms, `
       + `window ${getDbPoolHealthWindowMs()}ms, probe threshold `
       + `${getDbPoolHealthMinTimeouts()} CONNECT_TIMEOUT(s) per window)`,
+    );
+  }
+
+  // #6048 — wedged-backend detector. Started alongside the watchdog above and
+  // on the same constraints, but on its OWN cadence and threshold, because the
+  // failure it watches for produced zero CONNECT_TIMEOUTs and would never have
+  // crossed the watchdog's probe threshold.
+  const wedgedBackendIntervalMs = startWedgedBackendMonitor();
+  if (wedgedBackendIntervalMs === null) {
+    console.warn(
+      '[db-wedged-backend] Detector DISABLED — a pool slot lost to a connection wedged in '
+      + 'active/ClientRead will stay lost, and invisible, for the life of the process (#6048).',
+    );
+  } else {
+    console.log(
+      `[db-wedged-backend] Detector started (interval ${wedgedBackendIntervalMs}ms, `
+      + `threshold ${getWedgedBackendMinAgeMs()}ms)`,
     );
   }
 

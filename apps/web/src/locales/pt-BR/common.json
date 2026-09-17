@@ -58,7 +58,7 @@
     "partner": "Parceiro",
     "billing": "Faturamento",
     "organizations": "Organizações",
-    "aiUsageBudget": "Uso e Orçamento de IA",
+    "aiUsage": "Uso de IA",
     "scriptAuthoring": "Criação de scripts",
     "toolSources": "Fontes de ferramentas",
     "aiAgents": "Agentes de IA",
@@ -956,7 +956,8 @@
         "fallbackTitle": "Monitor",
         "fields": {
           "interval": "Intervalo (s)",
-          "timeout": "Tempo limite (s)"
+          "timeout": "Tempo limite (s)",
+          "target": "URL de destino"
         },
         "labels": {
           "lastChecked": "Última verificação: {{time}}",
@@ -984,6 +985,20 @@
           "httpCheck": "Verificação HTTP",
           "icmpPing": "Ping ICMP",
           "tcpPort": "Porta TCP"
+        },
+        "targetResetNote": "Alterar a URL redefine a observação TLS.",
+        "saved": "Monitor atualizado",
+        "certificate": {
+          "title": "Certificado",
+          "issuer": "Emissor",
+          "expires": "Expira em",
+          "observedHost": "Host observado",
+          "state": "Estado",
+          "states": {
+            "observed": "Observado",
+            "handshakeFailed": "Falha na negociação TLS",
+            "notTls": "Sem TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1834,7 +1849,9 @@
         "assetsDescription": "Visão unificada de polling SNMP e verificações de rede por ativo descoberto.",
         "table": {
           "asset": "Ativo",
-          "overall": "Geral"
+          "overall": "Geral",
+          "reachability": "Acessibilidade",
+          "collection": "Coleta"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1886,7 +1903,29 @@
         "disabling": "Desativando...",
         "yesDisable": "Sim, desativar",
         "monitoringNotActive": "O monitoramento não está ativo para este ativo.",
-        "saving": "Salvando..."
+        "saving": "Salvando...",
+        "openSettings": "Configurações…",
+        "reachability": {
+          "responding": "Respondendo",
+          "notResponding": "Não responde",
+          "unverified": "Não verificado",
+          "sources": {
+            "networkCheck": "verificação de rede",
+            "probe": "verificar agora",
+            "scan": "varredura",
+            "unifi": "controladora UniFi",
+            "snmp": "consulta SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Coletando",
+          "partial": "Parcial",
+          "no_template": "Sem modelo",
+          "failing": "Com falha",
+          "paused": "Em pausa",
+          "never_polled": "Nunca consultado",
+          "not_configured": "Não configurado"
+        }
       },
       "MonitoringPage": {
         "tabs": {

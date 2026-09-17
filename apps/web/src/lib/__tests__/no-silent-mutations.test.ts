@@ -33,6 +33,9 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  // Network device "Check now" (#5988 W05): the probe reads liveness outside
+  // W04's settings writer and must surface every mutation outcome.
+  'src/components/devices/networkDevice/useAssetProbe.ts',
   'src/components/alerts/NotificationChannelsPage.tsx',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
@@ -312,11 +315,23 @@ const TARGET_GLOBS = [
   // believing responses resumed and the recurrence counter cleared when they
   // did not.
   'src/components/monitoring/MonitorActivityTab.tsx',
+  // Network device page truth W04 (#5992): single writer for asset-scoped mutations.
+  'src/components/devices/networkDevice/settings/useNetworkAssetMutations.ts',
   // Monitor editor + deploy dialog (sweep G1-4): save/delete already routed
   // through runAction, but attach/detach were bare fetchWithAuth calls — a
   // failed detach was silent and a successful one gave no feedback.
   'src/components/monitoring/MonitorEditor.tsx',
   'src/components/monitoring/DeployMonitorDialog.tsx',
+  // #4050 (deferred from #4018 / PR #4041): the account-security surface — MFA
+  // enable/disable, recovery-code rotation, passkey register/rename/delete, SSO
+  // re-auth, password and avatar changes. Every mutation here already reports
+  // its outcome, but through section-scoped inline banners rather than
+  // runAction, so each existing call site carries a reasoned
+  // `runaction-exempt:` marker. The point of guarding the file is the NEXT
+  // mutation: without an entry here, a bare fetchWithAuth added beside them
+  // ships with zero CI signal on the one page where a silently-failed
+  // "Disable MFA" or "Delete passkey" is a security-posture lie.
+  'src/components/settings/ProfilePage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -652,11 +667,12 @@ describe('no silent mutations in targeted set', () => {
     // (contract detail embeds the shared list instead), so the count is 131.
     // Execution plane W05 (#5716) adds two adopters (AiRunCard attach-to-ticket
     // and the per-org external-processing switch), so the count is 133.
-    // Tool catalog W01 PR C (#5216) adds five: the toolSources API client and
-    // its four components, so the count is now 138.
-    // Sweep G1-4 moves monitor attach/detach onto runAction, adding
-    // MonitorEditor.tsx and DeployMonitorDialog.tsx (+2 on main's 138).
-    expect(absoluteFiles.length).toBe(140);
+    // Tool catalog W01 PR C (#5216) took the count to 138; sweep G1-4 added
+    // MonitorEditor.tsx and DeployMonitorDialog.tsx (140); network device page
+    // truth W04 (#5992) adds the network asset single writer: 140 → 141.
+    // Network device page truth W05 adds the probe hook: 141 → 142.
+    // #4050 adds settings/ProfilePage.tsx (account security): 142 → 143.
+    expect(absoluteFiles.length).toBe(143);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

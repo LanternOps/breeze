@@ -26,7 +26,7 @@
     "kindMcp": "MCP sunucusu",
     "kindOpenapiSoon": "OpenAPI (sonraki bir sürümde gelecek)",
     "endpoint": "Uç nokta URL’si",
-    "endpointHelp": "https URL’si olmalıdır. Kimlik bilgileri yalnızca bu kaynağa gönderilir.",
+    "endpointHelp": "HTTPS kullanın veya kendi sunucunuzda özel ağlara giden bağlantılara izin veriliyorsa HTTP kullanın. Kimlik bilgileri yalnızca bu kaynağa gönderilir.",
     "authKind": "Kimlik doğrulama",
     "rateLimit": "Dakikadaki çağrı sayısı",
     "scope": "Kullanılabilirlik",
@@ -101,6 +101,7 @@
     "duration": "{{ms}} ms içinde tamamlandı"
   },
   "toasts": {
+    "discoveryNotQueued": "Araç kaynağı kaydedildi ancak keşif sıraya alınamadı. Araçları yeniden keşfetmeyi deneyin.",
     "created": "Araç kaynağı eklendi. Keşif kuyruğa alındı.",
     "saved": "Araç kaynağı kaydedildi.",
     "deleted": "Araç kaynağı silindi.",

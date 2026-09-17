@@ -1335,6 +1335,8 @@
       "readyToDeployStandalone": "Bereit zum Einsatz."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Automatische Installation aktiviert",
+      "complianceCheckQueued": "Konformitätsprüfung eingereiht",
       "failedToLoadSoftwarePolicyData": "Das Laden der Softwarerichtliniendaten ist fehlgeschlagen",
       "couldNotLoadLatestPolicyDetailsShowing": "Die neuesten Richtliniendetails konnten nicht geladen werden. Zwischengespeicherte Daten werden angezeigt.",
       "couldNotLoadPolicyDetailsShowingCached": "Richtliniendetails konnten nicht geladen werden. Zwischengespeicherte Daten werden angezeigt.",
@@ -1610,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 Geräte — meist, weil diese Richtlinie noch keinem Gerät zugewiesen ist; eine vollständig konforme Flotte oder eine leere Standort-Freigabeliste ergibt ebenfalls 0",
+      "manageAssignments": "Zuweisungen von Konfigurationsrichtlinien verwalten",
+      "gracePeriodHelp": "Wird beim nächsten Konformitätsprüflauf angewendet",
       "scope": "Umfang",
       "allOrganizations": "Alle Organisationen",
       "partnerWideTemplate": "(partnerweite Vorlage)",

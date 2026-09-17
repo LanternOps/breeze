@@ -520,11 +520,11 @@ async function rollupRawSnmpMetrics(options: MetricRollupRange): Promise<void> {
         sm.org_id,
         da.linked_device_id AS device_id,
         sm.device_id AS snmp_device_id,
-        sm.oid,
+        regexp_replace(sm.oid, '^[.]', '') AS oid,
         sm.name,
         left(
-          regexp_replace(coalesce(nullif(sm.name, ''), sm.oid), '[^a-zA-Z0-9_.:-]+', '_', 'g')
-            || ':' || md5(sm.device_id::text || ':' || sm.oid),
+          regexp_replace(sm.oid, '^[.]', '')
+            || ':' || md5(sm.device_id::text || ':' || regexp_replace(sm.oid, '^[.]', '')),
           120
         ) AS metric_name,
         CASE
@@ -549,15 +549,16 @@ async function rollupRawSnmpMetrics(options: MetricRollupRange): Promise<void> {
         AND sm.timestamp < ${toIso}::timestamp
     ),
     snmp_series AS (
-      SELECT DISTINCT
+      SELECT
         org_id,
         device_id,
         snmp_device_id,
         oid,
-        name,
+        min(name) AS name,
         metric_name
       FROM snmp_values
       WHERE metric_value IS NOT NULL
+      GROUP BY org_id, device_id, snmp_device_id, oid, metric_name
     ),
     buckets AS (
       SELECT generate_series(

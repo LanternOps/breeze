@@ -211,7 +211,8 @@
       "actionPlan": "Plan de acción",
       "autoApprove": "Aprobación automática",
       "hybridPlan": "Plan híbrido"
-    }
+    },
+    "overridesOrgTab": "Los campos que establece aquí sobrescriben y bloquean el mismo campo en la pestaña de IA de cada organización."
   },
   "aiBudgetThresholds": {
     "invalid": "Ingresa hasta cinco números enteros entre 1 y 99, separados por comas."
@@ -1133,6 +1134,10 @@
       "description": "Elija qué información de servicio puede ver este cliente en el portal.",
       "enableAll": "Habilitar toda la visibilidad",
       "toggles": {
+        "enableDevices": {
+          "label": "Dispositivos",
+          "description": "Mostrar la página de dispositivos. El autoservicio también permite acceder a esta página."
+        },
         "enableDashboard": {
           "label": "Panel",
           "description": "Muestra un resumen del estado del servicio al iniciar sesión."
@@ -1444,7 +1449,7 @@
     "completeReview": "Revisión completa"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "AI Uso y presupuesto",
+    "aIUsageBudget": "Uso de IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Supervise el uso del asistente AI y configure límites de presupuesto",
     "budgetConfiguration": "Configuración del presupuesto",
     "aIEnabled": "AI Habilitado",
@@ -1494,7 +1499,19 @@
     "untitled": "Sin título",
     "billedToPartnerKey": "Facturado a tu clave: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze",
     "billedToPartnerKeyViaEndpoint": "Facturado a tu clave a través de {{name}}: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze",
-    "creditsRemaining": "Créditos de IA de Breeze restantes"
+    "creditsRemaining": "Créditos de IA de Breeze restantes",
+    "defaultValue": "Predeterminado ({{value}})",
+    "viewPartnerWideBudgets": "Presupuestos de IA del socio",
+    "monitorAIAssistantUsage": "Supervisar el uso del asistente de IA",
+    "effectiveBudget": "Presupuesto vigente",
+    "effectiveBudgetHelp": "Los límites vigentes para esta organización en este momento, y dónde se estableció cada uno.",
+    "effectiveBudgetUnavailable": "No se pudo cargar el presupuesto efectivo. Vuelva a cargar la página para intentarlo de nuevo.",
+    "sourcePartner": "Establecido por el socio",
+    "sourceOrganization": "Establecido por la organización",
+    "sourceDefault": "Predeterminado",
+    "selectOrgForEffectiveBudget": "Seleccione una organización para ver su presupuesto vigente, o edite los valores predeterminados de todo el socio.",
+    "editPartnerWideDefaults": "Editar valores predeterminados de todo el socio",
+    "thresholdsOff": "Desactivado"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4028,6 +4045,7 @@
     "languageLoadFailed": "La preferencia se guardó, pero el idioma no se pudo cargar: se muestra inglés. Compruebe su conexión y vuelva a intentarlo."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Registro de tiempo predeterminado (minutos)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA los minutos y la tarifa por hora deben ser números.",
     "categoryUpdated": "Categoría actualizada",
     "ticketing": "Gestión de tickets",
@@ -4283,6 +4301,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Presupuesto de IA",
+    "description": "Límites de gasto, límites de frecuencia y modo de aprobación del asistente de IA en esta organización. Los campos que su socio ha establecido se muestran aquí, pero solo se pueden cambiar en la pestaña del socio.",
+    "selectOrganization": "Seleccione una organización para configurar su presupuesto de IA."
+  },
   "orgSettingsPage": {
     "loading": "Cargando configuración de la organización...",
     "confirmDiscard": "Tiene cambios no guardados en esta sección. El cambio los descartará. ¿Continuar?",
@@ -4336,7 +4359,9 @@
       "notifications": "Notificaciones",
       "notificationsDescription": "Correo electrónico, Slack, webhooks",
       "ticketing": "Gestión de tickets",
-      "ticketingDescription": "SLA y anulaciones de facturación"
+      "ticketingDescription": "SLA y anulaciones de facturación",
+      "ai": "IA",
+      "aiDescription": "Presupuesto del asistente de IA, límites de frecuencia y modo de aprobación"
     },
     "overview": {
       "title": "Descripción general de la organización",
@@ -5216,6 +5241,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Falló la búsqueda del Archivo de precios TD SYNNEX (respuesta no válida)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Las variables de cada organización se muestran dentro de esa organización.",
     "title": "Variables",
     "description": "Define un valor una sola vez —un token de sitio de un proveedor, la URL de un repositorio interno— y refiérelo desde los scripts en lugar de escribirlo en cada cliente.",
     "loading": "Cargando variables…",

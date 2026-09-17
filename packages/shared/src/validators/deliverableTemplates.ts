@@ -16,20 +16,26 @@ export const templateOwnerScopeSchema = z.enum(['organization', 'partner']);
  * evidence. HAND-PARALLEL to `MANAGED_EVIDENCE_REGISTRY` in
  * `apps/api/src/services/managedEvidenceRegistry.ts` (the shared validator
  * cannot import from apps/api); `managedEvidenceRegistry.test.ts` pins the two
- * together. Deliberately EMPTY in W01 — W02 adds 'threat_detection_review',
- * W03 'endpoint_management_review', W04 'vulnerability_management' and W06
- * 'identity_access_review', each alongside its own enum migration.
+ * together. W02 added the first member; W03 adds 'endpoint_management_review',
+ * W04 'vulnerability_management' and W06 'identity_access_review', each
+ * alongside its own enum migration. Later waves only APPEND to this tuple.
  */
-export const MANAGED_EVIDENCE_REPORT_TYPES = [] as const satisfies readonly string[];
+export const MANAGED_EVIDENCE_REPORT_TYPES = [
+  // #5784 W02 — Huntress threat detection review.
+  'threat_detection_review',
+  // #5784 W03 — Intune endpoint management review over the #5327 sync tables.
+  'endpoint_management_review',
+  // #5784 W04 — the vulnerability detail artifact.
+  'vulnerability_management',
+  // #5784 W06 — the identity and access review (interactive sign-ins).
+  'identity_access_review',
+] as const satisfies readonly string[];
 export type ManagedEvidenceReportType = (typeof MANAGED_EVIDENCE_REPORT_TYPES)[number];
 
-// Not `z.enum`: an empty tuple is not a valid enum, and this shape is correct
-// whether the list is empty (W01) or filled (W02+), so no later wave has to
-// swap the schema — it only appends to the tuple.
-const managedEvidenceReportTypeSchema = z.custom<ManagedEvidenceReportType>(
-  (value) => typeof value === 'string' && (MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).includes(value),
-  { message: 'Not a managed evidence report type' },
-);
+// The tuple is non-empty as of W02, so this is a real `z.enum` rather than
+// W01's placeholder `z.custom` — the rejection message now names the allowed
+// values instead of a generic refusal.
+const managedEvidenceReportTypeSchema = z.enum(MANAGED_EVIDENCE_REPORT_TYPES);
 
 // Defaults live only on the CREATE shape. `.partial()` does not strip a
 // `.default()` — an absent key still resolves to the default — so deriving the

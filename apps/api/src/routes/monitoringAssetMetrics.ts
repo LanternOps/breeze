@@ -30,6 +30,8 @@ import {
   type BucketChoice,
 } from '../services/metricBucketing';
 
+export const MAX_INSTANCES_PER_OID = 64;
+
 export const monitoringAssetMetricsRoutes = new Hono();
 monitoringAssetMetricsRoutes.use('*', authMiddleware);
 
@@ -119,7 +121,48 @@ monitoringAssetMetricsRoutes.get(
     const baseExpr = sql`coalesce(${snmpMetrics.baseOid}, ${snmpMetrics.oid})`;
     const instanceExpr = sql`coalesce(${snmpMetrics.instance}, '')`;
 
-    const rows = await db
+    const metricFilter = and(
+      eq(snmpMetrics.deviceId, snmpDevice.id),
+      gte(snmpMetrics.timestamp, new Date(fromMs)),
+      lt(snmpMetrics.timestamp, new Date(toMs)),
+      // `inArray`, not `= any($n)`: postgres.js binds an interpolated JS
+      // array as a parenthesised scalar tuple `($1,$2,$3)`, and
+      // `any(<tuple>)` is not valid SQL (42809 "op ANY/ALL (array) requires
+      // array on right side"). inArray emits a plain IN list, which is what
+      // the tuple binding actually is.
+      or(inArray(baseExpr, oids), inArray(snmpMetrics.oid, oids))!,
+      sql`${snmpMetrics.value} ~ '^-?[0-9]+([.][0-9]+)?$'`,
+    );
+    const perBaseCap = Math.max(1, Math.floor(MAX_SERIES / oids.length));
+    // Widen the bounded lookahead so a large base can leave room for siblings.
+    const candidates = await db
+      .selectDistinctOn([baseExpr, instanceExpr], {
+        baseOid: sql<string>`${baseExpr}`,
+        instance: sql<string>`${instanceExpr}`,
+      })
+      .from(snmpMetrics)
+      .where(metricFilter)
+      .orderBy(baseExpr, instanceExpr)
+      .limit(MAX_SERIES * oids.length + 1);
+    const selected: typeof candidates = [];
+    const instanceCounts = new Map<string, number>();
+    let truncatedSeries = false;
+    for (const candidate of candidates) {
+      const count = instanceCounts.get(candidate.baseOid) ?? 0;
+      if (selected.length >= MAX_SERIES || count >= perBaseCap) {
+        truncatedSeries = true;
+        continue;
+      }
+      selected.push(candidate);
+      instanceCounts.set(candidate.baseOid, count + 1);
+    }
+    if (truncatedSeries) {
+      console.warn('[MonitoringAssetMetrics] truncated series', {
+        assetId, seriesCount: selected.length, cap: perBaseCap,
+      });
+    }
+
+    const rows = selected.length === 0 ? [] : await db
       .select({
         baseOid: baseExpr as unknown as ReturnType<typeof sql<string>>,
         oid: snmpMetrics.oid,
@@ -131,16 +174,10 @@ monitoringAssetMetricsRoutes.get(
       })
       .from(snmpMetrics)
       .where(and(
-        eq(snmpMetrics.deviceId, snmpDevice.id),
-        gte(snmpMetrics.timestamp, new Date(fromMs)),
-        lt(snmpMetrics.timestamp, new Date(toMs)),
-        // `inArray`, not `= any($n)`: postgres.js binds an interpolated JS
-        // array as a parenthesised scalar tuple `($1,$2,$3)`, and
-        // `any(<tuple>)` is not valid SQL (42809 "op ANY/ALL (array) requires
-        // array on right side"). inArray emits a plain IN list, which is what
-        // the tuple binding actually is.
-        or(inArray(baseExpr, oids), inArray(snmpMetrics.oid, oids))!,
-        sql`${snmpMetrics.value} ~ '^-?[0-9]+([.][0-9]+)?$'`,
+        metricFilter,
+        or(...selected.map(({ baseOid, instance }) => and(
+          eq(baseExpr, baseOid), eq(instanceExpr, instance),
+        ))),
       ))
       .groupBy(baseExpr, snmpMetrics.oid, instanceExpr, bucketExpr)
       .orderBy(bucketExpr);
@@ -165,6 +202,7 @@ monitoringAssetMetricsRoutes.get(
 
     return c.json({
       series,
+      truncatedSeries,
       bucket: range.bucket,
       from: new Date(fromMs).toISOString(),
       to: new Date(toMs).toISOString(),

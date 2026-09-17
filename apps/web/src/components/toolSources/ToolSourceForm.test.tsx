@@ -30,6 +30,7 @@ vi.mock('../../stores/auth', () => ({
     selector({ user: { canManagePartnerWide: true } }),
 }));
 
+import { showToast } from '../shared/Toast';
 import { ToolSourceForm } from './ToolSourceForm';
 import { ActionError } from '../../lib/runAction';
 
@@ -53,6 +54,19 @@ async function fillRequired(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('ToolSourceForm', () => {
+  it('keeps a saved source and shows only a warning when discovery was not queued', async () => {
+    const user = userEvent.setup();
+    createToolSource.mockResolvedValueOnce({ id: 's-1', warning: 'discovery_not_queued' });
+    const onSaved = renderCreate();
+    await fillRequired(user);
+    await user.click(screen.getByTestId('tool-source-submit'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledExactlyOnceWith({
+      type: 'warning', message: 'Tool source saved, but discovery could not be queued. Try re-discovering tools.',
+    });
+    expect(screen.queryByTestId('tool-source-form-error')).toBeNull();
+  });
+
   it('defaults to partner-wide for a partner-scoped user and shows the cross-customer warning', async () => {
     renderCreate();
     expect((screen.getByTestId('tool-source-scope-partner') as HTMLInputElement).checked).toBe(true);

@@ -285,7 +285,8 @@ export async function createConfigPolicy(
     status?: 'active' | 'inactive' | 'archived';
     parentPolicyId?: string;
   },
-  userId: string
+  userId: string,
+  executor: DbExecutor = db
 ) {
   const values = {
     orgId: owner.orgId ?? null,
@@ -301,13 +302,13 @@ export async function createConfigPolicy(
   // ONLY for the inheritance case, so the overwhelmingly common create keeps its
   // existing shape and cost.
   if (!data.parentPolicyId) {
-    const [policy] = await db.insert(configurationPolicies).values(values).returning();
+    const [policy] = await executor.insert(configurationPolicies).values(values).returning();
     if (!policy) throw new Error('Failed to create configuration policy');
     return policy;
   }
 
   const parentPolicyId = data.parentPolicyId;
-  return db.transaction(async (tx) => {
+  return executor.transaction(async (tx) => {
     // Read the parent through the CALLER'S OWN RLS context — an org token sees a
     // partner-wide parent via configuration_policies_partner_wide_select, and
     // sees nothing of another tenant, so "not visible" collapses into the same
@@ -653,13 +654,14 @@ export async function listConfigPolicies(
 export async function updateConfigPolicy(
   id: string,
   data: { name?: string; description?: string; status?: 'active' | 'inactive' | 'archived' },
-  auth: AuthContext
+  auth: AuthContext,
+  executor: DbExecutor = db
 ) {
   const conditions: SQL[] = [eq(configurationPolicies.id, id)];
   const accessCond = policyAccessCondition(auth);
   if (accessCond) conditions.push(accessCond);
 
-  const [existing] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
+  const [existing] = await executor.select().from(configurationPolicies).where(and(...conditions)).limit(1);
   if (!existing) return null;
 
   // Partner-wide policies are READABLE by any member of the partner but
@@ -675,7 +677,7 @@ export async function updateConfigPolicy(
   if (data.description !== undefined) updates.description = data.description;
   if (data.status !== undefined) updates.status = data.status;
 
-  const [updated] = await db
+  const [updated] = await executor
     .update(configurationPolicies)
     .set(updates)
     .where(and(...conditions))
@@ -1254,11 +1256,12 @@ async function deleteNormalizedRows(
  */
 async function assembleInlineSettings(
   featureType: ConfigFeatureType,
-  linkId: string
+  linkId: string,
+  executor: DbExecutor
 ): Promise<unknown | null> {
   switch (featureType) {
     case 'alert_rule': {
-      const rows = await db
+      const rows = await executor
         .select()
         .from(configPolicyAlertRules)
         .where(eq(configPolicyAlertRules.featureLinkId, linkId))
@@ -1283,7 +1286,7 @@ async function assembleInlineSettings(
     }
 
     case 'automation': {
-      const rows = await db
+      const rows = await executor
         .select()
         .from(configPolicyAutomations)
         .where(eq(configPolicyAutomations.featureLinkId, linkId))
@@ -1305,7 +1308,7 @@ async function assembleInlineSettings(
     }
 
     case 'compliance': {
-      const rows = await db
+      const rows = await executor
         .select()
         .from(configPolicyComplianceRules)
         .where(eq(configPolicyComplianceRules.featureLinkId, linkId))
@@ -1324,7 +1327,7 @@ async function assembleInlineSettings(
     }
 
     case 'patch': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyPatchSettings)
         .where(eq(configPolicyPatchSettings.featureLinkId, linkId))
@@ -1354,7 +1357,7 @@ async function assembleInlineSettings(
     }
 
     case 'maintenance': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyMaintenanceSettings)
         .where(eq(configPolicyMaintenanceSettings.featureLinkId, linkId))
@@ -1377,7 +1380,7 @@ async function assembleInlineSettings(
     }
 
     case 'event_log': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyEventLogSettings)
         .where(eq(configPolicyEventLogSettings.featureLinkId, linkId))
@@ -1394,7 +1397,7 @@ async function assembleInlineSettings(
     }
 
     case 'sensitive_data': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicySensitiveDataSettings)
         .where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId))
@@ -1417,13 +1420,13 @@ async function assembleInlineSettings(
     }
 
     case 'monitoring': {
-      const [settingsRow] = await db
+      const [settingsRow] = await executor
         .select()
         .from(configPolicyMonitoringSettings)
         .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId))
         .limit(1);
       if (!settingsRow) return null;
-      const watches = await db
+      const watches = await executor
         .select()
         .from(configPolicyMonitoringWatches)
         .where(eq(configPolicyMonitoringWatches.settingsId, settingsRow.id))
@@ -1451,7 +1454,7 @@ async function assembleInlineSettings(
     }
 
     case 'backup': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyBackupSettings)
         .where(eq(configPolicyBackupSettings.featureLinkId, linkId))
@@ -1469,7 +1472,7 @@ async function assembleInlineSettings(
     }
 
     case 'remote_access': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyRemoteAccessSettings)
         .where(eq(configPolicyRemoteAccessSettings.featureLinkId, linkId))
@@ -1485,7 +1488,7 @@ async function assembleInlineSettings(
     }
 
     case 'monitors': {
-      const rows = await db
+      const rows = await executor
         .select()
         .from(configPolicyMonitors)
         .where(eq(configPolicyMonitors.featureLinkId, linkId))
@@ -1646,7 +1649,8 @@ export async function addFeatureLink(
   featureType: ConfigFeatureType,
   featurePolicyId?: string | null,
   inlineSettings?: unknown,
-  consentActor?: WarrantyConsentActor
+  consentActor?: WarrantyConsentActor,
+  executor: DbExecutor = db
 ) {
   if (inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
@@ -1687,7 +1691,7 @@ export async function addFeatureLink(
     : null;
   if (normalizedAutomation) inlineSettings = normalizedAutomation.settings;
 
-  return db.transaction(async (tx) => {
+  return executor.transaction(async (tx) => {
     const effectiveInlineSettings =
       featureType === 'patch'
         ? normalizePatchInlineSettings(inlineSettings)
@@ -1741,13 +1745,14 @@ export async function updateFeatureLink(
   linkId: string,
   updates: { featurePolicyId?: string | null; inlineSettings?: unknown },
   configPolicyId?: string,
-  consentActor?: WarrantyConsentActor
+  consentActor?: WarrantyConsentActor,
+  executor: DbExecutor = db
 ) {
   if (updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
     updates.inlineSettings = configFeatureInlineSettingsSchema.parse(updates.inlineSettings);
   }
 
-  return db.transaction(async (tx) => {
+  return executor.transaction(async (tx) => {
     // Fetch current link to get featureType, scoped to configPolicyId when provided
     const conditions = [eq(configPolicyFeatureLinks.id, linkId)];
     if (configPolicyId) {
@@ -1885,8 +1890,8 @@ export async function removeFeatureLink(linkId: string, configPolicyId: string) 
   return deleted ?? null;
 }
 
-export async function listFeatureLinks(configPolicyId: string) {
-  const links = await db
+export async function listFeatureLinks(configPolicyId: string, executor: DbExecutor = db) {
+  const links = await executor
     .select()
     .from(configPolicyFeatureLinks)
     .where(eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
@@ -1895,7 +1900,7 @@ export async function listFeatureLinks(configPolicyId: string) {
   const enriched = await Promise.all(
     links.map(async (link) => {
       const featureType = link.featureType as ConfigFeatureType;
-      const assembled = await assembleInlineSettings(featureType, link.id);
+      const assembled = await assembleInlineSettings(featureType, link.id, executor);
       let effectiveInlineSettings: unknown;
       if (featureType === 'patch') {
         // CONSTRAINT: autoApproveDeferralDays and apps (block/pin rules) have NO
@@ -1954,7 +1959,8 @@ export async function assignPolicy(
   priority: number = 0,
   userId: string,
   roleFilter?: string[],
-  osFilter?: string[]
+  osFilter?: string[],
+  executor: DbExecutor = db
 ) {
   // ON CONFLICT DO NOTHING instead of catch-and-map: callers run inside the
   // withDbAccessContext transaction, and postgres.js re-throws a raised unique
@@ -1964,7 +1970,7 @@ export async function assignPolicy(
   // only non-PK unique constraint on this table, so a bare onConflictDoNothing
   // only ever suppresses that duplicate-assignment case. Callers must treat a
   // null return as "already assigned".
-  const [assignment] = await db
+  const [assignment] = await executor
     .insert(configPolicyAssignments)
     .values({
       configPolicyId,

@@ -173,3 +173,20 @@ describe("PolicyForm — dry-run device count preview (#5509)", () => {
     );
   });
 });
+
+
+describe("PolicyForm — assignment and grace-period guidance (#6026)", () => {
+  it("explains a zero-device preview and links to configuration policies", async () => {
+    fetchMock.mockResolvedValue(jsonRes({ eligibleDeviceCount: 0 }));
+    render(<PolicyForm policyId="pol-1" defaultValues={{ mode: "allowlist", enforceMode: true, autoInstall: true }} />);
+    await vi.waitFor(() => expect(screen.getByTestId("autoinstall-dry-run")).toHaveTextContent(
+      "0 devices — usually because this policy is not assigned to any device yet",
+    ));
+    expect(screen.getByTestId("autoinstall-assignment-link")).toHaveAttribute("href", "/configuration-policies");
+  });
+
+  it("explains when a changed grace period takes effect", () => {
+    render(<PolicyForm defaultValues={{ enforceMode: true }} />);
+    expect(screen.getByTestId("policy-grace-period-help")).toHaveTextContent("Applied on the next compliance pass");
+  });
+});

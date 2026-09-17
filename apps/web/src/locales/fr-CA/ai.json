@@ -128,6 +128,8 @@
   "aiToolCallCard": {
     "running": "En cours…",
     "approvedRunning": "Approuvé · en cours",
+    "approvedFailed": "Approuvé · échec",
+    "approvedCompleted": "Approuvé · terminé",
     "input": "Entrée :",
     "error": "Erreur :",
     "output": "Sortie :"
@@ -138,7 +140,7 @@
     "tabs": {
       "orgs": "Organisations",
       "sessions": "Sessions",
-      "usage": "Utilisation",
+      "usage": "Utilisation du complément Office",
       "templates": "Modèles"
     }
   },

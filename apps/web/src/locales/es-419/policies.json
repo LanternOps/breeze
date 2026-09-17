@@ -1335,6 +1335,8 @@
       "readyToDeployStandalone": "Listo para implementar."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Instalación automática activada",
+      "complianceCheckQueued": "Verificación de cumplimiento en cola",
       "failedToLoadSoftwarePolicyData": "No se pudieron cargar los datos de la política de software",
       "couldNotLoadLatestPolicyDetailsShowing": "No se pudieron cargar los detalles de la política más recientes. Mostrando datos almacenados en caché.",
       "couldNotLoadPolicyDetailsShowingCached": "No se pudieron cargar los detalles de la política. Mostrando datos almacenados en caché.",
@@ -1610,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 dispositivos — normalmente porque esta política aún no está asignada a ningún dispositivo, aunque una flota totalmente conforme o una lista de sitios vacía también da 0",
+      "manageAssignments": "Administrar asignaciones de políticas de configuración",
+      "gracePeriodHelp": "Se aplica en la próxima verificación de cumplimiento",
       "scope": "Alcance",
       "allOrganizations": "Todas las organizaciones",
       "partnerWideTemplate": "(plantilla en todo el socio)",

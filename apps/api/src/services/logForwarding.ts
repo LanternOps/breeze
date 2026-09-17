@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { db } from '../db';
-import { organizations } from '../db/schema';
+import { organizations, partners } from '../db/schema';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { eq } from 'drizzle-orm';
 import { decryptForColumn } from './secretCrypto';
 import { captureException } from './sentry';
@@ -39,23 +40,42 @@ interface BulkResult {
 
 export async function getOrgForwardingConfig(orgId: string): Promise<LogForwardingConfig | null> {
   const [org] = await db
-    .select({ settings: organizations.settings })
+    .select({ settings: organizations.settings, partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
 
   if (!org) return null;
 
+  // Resolve the relationship live under the caller's RLS context before
+  // reading the partner-axis row, which org-scoped callers cannot see directly.
+  const [partner] = await readWithPartnerAxisVisibility(() => db
+    .select({ settings: partners.settings })
+    .from(partners)
+    .where(eq(partners.id, org.partnerId))
+    .limit(1));
+
   const settings = (org.settings as Record<string, unknown>) ?? {};
-  const forwarding = settings.logForwarding as LogForwardingConfig | undefined;
+  const partnerSettings = (partner?.settings as Record<string, unknown>) ?? {};
+  const partnerForwarding = partnerSettings.eventLogs as Partial<LogForwardingConfig> | undefined;
+  // Only an enabled partner destination with an endpoint overrides the org.
+  // Otherwise, the org configures its own destination.
+  // Keep destinations atomic: never send org credentials to a partner URL.
+  const usePartner = partnerForwarding?.enabled === true && !!partnerForwarding?.elasticsearchUrl;
+  const forwarding = usePartner
+    ? partnerForwarding
+    : settings.logForwarding as LogForwardingConfig | undefined;
+  const table = usePartner ? 'partners' : 'organizations';
 
   if (!forwarding?.enabled || !forwarding.elasticsearchUrl) return null;
   return {
     ...forwarding,
-    // Sub-fields of organizations.settings JSON column; AAD binds at the
-    // column level to match transformEncryptedColumnValue's walker output.
-    elasticsearchApiKey: decryptForColumn('organizations', 'settings', forwarding.elasticsearchApiKey) ?? undefined,
-    elasticsearchPassword: decryptForColumn('organizations', 'settings', forwarding.elasticsearchPassword) ?? undefined,
+    enabled: true,
+    elasticsearchUrl: forwarding.elasticsearchUrl,
+    indexPrefix: forwarding.indexPrefix || 'breeze-logs',
+    // AAD must match the settings column that owns the selected credentials.
+    elasticsearchApiKey: decryptForColumn(table, 'settings', forwarding.elasticsearchApiKey) ?? undefined,
+    elasticsearchPassword: decryptForColumn(table, 'settings', forwarding.elasticsearchPassword) ?? undefined,
   };
 }
 

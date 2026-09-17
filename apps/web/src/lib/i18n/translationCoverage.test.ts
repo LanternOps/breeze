@@ -79,7 +79,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 3,
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
-    'devices.json': 175,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 177,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     'errors.json': 0,
@@ -213,7 +214,8 @@ const namespaceDuplicateBaselines = {
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 2,
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
-    'devices.json': 126,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 128,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -347,7 +349,8 @@ const namespaceDuplicateBaselines = {
     // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Audit" and "Date" are identical cognates in fr-FR.
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 7,
-    'devices.json': 152,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 154,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -492,7 +495,8 @@ const namespaceDuplicateBaselines = {
     // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Date" and "Notes" are identical cognates in fr-CA.
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 7,
-    'devices.json': 152,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 154,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -649,7 +653,8 @@ const namespaceDuplicateBaselines = {
     // #5573 W01 (service deliverables): "Status", "Portal", "Name" and "Audit" are identical cognates in de-DE.
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 5,
-    'devices.json': 164,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 166,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
     // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
@@ -766,7 +771,8 @@ const namespaceDuplicateBaselines = {
     // #5573 W01 (service deliverables): "Deliverable" is the established loanword in it-IT and "Audit" is the identical cognate.
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 3,
-    'devices.json': 144,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 146,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -861,7 +867,8 @@ const namespaceDuplicateBaselines = {
     // #5573 W01 (service deliverables): "Portal" is the identical cognate in tr-TR.
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 2,
-    'devices.json': 88,
+    // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
+    'devices.json': 90,
     'discovery.json': 9,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.

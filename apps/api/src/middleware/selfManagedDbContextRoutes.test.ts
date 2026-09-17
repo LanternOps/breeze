@@ -143,6 +143,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes/abc-123/resend/'],
     ['post', '/api/v1/quotes/abc-123/resend'], // method is case-insensitive
     // Task A9 — the tool test-call route dispatches a real outbound MCP call.
+    ['POST', '/api/v1/tool-sources'],
+    ['PATCH', '/api/v1/tool-sources/src-1'],
+    ['POST', '/api/v1/tool-sources/src-1/discover'],
     ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test'],
     ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test/'],
     ['post', '/api/v1/tool-sources/src-1/tools/tool-1/test'], // method is case-insensitive

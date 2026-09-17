@@ -26,7 +26,7 @@
     "kindMcp": "MCP server",
     "kindOpenapiSoon": "OpenAPI (coming in a later release)",
     "endpoint": "Endpoint URL",
-    "endpointHelp": "Must be an https URL. Credentials are sent only to this origin.",
+    "endpointHelp": "Use HTTPS, or HTTP when private egress is enabled on a self-hosted server. Credentials are sent only to this origin.",
     "authKind": "Authentication",
     "rateLimit": "Calls per minute",
     "scope": "Availability",
@@ -101,6 +101,7 @@
     "duration": "Completed in {{ms}} ms"
   },
   "toasts": {
+    "discoveryNotQueued": "Tool source saved, but discovery could not be queued. Try re-discovering tools.",
     "created": "Tool source added. Discovery has been queued.",
     "saved": "Tool source saved.",
     "deleted": "Tool source deleted.",
