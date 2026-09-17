@@ -59,13 +59,20 @@ type VariableListResult = { ok: true; data: TenantVariable[] } | { ok: false };
 let inFlightListKey: string | null = null;
 let inFlightListRequest: Promise<VariableListResult> | null = null;
 
-function fetchVariableList(url: string, ambientOrgId: string | null): Promise<VariableListResult> {
+function fetchVariableList(
+  url: string,
+  ambientOrgId: string | null,
+  options: { fresh?: boolean } = {}
+): Promise<VariableListResult> {
   // Key on the fully-resolved URL (post orgId injection), matching exactly
   // what fetchWithAuth will request — not the raw path. Two calls for the
   // same path but different orgs (a rapid org switch landing mid-flight) must
   // never be coalesced into the wrong tenant's data.
   const key = applyOrgId(url, { ambient: ambientOrgId });
-  if (inFlightListKey === key && inFlightListRequest) {
+  // `fresh` is for the reload after a save/delete: joining a GET that was
+  // already in flight BEFORE the mutation committed would repaint the
+  // pre-mutation list. Such a reload always issues its own request.
+  if (!options.fresh && inFlightListKey === key && inFlightListRequest) {
     return inFlightListRequest;
   }
   const request = (async (): Promise<VariableListResult> => {
@@ -105,14 +112,15 @@ export default function TenantVariablesPage() {
   const [search, setSearch] = useState('');
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options: { fresh?: boolean } = {}) => {
     setLoading(true);
     setError(false);
     // A selected org includes its inherited partner rows. All Organizations
     // instead lists only partner-wide definitions (#5353).
     const result = await fetchVariableList(
       partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables',
-      orgScope.orgId
+      orgScope.orgId,
+      options
     );
     if (!result.ok) {
       setError(true);
@@ -209,7 +217,7 @@ export default function TenantVariablesPage() {
         onUnauthorized: UNAUTHORIZED
       });
       closeEditor();
-      await load();
+      await load({ fresh: true });
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
       // ActionError already toasted via runAction; keep the editor open.
@@ -232,7 +240,7 @@ export default function TenantVariablesPage() {
           errorFallback: t('tenantVariablesPage.toasts.deleteFailed'),
           onUnauthorized: UNAUTHORIZED
         });
-        await load();
+        await load({ fresh: true });
       } catch (err) {
         if (!(err instanceof ActionError)) throw err;
       }

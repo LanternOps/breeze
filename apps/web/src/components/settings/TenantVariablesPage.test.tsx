@@ -215,6 +215,44 @@ describe('TenantVariablesPage', () => {
     expect(within(second.container).getByTestId('tenant-variable-row-syslog_host')).toBeTruthy();
   });
 
+  it('reloads with its own request after a delete instead of joining a list GET that was already in flight (#6103)', async () => {
+    // A GET that started BEFORE the mutation committed would repaint the
+    // pre-mutation list if the post-mutation reload coalesced into it.
+    const first = render(<TenantVariablesPage />);
+    await within(first.container).findByTestId('tenant-variable-row-syslog_host');
+
+    const baseImpl = fetchMock.getMockImplementation()!;
+    // Settled at the end: the in-flight slot is module-level, so a request
+    // left hanging here would be joined by the next test.
+    const hung: Array<(r: Response) => void> = [];
+    const isListGet = (input: unknown, init?: RequestInit) =>
+      String(input).startsWith('/tenant-variables') && !String(input).includes('/tenant-variables/') && (!init || !init.method);
+    fetchMock.mockImplementation(async (input, init) => {
+      if (isListGet(input, init as RequestInit | undefined)) {
+        return new Promise<Response>((resolve) => hung.push(resolve));
+      }
+      return baseImpl(input, init);
+    });
+    fetchMock.mockClear();
+
+    // A second instance mounts; its list GET hangs in flight.
+    render(<TenantVariablesPage />);
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter((c) => isListGet(c[0], c[1] as RequestInit | undefined))).toHaveLength(1)
+    );
+
+    const row = within(first.container);
+    fireEvent.click(row.getByTestId('tenant-variable-delete-syslog_host'));
+    fireEvent.click(row.getByTestId('tenant-variable-delete-syslog_host'));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter((c) => isListGet(c[0], c[1] as RequestInit | undefined))).toHaveLength(2)
+    );
+
+    hung.forEach((resolve) => resolve(makeJsonResponse({ data: [] })));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
   it('does not coalesce requests for the same path across different orgs (#6103)', async () => {
     // A rapid org switch landing mid-flight must never let a second caller
     // silently receive the FIRST org's in-flight (and possibly wrong-tenant)
