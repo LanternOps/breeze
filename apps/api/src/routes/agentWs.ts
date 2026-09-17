@@ -2321,6 +2321,24 @@ async function processCommandResult(
     // flight from before the deploy. Reconciliation is idempotent (guarded on
     // status='pending' + matching attempt), so a result that reaches BOTH
     // transports is still applied once.
+    if (command.type === 'network_diagnostic') {
+      try {
+        // No org wrap: the topology result path establishes its own bounded
+        // system context, and the producer identity comes from this connection.
+        const { ingestTopologyDiagnosticCommandResult } = await import('../services/topology/diagnosticResults');
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: resolvedDeviceId!,
+          agentId,
+          commandId: result.commandId,
+          result: normalizedResult.result,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] Failed to persist topology diagnostic result ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
     if (command.type === 'software_install') {
       try {
         // Short org wrap (#3021): deployment_results is an RLS-guarded org table.

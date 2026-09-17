@@ -179,6 +179,9 @@ export const CommandTypes = {
   // payload is a server-compiled, digest-sealed plan with an absolute expiry;
   // the agent runs it and nothing else. There is no recurring variant in M1.
   NETWORK_DIAGNOSTIC: 'network_diagnostic',
+  // Best-effort stop for an in-flight diagnostic (M1 Task 18). Carries only
+  // the run/attempt/command identity, never a new plan.
+  NETWORK_DIAGNOSTIC_CANCEL: 'network_diagnostic_cancel',
 
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',

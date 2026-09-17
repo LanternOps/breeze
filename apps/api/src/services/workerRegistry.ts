@@ -105,6 +105,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'topologyDiagnosticWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/topologyDiagnosticWorker');
+      return { init: m.initializeTopologyDiagnosticWorker, shutdown: m.shutdownTopologyDiagnosticWorker };
+    },
+  },
+  {
+    name: 'topologyDiagnosticSweeper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyDiagnosticSweeper');
+      return { init: m.initializeTopologyDiagnosticSweeper, shutdown: m.shutdownTopologyDiagnosticSweeper };
+    },
+  },
+  {
     name: 'alertWorkers',
     placement: 'global',
     load: async () => {

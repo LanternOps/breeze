@@ -27,6 +27,8 @@ export type WorkerInitializerClassification =
         | 'topologyReconcileWorker'
         | 'topologyCollectionRetentionWorker'
         | 'topologyTemplateApplyWorker'
+        | 'topologyDiagnosticWorker'
+        | 'topologyDiagnosticSweeper'
         | 'incidentCorrelationWorker'
         | 'incidentTimelineEnricher'
         | 'incidentSlaMonitor';
@@ -109,6 +111,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   { kind: 'non_consumer', initializer: 'topologyReconcileWorker' },
   { kind: 'non_consumer', initializer: 'topologyCollectionRetentionWorker' },
   { kind: 'non_consumer', initializer: 'topologyTemplateApplyWorker' },
+  { kind: 'non_consumer', initializer: 'topologyDiagnosticWorker' },
+  { kind: 'non_consumer', initializer: 'topologyDiagnosticSweeper' },
   consumers('networkBaselineWorker'),
   consumers('snmpWorker'),
   consumers('monitorWorker'),

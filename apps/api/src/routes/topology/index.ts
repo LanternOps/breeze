@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 
 import { authMiddleware } from '../../middleware/auth';
+import { topologyDiagnosticRoutes } from './diagnostics';
 import { topologyTargetRoutes } from './targets';
 import { topologyPolicyRoutes } from './policies';
 import { topologyTemplateApplicationRoutes } from './templateApplications';
@@ -27,6 +28,7 @@ export function createTopologyRoutes(): Hono {
   routes.route('/', topologyGraphRoutes);
   routes.route('/', topologyManualRoutes);
   routes.route('/', topologyLayoutRoutes);
+  routes.route('/', topologyDiagnosticRoutes);
   return routes;
 }
 

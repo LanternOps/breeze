@@ -139,6 +139,9 @@ const LIVE: readonly string[] = [
   // a probe authorized against a network state that no longer exists, so an
   // offline origin is a hard rejection rather than a queued row.
   C.NETWORK_DIAGNOSTIC,
+  // Cancels work the agent is running RIGHT NOW; a queued one would arrive
+  // long after the run it names has expired.
+  C.NETWORK_DIAGNOSTIC_CANCEL,
   // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
   // which waits for the result synchronously (`waitForCommandResult`) — the one
   // combination the design forbids pairing with `queue` (#5128 §A). The two

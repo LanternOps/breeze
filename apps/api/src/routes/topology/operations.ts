@@ -48,11 +48,14 @@ export function topologyOperation(
         options.status ?? 200,
       );
     } catch (error) {
-      if (
-        error instanceof TopologyOperationError ||
-        error instanceof TopologyError ||
-        error instanceof TopologyWriteError
-      )
+      if (error instanceof TopologyOperationError) {
+        // A budget refusal has to tell the caller when to come back; every
+        // other topology error is a plain code/status pair.
+        if (error.retryAfterSeconds !== undefined)
+          c.header('Retry-After', String(error.retryAfterSeconds));
+        return c.json({ error: error.message, code: error.code }, error.status);
+      }
+      if (error instanceof TopologyError || error instanceof TopologyWriteError)
         return c.json({ error: error.message, code: error.code }, error.status);
       if (error instanceof ZodError)
         return c.json(

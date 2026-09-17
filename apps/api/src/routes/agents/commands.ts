@@ -704,6 +704,24 @@ commandsRoutes.post(
       }
     }
 
+    if (command.type === 'network_diagnostic') {
+      try {
+        const { ingestTopologyDiagnosticCommandResult } = await import(
+          '../../services/topology/diagnosticResults'
+        );
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: command.deviceId,
+          agentId: agent?.agentId ?? agentId,
+          commandId,
+          result: normalizedData.result,
+        });
+      } catch (err) {
+        console.error(`[agents] topology diagnostic post-processing failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
     if (DR_COMMAND_TYPES.has(command.type)) {
       try {
         const commandPayload =

@@ -150,7 +150,11 @@ export function getCommandTimeoutMs(
         : DEFAULT_SCRIPT_TIMEOUT_S;
     return timeoutSeconds * 1000 + SCRIPT_GRACE_BUFFER_MS;
   }
-  if (commandType === CommandTypes.NETWORK_DIAGNOSTIC) return NETWORK_DIAGNOSTIC_TIMEOUT_MS;
+  if (
+    commandType === CommandTypes.NETWORK_DIAGNOSTIC ||
+    commandType === CommandTypes.NETWORK_DIAGNOSTIC_CANCEL
+  )
+    return NETWORK_DIAGNOSTIC_TIMEOUT_MS;
   if (SHORT_TIMEOUT_TYPES.has(commandType)) return FIVE_MINUTES;
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
   if (RESTORE_TIMEOUT_TYPES.has(commandType)) return SIXTY_MINUTES;
