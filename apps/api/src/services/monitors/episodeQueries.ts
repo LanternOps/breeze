@@ -13,7 +13,7 @@ import { db } from '../../db';
 import { devices, monitorDeviceState, monitorEpisodes } from '../../db/schema';
 import type { MonitorDeviceLastState } from '../../db/schema/monitorEpisodes';
 import type { AuthContext } from '../../middleware/auth';
-import { deviceScopeCondition, filterToDeviceScope } from '../aiToolsSiteScope';
+import { deviceScopeCondition, filterToDeviceScope, siteScopeCondition } from '../aiToolsSiteScope';
 
 export interface MonitorDeviceActivity {
   deviceId: string;
@@ -63,6 +63,10 @@ export async function listMonitorDeviceActivity(
     // on purpose: the device-LESS analysis shape carries `allowedDeviceIds`
     // with no `allowedSiteIds`, so a site-keyed guard would no-op for it.
     deviceScopeCondition(auth, monitorDeviceState.deviceId),
+    // Site axis, independent of the above. `devices` is already INNER JOINed, so
+    // this narrows in the same query: a site-restricted technician sees only the
+    // breach/escalation state of devices in their sites (audit 2026-09-17 §1.1).
+    siteScopeCondition(auth, devices.siteId),
   ];
 
   const rows = await db
@@ -127,6 +131,11 @@ export async function listMonitorEpisodes(
     // an optional caller filter, NOT an authorization bound: absent it, this
     // listed the whole org's episodes.
     deviceScopeCondition(auth, monitorEpisodes.deviceId),
+    // Site axis, independent of the above and of `opts.deviceId` (a caller
+    // FILTER, never an authorization bound). `devices` is LEFT JOINed, so this
+    // also denies an episode whose device row is gone/invisible — the right
+    // answer for a restricted caller, who cannot attribute it to one of its sites.
+    siteScopeCondition(auth, devices.siteId),
   ];
   if (opts.deviceId) conditions.push(eq(monitorEpisodes.deviceId, opts.deviceId));
   // Keyset pagination on the same key the list is ordered by. An unparseable

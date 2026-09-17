@@ -314,6 +314,9 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
               userId: auth.user.id,
               partnerId: actor.partnerId,
               accessibleOrgIds: actor.accessibleOrgIds,
+              // The read leg of add_contract_line went through an ungated actor,
+              // bolting an org-wide contract/line read onto a site-checked write.
+              allowedSiteIds: actor.allowedSiteIds,
             };
             const contractId = String(input.contractId);
             const contractLineId = String(input.contractLineId);

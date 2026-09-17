@@ -249,3 +249,46 @@ describe('get_browser_security — read site narrowing', () => {
     });
   });
 });
+
+describe('manage_browser_policy list — site read scope (audit §1.1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const POLICIES = [
+    { id: 'p-org', name: 'Org wide', targetType: 'org', targetIds: [] },
+    { id: 'p-in', name: 'Site 1', targetType: 'site', targetIds: ['site-1'] },
+    { id: 'p-out', name: 'Site 2', targetType: 'site', targetIds: ['site-2'] },
+    { id: 'p-span', name: 'Both', targetType: 'site', targetIds: ['site-1', 'site-2'] },
+    { id: 'p-dev', name: 'Device', targetType: 'device', targetIds: ['d-out'] },
+  ];
+
+  function mockList(orgDevices: Array<{ id: string; siteId: string }> = []) {
+    let deviceScans = 0;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols && typeof cols === 'object' && 'id' in (cols as object) && 'siteId' in (cols as object)) {
+        deviceScans++;
+        return { from: () => ({ where: () => Promise.resolve(orgDevices) }) };
+      }
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(POLICIES) }) }) }) };
+    });
+    return () => deviceScans;
+  }
+
+  it('hides policies targeted at sites the caller cannot access', async () => {
+    mockList([{ id: 'd-out', siteId: 'site-2' }]);
+    const raw = await handlerFor('manage_browser_policy')({ action: 'list' }, makeAuth(['site-1'])) as string;
+    const parsed = JSON.parse(raw);
+    expect(parsed.policies.map((p: any) => p.id)).toEqual(['p-org', 'p-in']);
+    // the out-of-scope site id and its device must not leak through targetIds
+    expect(raw).not.toContain('site-2');
+    expect(raw).not.toContain('d-out');
+  });
+
+  it('shows every policy to an unrestricted caller and runs no device scan', async () => {
+    const scans = mockList();
+    const parsed = JSON.parse(
+      await handlerFor('manage_browser_policy')({ action: 'list' }, makeAuth(undefined)) as string,
+    );
+    expect(parsed.policies).toHaveLength(5);
+    expect(scans()).toBe(0);
+  });
+});

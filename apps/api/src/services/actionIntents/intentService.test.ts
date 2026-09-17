@@ -232,6 +232,11 @@ vi.mock('./intentApprovers', () => ({
   resolveIntentApprovers: intentApproversState.resolveIntentApprovers,
   resolveAgentIntentApprovers: intentApproversState.resolveAgentIntentApprovers,
   resolveIntentTargetScope: intentApproversState.resolveIntentTargetScope,
+  // Org-wide governance classifier (audit §1.1) — REAL semantics, not a
+  // constant, so the fan-out filter flag is driven by the same tool/action
+  // shape production uses. Literals: vi.mock factories are hoisted.
+  isOrgWideGovernanceIntent: (toolName: string, args: Record<string, unknown> | null | undefined) =>
+    toolName === 'manage_ai_agents' && args?.action === 'authorize_supervised_key',
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -584,6 +589,43 @@ beforeEach(() => {
 // W03 (#5612): four-eyes fan-out filtered to scripts:write for STRICT proposals
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Audit §1.1: org-wide governance fan-out excludes site-restricted approvers
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — org-wide governance fan-out filter', () => {
+  const govInput = () => baseInput({
+    toolName: 'manage_ai_agents',
+    input: { action: 'authorize_supervised_key', agentId: 'agent-1', orgId: ORG_ID },
+    idempotencyKey: 'key-gov',
+  });
+
+  it('asks the resolver to drop site-restricted approvers for an org-wide governance intent', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-gov' }]);
+
+    await createActionIntent(makeAuth(), govInput()).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, { alsoRequire: undefined, requireOrgWideGovernance: true },
+    );
+  });
+
+  it('does NOT ask for the filter on an ordinary (non-governance) action of the same tool', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-ord' }]);
+
+    await createActionIntent(
+      makeAuth(),
+      baseInput({ toolName: 'manage_ai_agents', input: { action: 'list', orgId: ORG_ID }, idempotencyKey: 'key-ord' }),
+    ).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, { alsoRequire: undefined, requireOrgWideGovernance: false },
+    );
+  });
+});
+
 describe('createActionIntent — STRICT proposal fan-out filter (W03)', () => {
   const proposalInput = (strictHits: string[]) => baseInput({
     input: { proposalId: '44444444-4444-4444-8444-444444444444', deviceIds: ['device-1'] },
@@ -601,7 +643,7 @@ describe('createActionIntent — STRICT proposal fan-out filter (W03)', () => {
     await createActionIntent(makeAuth(), proposalInput(['PowerShell HKLM write'])).catch(() => undefined);
 
     expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
-      ORG_ID, { alsoRequire: { resource: 'scripts', action: 'write' } },
+      ORG_ID, { alsoRequire: { resource: 'scripts', action: 'write' }, requireOrgWideGovernance: false },
     );
   });
 
@@ -612,7 +654,9 @@ describe('createActionIntent — STRICT proposal fan-out filter (W03)', () => {
 
     await createActionIntent(makeAuth(), proposalInput([])).catch(() => undefined);
 
-    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(ORG_ID, { alsoRequire: undefined });
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, { alsoRequire: undefined, requireOrgWideGovernance: false },
+    );
   });
 });
 

@@ -62,6 +62,7 @@ import { requiredPermissionsForTool } from '../aiGuardrails';
 import { getUserPermissions, type UserPermissions } from '../permissions';
 import {
   DEVICE_COMPLETE_TARGET_TOOLS,
+  isOrgWideGovernanceIntent,
   isAgentIntentDecideAuthorized,
   resolveAgentIntentApprovers,
   resolveIntentApprovers,
@@ -111,6 +112,139 @@ function queueSelects(opts: {
 
   return { orgMembersInnerJoin, orgMembersWhere, partnerMembersInnerJoin, partnerMembersWhere };
 }
+
+/**
+ * The org lookup `resolveIntentApprovers` issues only when it has to filter on
+ * the org-wide-governance ceiling (select #5, after queueSelects' four).
+ */
+function queueGovernanceOrgLookup(partnerId: string | null) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ partnerId }]) }),
+    }),
+  } as any);
+}
+
+function perms(overrides: Partial<UserPermissions>): UserPermissions {
+  return {
+    permissions: [],
+    partnerId: null,
+    orgId: 'org-1',
+    roleId: 'role-decide',
+    scope: 'organization',
+    ...overrides,
+  } as UserPermissions;
+}
+
+describe('resolveIntentApprovers — requireOrgWideGovernance (audit §1.1 fan-out twin)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('drops a site-restricted approvals:decide holder and keeps the unrestricted one', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }, { userId: 'u-site' }],
+      partnerMembers: [],
+    });
+    queueGovernanceOrgLookup('partner-1');
+    vi.mocked(getUserPermissions).mockImplementation(async (userId: string) =>
+      userId === 'u-site'
+        ? perms({ allowedSiteIds: ['site-1'] })
+        : perms({ allowedSiteIds: undefined }),
+    );
+
+    const result = await resolveIntentApprovers('org-1', { requireOrgWideGovernance: true });
+    expect(result).toEqual(['u-open']);
+  });
+
+  it('keeps every decide holder when the intent is NOT org-wide governance', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }, { userId: 'u-site' }],
+      partnerMembers: [],
+    });
+
+    const result = await resolveIntentApprovers('org-1', { requireOrgWideGovernance: false });
+    expect([...result].sort()).toEqual(['u-open', 'u-site']);
+    // No ceiling filtering ⇒ no org lookup and no permission loads.
+    expect(db.select).toHaveBeenCalledTimes(4);
+    expect(getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('resolves each candidate WITH the org partner id (partner-only techs are otherwise discarded)', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [],
+      partnerMembers: [{ userId: 'u-partner', orgAccess: 'all', orgIds: null }],
+    });
+    queueGovernanceOrgLookup('partner-1');
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', allowedSiteIds: undefined }));
+
+    const result = await resolveIntentApprovers('org-1', { requireOrgWideGovernance: true });
+    expect(result).toEqual(['u-partner']);
+    expect(getUserPermissions).toHaveBeenCalledWith('u-partner', { orgId: 'org-1', partnerId: 'partner-1' });
+  });
+
+  it('drops a candidate whose permissions cannot be resolved at all (fail closed)', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-gone' }],
+      partnerMembers: [],
+    });
+    queueGovernanceOrgLookup('partner-1');
+    vi.mocked(getUserPermissions).mockResolvedValue(null as unknown as UserPermissions);
+
+    expect(await resolveIntentApprovers('org-1', { requireOrgWideGovernance: true })).toEqual([]);
+  });
+
+  it('can empty the set entirely when every decide holder is site-restricted', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-site-a' }, { userId: 'u-site-b' }],
+      partnerMembers: [],
+    });
+    queueGovernanceOrgLookup('partner-1');
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ allowedSiteIds: [] }));
+
+    // Same outcome as "nobody holds approvals:decide" — the caller
+    // (intentService fan-out) then cancels with no_eligible_approvers, or
+    // falls to the sole-operator branch if the REQUESTER survived.
+    expect(await resolveIntentApprovers('org-1', { requireOrgWideGovernance: true })).toEqual([]);
+  });
+
+  it('composes with alsoRequire (intersection first, ceiling second)', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }, { userId: 'u-site' }],
+      partnerMembers: [],
+    });
+    // alsoRequire re-runs the whole resolver (selects 5-7 here).
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-writer' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }, { userId: 'u-site' }],
+      partnerMembers: [],
+    });
+    queueGovernanceOrgLookup('partner-1');
+    vi.mocked(getUserPermissions).mockImplementation(async (userId: string) =>
+      userId === 'u-site' ? perms({ allowedSiteIds: ['site-1'] }) : perms({ allowedSiteIds: undefined }),
+    );
+
+    const result = await resolveIntentApprovers('org-1', {
+      alsoRequire: { resource: 'scripts', action: 'write' },
+      requireOrgWideGovernance: true,
+    });
+    expect(result).toEqual(['u-open']);
+  });
+});
 
 describe('resolveIntentApprovers', () => {
   beforeEach(() => {
@@ -763,5 +897,39 @@ describe('DEVICE_COMPLETE_TARGET_TOOLS', () => {
       'remediate_vulnerability',
       'run_script',
     ]);
+  });
+});
+
+describe('isOrgWideGovernanceIntent (audit §1.1)', () => {
+  it('classifies manage_ai_agents:authorize_supervised_key as org-wide governance', () => {
+    expect(
+      isOrgWideGovernanceIntent('manage_ai_agents', {
+        action: 'authorize_supervised_key',
+        kind: 'triage',
+        opKey: 'manage_services:restart',
+      }),
+    ).toBe(true);
+  });
+
+  it('does NOT classify another action of the same tool', () => {
+    expect(isOrgWideGovernanceIntent('manage_ai_agents', { action: 'list' })).toBe(false);
+  });
+
+  it('does NOT classify an unrelated tool, whatever its action', () => {
+    expect(isOrgWideGovernanceIntent('run_script', { action: 'authorize_supervised_key' })).toBe(false);
+  });
+
+  it('is false for missing / non-string / absent arguments rather than matching the whole tool', () => {
+    expect(isOrgWideGovernanceIntent('manage_ai_agents', null)).toBe(false);
+    expect(isOrgWideGovernanceIntent('manage_ai_agents', undefined)).toBe(false);
+    expect(isOrgWideGovernanceIntent('manage_ai_agents', {})).toBe(false);
+    expect(isOrgWideGovernanceIntent('manage_ai_agents', { action: 42 })).toBe(false);
+  });
+
+  it('is already covered on the supervised lane: manage_ai_agents has no complete device target, so it resolves to indirect (site-unrestricted approvers only)', async () => {
+    expect(DEVICE_COMPLETE_TARGET_TOOLS.has('manage_ai_agents')).toBe(false);
+    await expect(
+      resolveIntentTargetScope('manage_ai_agents', { action: 'authorize_supervised_key' }, { deviceId: 'dev-1' }, 'org-1'),
+    ).resolves.toEqual({ kind: 'indirect' });
   });
 });

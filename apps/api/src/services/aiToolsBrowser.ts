@@ -98,6 +98,45 @@ export function policyWithinDeviceReadScope(
   return (targetIds ?? []).every((id) => auth.allowedDeviceIds!.includes(id));
 }
 
+/**
+ * SITE counterpart of `policyWithinDeviceReadScope` for the policy LIST branch
+ * (audit §1.1).
+ *
+ * `list` returned every org policy — including the `targetIds` naming sites the
+ * caller cannot reach and their extension allow/block lists — while
+ * create/update/apply were all site-gated. The write helper cannot be reused:
+ * it denies every non-`site` target type, which on read would hide the org-wide
+ * policies a site-restricted tech legitimately operates under.
+ *
+ * - `org`/`group`/`tag` targets are not site-attributable and stay visible.
+ * - a `site` policy is visible only when EVERY target site is in the allowlist
+ *   (a policy spanning an out-of-scope site discloses that site's id); an empty
+ *   target list is unattributable and fails closed.
+ * - a `device` policy is visible only when every target device is in the
+ *   caller's site-resolved device set (`allowedDeviceIds` = the intersection
+ *   from `resolveSiteAllowedDeviceIds`, or `null` when not resolved).
+ */
+export function policyWithinSiteReadScope(
+  auth: AuthContext,
+  targetType: string,
+  targetIds: string[] | null | undefined,
+  siteAllowedDeviceIds: string[] | null,
+): boolean {
+  if (!auth.allowedSiteIds) return true;
+  if (targetType === 'site') {
+    if (!auth.canAccessSite) return false;
+    const ids = targetIds ?? [];
+    if (ids.length === 0) return false;
+    return ids.every((id) => auth.canAccessSite!(id));
+  }
+  if (targetType === 'device') {
+    if (siteAllowedDeviceIds === null) return true;
+    const allowed = new Set(siteAllowedDeviceIds);
+    return (targetIds ?? []).every((id) => allowed.has(id));
+  }
+  return true;
+}
+
 export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -316,10 +355,19 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(browserPolicies.updatedAt))
           .limit(200);
 
+        // Site axis: resolve the caller's device set ONLY when a device-targeted
+        // policy is actually present (one scan at most, none when unrestricted).
+        const siteAllowedDeviceIds =
+          auth.allowedSiteIds && auth.orgId && policies.some((p) => p.targetType === 'device')
+            ? await resolveSiteAllowedDeviceIds(auth.orgId, auth)
+            : null;
+
         // Exact-device axis: drop policies that name a device outside this
-        // caller's allowlist (no-op for an unrestricted caller).
+        // caller's allowlist (no-op for an unrestricted caller). Site axis:
+        // drop policies targeted exclusively at sites/devices out of reach.
         const visible = policies.filter((policy) =>
-          policyWithinDeviceReadScope(auth, policy.targetType, policy.targetIds));
+          policyWithinDeviceReadScope(auth, policy.targetType, policy.targetIds)
+          && policyWithinSiteReadScope(auth, policy.targetType, policy.targetIds, siteAllowedDeviceIds));
 
         return JSON.stringify({ policies: visible });
       }

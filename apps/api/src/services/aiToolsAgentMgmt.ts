@@ -14,7 +14,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget, normalizeAgentArchitecture } from '../routes/agents/helpers';
 import { getBinaryEdition } from './binaryEdition';
-import { deviceScopeCondition } from './aiToolsSiteScope';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -154,6 +154,26 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         // site axis — a device-less analysis run has no `allowedSiteIds` at all.
         const deviceCond = deviceScopeCondition(auth, devices.id);
         if (deviceCond) conditions.push(deviceCond);
+        // Site axis (audit §1.1). A site-restricted HUMAN never carries
+        // `allowedDeviceIds`, so the branch above is a no-op for them and this
+        // rollup stayed org-wide. `resolveSiteAllowedDeviceIds` intersects both
+        // axes; an unrestricted caller reaches neither branch and pays no scan.
+        if (auth.allowedSiteIds !== undefined) {
+          const siteDeviceIds = auth.orgId
+            ? await resolveSiteAllowedDeviceIds(auth.orgId, auth) ?? []
+            : [];
+          if (siteDeviceIds.length === 0) {
+            return JSON.stringify({
+              latestVersion: latest?.version ?? null,
+              effectiveTarget,
+              pinned,
+              totalOutdated: 0,
+              byVersion: [],
+              note: SITE_SCOPE_EMPTY_NOTE,
+            });
+          }
+          conditions.push(inArray(devices.id, siteDeviceIds));
+        }
 
         const outdated = await db
           .select({

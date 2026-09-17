@@ -104,3 +104,70 @@ describe('query_analytics capacity_predictions — site narrowing', () => {
     expect(mockDb.select).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('query_analytics sla_definitions / sla_compliance — site narrowing (audit §1.1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const ORG_WIDE = { id: 'sla-org', name: 'Org SLA', targetType: null, targetIds: null };
+  const SITE_IN = { id: 'sla-in', name: 'Site 1 SLA', targetType: 'site', targetIds: ['site-1'] };
+  const SITE_OUT = { id: 'sla-out', name: 'Site 2 SLA', targetType: 'site', targetIds: ['site-2'] };
+  const DEVICE_OUT = { id: 'sla-dev', name: 'Device SLA', targetType: 'device', targetIds: ['d-out'] };
+
+  function mockDefs(rows: unknown[], orgDevices: Array<{ id: string; siteId: string }> = []) {
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        return { from: () => ({ where: () => Promise.resolve(orgDevices) }) };
+      }
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(rows) }) }) }) };
+    });
+  }
+
+  it('sla_definitions hides site- and device-targeted definitions outside the caller scope', async () => {
+    mockDefs([ORG_WIDE, SITE_IN, SITE_OUT, DEVICE_OUT], [{ id: 'd-out', siteId: 'site-2' }]);
+    const r = await handlerFor('query_analytics')({ action: 'sla_definitions' }, makeAuth(['site-1'])) as string;
+    const parsed = JSON.parse(r);
+    expect(parsed.slaDefinitions.map((d: any) => d.id)).toEqual(['sla-org', 'sla-in']);
+    expect(parsed.showing).toBe(2);
+    // the out-of-scope site/device UUIDs must not leak either
+    expect(r).not.toContain('site-2');
+    expect(r).not.toContain('d-out');
+  });
+
+  it('sla_definitions is unchanged for an unrestricted caller', async () => {
+    mockDefs([ORG_WIDE, SITE_IN, SITE_OUT, DEVICE_OUT]);
+    const r = await handlerFor('query_analytics')({ action: 'sla_definitions' }, makeAuth(undefined)) as string;
+    expect(JSON.parse(r).showing).toBe(4);
+    // and pays no device-resolution query
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('sla_compliance hides rows whose definition targets another site', async () => {
+    const rows = [
+      { id: 'c1', slaId: 'sla-in', slaName: 'Site 1 SLA', targetType: 'site', targetIds: ['site-1'], overallCompliant: true },
+      { id: 'c2', slaId: 'sla-out', slaName: 'Site 2 SLA', targetType: 'site', targetIds: ['site-2'], overallCompliant: false },
+    ];
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) return { from: () => ({ where: () => Promise.resolve([]) }) };
+      return { from: () => ({ innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(rows) }) }) }) }) };
+    });
+    const r = await handlerFor('query_analytics')({ action: 'sla_compliance' }, makeAuth(['site-1'])) as string;
+    const parsed = JSON.parse(r);
+    expect(parsed.slaCompliance.map((c: any) => c.id)).toEqual(['c1']);
+    expect(r).not.toContain('site-2');
+    // the target columns are a gating input, not part of the compliance payload
+    expect(parsed.slaCompliance[0].targetIds).toBeUndefined();
+  });
+
+  it('sla_compliance is unchanged for an unrestricted caller', async () => {
+    const rows = [
+      { id: 'c1', slaId: 'sla-in', targetType: 'site', targetIds: ['site-1'] },
+      { id: 'c2', slaId: 'sla-out', targetType: 'site', targetIds: ['site-2'] },
+    ];
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({ innerJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(rows) }) }) }) }),
+    }));
+    const r = await handlerFor('query_analytics')({ action: 'sla_compliance' }, makeAuth(undefined)) as string;
+    expect(JSON.parse(r).showing).toBe(2);
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+});

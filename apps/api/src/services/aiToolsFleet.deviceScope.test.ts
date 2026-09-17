@@ -233,12 +233,15 @@ describe('manage_patches list — patch inventory carries both axes', () => {
 // ── 3. manage_deployments control actions ────────────────────────────────────
 describe('manage_deployments — control actions carry the device axis', () => {
   function mockDeployment(members: Array<{ deviceId: string; siteId: string }>) {
+    // The membership query is batched by deployment id (one query for any
+    // number of deployments), so each member row carries its deploymentId.
+    const memberRows = members.map((m) => ({ deploymentId: 'dep-1', ...m }));
     let call = 0;
     mockDb.select.mockImplementation(() => {
       if (call++ === 0) {
         return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'dep-1', name: 'D', status: 'draft' }]) }) }) };
       }
-      return { from: () => ({ leftJoin: () => ({ where: () => Promise.resolve(members) }) }) };
+      return { from: () => ({ leftJoin: () => ({ where: () => Promise.resolve(memberRows) }) }) };
     });
     mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
   }

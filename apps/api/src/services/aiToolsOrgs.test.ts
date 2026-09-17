@@ -627,6 +627,42 @@ describe('manage_organizations add_contact', () => {
     );
   });
 
+  // Site axis (audit §1.2). The gate was written `auth.canAccessSite?.(siteId)
+  // === false`, which fails OPEN whenever the closure is absent — a shape that
+  // is one refactor away from being live, and that copy-pastes easily.
+  it('denies a site-restricted caller filing a contact at another site', async () => {
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, siteId: SITE_2, name: 'Rogue Site Contact' },
+        orgAuth({ allowedSiteIds: [SITE_1], canAccessSite: (s: string | null | undefined) => s === SITE_1 } as Partial<AuthContext>)
+      )
+    );
+    expect(out.code).toBe('site-access-denied');
+    expect(mockCreateContact).not.toHaveBeenCalled();
+  });
+
+  it('denies a site-restricted caller whose canAccessSite closure is absent (no fail-open)', async () => {
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, siteId: SITE_2, name: 'Rogue Site Contact' },
+        orgAuth({ allowedSiteIds: [SITE_1] } as Partial<AuthContext>)
+      )
+    );
+    expect(out.code).toBe('site-access-denied');
+    expect(mockCreateContact).not.toHaveBeenCalled();
+  });
+
+  it('still allows a site-restricted caller at an in-scope site', async () => {
+    mockCreateContact.mockResolvedValueOnce(contactRow({ siteId: SITE_1, name: 'Site Contact' }));
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, siteId: SITE_1, name: 'Site Contact' },
+        orgAuth({ allowedSiteIds: [SITE_1], canAccessSite: (s: string | null | undefined) => s === SITE_1 } as Partial<AuthContext>)
+      )
+    );
+    expect(out.contact.siteId).toBe(SITE_1);
+  });
+
   it('denies a partner caller targeting an org outside its accessible set', async () => {
     const out = JSON.parse(
       await getTools().manage.handler(

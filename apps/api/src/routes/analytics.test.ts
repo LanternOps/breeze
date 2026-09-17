@@ -1225,5 +1225,75 @@ describe('analytics routes', () => {
         expect(body.series).toHaveLength(1);
       });
     });
+
+    describe('SLA site scoping (audit §1.1 / §4)', () => {
+      const ORG_WIDE = { id: 'sla-org', orgId: ORG_ID, name: 'Org SLA', targetType: 'organization', targetIds: null };
+      const SITE_IN = { id: 'sla-in', orgId: ORG_ID, name: 'In', targetType: 'site', targetIds: [SITE_ALLOWED] };
+      const SITE_OUT = { id: 'sla-out', orgId: ORG_ID, name: 'Out', targetType: 'site', targetIds: [SITE_DENIED] };
+      const DEVICE_OUT = { id: 'sla-dev', orgId: ORG_ID, name: 'Dev', targetType: 'device', targetIds: [DEVICE_OUT_OF_SCOPE] };
+
+      it('GET /analytics/sla hides definitions targeting sites/devices outside the caller scope', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce([ORG_WIDE, SITE_IN, SITE_OUT, DEVICE_OUT]); // definitions
+        mockSelectOnce(ORG_DEVICE_ROWS); // device resolution (device-targeted def present)
+
+        const res = await app.request('/analytics/sla?page=1&limit=10', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((d: any) => d.id)).toEqual(['sla-org', 'sla-in']);
+        expect(body.pagination.total).toBe(2);
+        expect(JSON.stringify(body)).not.toContain(SITE_DENIED);
+      });
+
+      it('GET /analytics/sla is unchanged for an unrestricted caller', async () => {
+        currentPermissions = undefined;
+        mockSelectOnce([{ count: 4 }]);
+        mockSelectOnce([ORG_WIDE, SITE_IN, SITE_OUT, DEVICE_OUT]);
+
+        const res = await app.request('/analytics/sla?page=1&limit=10', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(4);
+        expect(body.pagination.total).toBe(4);
+      });
+
+      it('GET /analytics/sla/:id/compliance denies an out-of-scope definition', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce([SITE_OUT]); // the definition
+
+        const res = await app.request('/analytics/sla/sla-out/compliance', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toBe('Access denied');
+      });
+
+      it('GET /analytics/sla/:id/compliance still serves an in-scope definition', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce([SITE_IN]); // the definition
+        mockSelectOnce([]); // compliance history
+        mockSelectOnce([{ count: 2 }]);
+        mockSelectOnce([{ count: 4 }]);
+
+        const res = await app.request('/analytics/sla/sla-in/compliance', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).slaId).toBe('sla-in');
+      });
+    });
+
   });
 });

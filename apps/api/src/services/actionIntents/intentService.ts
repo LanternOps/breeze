@@ -52,6 +52,7 @@ import { isTerminalIntentStatus, type IntentOutcomeSnapshot } from '../aiToolHan
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import {
+  isOrgWideGovernanceIntent,
   resolveAgentIntentApprovers,
   resolveIntentApprovers,
   resolveIntentTargetScope,
@@ -1643,11 +1644,21 @@ export async function createActionIntent(
   // can also acknowledge the patterns (scripts:write + MFA, spec §4.5), so the
   // four-eyes candidate set is filtered to scripts:write holders. The context
   // was already loaded once for the guardrail above — no second proposal read.
+  // Audit §1.1: an ORG-WIDE GOVERNANCE intent (today
+  // manage_ai_agents:authorize_supervised_key) is refused at decide time for
+  // any approver carrying a site/exact-device ceiling
+  // (`canMutateOrgWideGovernance`, approvals/decideApprovalRequest.ts). Fan out
+  // to the same population the decide gate admits, or the queue fills with rows
+  // nobody can action and — more seriously — the sole-operator determination
+  // disagrees with its own decide-time re-derivation, which passes this SAME
+  // flag. The two call sites must always move together.
+  const requireOrgWideGovernance = isOrgWideGovernanceIntent(input.toolName, input.input);
   const eligibleAll = await resolveIntentApprovers(orgId, {
     alsoRequire:
       input.toolName === 'run_script' && (guardrailContext?.proposal?.strictHits?.length ?? 0) > 0
         ? PERMISSION_GRANTS.SCRIPTS_WRITE
         : undefined,
+    requireOrgWideGovernance,
   });
   const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId);
   const requesterEligible = eligibleAll.includes(requesterId);

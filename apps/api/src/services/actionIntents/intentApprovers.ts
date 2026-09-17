@@ -54,6 +54,7 @@ import {
   hasPermission,
 } from '../permissions';
 import { resolveUsersWithPermissionForOrg, type PermissionPair } from '../usersWithPermission';
+import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 
 /**
  * Resolve the distinct user ids eligible to decide an action intent for
@@ -73,12 +74,63 @@ export async function resolveIntentApprovers(
      * truthful refusal, not a reason to widen.
      */
     alsoRequire?: PermissionPair;
+    /**
+     * The FAN-OUT twin of the decide-side site-ceiling gate (audit §1.1,
+     * `decideApprovalRequest.ts`). Pass `isOrgWideGovernanceIntent(actionName,
+     * arguments)`: when true, a candidate who holds `approvals:decide` but
+     * carries a site (or exact-device) ceiling is DROPPED, because
+     * `canMutateOrgWideGovernance` would 403 them the moment they tried to
+     * approve — queueing them fills the inbox with rows nobody can action AND,
+     * worse, makes the sole-operator determination wrong in both directions.
+     *
+     * The fan-out and the sole-operator RE-DERIVATION in
+     * `decideApprovalRequest.ts` MUST pass the same value: if only one of them
+     * filters, an intent is either treated as having another eligible approver
+     * who cannot actually decide, or as sole-operator when it is not.
+     *
+     * Dropping every other candidate is deliberately NOT a special case: the
+     * intent behaves exactly as if those users did not hold `approvals:decide`
+     * at all — the requester falls to the sole-operator branch if THEY survive
+     * the same filter, and otherwise the intent is cancelled with
+     * `no_eligible_approvers` (intentService.ts).
+     */
+    requireOrgWideGovernance?: boolean;
   },
 ): Promise<string[]> {
   const deciders = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
-  if (!opts?.alsoRequire || deciders.length === 0) return deciders;
-  const also = new Set(await resolveUsersWithPermissionForOrg(orgId, opts.alsoRequire));
-  return deciders.filter((userId) => also.has(userId));
+  let eligible = deciders;
+  if (opts?.alsoRequire && eligible.length > 0) {
+    const also = new Set(await resolveUsersWithPermissionForOrg(orgId, opts.alsoRequire));
+    eligible = eligible.filter((userId) => also.has(userId));
+  }
+  if (!opts?.requireOrgWideGovernance || eligible.length === 0) return eligible;
+
+  // Same system-context contract as every other read in this module: the
+  // partner id is load-bearing for `getUserPermissions` (the permission
+  // service only evaluates the partner axis when `partnerId` is present), so
+  // omitting it would silently discard every partner-only technician.
+  const [org] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1),
+    ),
+  );
+  const partnerId = org?.partnerId ?? null;
+
+  const kept: string[] = [];
+  for (const userId of eligible) {
+    const userPerms = await getUserPermissions(userId, {
+      orgId,
+      ...(partnerId ? { partnerId } : {}),
+    });
+    // Unresolvable permissions fail closed, exactly as in
+    // `userHasActionAndTargetAuthority` below.
+    if (userPerms && canMutateOrgWideGovernance(userPerms)) kept.push(userId);
+  }
+  return kept;
 }
 
 // ============================================================
@@ -129,6 +181,52 @@ export const DEVICE_COMPLETE_TARGET_TOOLS: ReadonlySet<string> = new Set([
   'remediate_vulnerability',
   'run_script',
 ]);
+
+/**
+ * Tool → actions whose EFFECT is an org-wide governance grant: an approval
+ * that changes what may happen across the WHOLE org, with no per-site slice to
+ * narrow it to.
+ *
+ * This is the approver-side twin of the raiser gate. The raiser of
+ * `manage_ai_agents:authorize_supervised_key` is already refused by
+ * `canMutateOrgWideGovernance` (services/aiToolsAiAgentGovernance.ts), which
+ * is the same predicate every other org-wide governance object's write path
+ * uses (webhooks, notification channels, config policies, PAM, backup — see
+ * services/siteCeilingAccess.ts). Nothing applied it to the DECIDER of the
+ * resulting four-eyes row, so a site-restricted holder of `approvals:decide`
+ * could wave through a grant they could never have raised.
+ *
+ * Note this is only needed for the four_eyes lane. A SUPERVISED
+ * agent-originated intent is already covered by the existing rule below:
+ * `manage_ai_agents` is not in DEVICE_COMPLETE_TARGET_TOOLS, so its target
+ * scope resolves to `{kind:'indirect'}` and
+ * `userHasActionAndTargetAuthority` already requires
+ * `allowedSiteIds === undefined`. Classifying the action here rather than
+ * inventing a second, bespoke check keeps the two lanes on one notion of
+ * "org-wide, nothing to narrow".
+ *
+ * An empty action set would mean "every action of this tool"; today every
+ * entry is action-discriminated.
+ */
+export const ORG_WIDE_GOVERNANCE_TOOL_ACTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['manage_ai_agents', new Set(['authorize_supervised_key'])],
+]);
+
+/**
+ * True when an intent's stored `(actionName, arguments)` names an org-wide
+ * governance grant, i.e. one whose decider must clear the site/exact-device
+ * ceiling (`canMutateOrgWideGovernance`) exactly as its raiser did.
+ */
+export function isOrgWideGovernanceIntent(
+  toolName: string,
+  args: Record<string, unknown> | null | undefined,
+): boolean {
+  const actions = ORG_WIDE_GOVERNANCE_TOOL_ACTIONS.get(toolName);
+  if (!actions) return false;
+  if (actions.size === 0) return true;
+  const action = args?.action;
+  return typeof action === 'string' && actions.has(action);
+}
 
 export type IntentTargetScope =
   | { kind: 'devices'; siteIds: string[] } // fully resolved via deviceArgs ∪ run.deviceId

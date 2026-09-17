@@ -658,18 +658,34 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       // their member devices (mirrors routes/deployments.ts:760-766). Control
       // actions affect ALL member devices, so deny if the deployment includes
       // ANY out-of-site device (fail closed). Unrestricted callers: always false.
-      const deploymentSiteDenied = async (deploymentId: string): Promise<boolean> => {
-        if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return false;
-        const members = await db.select({ deviceId: deploymentDevices.deviceId, siteId: devices.siteId })
+      // Batched form: ONE membership query for any number of deployments, so
+      // `list` never degenerates into an N+1 for a restricted caller. Returns
+      // the subset of `deploymentIds` the caller must not reach; an empty set
+      // (and zero queries) for an unrestricted caller.
+      const deniedDeploymentIds = async (deploymentIds: string[]): Promise<Set<string>> => {
+        if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return new Set();
+        if (deploymentIds.length === 0) return new Set();
+        const members = await db.select({
+          deploymentId: deploymentDevices.deploymentId,
+          deviceId: deploymentDevices.deviceId,
+          siteId: devices.siteId,
+        })
           .from(deploymentDevices)
           .leftJoin(devices, eq(deploymentDevices.deviceId, devices.id))
-          .where(eq(deploymentDevices.deploymentId, deploymentId));
+          .where(inArray(deploymentDevices.deploymentId, deploymentIds));
+        const denied = new Set<string>();
         // Three arguments, not two (#6096): the member IS a device, so the
         // exact-device axis applies — a device-bound run shares its site with
         // every sibling, and site alone would wave them through. `?? null`
         // keeps an unresolvable member failing closed for such a run.
-        return members.some((m) => deviceSiteDenied(auth, m.siteId, m.deviceId ?? null));
+        for (const m of members) {
+          if (deviceSiteDenied(auth, m.siteId, m.deviceId ?? null)) denied.add(m.deploymentId);
+        }
+        return denied;
       };
+
+      const deploymentSiteDenied = async (deploymentId: string): Promise<boolean> =>
+        (await deniedDeploymentIds([deploymentId])).has(deploymentId);
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -692,7 +708,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(deployments.createdAt))
           .limit(limit);
 
-        return JSON.stringify({ deployments: rows, showing: rows.length });
+        // Deployments are site-attributable through their member devices, so a
+        // site-restricted caller must not even see the metadata of a deployment
+        // that reaches a device outside their sites (audit §1.1). Batched: one
+        // extra query for a restricted caller, zero for an unrestricted one.
+        const denied = await deniedDeploymentIds(rows.map((r) => r.id));
+        const visible = denied.size > 0 ? rows.filter((r) => !denied.has(r.id)) : rows;
+
+        return JSON.stringify({ deployments: visible, showing: visible.length });
       }
 
       if (action === 'get') {
@@ -703,6 +726,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [dep] = await db.select().from(deployments).where(and(...conditions)).limit(1);
         if (!dep) return JSON.stringify({ error: 'Deployment not found or access denied' });
+        // Same gate the control actions carry: the progress counts below
+        // aggregate over EVERY member device, so they are unattributable for a
+        // caller who cannot reach all of them (audit §1.1).
+        if (await deploymentSiteDenied(dep.id)) return JSON.stringify({ error: 'Deployment not found or access denied' });
 
         // Get progress stats
         const stats = await db.select({

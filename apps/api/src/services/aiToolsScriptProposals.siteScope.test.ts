@@ -1,8 +1,11 @@
 /**
- * #6096 finding 12 — `get_script_proposal` resolved by org reach only
- * (`getScriptProposalForPrincipal`), so a device-bound AI run could read any
- * proposal in the org: its goal, its static-scan hits and its target device
- * list. A proposal is device-attributable via `targetDeviceIds`.
+ * Audit 2026-09-17 §1.1 — `scopedTargetDeviceIds` branched on
+ * `auth.allowedDeviceIds` ONLY, so `get_script_proposal` handed a site-restricted
+ * technician the full proposal (goal, script intent, static-scan hits, target
+ * device ids) for devices in sites they cannot access: the helper returned
+ * `null` (= no narrowing) for exactly that caller shape.
+ *
+ * Both axes now apply, via `scopeDeviceIdsToCaller` (their INTERSECTION).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,16 +34,16 @@ function handlerFor(name: string): AiTool['handler'] {
   return reg.get(name)!.handler;
 }
 
-function auth(allowedDeviceIds?: string[], allowedSiteIds?: string[]): AuthContext {
+/** A HUMAN technician restricted to sites — never carries `allowedDeviceIds`. */
+function human(allowedSiteIds?: string[]): AuthContext {
   return {
-    principal: { kind: 'ai_agent' },
+    principal: { kind: 'user' },
     user: { id: 'u1' },
     orgId: 'org-1',
     scope: 'organization',
     accessibleOrgIds: ['org-1'],
     orgCondition: () => undefined,
     canAccessOrg: () => true,
-    allowedDeviceIds,
     allowedSiteIds,
     canAccessSite: (s: string | null | undefined) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
   } as unknown as AuthContext;
@@ -56,58 +59,65 @@ function proposal(targetDeviceIds: string[]) {
   };
 }
 
+/** dev-1 lives in site-1, dev-2 in site-2. */
+const ORG_DEVICES = [{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-2' }];
+let deviceScans = 0;
+
 function mockRead(row: ReturnType<typeof proposal>) {
-  // Awaiting the chain with no limit is the device->site scan the site axis
-  // added (resolveSiteAllowedDeviceIds): dev-1 in site-1, dev-2 in site-2.
-  mockDb.select.mockImplementation(() => {
+  deviceScans = 0;
+  mockDb.select.mockImplementation((cols?: any) => {
     const chain: any = {
       from: () => chain,
       where: () => chain,
       limit: () => Promise.resolve([row]),
-      then: (resolve: (v: unknown) => unknown) =>
-        Promise.resolve([{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-2' }]).then(resolve),
+      // Awaiting the chain with no limit = the device→site scan.
+      then: (resolve: (v: unknown) => unknown) => {
+        if (cols !== undefined) deviceScans += 1;
+        return Promise.resolve(ORG_DEVICES).then(resolve);
+      },
     };
     return chain;
   });
 }
 
-describe('getScriptProposalForPrincipal — exact-device scope', () => {
+describe('getScriptProposalForPrincipal — site axis', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns null for a proposal targeting only a sibling device', async () => {
+  it('returns null for a proposal targeting only a device in another site', async () => {
     mockRead(proposal(['dev-2']));
-    expect(await getScriptProposalForPrincipal(auth(['dev-1'], ['site-1']), 'prop-1')).toBeNull();
+    expect(await getScriptProposalForPrincipal(human(['site-1']), 'prop-1')).toBeNull();
   });
 
-  it('returns null for a device-LESS analysis run too', async () => {
-    mockRead(proposal(['dev-2']));
-    expect(await getScriptProposalForPrincipal(auth(['dev-1'], undefined), 'prop-1')).toBeNull();
+  it('returns null for a proposal targeting NO devices (not attributable)', async () => {
+    mockRead(proposal([]));
+    expect(await getScriptProposalForPrincipal(human(['site-1']), 'prop-1')).toBeNull();
   });
 
-  it('still resolves a proposal targeting the run\'s OWN device', async () => {
+  it('still resolves a proposal targeting a device in the human\'s OWN site', async () => {
     mockRead(proposal(['dev-1']));
-    expect(await getScriptProposalForPrincipal(auth(['dev-1'], ['site-1']), 'prop-1')).not.toBeNull();
+    expect(await getScriptProposalForPrincipal(human(['site-1']), 'prop-1')).not.toBeNull();
   });
 
-  it('is unchanged for an unrestricted caller', async () => {
+  it('is unchanged for an unrestricted human, with NO device scan', async () => {
     mockRead(proposal(['dev-2']));
-    expect(await getScriptProposalForPrincipal(auth(undefined, undefined), 'prop-1')).not.toBeNull();
+    expect(await getScriptProposalForPrincipal(human(undefined), 'prop-1')).not.toBeNull();
+    expect(deviceScans).toBe(0);
   });
 });
 
-describe('get_script_proposal tool', () => {
+describe('get_script_proposal tool — site axis', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('reports not_found for a sibling-only proposal', async () => {
+  it('reports not_found for an out-of-site proposal and leaks nothing', async () => {
     mockRead(proposal(['dev-2']));
-    const out = JSON.parse(await handlerFor('get_script_proposal')({ proposalId: 'prop-1' }, auth(['dev-1'], ['site-1'])));
+    const out = JSON.parse(await handlerFor('get_script_proposal')({ proposalId: 'prop-1' }, human(['site-1'])));
     expect(out.error).toContain('not_found');
     expect(JSON.stringify(out)).not.toContain('SECRET-GOAL');
   });
 
-  it('filters targetDeviceIds down to the allowlist on a mixed proposal', async () => {
+  it('echoes only the target devices inside the human\'s sites', async () => {
     mockRead(proposal(['dev-1', 'dev-2']));
-    const out = JSON.parse(await handlerFor('get_script_proposal')({ proposalId: 'prop-1' }, auth(['dev-1'], ['site-1'])));
+    const out = JSON.parse(await handlerFor('get_script_proposal')({ proposalId: 'prop-1' }, human(['site-1'])));
     expect(out.targetDeviceIds).toEqual(['dev-1']);
   });
 });

@@ -61,9 +61,18 @@ function createChain(result: unknown = []) {
  * check_upgrades issues two selects: (1) the global `isLatest` version,
  * (2) the grouped outdated-device rollup. Capture the WHERE of (2).
  */
-function mockCheckUpgrades(outdatedRows: unknown[]): { capturedWhere: () => unknown } {
+function mockCheckUpgrades(
+  outdatedRows: unknown[],
+  /**
+   * Org device scan rows. A caller carrying `allowedSiteIds` (every device-BOUND
+   * run does) also resolves the site axis, which costs one device scan between
+   * the two selects. Omit for a caller with no site axis.
+   */
+  orgDevices?: Array<{ id: string; siteId: string }>,
+): { capturedWhere: () => unknown } {
   let captured: unknown;
   mockDb.select.mockImplementationOnce(() => createChain([{ version: '0.90.0' }]));
+  if (orgDevices) mockDb.select.mockImplementationOnce(() => createChain(orgDevices));
   mockDb.select.mockImplementationOnce(() => {
     const chain = createChain(outdatedRows);
     chain.where = vi.fn((condition: unknown) => {
@@ -116,7 +125,10 @@ describe('query_agent_versions check_upgrades — exact-device narrowing', () =>
   beforeEach(() => vi.clearAllMocks());
 
   it('cannot count a sibling device at the same site (device-bound run)', async () => {
-    const { capturedWhere } = mockCheckUpgrades([]);
+    const { capturedWhere } = mockCheckUpgrades([], [
+      { id: DEVICE_ID, siteId: 'site-1' },
+      { id: SIBLING_DEVICE_ID, siteId: 'site-1' },
+    ]);
 
     await handlerFor('query_agent_versions')({ action: 'check_upgrades' }, deviceBoundAuth());
 
@@ -126,7 +138,9 @@ describe('query_agent_versions check_upgrades — exact-device narrowing', () =>
   });
 
   it('still counts its own device (no over-blocking)', async () => {
-    const { capturedWhere } = mockCheckUpgrades([{ currentVersion: '0.80.0', count: 1 }]);
+    const { capturedWhere } = mockCheckUpgrades([{ currentVersion: '0.80.0', count: 1 }], [
+      { id: DEVICE_ID, siteId: 'site-1' },
+    ]);
 
     const parsed = JSON.parse(
       await handlerFor('query_agent_versions')({ action: 'check_upgrades' }, deviceBoundAuth()),
@@ -154,6 +168,81 @@ describe('query_agent_versions check_upgrades — exact-device narrowing', () =>
     );
 
     expect(parsed.totalOutdated).toBe(7);
+    const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
+    expect(rendered.params).not.toContain(DEVICE_ID);
+  });
+});
+
+/**
+ * SITE axis (audit §1.1) for the same rollup. A site-restricted HUMAN carries
+ * `allowedSiteIds` and never `allowedDeviceIds`, so the device branch above is
+ * a no-op for them and the count stayed org-wide.
+ */
+describe('query_agent_versions check_upgrades — site narrowing', () => {
+  // `clearAllMocks` does NOT drain queued `mockImplementationOnce` entries, and
+  // a test that short-circuits (zero in-scope devices) leaves one behind that
+  // would then answer the next test's first query. Reset the queue explicitly.
+  beforeEach(() => { vi.clearAllMocks(); mockDb.select.mockReset(); });
+
+  const SITE_RESTRICTED = 'site-1';
+  /** Human restricted to one site; NO exact-device allowlist. */
+  const siteRestrictedAuth = () =>
+    makeAuth({
+      allowedDeviceIds: undefined,
+      allowedSiteIds: [SITE_RESTRICTED],
+      canAccessSite: (s: string | null | undefined) => s === SITE_RESTRICTED,
+    } as Partial<AuthContext>);
+
+  /** Insert the org device scan resolveSiteAllowedDeviceIds performs. */
+  function mockSiteCheckUpgrades(orgDevices: Array<{ id: string; siteId: string }>, outdatedRows: unknown[]) {
+    let captured: unknown;
+    mockDb.select.mockImplementationOnce(() => createChain([{ version: '0.90.0' }]));
+    mockDb.select.mockImplementationOnce(() => createChain(orgDevices)); // device scan
+    mockDb.select.mockImplementationOnce(() => {
+      const chain = createChain(outdatedRows);
+      chain.where = vi.fn((condition: unknown) => { captured = condition; return chain; });
+      return chain;
+    });
+    return { capturedWhere: () => captured };
+  }
+
+  it('excludes a sibling device in another site', async () => {
+    const { capturedWhere } = mockSiteCheckUpgrades(
+      [{ id: DEVICE_ID, siteId: SITE_RESTRICTED }, { id: SIBLING_DEVICE_ID, siteId: 'site-2' }],
+      [{ currentVersion: '0.80.0', count: 1 }],
+    );
+
+    const parsed = JSON.parse(
+      await handlerFor('query_agent_versions')({ action: 'check_upgrades' }, siteRestrictedAuth()),
+    );
+
+    expect(parsed.totalOutdated).toBe(1);
+    const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
+    expect(rendered.params).toContain(DEVICE_ID);
+    expect(rendered.params).not.toContain(SIBLING_DEVICE_ID);
+  });
+
+  it('reports zero with the site-scope note when no device is in scope', async () => {
+    mockSiteCheckUpgrades([{ id: SIBLING_DEVICE_ID, siteId: 'site-2' }], []);
+
+    const parsed = JSON.parse(
+      await handlerFor('query_agent_versions')({ action: 'check_upgrades' }, siteRestrictedAuth()),
+    );
+
+    expect(parsed.totalOutdated).toBe(0);
+    expect(parsed.byVersion).toEqual([]);
+    expect(parsed.note).toContain('site');
+  });
+
+  it('unrestricted caller pays no device scan (no regression)', async () => {
+    const { capturedWhere } = mockCheckUpgrades([{ currentVersion: '0.80.0', count: 7 }]);
+
+    const parsed = JSON.parse(
+      await handlerFor('query_agent_versions')({ action: 'check_upgrades' }, makeAuth()),
+    );
+
+    expect(parsed.totalOutdated).toBe(7);
+    expect(mockDb.select).toHaveBeenCalledTimes(2);
     const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
     expect(rendered.params).not.toContain(DEVICE_ID);
   });

@@ -270,7 +270,7 @@ describe('SR5-03 manage_deployments — site scoping', () => {
     let call = 0;
     mockDb.select.mockImplementation(() => {
       if (call === 0) { call++; return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'dep1', name: 'D', status: 'running' }]) }) }) }; }
-      return { from: () => ({ leftJoin: () => ({ where: () => Promise.resolve([{ siteId: 'site-FORBIDDEN' }]) }) }) };
+      return { from: () => ({ leftJoin: () => ({ where: () => Promise.resolve([{ deploymentId: 'dep1', deviceId: 'd-out', siteId: 'site-FORBIDDEN' }]) }) }) };
     });
     (db as any).update = vi.fn();
     const r = await handlerFor('manage_deployments')({ action: 'pause', deploymentId: 'dep1' }, makeAuth(['site-A']));
@@ -775,5 +775,104 @@ describe('manage_patches setup_auto_approval — site-ceiling gate (contract-sit
     const r = await handlerFor('manage_patches')({ action: 'setup_auto_approval' }, makeAuth(undefined)) as string;
     expect(r).toContain('disabled');
     expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe('manage_deployments get/list — site axis (audit §1.1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Deployments carry no siteId; their site attribution is their member
+  // devices. `get` exposes the row plus org-wide progress counts and `list`
+  // exposes every deployment's metadata — both had no site check while
+  // start/pause/resume/cancel did.
+  function mockGet(members: Array<{ deviceId: string; siteId: string | null }>) {
+    const memberRows = members.map((m) => ({ deploymentId: 'dep-1', ...m }));
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) {
+        return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'dep-1', name: 'D', status: 'running' }]) }) }) };
+      }
+      // member lookup (leftJoin) then, if reached, the progress aggregate
+      return {
+        from: () => ({
+          leftJoin: () => ({ where: () => Promise.resolve(memberRows) }),
+          where: () => Promise.resolve([{ total: 3, pending: 1, running: 1, completed: 1, failed: 0, skipped: 0 }]),
+        }),
+      };
+    });
+  }
+
+  it('get denies a deployment whose members live in another site', async () => {
+    mockGet([{ deviceId: 'd-out', siteId: 'site-2' }]);
+    const r = await handlerFor('manage_deployments')({ action: 'get', deploymentId: 'dep-1' }, makeAuth(['site-1'])) as string;
+    expect(JSON.parse(r).error).toContain('access denied');
+    expect(r).not.toContain('progress');
+  });
+
+  it('get still returns a deployment confined to the caller site', async () => {
+    mockGet([{ deviceId: 'd-in', siteId: 'site-1' }]);
+    const r = await handlerFor('manage_deployments')({ action: 'get', deploymentId: 'dep-1' }, makeAuth(['site-1'])) as string;
+    const parsed = JSON.parse(r);
+    expect(parsed.deployment.id).toBe('dep-1');
+    expect(parsed.progress.total).toBe(3);
+  });
+
+  it('get runs no member query for an unrestricted caller', async () => {
+    let memberQueries = 0;
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) {
+        return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'dep-1', name: 'D', status: 'running' }]) }) }) };
+      }
+      return {
+        from: () => ({
+          leftJoin: () => { memberQueries++; return { where: () => Promise.resolve([]) }; },
+          where: () => Promise.resolve([{ total: 0 }]),
+        }),
+      };
+    });
+    const r = await handlerFor('manage_deployments')({ action: 'get', deploymentId: 'dep-1' }, makeAuth(undefined)) as string;
+    expect(JSON.parse(r).deployment.id).toBe('dep-1');
+    expect(memberQueries).toBe(0);
+  });
+
+  it('list hides deployments that reach devices outside the caller site', async () => {
+    let call = 0;
+    let memberQueries = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) {
+        return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([
+          { id: 'dep-in', name: 'In', type: 't', status: 'running', targetType: 'device', createdAt: null, startedAt: null, completedAt: null },
+          { id: 'dep-out', name: 'Out', type: 't', status: 'running', targetType: 'device', createdAt: null, startedAt: null, completedAt: null },
+        ]) }) }) }) };
+      }
+      return { from: () => ({ leftJoin: () => ({ where: () => { memberQueries++; return Promise.resolve([
+        { deploymentId: 'dep-in', deviceId: 'd-in', siteId: 'site-1' },
+        { deploymentId: 'dep-out', deviceId: 'd-out', siteId: 'site-2' },
+      ]); } }) }) };
+    });
+    const r = await handlerFor('manage_deployments')({ action: 'list' }, makeAuth(['site-1'])) as string;
+    const parsed = JSON.parse(r);
+    expect(parsed.deployments.map((d: any) => d.id)).toEqual(['dep-in']);
+    expect(parsed.showing).toBe(1);
+    // one batched membership query, not one per deployment
+    expect(memberQueries).toBe(1);
+  });
+
+  it('list is unchanged and pays no extra query for an unrestricted caller', async () => {
+    let call = 0;
+    let memberQueries = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) {
+        return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([
+          { id: 'dep-in', name: 'In', type: 't', status: 'running', targetType: 'device', createdAt: null, startedAt: null, completedAt: null },
+          { id: 'dep-out', name: 'Out', type: 't', status: 'running', targetType: 'device', createdAt: null, startedAt: null, completedAt: null },
+        ]) }) }) }) };
+      }
+      return { from: () => ({ leftJoin: () => ({ where: () => { memberQueries++; return Promise.resolve([]); } }) }) };
+    });
+    const r = await handlerFor('manage_deployments')({ action: 'list' }, makeAuth(undefined)) as string;
+    expect(JSON.parse(r).showing).toBe(2);
+    expect(memberQueries).toBe(0);
   });
 });

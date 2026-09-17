@@ -7,7 +7,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
-import { devices, alerts } from '../db/schema';
+import { devices } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
@@ -226,13 +226,22 @@ export async function enforceDeviceArgs(
   return { ok: true };
 }
 
-export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(alerts.id, alertId)];
-  const orgCond = auth.orgCondition(alerts.orgId);
-  if (orgCond) conditions.push(orgCond);
-  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  return alert || null;
-}
+/**
+ * Resolve one alert the caller may actually reach, on ALL THREE axes (org,
+ * exact-device, site).
+ *
+ * RE-EXPORT, not a second body (#6096 I6 follow-up). This module and
+ * `aiToolsAlerts.ts` each carried a byte-identical copy with their own
+ * callers — exactly the shape that drifted once already. The implementation
+ * lives in `aiToolsAlerts.ts` and is re-exported here because THIS is the
+ * import direction that already exists at runtime (this module imports
+ * `registerAlertTools` from that one); pointing the new edge the other way
+ * would close a genuine ESM cycle between the tool hub and one of its domain
+ * modules. Both public paths — `services/aiTools` and `services/aiToolsAlerts`
+ * (which `aiToolsTicketing.ts` imports) — keep working and now resolve to the
+ * SAME function object, pinned by `aiTools.findAlertWithAccess.test.ts`.
+ */
+export { findAlertWithAccess } from './aiToolsAlerts';
 
 export function resolveWritableToolOrgId(
   auth: AuthContext,

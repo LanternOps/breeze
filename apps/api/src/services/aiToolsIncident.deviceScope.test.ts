@@ -59,16 +59,18 @@ function mockReads(inc: ReturnType<typeof incident>) {
     }
     return { from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) };
   });
-  // both the incident read and the action/evidence reads go through select()
+  // both the incident read and the action/evidence reads go through select().
+  // Awaiting the chain with no limit/orderBy is the device->site scan the site
+  // axis added (resolveSiteAllowedDeviceIds): dev-1 in site-1, dev-2 in site-2.
   mockDb.select.mockImplementation(() => {
-    let usedLimit = false;
     const chain: any = {
       from: () => chain,
       where: () => chain,
       orderBy: () => Promise.resolve([]),
-      limit: () => { usedLimit = true; return Promise.resolve([inc]); },
+      limit: () => Promise.resolve([inc]),
+      then: (resolve: (v: unknown) => unknown) =>
+        Promise.resolve([{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-2' }]).then(resolve),
     };
-    void usedLimit;
     return chain;
   });
 }

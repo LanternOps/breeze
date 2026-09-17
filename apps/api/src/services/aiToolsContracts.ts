@@ -63,7 +63,12 @@ function actorFromAuth(auth: AuthContext): ContractActor {
   return {
     userId: auth.user.id,
     partnerId: auth.partnerId ?? null,
-    accessibleOrgIds: auth.accessibleOrgIds
+    accessibleOrgIds: auth.accessibleOrgIds,
+    // Thread the caller's site-axis restriction so a site-limited AI session can't
+    // read/mutate contracts outside its sites — the sibling actors already do
+    // (aiToolsBilling.ts, aiToolsQuotes.ts). undefined (partner/system, all-sites
+    // org users) stays unrestricted, preserving prior behavior.
+    allowedSiteIds: auth.allowedSiteIds
   };
 }
 

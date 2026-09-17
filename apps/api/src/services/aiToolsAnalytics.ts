@@ -18,6 +18,7 @@ import { eq, and, desc, asc, inArray, gte, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { slaDefinitionOutOfScope, slaScopeNarrowed } from './slaSiteScope';
 
 type AnalyticsHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -33,6 +34,26 @@ function capacityRollupMetricName(metricType: string): string {
   if (metricType === 'cpu') return 'cpu_percent';
   if (metricType === 'memory') return 'ram_percent';
   return 'disk_percent';
+}
+
+/**
+ * Drop SLA rows whose definition targets sites or devices a narrowed caller
+ * cannot reach (audit §1.1). Site is app-layer only — RLS does not defend it.
+ * Unrestricted callers pay nothing: no filtering, and no device-resolution
+ * query.
+ */
+async function filterSlaRows<T extends { targetType: string | null; targetIds: string[] | null }>(
+  auth: AuthContext,
+  rows: T[],
+): Promise<T[]> {
+  if (!slaScopeNarrowed(auth) || rows.length === 0) return rows;
+  // Only an organization-scope principal can be narrowed, so a single org id.
+  const orgId = auth.orgId;
+  const needsDeviceAxis = rows.some((r) => (r.targetType ?? '').toLowerCase() === 'device');
+  const allowedDeviceIds = needsDeviceAxis && orgId
+    ? await resolveSiteAllowedDeviceIds(orgId, auth)
+    : null;
+  return rows.filter((r) => !slaDefinitionOutOfScope(auth, r, allowedDeviceIds));
 }
 
 function clampPercent(value: number): number {
@@ -196,6 +217,11 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
             excludedMinutes: slaCompliance.excludedMinutes,
             details: slaCompliance.details,
             calculatedAt: slaCompliance.calculatedAt,
+            // Gating inputs only — stripped from the payload below. A
+            // definition may target specific sites or devices, and its
+            // compliance figures aggregate across all of them (audit §1.1).
+            targetType: slaDefinitions.targetType,
+            targetIds: slaDefinitions.targetIds,
           })
           .from(slaCompliance)
           .innerJoin(slaDefinitions, eq(slaCompliance.slaId, slaDefinitions.id))
@@ -203,7 +229,10 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(slaCompliance.periodEnd))
           .limit(limit);
 
-        return JSON.stringify({ slaCompliance: rows, showing: rows.length });
+        const visibleCompliance = await filterSlaRows(auth, rows);
+        const payload = visibleCompliance.map(({ targetType: _t, targetIds: _i, ...rest }) => rest);
+
+        return JSON.stringify({ slaCompliance: payload, showing: payload.length });
       }
 
       if (action === 'capacity_predictions') {
@@ -344,7 +373,9 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(slaDefinitions.createdAt))
           .limit(limit);
 
-        return JSON.stringify({ slaDefinitions: rows, showing: rows.length });
+        const visibleDefs = await filterSlaRows(auth, rows);
+
+        return JSON.stringify({ slaDefinitions: visibleDefs, showing: visibleDefs.length });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}. Use sla_compliance, capacity_predictions, or sla_definitions.` });

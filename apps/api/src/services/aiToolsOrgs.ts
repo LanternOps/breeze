@@ -480,8 +480,14 @@ async function handleAddContact(
   // matching the list handler's allowedSiteIds confinement above. An absent
   // siteId is an org-level contact and stays allowed: the allowlist confines a
   // caller within an org, it does not narrow their org reach.
+  //
+  // Written on `allowedSiteIds`, NOT `canAccessSite?.(…) === false`: the
+  // optional-call form fails OPEN whenever the closure is absent, and a human
+  // AuthContext is only guaranteed to carry the restriction itself. A caller
+  // that is restricted but has no closure to evaluate it with is denied.
   const siteId = typeof input.siteId === 'string' ? input.siteId : undefined;
-  if (siteId !== undefined && auth.canAccessSite?.(siteId) === false) {
+  if (siteId !== undefined && auth.allowedSiteIds
+    && (!auth.canAccessSite || !auth.canAccessSite(siteId))) {
     return jsonError(
       'Access denied to that site. You can only add contacts to sites you have access to.',
       'site-access-denied'
