@@ -14,13 +14,16 @@ Last release: **v0.113.0** (2026-09-13).
 
 ## Release to-do (pre-cut gates — see `/release` Step 0.2)
 
-- [ ] Merge sweep PR **#6104** (template suggestion, identity-report empty paths / closes #6100, row-menu clipping + the 2026-09-17 sweep doc). Already on main: #6031 (prior sweep), #6084 (rustls, Cargo Audit green).
+- [x] Sweep PR **#6104** merged 2026-09-17 (template suggestion, identity-report empty paths / closes #6100, row-menu clipping + the 2026-09-17 sweep doc). Also on main: #6031 (prior sweep), #6084 (rustls, Cargo Audit green).
 - [x] Live-agent rows run on the lab rigs 2026-09-17 (WIN-IMDR2GAIDMV + KIT `lab-ubuntu-src`, agent `0.114.0-rc.sweep` built from main): PASS #6017, #6066, #6040, #5977, #5900, #5907, #5922, #5959 (emission), Linux install/upgrade path. PARTIAL #5901 (hosted half needs a hosted-edition build — check it in the hosted signing lane before the droplet flip), #5973 (race not stageable). #5931 desired-state install PASS end-to-end (real 7-Zip MSI install + honest failure on a bad URL; real walk is Pending → Completed, there is no `Installing` state on this path).
-- [ ] **Blocker — merge the #6108 fix before tagging.** New in this range (#6002): `snmp_metrics.instance VARCHAR(64)`; one over-long instance (any IPv6 route table, 98-110 chars) aborts the poll's single INSERT and silently discards every metric, with no `last_error`. Fixer PR in flight.
-- [ ] **Merge #6077 before tagging** (open, CI green): on main an `snmp_version='v1'` device is polled with SNMPv2c GetRequest + GetBulk (tcpdump-verified on the lab rig), so a genuinely v1-only device fails every poll.
+- [x] #6108 blocker fixed — **#6109** merged 2026-09-17: one over-long SNMP instance (any IPv6 route table, 98-110 chars) no longer aborts the poll's single INSERT and discards every metric; `snmp_metrics.instance` widened to `VARCHAR(200)`.
+- [x] **#6077** merged 2026-09-17: an `snmp_version='v1'` device is now polled as v1 (GETNEXT walks), not SNMPv2c GetRequest + GetBulk.
 - [ ] Flags: nothing new to enable. `TOOL_SOURCES_ENABLED` stays dark; `REMOTE_DESKTOP_FENCE_REQUIRED` stays **off** this release (flip one release after the fence ships, per SEC-038).
-- [ ] **Decide before the cut: #6107** — since v0.113.0 every desktop session of a Partner Admin with no MFA factor is revoked ~80 ms after start (`mfa_required`, silent in the UI) because the revocation lease ignores `MFA_FORCE_FOR_PARTNER_ADMIN=false`. Live in prod today; auth surface, so it needs a deliberate fix, and if it is not fixed in this release the upgrade notes must tell operators to enrol a factor.
-- [ ] Sweep issues open at cut time, none blocking: #6097, #6098, #6099, #6101, #6102, #6103. (Blocking ones are listed above: #6108, and the #6107 decision.)
+- [x] #6107 fixed — **#6121** merged 2026-09-17: the desktop revocation lease now evaluates MFA through the login policy (kill switch, enrolment grace, settings `requireMfa`), so an MFA-less Partner Admin's session is no longer revoked ~80 ms after start when `MFA_FORCE_FOR_PARTNER_ADMIN=false`. No "enrol a factor" upgrade note needed. Fold into the release body under Fixed: v0.113.0 operators saw "Launching viewer…" silently revert.
+- [ ] Sweep issues open at cut time, none blocking: #6097, #6098, #6099, #6101, #6102, #6103 (fix PRs #6124, #6128, #6125, #6122, #6127 are open — hold them until after the tag so nothing ships unswept).
+- [ ] In-app What's New entry for 0.114.0 — **#6131**, in the merge queue. Must be on main before the tag (bundled into the web image at build time).
+- [ ] **Size `network_monitor_results` in prod (both regions) before deploying.** `2026-10-16-181300-monitor-coverage-kinds.sql` backfills `org_id` on it in ONE unbatched `UPDATE` inside the API-boot migration transaction; its own comment says the table can exceed 1M rows. Small = non-event; large = slow first boot per region, plan the window.
+- [ ] #5901 hosted half: verify hosted first-install watchdog staging on a hosted-edition build in the hosted signing lane before the droplet flip (lab rigs covered the self-host half only).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
