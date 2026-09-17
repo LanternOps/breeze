@@ -147,7 +147,7 @@ export const deploymentResults = pgTable('deployment_results', {
   statusIdx: index('deployment_results_status_idx').on(table.status),
   // #5777: covers softwareDeploymentSiteScopePredicate's correlated
   // EXISTS/NOT EXISTS over (deployment_id, device_id). See migration
-  // 2026-10-17-150000-deployment-results-deployment-device-index.sql.
+  // 2026-10-17-160000-deployment-results-deployment-device-index.sql.
   deploymentDeviceIdx: index('deployment_results_deployment_id_device_id_idx').on(table.deploymentId, table.deviceId)
 }));
 
