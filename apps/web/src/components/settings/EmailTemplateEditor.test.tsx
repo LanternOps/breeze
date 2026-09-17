@@ -212,21 +212,22 @@ describe('EmailTemplateEditor', () => {
     );
 
     expect(screen.queryByTestId('email-template-button-label')).toBeNull();
+    expect(screen.queryByTestId('email-template-var-cta_button')).toBeNull();
     expect(screen.getByTestId('email-template-subject')).toBeTruthy();
   });
 
   it.each([
     {
       id: 'quote_send' as const,
-      chips: ['quote_number', 'partner_name', 'total', 'expiry_date', 'accept_url'] as const,
+      chips: ['quote_number', 'partner_name', 'total', 'expiry_date', 'accept_url', 'cta_button'] as const,
     },
     {
       id: 'invoice_send' as const,
-      chips: ['invoice_number', 'partner_name', 'total', 'due_date', 'portal_url'] as const,
+      chips: ['invoice_number', 'partner_name', 'total', 'due_date', 'portal_url', 'cta_button'] as const,
     },
     {
       id: 'portal_invite' as const,
-      chips: ['requester_name', 'partner_name', 'invite_url', 'org_name'] as const,
+      chips: ['requester_name', 'partner_name', 'invite_url', 'org_name', 'cta_button'] as const,
     },
   ])('shows merge chips and a button label for $id', ({ id, chips }) => {
     render(

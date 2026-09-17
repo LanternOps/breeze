@@ -778,7 +778,8 @@
       "accept_url": "URL de aceitação",
       "invoice_number": "Número da fatura",
       "due_date": "Data de vencimento",
-      "invite_url": "URL do convite"
+      "invite_url": "URL do convite",
+      "cta_button": "Botão"
     }
   },
   "inboundEmail": {

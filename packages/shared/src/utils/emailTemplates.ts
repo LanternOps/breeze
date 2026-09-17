@@ -28,7 +28,8 @@ export type EmailTemplateVarKey =
   | 'accept_url'
   | 'invoice_number'
   | 'due_date'
-  | 'invite_url';
+  | 'invite_url'
+  | 'cta_button';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -39,6 +40,7 @@ const COMMENT_NOTIFICATION_VARS = [
   'partner_name',
   'portal_url',
   'email_only_hint',
+  'cta_button',
 ] as const satisfies readonly EmailTemplateVarKey[];
 
 const AUTORESPONSE_VARS = [
@@ -56,6 +58,7 @@ const QUOTE_SEND_VARS = [
   'total',
   'expiry_date',
   'accept_url',
+  'cta_button',
 ] as const satisfies readonly EmailTemplateVarKey[];
 
 const INVOICE_SEND_VARS = [
@@ -64,6 +67,7 @@ const INVOICE_SEND_VARS = [
   'total',
   'due_date',
   'portal_url',
+  'cta_button',
 ] as const satisfies readonly EmailTemplateVarKey[];
 
 const PORTAL_INVITE_VARS = [
@@ -71,6 +75,7 @@ const PORTAL_INVITE_VARS = [
   'partner_name',
   'invite_url',
   'org_name',
+  'cta_button',
 ] as const satisfies readonly EmailTemplateVarKey[];
 
 const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {

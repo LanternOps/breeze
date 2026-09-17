@@ -778,7 +778,8 @@
       "accept_url": "Annahme-URL",
       "invoice_number": "Rechnungsnummer",
       "due_date": "Fälligkeitsdatum",
-      "invite_url": "Einladungs-URL"
+      "invite_url": "Einladungs-URL",
+      "cta_button": "Schaltfläche"
     }
   },
   "inboundEmail": {

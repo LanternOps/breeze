@@ -78,6 +78,7 @@ const CTA_SENTINEL = '%%BREEZE_CTA_BUTTON%%';
 function catalogVars(id: EmailTemplateId, vars: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const key of varsForEmailTemplate(id)) {
+    if (key === 'cta_button') continue;
     out[key] = vars[key] ?? '';
   }
   return out;

@@ -778,7 +778,8 @@
       "accept_url": "Accept URL",
       "invoice_number": "Invoice number",
       "due_date": "Due date",
-      "invite_url": "Invite URL"
+      "invite_url": "Invite URL",
+      "cta_button": "Button"
     }
   },
   "inboundEmail": {

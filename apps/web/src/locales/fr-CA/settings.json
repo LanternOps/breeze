@@ -778,7 +778,8 @@
       "accept_url": "URL d'acceptation",
       "invoice_number": "Numéro de facture",
       "due_date": "Date d'échéance",
-      "invite_url": "URL d'invitation"
+      "invite_url": "URL d'invitation",
+      "cta_button": "Bouton"
     }
   },
   "inboundEmail": {

@@ -44,6 +44,7 @@ const SAMPLE_VARS: Record<string, string> = {
   invoice_number: 'INV-0001',
   due_date: '2026-09-01',
   invite_url: 'https://portal.example.com/accept-invite?token=abc',
+  cta_button: 'Button',
 };
 
 /** Same tags as apps/api/src/services/richTextSanitize.ts RICH_TEXT_ALLOWED_TAGS. */

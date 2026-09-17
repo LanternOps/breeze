@@ -22,7 +22,7 @@ describe('email template catalog', () => {
   it('comment notification vars are the closed list', () => {
     expect(varsForEmailTemplate('ticket_comment_notification')).toEqual([
       'ticket_number', 'ticket_subject', 'requester_name', 'requester_email',
-      'org_name', 'partner_name', 'portal_url', 'email_only_hint',
+      'org_name', 'partner_name', 'portal_url', 'email_only_hint', 'cta_button',
     ]);
   });
 
@@ -37,8 +37,16 @@ describe('email template catalog', () => {
     expect(varsForEmailTemplate('ticket_resolved')).toContain('resolution_note');
     expect(varsForEmailTemplate('ticket_resolved')).toEqual([
       'ticket_number', 'ticket_subject', 'requester_name', 'requester_email',
-      'org_name', 'partner_name', 'portal_url', 'email_only_hint', 'resolution_note',
+      'org_name', 'partner_name', 'portal_url', 'email_only_hint', 'cta_button',
+      'resolution_note',
     ]);
+  });
+
+  it('cta_button is insertable on every template that has a CTA, and never on autoresponse', () => {
+    for (const id of EMAIL_TEMPLATE_IDS) {
+      if (emailTemplateHasCta(id)) expect(varsForEmailTemplate(id)).toContain('cta_button');
+      else expect(varsForEmailTemplate(id)).not.toContain('cta_button');
+    }
   });
 
   it('no template includes agent_name or a comment key', () => {
@@ -68,19 +76,19 @@ describe('email template catalog', () => {
 
   it('quote_send vars are the closed list', () => {
     expect(varsForEmailTemplate('quote_send')).toEqual([
-      'quote_number', 'partner_name', 'total', 'expiry_date', 'accept_url',
+      'quote_number', 'partner_name', 'total', 'expiry_date', 'accept_url', 'cta_button',
     ]);
   });
 
   it('invoice_send vars are the closed list', () => {
     expect(varsForEmailTemplate('invoice_send')).toEqual([
-      'invoice_number', 'partner_name', 'total', 'due_date', 'portal_url',
+      'invoice_number', 'partner_name', 'total', 'due_date', 'portal_url', 'cta_button',
     ]);
   });
 
   it('portal_invite vars are the closed list', () => {
     expect(varsForEmailTemplate('portal_invite')).toEqual([
-      'requester_name', 'partner_name', 'invite_url', 'org_name',
+      'requester_name', 'partner_name', 'invite_url', 'org_name', 'cta_button',
     ]);
   });
 });

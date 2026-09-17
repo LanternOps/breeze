@@ -778,7 +778,8 @@
       "accept_url": "Kabul URL'si",
       "invoice_number": "Fatura numarası",
       "due_date": "Vade tarihi",
-      "invite_url": "Davet URL'si"
+      "invite_url": "Davet URL'si",
+      "cta_button": "Düğme"
     }
   },
   "inboundEmail": {
