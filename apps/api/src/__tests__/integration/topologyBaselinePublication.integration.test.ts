@@ -1,7 +1,7 @@
 import './setup';
 import { describe,expect,it,vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { db,withDbAccessContext } from '../../db';
+import { db,runOutsideDbContext,withDbAccessContext,withSystemDbAccessContext } from '../../db';
 import { orgContext } from './topology-fixtures';
 import { topologyIngestFixture } from '../helpers/topologyIngest';
 import { expireTopologyEvidence } from '../../services/topology/collectionRetention';
@@ -63,7 +63,9 @@ describe('atomic baseline evidence publication',()=>{
  it('retains compact truth after detail expiry, archives stale support, and revives on a real confirmation',async()=>{
   const f=await fixture(),full=f.full('1',-1000);await f.ingest(full);await f.publish();
   const future=new Date(Date.now()+35*86400_000);
-  const expired=await f.scoped(()=>expireTopologyEvidence({orgId:f.orgId,siteId:f.siteId},future));
+  // Retention runs in the worker's system context; only that scope can tell a
+  // deleted producer from one that merely moved (collectionRetention.ts).
+  const expired=await runOutsideDbContext(()=>withSystemDbAccessContext(()=>expireTopologyEvidence({orgId:f.orgId,siteId:f.siteId},future)));
   expect(expired.deletedDetails).toBe(5);expect(expired.archived).toBeGreaterThan(0);
   await f.publish();expect((await f.graph()).every(r=>r.lifecycle==='archived')).toBe(true);
   vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(future);
