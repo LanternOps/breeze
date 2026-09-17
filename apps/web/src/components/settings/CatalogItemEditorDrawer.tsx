@@ -156,8 +156,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       setName(item.name);
       setDescription(item.description ?? '');
       setSku(item.sku ?? '');
-      // The list row already carries the aggregated price book (never the
-      // price book); the detail load refreshes it below.
+      // The list row already carries the aggregated price book; the detail
+      // load refreshes it below.
       const listPrices = (item.prices ?? []).map((p) => ({ currencyCode: p.currencyCode, unitPrice: p.unitPrice }));
       setPriceRows(listPrices);
       setBasePrices(listPrices);

@@ -351,8 +351,8 @@ export const CATALOG_TYPE_CHIP: Record<CatalogItemType, string> = {
 };
 
 /** The item's price-book row for `currencyCode` (case-insensitive), or null when
- *  the book has no row in that currency. Never falls back to another currency
- *  or to another currency's row — a gap is a gap (no conversion, ever). */
+ *  the book has no row in that currency. Never falls back to another currency's
+ *  row — a gap is a gap (no conversion, ever). */
 export function priceFor(
   item: Pick<CatalogItem, 'prices'> | { prices?: PriceBookEntry[] | null },
   currencyCode: string | null | undefined,

@@ -1110,9 +1110,9 @@ async function withBundleLockTimeoutMapped<T>(fn: () => Promise<T>): Promise<T> 
  * JPY 100.50 — the migrations keep such rows as-is, snapshots rule) is the
  * typed PRICE_NOT_REPRESENTABLE gap (409, #3775 review #4): it never enters a
  * new document, is never rounded, and is never skipped in favour of the next
- * candidate. Fix it with PUT /catalog/:id/prices/:code. Never converts and
- * Reads the price book only (the deprecated catalog_items.unit_price mirror was
- * dropped in #3812). Runs on `dbc` so
+ * candidate. Fix it with PUT /catalog/:id/prices/:code. Never converts, and
+ * reads the price book only — the deprecated catalog_items.unit_price mirror it
+ * used to refuse to read was dropped in #3812. Runs on `dbc` so
  * document services resolve inside their already-locked transaction (document
  * row → lines → sources); every catalog read here is a plain SELECT — no
  * FOR UPDATE on the document path.

@@ -143,7 +143,7 @@ describe('TicketPartsCard', () => {
     const catItem = {
       id: 'cat-1', partnerId: 'p1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
       // The prefill must come from the price book row in the org currency.
-      billingType: 'one_time', unitPrice: '999.00', costBasis: '90.00', costCurrency: 'USD', markupPercent: null, unitOfMeasure: 'each',
+      billingType: 'one_time', costBasis: '90.00', costCurrency: 'USD', markupPercent: null, unitOfMeasure: 'each',
       taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
       prices: [{ currencyCode: 'USD', unitPrice: '150.00' }],
     };
