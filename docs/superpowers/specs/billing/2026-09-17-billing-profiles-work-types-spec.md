@@ -72,10 +72,13 @@ one lookup. The category and org rate fields are **converted into profiles and r
 
 Partner-owned list. A label only — no rate, no default flag. Lives on the **time entry**,
 so one ticket can mix them. A ticket category may name a **default work type** (one select
-replacing the three pricing fields it loses) so the picker opens on the right value.
-`workTypeId` is optional everywhere: an entry with none is priced by the profile's "All
-other work" row, which is what keeps old mobile builds, the AI tools and the add-in
-correct with no client change.
+replacing the three pricing fields it loses). That default is applied **server-side at
+stamp time**, not just in the picker: when a caller sends no `workTypeId` and the entry has
+a ticket, the service takes the category's default before resolving. That — not the base
+row — is what keeps old mobile builds, the AI tools, the add-in and `intentReleaseWorker`
+correctly priced with no client change; without it every partner who prices
+by category today would lose those rates on any entry created without a picker. Only when
+there is no category default does the entry fall to the card's "All other work" row.
 
 ### 3.2 Billing profiles
 
@@ -110,9 +113,13 @@ card = org's assigned profile, if active and in the org's currency
 row  = card's row for the entry's work type, else card's base row
 ```
 
-- **No card** (nothing assigned, no default in that currency): billable, no rate. The
-  quick-add already warns on a missing rate (#5321) and invoice assembly already buckets it
-  as `missingRate`. Nothing is ever silently unbilled.
+- **Every partner always has a default card.** Partner creation makes a "Standard rates"
+  profile in the partner's currency (base row *billable, no rate*); creating an org in, or
+  moving one to, a currency with no default card makes one; the conversion (§3.6) back-fills
+  existing partners. So every priced entry has an auditable row behind it and the Rates
+  screen is never empty. The resolver keeps a "no card ⇒ billable, no rate" branch only as
+  a safety net that logs at warn. A rate-less billable entry is already handled: the
+  quick-add warns (#5321) and invoice assembly buckets it as `missingRate`.
 - **Match-or-skip** (multi-currency spec §7) is a property of *which card*: a card in the
   wrong currency is never used and never converted. Assignment rejects one up front (409
   `PROFILE_CURRENCY_MISMATCH`); if an org's currency changes later the assignment is skipped
@@ -126,7 +133,7 @@ row  = card's row for the entry's work type, else card's base row
 |---|---|
 | `billable` @ R | `is_billable = true`, `billing_status = 'not_billed'`, `hourly_rate = R` (or `NULL`), `minimum_minutes`, `rounding_increment_minutes` |
 | `included` | `is_billable = true`, `billing_status = 'contract'`, `hourly_rate = NULL` |
-| `non_billable` | `is_billable = false`, `billing_status = 'not_billed'`, `hourly_rate = NULL` — exactly today's non-billable entry |
+| `non_billable` | `is_billable = false`, `billing_status = 'not_billed'`, `hourly_rate = NULL` — today's non-billable entry, minus the rate it pointlessly carries (§3.6) |
 
 Plus `work_type_id`, `billing_profile_id`, `coverage`, and the existing `currency_code`
 snapshot.
@@ -178,35 +185,73 @@ Lines stay one per entry.
 type); the org ticket-settings editor becomes SLA-only. The resolver stops reading the
 columns the day the conversion runs; the columns are dropped one release later.
 
-**A one-time, price-preserving conversion** turns the old data into profiles, per partner:
+**A one-time conversion** turns the old data into cards, for **every** partner:
 
-1. *Pricing-relevant categories* — those with a rate, or with `default_billable = false`.
-   Each becomes a **work type of the same name** and the category's default work type.
-   (A partner who priced by category was using categories as work types; this keeps every
-   price and lets them rename or merge afterwards.)
-2. A **default profile per currency the partner's orgs use** ("Standard rates"), base row
-   *billable, no rate*. Each category from step 1 becomes a row: `billable @ rate` in the
-   currency its rate was entered in; `non_billable` in every currency if it was
-   non-billable.
-3. For each org whose ticket settings carry a rate or a billable flag: **clone** the
-   default profile for the org's currency, name it after the org, then overlay — a billable
-   flag sets every row's coverage; a rate (only if entered in the org's currency, per
-   match-or-skip) sets every row's rate — collapse rows equal to the base, and assign it.
-   This reproduces "org default beats category default" exactly.
-4. A partner with nothing configured gets nothing created.
+1. **Default cards.** One "Standard rates" profile per currency in *{the partner's org
+   currencies} ∪ {currencies any category rate was entered in} ∪ {the partner currency}*,
+   base row *billable, no rate*.
+2. **Categories → work types.** Every category that carries a rate or is non-billable —
+   **including inactive ones** (`getCategoryDefaults` does not filter `is_active`, so retired
+   categories still price entries today) — becomes a work type and that category's default
+   work type; inactive categories make inactive work types. `ticket_categories` has no
+   unique name and is nested, so: same name + same pricing share one work type; same name +
+   different pricing get the parent path as a suffix, with a `RAISE WARNING` naming them.
+   (A partner who priced by category was using categories as work types. This keeps every
+   price; they can rename or merge afterwards.)
+3. **Rows.** A category with a rate gets a `billable @ rate` row **only in the card of the
+   currency the rate was entered in** — in every other currency it gets no row and falls to
+   the base, never a converted number (match-or-skip). A non-billable category gets a
+   `non_billable` row in every card; if it also carried a rate the rate is dropped and
+   counted.
+4. **Org overrides.** For each org whose ticket settings carry a rate or a billable flag:
+   clone the default card for the org's currency, name it after the org, overlay — a
+   billable flag sets the coverage of every row and the base; a rate entered in the org's
+   currency sets the rate of every billable row and the base (a wrong-currency rate is
+   skipped, as today) — collapse rows equal to the base, assign it. This reproduces "org
+   default beats category default".
+5. **Marker.** `partners.labour_pricing_converted_at` is set in the same transaction and
+   is the idempotency guard. Not "partner has any profile": a hand-made card would then
+   skip the partner forever and silently lose its legacy pricing.
 
-This is exact parity with the legacy chain with **one deliberate difference**: a ticket
-with *no category* in an org with *no defaults* resolves today to silently non-billable;
-after, it is billable with no rate and shows up in the missing-rate warning. §9 pins the
-rest with a parity test.
+**Parity, stated honestly.** Every (org, category) pair resolves to the same billable flag
+and rate as the legacy chain, with **two declared differences**, both pinned by the §9
+parity test:
 
-The conversion writes rows on billing data — high blast radius. It is one idempotent SQL
-migration (`WHERE NOT EXISTS` on the partner having any profile), opening with
-`SELECT set_config('breeze.scope','system',true);`, reporting every count through
-`RAISE WARNING`, never joining the `migrationRlsScope.test.ts` baseline. Existing time
-entries are **not touched**: their stamped rate, billable flag and status are already
-snapshots. The plan's first task is a read-only count on both regions of how many
-partners, categories and orgs carry these fields, to size it.
+- *Uncategorised tickets in an org that never set a billable default* are silently
+  non-billable today (`org.defaultBillable ?? category.defaultBillable ?? false`). After,
+  they are priced by the base row — billable, at the org's rate if it has one. This one
+  **can move money**, so the dry-run below lists every affected org with its count of
+  recent uncategorised-ticket entries.
+- *Non-billable entries stop carrying a rate.* Today a non-billable entry is stamped with
+  the default rate anyway; nothing bills it, but `ticketMoveCurrencyGuard.ts` and the
+  currency-change readiness report count any unbilled entry with a rate. After, those
+  entries carry none.
+
+**Safeguards — this writes billing data.**
+
+- A **read-only dry-run report** ships in W01 (`apps/api/scripts/`), printing per partner
+  what would be created and every collision, skip, dropped rate and affected org. It is run
+  on both regions and read by a human **before** the cut-over merges; self-hosters get it
+  in the release notes.
+- One idempotent SQL migration, opening with
+  `SELECT set_config('breeze.scope','system',true);`, reporting every count through
+  `RAISE WARNING`, never joining the `migrationRlsScope.test.ts` baseline.
+- **Existing time entries are not touched** — their rate, billable flag and status are
+  already snapshots.
+
+**Sweep list for the removal** (verified readers of the six columns; the plan owns the
+detail): `timeEntryService.ts` resolver functions · `ticketConfigService.ts`
+(`getOrgBillingDefaults`, read, upsert incl. the `rate_currency` restamp) ·
+`routes/orgTicketSettings.ts` · `routes/ticketCategories.ts` (POST / PATCH currency
+stamping) · `orgCurrencyService.ts` readiness warnings, **rewritten** as "assigned card
+currency mismatch", and its consumer `OrgBillingSettings.tsx` (API contract change) ·
+`OrgTicketSettingsEditor.tsx` · `TicketCategoriesPage.tsx` + the key in all 8 locale files ·
+shared validators `ticketConfig.ts`, `tickets.ts` (public contract: ignore with a
+deprecation warning for one release, then reject) · `tenantExportPolicyRegistry.ts`
+(`org_ticket_settings` entry) · `aiTimeEntryProposal.ts` · the CHECK and FKs from
+`2026-08-30-ticketing-currency.sql` in the drop migration · the constraint-asserting suites
+`ticketingCurrencyMigration` / `ticketingCurrencyBackfill`, and roughly a dozen fixtures.
+No MCP tool, seed or script reads these columns.
 
 ### 3.7 Overrides and edits
 
@@ -293,8 +338,10 @@ is exactly the row pricing is being moved *out* of.
 `billing_profile_id` (composite `(…, partner_id)` FKs), `coverage`, `billing_overridden`
 boolean NOT NULL DEFAULT false, `minimum_minutes`, `rounding_increment_minutes`,
 `billable_minutes` + the §3.5 CHECK (`NOT VALID`, then validated — every existing row is
-NULL). `ticket_categories`: `default_work_type_id` (composite FK). Six columns leave
-(§3.6) one release after the cut-over.
+NULL). `ticket_categories`: `default_work_type_id` (composite FK). `partners`:
+`labour_pricing_converted_at`. Six columns leave (§3.6) one release after the cut-over. The
+base-row CHECKs (coverage values; rate / minimum only when billable) are duplicated on
+`billing_profiles` — deliberate, since the base row is columns.
 
 ### 4.4 Registration lists
 
@@ -378,11 +425,16 @@ to the pile and removes six fields from it.
 ## 9. Test and rollout notes
 
 - **Conversion parity** (integration, real Postgres) — the gate for the cut-over. Seed
-  partners covering every legacy shape (category rate / non-billable category / org rate /
-  org billable-only / wrong-currency org rate / wrong-currency category rate / nothing).
-  For every (org, category ∪ none) pair assert legacy-resolver output == new-resolver
-  output after conversion, with the single §3.6 exception asserted explicitly. The legacy
-  resolver survives as a test-only fixture. Re-running the migration is a no-op.
+  partners covering every legacy shape: category rate / non-billable category / non-billable
+  category *with* a rate / org rate / org billable-only / org row with
+  `default_billable = NULL` and a rate / org row absent vs present-with-NULLs / wrong-
+  currency org rate / wrong-currency category rate / **duplicate and case-colliding category
+  names** / **nested same-name categories with different rates** / **inactive categories** /
+  a category currency no org uses / org-only config with no priced category / nothing at
+  all / a ticket whose `partner_id` is NULL. For every (org, category ∪ none) pair, **for an
+  entry created with no `workTypeId`**, assert legacy-resolver output == new-resolver output,
+  with the two §3.6 differences asserted explicitly. The legacy resolver survives as a
+  test-only fixture. Re-running is a no-op; a partner with a hand-made card still converts.
 - **Resolver** — table-driven: assigned / default / none, currency skip, work-type row vs
   base row, inactive card, no work type, no org.
 - **Stamp immunity** — edit a row, archive a card, reassign the org → entry unchanged;
@@ -399,9 +451,11 @@ to the pile and removes six fields from it.
   adds no money.
 - **Override gate** — through the REST route, the AI tool, the add-in and the worker;
   numeric echo (`'225'` vs `'225.00'`).
-- **Waves** (the plan finalises): **W01** tables, API, work type on entries + pickers, AI
-  param — dark for pricing, delivers #4615's dimension · **W02 cut-over, one PR**: Rates
-  screen, org select, resolver switch, stamping, conversion migration + parity test,
+- **Waves** (the plan finalises): **W01** `work_types` only — table, API, work type on
+  entries + pickers, category default, AI param, **and the dry-run report**; no profile
+  tables yet, so nobody can hand-make a card before the conversion · **gate: dry-run read
+  on both regions** · **W02 cut-over, one PR**: profile tables, Rates screen, org select,
+  resolver switch, stamping, default-card guarantee, conversion migration + parity test,
   override gate, legacy fields out of the UI and API · **W03** minimums / rounding,
   `billable_minutes`, money + portal readers, invoice lines · **W04** mobile + add-in
   pickers, report / CSV dimensions, docs, drop the six columns.
@@ -412,9 +466,10 @@ Three are yours. The rest were settled by the quorum; say if you disagree.
 
 1. **Clean cut or coexistence?**
    - **A — convert and remove the old category / org rate fields in the cut-over wave**
-     (§3.6): one place, one rule; con: a row-writing migration on billing data, gated by
-     the parity test, and one behaviour difference (uncategorised + no defaults becomes
-     "billable, needs a rate" instead of silently non-billable).
+     (§3.6): one place, one rule; con: a row-writing migration on billing data — gated by a
+     human-read dry-run on both regions and the parity test — and two declared differences,
+     one of which can move money (uncategorised tickets in an org with a rate but no
+     billable default start billing; the dry-run names every such org).
    - **B — keep the old fields as a fallback under the cards** (r1): no data migration;
      con: five places, a six-step chain, and the retrofit later anyway.
    **Recommend A.**
@@ -456,5 +511,19 @@ recreate; approval is the control); forcing `is_billable` when an org default ra
 the reviewer identified at its root).
 
 **r2 (consolidation)** was prompted by Todd, not by the quorum: both seats had accepted a
-six-step chain layered over the legacy fields. r2's conversion rules (§3.6) get a focused
-second review because they write billing data.
+six-step chain layered over the legacy fields.
+
+**Focused second review of the r2 conversion** (it writes billing data). The reviewer was
+asked to break the parity claim and did, ten ways; all adopted: entries with no
+`workTypeId` would have lost every category rate (→ server-side category default at stamp
+time) · the base row cannot reproduce both "uncategorised = non-billable" and "unpriced
+category = billable" (→ declared, dry-run-listed difference) · non-billable rows cannot
+carry the legacy rate, which two currency guards can observe (→ second declared
+difference) · category names are neither unique nor flat · inactive categories still price
+entries · wrong-currency rates must produce *no* row · default cards needed for the union
+of currencies · org-only config had no card to clone · the "has any profile" guard would
+permanently skip a partner (→ explicit marker; no profile tables before W02) · "no card" as
+a primary rule is an unauditable hole (→ every partner always has a default card). The
+reviewer's verdict: still the clean cut, not coexistence — coexistence would hide the first
+break behind the legacy fallback and ship it later — provided the dry-run is read by a
+human before the writing run.
