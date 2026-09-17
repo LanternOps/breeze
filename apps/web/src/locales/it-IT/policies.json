@@ -1335,6 +1335,8 @@
       "readyToDeployStandalone": "Pronto per la distribuzione."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Installazione automatica attivata",
+      "complianceCheckQueued": "Verifica di conformità in coda",
       "failedToLoadSoftwarePolicyData": "Impossibile caricare i dati del criterio software",
       "couldNotLoadLatestPolicyDetailsShowing": "Impossibile caricare i dettagli più recenti del criterio. Visualizzazione dei dati memorizzati nella cache.",
       "couldNotLoadPolicyDetailsShowingCached": "Impossibile caricare i dettagli del criterio. Visualizzazione dei dati memorizzati nella cache.",
@@ -1610,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 dispositivi — di solito perché questa policy non è ancora assegnata ad alcun dispositivo, ma anche una flotta interamente conforme o un elenco di siti vuoto dà 0",
+      "manageAssignments": "Gestisci le assegnazioni delle policy di configurazione",
+      "gracePeriodHelp": "Applicato alla prossima verifica di conformità",
       "scope": "Ambito",
       "allOrganizations": "Tutte le organizzazioni",
       "partnerWideTemplate": "(template a livello di partner)",

@@ -90,5 +90,24 @@
       "approvedPromoteFailed": "Approvato, ma non è stato possibile inviare la richiesta di preautorizzazione. Riprova dalle impostazioni dell’agente.",
       "policyDecideDisabled": "Approvato. Non è stato possibile richiedere la preautorizzazione perché è disattivata per questa distribuzione."
     }
+  },
+  "recent": {
+    "title": "Recenti",
+    "subtitle": "Già decise o concluse",
+    "loading": "Caricamento delle approvazioni recenti…",
+    "error": "Impossibile caricare le approvazioni recenti.",
+    "retry": "Riprova",
+    "empty": "Nulla si è concluso di recente.",
+    "status": {
+      "failed": "Non riuscita",
+      "rejected": "Rifiutata",
+      "expired": "Scaduta",
+      "cancelled": "Annullata",
+      "completed": "Completata",
+      "denied": "Negata",
+      "approved": "Approvata",
+      "reported": "Segnalata",
+      "unknown": "Sconosciuto"
+    }
   }
 }

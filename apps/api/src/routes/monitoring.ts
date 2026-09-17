@@ -5,8 +5,9 @@ import { optionalQueryBoolean } from '@breeze/shared';
 import { and, desc, eq, gte, inArray, isNotNull, lte, or, sql } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, serviceProcessCheckResults } from '../db/schema';
+import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, snmpAlertThresholds, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
+import { suggestTemplate, type TemplateSuggestion } from '../services/snmpTemplateSuggest';
 import { loadReachability } from '../services/assetReachabilityLoader';
 import { deriveCollection, type CollectionTemplateEntry } from '../services/snmpCollectionState';
 import { isRedisAvailable } from '../services/redis';
@@ -38,8 +39,20 @@ function serializeSnmpDevice(device: typeof snmpDevices.$inferSelect) {
     pollingInterval: device.pollingInterval,
     isActive: device.isActive,
     lastPolled: device.lastPolled?.toISOString?.() ?? (device.lastPolled ? new Date(device.lastPolled as any).toISOString() : null),
-    lastStatus: device.lastStatus
+    lastStatus: device.lastStatus,
+    lastError: device.lastError ?? null,
+    lastErrorAt: device.lastErrorAt?.toISOString() ?? null
   };
+}
+
+/**
+ * The scan stores `{ sysDescr, sysObjectId, sysName }` in discovered_assets.snmpData
+ * (jsonb, agent-authored) — treat every field as untrusted shape.
+ */
+function readSysObjectId(snmpData: unknown): string | null {
+  if (!snmpData || typeof snmpData !== 'object') return null;
+  const raw = (snmpData as Record<string, unknown>).sysObjectId;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
 }
 
 async function validateSnmpTemplateAccess(templateId: string, orgId: string): Promise<boolean> {
@@ -108,6 +121,8 @@ monitoringRoutes.get(
         isActive: snmpDevices.isActive,
         lastPolled: snmpDevices.lastPolled,
         lastStatus: snmpDevices.lastStatus,
+        lastError: snmpDevices.lastError,
+        lastErrorAt: snmpDevices.lastErrorAt,
         createdAt: snmpDevices.createdAt
       })
       .from(snmpDevices)
@@ -229,7 +244,9 @@ monitoringRoutes.get(
             port: snmp!.port,
             isActive: snmp!.isActive,
             lastPolled: snmp!.lastPolled?.toISOString?.() ?? (snmp!.lastPolled ? new Date(snmp!.lastPolled as any).toISOString() : null),
-            lastStatus: snmp!.lastStatus ?? null
+            lastStatus: snmp!.lastStatus ?? null,
+            lastError: snmp!.lastError ?? null,
+            lastErrorAt: snmp!.lastErrorAt?.toISOString() ?? null
           } : {
             configured: false,
             deviceId: null,
@@ -239,7 +256,9 @@ monitoringRoutes.get(
             port: null,
             isActive: false,
             lastPolled: null,
-            lastStatus: null
+            lastStatus: null,
+            lastError: null,
+            lastErrorAt: null
           },
           network: {
             configured: networkConfigured,
@@ -416,6 +435,99 @@ monitoringRoutes.get(
   }
 );
 
+// The armed SNMP threshold alerts for an asset. The only non-deprecated way to
+// read them: /snmp/thresholds/:deviceId is a 410 stub, and the device page has
+// to be able to say what will actually fire. Read-only — thresholds are still
+// created and edited on the SNMP surfaces.
+monitoringRoutes.get(
+  '/assets/:id/thresholds',
+  requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const assetId = c.req.param('id')!;
+
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
+
+    const [asset] = await db
+      .select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId, siteId: discoveredAssets.siteId })
+      .from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
+      .limit(1);
+    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+
+    // Site scope is an app-layer-only authz axis; RLS does not defend it.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const rows = await db
+      .select({
+        id: snmpAlertThresholds.id,
+        oid: snmpAlertThresholds.oid,
+        operator: snmpAlertThresholds.operator,
+        threshold: snmpAlertThresholds.threshold,
+        severity: snmpAlertThresholds.severity,
+        message: snmpAlertThresholds.message,
+        isActive: snmpAlertThresholds.isActive,
+      })
+      .from(snmpAlertThresholds)
+      .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
+      .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)));
+
+    return c.json({ data: rows });
+  }
+);
+
+const suggestTemplateQuerySchema = z.object({ assetId: z.string().guid() });
+
+monitoringRoutes.get(
+  '/templates/suggest',
+  requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
+  zValidator('query', suggestTemplateQuerySchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { assetId } = c.req.valid('query');
+
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
+
+    const [asset] = await db
+      .select({
+        id: discoveredAssets.id,
+        orgId: discoveredAssets.orgId,
+        siteId: discoveredAssets.siteId,
+        assetType: discoveredAssets.assetType,
+        snmpData: discoveredAssets.snmpData,
+      })
+      .from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
+      .limit(1);
+    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const sysObjectId = readSysObjectId(asset.snmpData);
+    const suggestion = await suggestTemplate({
+      sysObjectId,
+      assetType: asset.assetType ?? null,
+      orgId: asset.orgId,
+    });
+
+    return c.json({ sysObjectId, assetType: asset.assetType ?? null, suggestion });
+  }
+);
+
 const upsertSnmpSchema = z.object({
   snmpVersion: z.enum(['v1', 'v2c', 'v3']),
   community: z.string().optional(),
@@ -462,6 +574,12 @@ monitoringRoutes.put(
       return c.json({ error: 'SNMP template not found' }, 404);
     }
 
+    // `templateId` ABSENT and `templateId: null` are different requests
+    // (spec §8): absent means "choose for me", explicit null means "no
+    // template". zod drops absent optional keys, so the key's presence is the
+    // signal — do not use `?? null`, which conflates the two.
+    const templateIdProvided = Object.prototype.hasOwnProperty.call(body, 'templateId');
+
     const existingRows = await db.select()
       .from(snmpDevices)
       .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
@@ -474,13 +592,31 @@ monitoringRoutes.put(
       return active ?? existingRows[0];
     })();
 
+    // Apply the suggestion only when the resulting row would otherwise have no
+    // template: on create, or on a row whose template_id is already null (spec
+    // D5 "only on create when no template is given", §8 "templateId omitted
+    // applies it"). Omitting templateId on a row that HAS one now preserves it
+    // rather than silently wiping it.
+    let templateSuggestion: TemplateSuggestion | null = null;
+    let resolvedTemplateId: string | null = templateIdProvided
+      ? (body.templateId ?? null)
+      : (existing?.templateId ?? null);
+    if (!templateIdProvided && !resolvedTemplateId) {
+      templateSuggestion = await suggestTemplate({
+        sysObjectId: readSysObjectId(asset.snmpData),
+        assetType: asset.assetType ?? null,
+        orgId: asset.orgId,
+      });
+      if (templateSuggestion) resolvedTemplateId = templateSuggestion.templateId;
+    }
+
     const setValues: Record<string, unknown> = {
       name: asset.hostname ?? (asset.ipAddress as any),
       ipAddress: asset.ipAddress as any,
       snmpVersion: body.snmpVersion,
       pollingInterval: body.pollingInterval ?? 300,
       port: body.port ?? 161,
-      templateId: body.templateId ?? null,
+      templateId: resolvedTemplateId,
       isActive: true
     };
     // Only overwrite credential fields when explicitly provided to avoid
@@ -557,7 +693,10 @@ monitoringRoutes.put(
 
     return c.json({
       success: true,
-      snmpDevice: serializeSnmpDevice(upserted)
+      snmpDevice: serializeSnmpDevice(upserted),
+      templateSuggestion: templateSuggestion
+        ? { ...templateSuggestion, applied: upserted.templateId === templateSuggestion.templateId }
+        : null
     });
   }
 );

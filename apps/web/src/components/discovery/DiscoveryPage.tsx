@@ -714,11 +714,6 @@ export default function DiscoveryPage() {
               asset={topologyAsset}
               loading={topologyAssetLoading}
               onClose={() => setTopologyAssetId(null)}
-              onDeleted={() => setTopologyAssetId(null)}
-              onUpdated={() => {
-                // Re-fetch to refresh data
-                setTopologyAssetId(prev => prev);
-              }}
             />
           )}
         </>

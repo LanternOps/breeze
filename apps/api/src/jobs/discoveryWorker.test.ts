@@ -109,7 +109,7 @@ vi.mock('./networkBaselineWorker', () => ({
 
 import { db } from '../db';
 import { buildApprovalDecision } from '../services/assetApproval';
-import { inferAssetTypeFromVendor } from '../services/macVendorLookup';
+import { inferAssetTypeFromVendor, lookupMacVendor } from '../services/macVendorLookup';
 import { devices, discoveredAssets } from '../db/schema';
 import type { DiscoveredHostResult } from './discoveryWorker';
 
@@ -392,6 +392,58 @@ describe('processResults — type_source', () => {
     expect(capturedInsertValues).not.toBeNull();
     expect(capturedInsertValues!.typeSource).toBe('auto');
     expect(capturedInsertValues!.detectedAssetType).toBe('server');
+  });
+
+  describe('SNMP identity ingest wiring', () => {
+    const sysObjectId = '.1.3.6.1.4.1.253.8.62.1.37.1.4.1.1';
+    const xeroxHost: DiscoveredHostResult = {
+      ip: '192.168.1.53',
+      mac: 'aa:bb:cc:11:22:33',
+      assetType: 'printer',
+      model: sysObjectId,
+      methods: ['snmp'],
+      snmpData: {
+        sysObjectId,
+        sysDescr: 'Xerox(R) C325 Color MFP; SS CXTGV.230.096, kernel 5.4.254-yocto-standard, All-N-1',
+      },
+    };
+
+    beforeEach(() => {
+      vi.mocked(lookupMacVendor).mockReturnValue('LEXMARK INTERNATIONAL, INC.');
+    });
+
+    it('inserts Xerox identity from SNMP instead of the NIC vendor or raw OID', async () => {
+      selectQueue = [...baseSelectQueue(), [], []];
+
+      await processResults(makeData([xeroxHost]));
+
+      expect(lookupMacVendor).toHaveBeenCalledWith(xeroxHost.mac);
+      expect(capturedInsertValues).not.toBeNull();
+      expect.soft(capturedInsertValues!.manufacturer).toBe('Xerox');
+      expect.soft(capturedInsertValues!.model).toBe('Xerox(R) C325 Color MFP');
+    });
+
+    it('binds resolved Xerox identity into the UPDATE manual guards without the raw OID', async () => {
+      selectQueue = [
+        ...baseSelectQueue(),
+        [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }],
+        [{ linkedDeviceId: null }],
+        [],
+      ];
+
+      await processResults(makeData([xeroxHost]));
+
+      expect(lookupMacVendor).toHaveBeenCalledWith(xeroxHost.mac);
+      expect(capturedUpdateSet).not.toBeNull();
+      const manufacturer = renderSqlQuery(capturedUpdateSet!.manufacturer);
+      const model = renderSqlQuery(capturedUpdateSet!.model);
+      expect(manufacturer.sql).toContain('case when');
+      expect(model.sql).toContain('case when');
+      expect.soft(manufacturer.params).toContain('Xerox');
+      expect.soft(model.params).toContain('Xerox(R) C325 Color MFP');
+      expect.soft(manufacturer.params).not.toContain(sysObjectId);
+      expect.soft(model.params).not.toContain(sysObjectId);
+    });
   });
 
   it('guards the device_role propagation on a manual asset type in SQL, not in JS', async () => {

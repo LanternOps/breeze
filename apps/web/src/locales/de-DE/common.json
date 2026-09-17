@@ -58,7 +58,7 @@
     "partner": "Partner",
     "billing": "Abrechnung",
     "organizations": "Organisationen",
-    "aiUsageBudget": "KI-Nutzung und Budget",
+    "aiUsage": "KI-Nutzung",
     "scriptAuthoring": "Skripterstellung",
     "toolSources": "Tool-Quellen",
     "aiAgents": "KI-Agenten",
@@ -956,7 +956,8 @@
         "fallbackTitle": "Überwachen",
         "fields": {
           "interval": "Intervall (s)",
-          "timeout": "Zeitüberschreitung (s)"
+          "timeout": "Zeitüberschreitung (s)",
+          "target": "Ziel-URL"
         },
         "labels": {
           "lastChecked": "Zuletzt geprüft: {{time}}",
@@ -984,6 +985,20 @@
           "httpCheck": "HTTP-Prüfung",
           "icmpPing": "ICMP-Ping",
           "tcpPort": "TCP-Port"
+        },
+        "targetResetNote": "Wenn Sie die URL ändern, wird die TLS-Beobachtung zurückgesetzt.",
+        "saved": "Monitor aktualisiert",
+        "certificate": {
+          "title": "Zertifikat",
+          "issuer": "Aussteller",
+          "expires": "Gültig bis",
+          "observedHost": "Beobachteter Host",
+          "state": "Zustand",
+          "states": {
+            "observed": "Beobachtet",
+            "handshakeFailed": "TLS-Handshake fehlgeschlagen",
+            "notTls": "Kein TLS"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1834,7 +1849,9 @@
         "assetsDescription": "Einheitliche Ansicht von SNMP-Abfragen und Netzwerkprüfungen pro erkanntem Asset.",
         "table": {
           "asset": "Asset",
-          "overall": "Insgesamt"
+          "overall": "Insgesamt",
+          "reachability": "Erreichbarkeit",
+          "collection": "Datenerfassung"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1886,7 +1903,29 @@
         "disabling": "Deaktivieren...",
         "yesDisable": "Ja, deaktivieren",
         "monitoringNotActive": "Für dieses Asset ist die Überwachung nicht aktiv.",
-        "saving": "Speichern..."
+        "saving": "Speichern...",
+        "openSettings": "Einstellungen…",
+        "reachability": {
+          "responding": "Antwortet",
+          "notResponding": "Antwortet nicht",
+          "unverified": "Nicht überprüft",
+          "sources": {
+            "networkCheck": "Netzwerkprüfung",
+            "probe": "Jetzt prüfen",
+            "scan": "Scan",
+            "unifi": "UniFi-Steuerung",
+            "snmp": "SNMP-Abfrage"
+          }
+        },
+        "collectionState": {
+          "collecting": "Daten werden erfasst",
+          "partial": "Teilweise",
+          "no_template": "Keine Vorlage",
+          "failing": "Fehlgeschlagen",
+          "paused": "Pausiert",
+          "never_polled": "Noch nie abgefragt",
+          "not_configured": "Nicht konfiguriert"
+        }
       },
       "MonitoringPage": {
         "tabs": {

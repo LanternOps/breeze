@@ -26,7 +26,7 @@
     "kindMcp": "Serveur MCP",
     "kindOpenapiSoon": "OpenAPI (à venir dans une version ultérieure)",
     "endpoint": "URL du point de terminaison",
-    "endpointHelp": "Doit être une URL https. Les identifiants sont envoyés uniquement à cette origine.",
+    "endpointHelp": "Utilisez HTTPS, ou HTTP si les connexions sortantes vers les réseaux privés sont activées sur un serveur autohébergé. Les identifiants sont envoyés uniquement à cette origine.",
     "authKind": "Authentification",
     "rateLimit": "Appels par minute",
     "scope": "Disponibilité",
@@ -101,6 +101,7 @@
     "duration": "Terminé en {{ms}} ms"
   },
   "toasts": {
+    "discoveryNotQueued": "La source d’outils a été enregistrée, mais la découverte n’a pas pu être mise en file d’attente. Relancez la découverte des outils.",
     "created": "Source d’outils ajoutée. La découverte a été mise en file d’attente.",
     "saved": "Source d’outils enregistrée.",
     "deleted": "Source d’outils supprimée.",

@@ -430,7 +430,7 @@ describe('autoEvidenceReportType is carried by every item write (#5784)', () => 
     const { db } = await import('../db');
     const values = vi.spyOn(db as any, 'values');
     dbMocks.rows.push([{ ...orgSet }], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: 'threat_detection_review' }]);
-    await createTemplateSet({ ownerScope: 'organization', orgId: 'org1', name: 'Org plan', items: [{ ...item, autoEvidenceReportType: 'threat_detection_review' as never }] }, partnerAdmin);
+    await createTemplateSet({ ownerScope: 'organization', orgId: 'org1', name: 'Org plan', items: [{ ...item, autoEvidenceReportType: 'threat_detection_review' }] }, partnerAdmin);
     expect(values.mock.calls.some(([v]) => (v as { autoEvidenceReportType?: string }).autoEvidenceReportType === 'threat_detection_review')).toBe(true);
     values.mockRestore();
   });
@@ -440,7 +440,7 @@ describe('autoEvidenceReportType is carried by every item write (#5784)', () => 
     const values = vi.spyOn(db as any, 'values');
     const setSpy = vi.spyOn(db as any, 'set');
     dbMocks.rows.push([orgSet], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: 'threat_detection_review' }]);
-    await addTemplateItem('s1', { ...item, autoEvidenceReportType: 'threat_detection_review' as never }, partnerAdmin);
+    await addTemplateItem('s1', { ...item, autoEvidenceReportType: 'threat_detection_review' }, partnerAdmin);
     expect(values.mock.calls.at(-1)![0]).toMatchObject({ autoEvidenceReportType: 'threat_detection_review' });
 
     dbMocks.rows.push([orgSet], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: null }]);

@@ -83,7 +83,7 @@ import {
   commandResultResultByteLength,
   MAX_COMMAND_RESULT_BYTES,
 } from './agents/schemas';
-import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
+import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
@@ -1199,24 +1199,42 @@ export async function processOrphanedCommandResult(
   const snmpData = result.result as {
     deviceId?: string;
     metrics?: SnmpMetricResult[];
+    protocol?: number;
+    success?: boolean;
   } | undefined;
 
-  if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
+  // Failed polls carry no result payload. Recover their target from dispatch
+  // evidence, without consuming expectations belonging to other command kinds.
+  pruneOrphanedResultExpectations();
+  const dispatched = orphanedResultExpectations.get(result.commandId);
+  const isSnmpDispatch = dispatched?.agentId === agentId && dispatched.kind === 'snmp';
+  if (isSnmpDispatch || (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0)) {
     const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
-    if (!expectation || expectation.kind !== 'snmp' || expectation.targetId !== snmpData.deviceId) {
+    if (!expectation || expectation.kind !== 'snmp' || (snmpData?.deviceId && expectation.targetId !== snmpData.deviceId)) {
       console.warn(
         `[AgentWs] Rejecting unexpected SNMP result ${result.commandId} from agent ${agentId}: ` +
-        `sentDevice=${snmpData.deviceId} expected=${expectation?.kind === 'snmp' ? expectation.targetId : 'none'} authDevice=${authenticatedDeviceId}`
+        `sentDevice=${snmpData?.deviceId ?? 'none'} expected=${expectation?.kind === 'snmp' ? expectation.targetId : 'none'} authDevice=${authenticatedDeviceId}`
       );
       return;
     }
-    console.log(`[AgentWs] Processing SNMP poll result for device ${snmpData.deviceId} from agent ${agentId}`);
+    const snmpDeviceId = expectation.targetId;
     try {
-      if (isRedisAvailable()) {
+      if (result.status !== 'completed' || snmpData?.success === false) {
+        await recordSnmpPollFailure(snmpDeviceId, authenticatedDeviceId, result.error || 'SNMP poll failed');
+        return;
+      }
+      if (!snmpData?.deviceId || !Array.isArray(snmpData.metrics)) return;
+      console.log(`[AgentWs] Processing SNMP poll result for device ${snmpDeviceId} from agent ${agentId}`);
+      if (isRedisAvailable() || snmpData.metrics.length === 0) {
+        const { snmpDevices } = await import('../db/schema');
+        await db.update(snmpDevices)
+          .set({ lastError: null, lastErrorAt: null })
+          .where(eq(snmpDevices.id, snmpDeviceId));
+        if (snmpData.metrics.length === 0) return;
         // Exit the held org-scoped transaction context for the Redis
         // round-trips (#1105) — see the note on the monitor-result branch.
         await runOutsideDbContext(() =>
-          enqueueSnmpPollResults(snmpData.deviceId!, snmpData.metrics!, result.commandId)
+          enqueueSnmpPollResults(snmpData.deviceId!, snmpData.metrics!, result.commandId, snmpData.protocol)
         );
       } else {
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${snmpData.deviceId}`);
@@ -1229,7 +1247,9 @@ export async function processOrphanedCommandResult(
             // backoff must not accumulate on a Redis outage (#3217).
             lastPollAttemptedAt: new Date(),
             consecutiveFailures: 0,
-            lastStatus: 'warning'
+            lastStatus: 'warning',
+            lastError: null,
+            lastErrorAt: null
           })
           .where(eq(snmpDevices.id, snmpData.deviceId));
       }

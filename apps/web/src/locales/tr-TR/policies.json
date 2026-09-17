@@ -1335,6 +1335,8 @@
       "readyToDeployStandalone": "Dağıtıma hazır."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Otomatik kurulum etkin",
+      "complianceCheckQueued": "Uyumluluk denetimi sıraya alındı",
       "failedToLoadSoftwarePolicyData": "Yazılım ilkesi verileri yüklenemedi",
       "couldNotLoadLatestPolicyDetailsShowing": "En son politika ayrıntıları yüklenemedi. Önbelleğe alınmış veriler gösteriliyor.",
       "couldNotLoadPolicyDetailsShowingCached": "Politika ayrıntıları yüklenemedi. Önbelleğe alınmış veriler gösteriliyor.",
@@ -1610,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 cihaz — genellikle bu ilke henüz hiçbir cihaza atanmadığı için; tamamen uyumlu bir filo veya boş bir site izin listesi de 0 verir",
+      "manageAssignments": "Yapılandırma ilkesi atamalarını yönet",
+      "gracePeriodHelp": "Bir sonraki uyumluluk denetiminde uygulanır",
       "scope": "Kapsam",
       "allOrganizations": "Tüm kuruluşlar",
       "partnerWideTemplate": "(iş ortağı çapında şablon)",

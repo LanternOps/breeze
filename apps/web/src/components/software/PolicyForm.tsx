@@ -492,6 +492,18 @@ export default function PolicyForm({
               <p className="text-muted-foreground">
                 {i18n.t("policies:software.policyForm.dryRunLoading")}
               </p>
+            ) : dryRun.status === "ready" && dryRun.eligibleDeviceCount === 0 ? (
+              // The preview exposes only a count, not configuration-policy linkage.
+              <p>
+                {i18n.t("policies:software.policyForm.dryRunUnassigned")}{" "}
+                <a
+                  data-testid="autoinstall-assignment-link"
+                  href="/configuration-policies"
+                  className="text-primary underline underline-offset-2"
+                >
+                  {i18n.t("policies:software.policyForm.manageAssignments")}
+                </a>
+              </p>
             ) : dryRun.status === "ready" ? (
               <p>
                 {i18n.t("policies:software.policyForm.dryRunResult", {
@@ -507,24 +519,30 @@ export default function PolicyForm({
         )}
 
         {watchEnforceMode && (
-          <div className="flex items-center gap-3">
-            <label
-              htmlFor="grace-period"
-              className="text-xs font-medium text-muted-foreground shrink-0"
-            >
-              {i18n.t("policies:software.policyForm.gracePeriodHours")}
-            </label>
-            <input
-              id="grace-period"
-              type="number"
-              min={0}
-              max={2160}
-              className="h-9 w-24 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              {...register("gracePeriod")}
-            />
-            <span className="text-xs text-muted-foreground">
-              {i18n.t("policies:software.policyForm.max2160h")}
-            </span>
+          <div className="space-y-1">
+            <div className="flex items-center gap-3">
+              <label
+                htmlFor="grace-period"
+                className="text-xs font-medium text-muted-foreground shrink-0"
+              >
+                {i18n.t("policies:software.policyForm.gracePeriodHours")}
+              </label>
+              <input
+                id="grace-period"
+                aria-describedby="policy-grace-period-help"
+                type="number"
+                min={0}
+                max={2160}
+                className="h-9 w-24 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                {...register("gracePeriod")}
+              />
+              <span className="text-xs text-muted-foreground">
+                {i18n.t("policies:software.policyForm.max2160h")}
+              </span>
+            </div>
+            <p id="policy-grace-period-help" data-testid="policy-grace-period-help" className="text-xs text-muted-foreground">
+              {i18n.t("policies:software.policyForm.gracePeriodHelp")}
+            </p>
           </div>
         )}
       </div>

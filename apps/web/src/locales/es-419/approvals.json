@@ -90,5 +90,24 @@
       "approvedPromoteFailed": "Aprobado, pero no se pudo enviar la solicitud de preautorización. Inténtalo de nuevo desde la configuración del agente.",
       "policyDecideDisabled": "Aprobado. No se pudo solicitar la preautorización porque está desactivada para esta implementación."
     }
+  },
+  "recent": {
+    "title": "Recientes",
+    "subtitle": "Ya decididas o finalizadas",
+    "loading": "Cargando aprobaciones recientes…",
+    "error": "No se pudieron cargar las aprobaciones recientes.",
+    "retry": "Reintentar",
+    "empty": "No ha finalizado nada recientemente.",
+    "status": {
+      "failed": "Falló",
+      "rejected": "Rechazada",
+      "expired": "Expirada",
+      "cancelled": "Cancelada",
+      "completed": "Completada",
+      "denied": "Denegada",
+      "approved": "Aprobada",
+      "reported": "Reportada",
+      "unknown": "Desconocido"
+    }
   }
 }

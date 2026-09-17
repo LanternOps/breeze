@@ -26,7 +26,7 @@
     "kindMcp": "Servidor MCP",
     "kindOpenapiSoon": "OpenAPI (disponível em uma versão futura)",
     "endpoint": "URL do endpoint",
-    "endpointHelp": "Deve ser uma URL https. As credenciais são enviadas somente para essa origem.",
+    "endpointHelp": "Use HTTPS ou HTTP quando o acesso de saída a redes privadas estiver habilitado em um servidor auto-hospedado. As credenciais são enviadas apenas para esta origem.",
     "authKind": "Autenticação",
     "rateLimit": "Chamadas por minuto",
     "scope": "Disponibilidade",
@@ -101,6 +101,7 @@
     "duration": "Concluído em {{ms}} ms"
   },
   "toasts": {
+    "discoveryNotQueued": "Fonte de ferramentas salva, mas não foi possível colocar a descoberta na fila. Tente descobrir as ferramentas novamente.",
     "created": "Fonte de ferramentas adicionada. A descoberta foi colocada na fila.",
     "saved": "Fonte de ferramentas salva.",
     "deleted": "Fonte de ferramentas excluída.",

@@ -626,6 +626,9 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 
 	tracked := async && (commandType == backupRunCommandType || req.QueueAsync) && bh != nil
 	if !tracked {
+		if isCancelableBackupVerification(commandType) {
+			return forwardCancelableBackupVerification(session, req, timeout)
+		}
 		return session.SendCommand(commandID, backupipc.TypeBackupCommand, req, timeout)
 	}
 
@@ -682,6 +685,97 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 		bh.activeRuns[commandID] = backupRunExecuting
 		bh.mu.Unlock()
 		return env, nil
+	}
+}
+
+// isCancelableBackupVerification limits timeout-driven helper cancellation
+// to the long-running verification commands from #5860. Other synchronous
+// backup commands retain their existing forwarding behaviour.
+func isCancelableBackupVerification(commandType string) bool {
+	switch commandType {
+	case "backup_verify", "backup_test_restore":
+		return true
+	default:
+		return false
+	}
+}
+
+// forwardCancelableBackupVerification keeps the original request registered
+// after a timeout so its eventual reply is consumed as a correlated response,
+// not forwarded to the server as an unsolicited second terminal result.
+func forwardCancelableBackupVerification(session *Session, req backupipc.BackupCommandRequest, timeout time.Duration) (*ipc.Envelope, error) {
+	env, _, err := session.sendCommandWithQuiescence(
+		req.CommandID,
+		backupipc.TypeBackupCommand,
+		req,
+		timeout,
+	)
+	if errors.Is(err, ErrCommandTimeout) {
+		// Return the timeout to the command path immediately. Cancellation runs
+		// independently so it cannot extend the server-visible command budget.
+		go cancelTimedOutBackupVerification(session, req.CommandID)
+	}
+	return env, err
+}
+
+// cancelTimedOutBackupVerification asks the helper to cancel exactly the
+// verification command that exceeded the agent-side budget. The helper's
+// targeted backup_stop path waits for that command to unwind before replying.
+func cancelTimedOutBackupVerification(session *Session, commandID string) {
+	payload, err := json.Marshal(struct {
+		JobID string `json:"jobId"`
+	}{JobID: commandID})
+	if err != nil {
+		backupLog.Warn("failed to marshal timed-out backup cancellation",
+			"commandId", commandID, "error", err.Error())
+		return
+	}
+
+	stopID := fmt.Sprintf("%s-timeout-cancel-%d", commandID, time.Now().UnixNano())
+	req := backupipc.BackupCommandRequest{
+		CommandID:   stopID,
+		CommandType: "backup_stop",
+		Payload:     payload,
+		TimeoutMs:   backupipc.BackupStopForwardTimeout.Milliseconds(),
+	}
+
+	env, err := session.SendCommand(
+		stopID,
+		backupipc.TypeBackupCommand,
+		req,
+		backupipc.BackupStopForwardTimeout,
+	)
+	if err != nil {
+		backupLog.Warn("timed-out backup verification cancellation failed",
+			"commandId", commandID, "error", err.Error())
+		return
+	}
+
+	var result backupipc.BackupCommandResult
+	if err := json.Unmarshal(env.Payload, &result); err != nil {
+		backupLog.Warn("invalid timed-out backup cancellation result",
+			"commandId", commandID, "error", err.Error())
+		return
+	}
+	if !result.Success {
+		backupLog.Warn("timed-out backup verification cancellation was rejected",
+			"commandId", commandID, "error", result.Stderr)
+		return
+	}
+
+	var state struct {
+		Stopped bool `json:"stopped"`
+		Drained bool `json:"drained"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &state); err != nil {
+		backupLog.Warn("invalid timed-out backup cancellation state",
+			"commandId", commandID, "error", err.Error())
+		return
+	}
+
+	if state.Stopped && !state.Drained {
+		backupLog.Warn("timed-out backup verification still unwinding after cancellation",
+			"commandId", commandID)
 	}
 }
 

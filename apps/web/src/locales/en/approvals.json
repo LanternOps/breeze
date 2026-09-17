@@ -90,5 +90,24 @@
       "approvedPromoteFailed": "Approved, but the pre-authorization request could not be sent. Try again from the agent's settings.",
       "policyDecideDisabled": "Approved. Pre-authorization could not be requested because it is turned off for this deployment."
     }
+  },
+  "recent": {
+    "title": "Recent",
+    "subtitle": "Already decided or finished",
+    "loading": "Loading recent approvals…",
+    "error": "Unable to load recent approvals.",
+    "retry": "Retry",
+    "empty": "Nothing has finished recently.",
+    "status": {
+      "failed": "Failed",
+      "rejected": "Rejected",
+      "expired": "Expired",
+      "cancelled": "Cancelled",
+      "completed": "Completed",
+      "denied": "Denied",
+      "approved": "Approved",
+      "reported": "Reported",
+      "unknown": "Unknown"
+    }
   }
 }

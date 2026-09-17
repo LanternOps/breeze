@@ -211,7 +211,8 @@
       "actionPlan": "Plan d’action",
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
-    }
+    },
+    "overridesOrgTab": "Les champs que vous définissez ici remplacent et verrouillent le même champ dans l’onglet IA de chaque organisation."
   },
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
@@ -1133,6 +1134,10 @@
       "description": "Choisissez les informations de service que ce client peut voir dans le portail.",
       "enableAll": "Activer toute la visibilité",
       "toggles": {
+        "enableDevices": {
+          "label": "Appareils",
+          "description": "Afficher la page Appareils. Le libre-service donne également accès à cette page."
+        },
         "enableDashboard": {
           "label": "Tableau de bord",
           "description": "Affiche un résumé de l'état du service à la connexion."
@@ -1444,7 +1449,7 @@
     "completeReview": "Revue complète"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Utilisation et budget de l’IA",
+    "aIUsageBudget": "Utilisation de l’IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de l’assistant IA et configurez les limites budgétaires",
     "budgetConfiguration": "Configuration du budget",
     "aIEnabled": "IA activée",
@@ -1494,7 +1499,19 @@
     "untitled": "Sans titre",
     "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
     "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}}: l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
-    "creditsRemaining": "Crédits IA Breeze restants"
+    "creditsRemaining": "Crédits IA Breeze restants",
+    "defaultValue": "Par défaut ({{value}})",
+    "viewPartnerWideBudgets": "Budgets IA du partenaire",
+    "monitorAIAssistantUsage": "Surveiller l’utilisation de l’assistant IA",
+    "effectiveBudget": "Budget en vigueur",
+    "effectiveBudgetHelp": "Les limites actuellement en vigueur pour cette organisation, et l’endroit où chacune a été définie.",
+    "effectiveBudgetUnavailable": "Le budget effectif n’a pas pu être chargé. Rechargez la page pour réessayer.",
+    "sourcePartner": "Défini par le partenaire",
+    "sourceOrganization": "Défini par l’organisation",
+    "sourceDefault": "Par défaut",
+    "selectOrgForEffectiveBudget": "Sélectionnez une organisation pour voir son budget en vigueur, ou modifiez les valeurs par défaut à l’échelle du partenaire.",
+    "editPartnerWideDefaults": "Modifier les valeurs par défaut à l’échelle du partenaire",
+    "thresholdsOff": "Désactivé"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2102,11 +2119,13 @@
           "title": "Fichiers produits par cette exécution",
           "download": "Télécharger",
           "preview": "Aperçu",
-          "attachToTicket": "Joindre à un ticket",
-          "attach": "Joindre {{name}}",
+          "attachToTicket": "Joindre comme note interne",
+          "attach": "Joindre {{name}} comme note interne",
           "ticketIdPlaceholder": "ID du ticket",
-          "attachedToTicket": "Joint au ticket",
-          "attachFailed": "Impossible de joindre le fichier à ce ticket"
+          "attachedToTicket": "Joint au ticket comme note interne",
+          "attachFailed": "Impossible de joindre le fichier à ce ticket",
+          "attachedButCommentFailed": "Le fichier a été joint, mais la note n'a pas pu être ajoutée au ticket",
+          "downloadExpired": "Ce fichier a expiré et n'est plus disponible au téléchargement."
         },
         "workspace": {
           "title": "Ce qui s’est exécuté dans le bac à sable",
@@ -4028,6 +4047,7 @@
     "languageLoadFailed": "Préférence enregistrée, mais la langue ne se chargeait pas — l’anglais montré. Vérifiez votre connexion et réessayez."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Saisie de temps par défaut (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes et tarif horaire doivent être des chiffres.",
     "categoryUpdated": "Catégorie mise à jour",
     "ticketing": "Ticketterie",
@@ -4283,6 +4303,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Budget IA",
+    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de l’assistant IA dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
+  },
   "orgSettingsPage": {
     "loading": "Chargement des paramètres d’organisation...",
     "confirmDiscard": "Vous avez des modifications non enregistrées dans cette section. Changer les éliminera. Continuer ?",
@@ -4336,7 +4361,9 @@
       "notifications": "Notifications",
       "notificationsDescription": "E-mail, Slack, webhooks",
       "ticketing": "Ticketterie",
-      "ticketingDescription": "SLA et les dérogations de facturation"
+      "ticketingDescription": "SLA et les dérogations de facturation",
+      "ai": "IA",
+      "aiDescription": "Budget de l’assistant IA, limites de fréquence et mode d’approbation"
     },
     "overview": {
       "title": "Aperçu de l’organisation",
@@ -5216,6 +5243,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Échec de la recherche du fichier tarifaire TD SYNNEX (réponse non valide)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Les variables propres à une organisation sont répertoriées sous celle-ci.",
     "title": "Variables",
     "description": "Définissez une valeur une seule fois — jeton de site d'un fournisseur, URL d'un dépôt interne — et référencez-la dans vos scripts au lieu de la coder en dur pour chaque client.",
     "loading": "Chargement des variables…",

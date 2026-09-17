@@ -1336,6 +1336,8 @@
       "readyToDeployStandalone": "Ready to deploy."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Auto-install armed",
+      "complianceCheckQueued": "Compliance check queued",
       "failedToLoadSoftwarePolicyData": "Failed to load software policy data",
       "couldNotLoadLatestPolicyDetailsShowing": "Could not load latest policy details. Showing cached data.",
       "couldNotLoadPolicyDetailsShowingCached": "Could not load policy details. Showing cached data.",
@@ -1611,6 +1613,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 devices — usually because this policy is not assigned to any device yet, but a fully compliant fleet or an empty site allowlist also reads as 0",
+      "manageAssignments": "Manage configuration policy assignments",
+      "gracePeriodHelp": "Applied on the next compliance pass",
       "scope": "Scope",
       "allOrganizations": "All organizations",
       "partnerWideTemplate": "(partner-wide template)",

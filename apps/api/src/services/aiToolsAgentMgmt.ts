@@ -14,6 +14,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget, normalizeAgentArchitecture } from '../routes/agents/helpers';
 import { getBinaryEdition } from './binaryEdition';
+import { deviceScopeCondition } from './aiToolsSiteScope';
 import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -23,6 +24,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -145,6 +149,11 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         const conditions: SQL[] = [ne(devices.agentVersion, effectiveTarget), eq(devices.isEphemeral, false)];
         const orgCond = auth.orgCondition(devices.orgId);
         if (orgCond) conditions.push(orgCond);
+        // Exact-device axis (#6086): the candidate set is otherwise org-wide, so
+        // a device-bound run would count every sibling device. Independent of the
+        // site axis — a device-less analysis run has no `allowedSiteIds` at all.
+        const deviceCond = deviceScopeCondition(auth, devices.id);
+        if (deviceCond) conditions.push(deviceCond);
 
         const outdated = await db
           .select({

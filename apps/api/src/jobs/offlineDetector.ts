@@ -11,7 +11,7 @@ import { findDueOfflineEffects, persistOfflineTransition, pruneOfflineEffects } 
 import { processOfflineEffect } from '../services/offlineTransitionEffects';
 import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
-import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray } from 'drizzle-orm';
+import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createAlert, evaluateDeviceAlertsFromPolicy, alertRuleOwnershipConditionForOrg } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
@@ -441,7 +441,9 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
     const [device] = await db.update(devices).set({ status: 'offline' }).where(and(
       eq(devices.id, data.deviceId), eq(devices.orgId, data.orgId),
       inArray(devices.status, ['online', 'updating']),
-      eq(devices.lastSeenAt, new Date(observedLastSeenAt)),
+      // The observation and transition ID have JS millisecond precision, while
+      // SQL-side writes (e.g. now()) can leave microseconds in last_seen_at.
+      sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observedLastSeenAt}`,
     )).returning();
     if (!device) return [];
     return persistOfflineTransition(device, data.transitionId, observedLastSeenAt);

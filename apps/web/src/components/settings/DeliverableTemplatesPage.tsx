@@ -574,14 +574,19 @@ export default function DeliverableTemplatesPage() {
                           }
                         >
                           <option value="">{t('form.autoEvidenceNone')}</option>
-                          {/* W01 ships no types; each report-type wave adds its
-                              label under `reports.types` when it lands. */}
+                          {/* Each report-type wave adds its label under
+                              `reports.types` when it lands (#5784 W02 first). */}
                           {MANAGED_EVIDENCE_REPORT_TYPES.map((type) => (
                             <option key={type} value={type}>{humanizeReportType(type)}</option>
                           ))}
                         </select>
                         <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>
-                        {MANAGED_EVIDENCE_REPORT_TYPES.length === 0 && (
+                        {/* Widening cast: the tuple is a literal type, so
+                            `.length === 0` is a ts(2367) error once it has
+                            members (non-empty from #5784 W02 on). The empty
+                            state still has to render if every type is ever
+                            retired. */}
+                        {(MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).length === 0 && (
                           <p
                             className="mt-1 text-xs text-muted-foreground"
                             data-testid="deliverable-template-item-auto-evidence-empty"

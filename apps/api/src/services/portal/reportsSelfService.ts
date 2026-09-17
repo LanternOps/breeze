@@ -60,7 +60,79 @@ const PORTAL_DEFINITIONS = [
       includeOtherEquipment: true,
     },
   },
+  // #5784 W02 — MANAGED EVIDENCE, not self-service. The customer sees and
+  // downloads this once the occurrence is delivered (deliveredEvidenceOnly),
+  // but never generates it: the type is deliberately absent from
+  // PORTAL_REPORT_TYPES and from both allowlist literals in
+  // reportGenerationService.ts (OD-10 = A).
+  //
+  // Name and config are literals rather than an import of
+  // MANAGED_EVIDENCE_REGISTRY because this array is `as const` and feeds a
+  // Drizzle insert. Divergence from the registry is caught by
+  // managedEvidenceRegistry.test.ts, which compares the two.
+  {
+    type: 'threat_detection_review',
+    name: 'Service evidence — Threat detection review',
+    config: {
+      sites: [],
+      includeCarriedIn: true,
+      topIncidents: 100,
+    },
+  },
+  // #5784 W03 — managed evidence, NOT self-service. The definition exists so a
+  // DELIVERED run can be listed and downloaded in the portal; the type is
+  // deliberately absent from PORTAL_REPORT_TYPES, so there is no generate
+  // button (OD-10 = A). `config` must stay byte-identical to
+  // MANAGED_EVIDENCE_REGISTRY.endpoint_management_review.defaultConfig —
+  // reportsSelfService.test.ts pins the two together.
+  {
+    type: 'endpoint_management_review',
+    name: 'Service evidence — Endpoint management review',
+    config: {
+      sites: [],
+      staleEnrolmentDays: 14,
+      trendDays: 30,
+      includeLicences: true,
+    },
+  },
+  // #5784 W04 — managed evidence, NOT self-service. Provisioned here so an org
+  // that already enabled portal reports has the definition ready (and so
+  // `resolveManagedEvidenceDefinition` adopts it rather than racing to create
+  // it), but deliberately ABSENT from PORTAL_REPORT_TYPES: a portal user can
+  // never generate it, and a run only becomes visible when the deliverable
+  // occurrence is delivered (OD-12). Name and config are spelled identically
+  // to MANAGED_EVIDENCE_REGISTRY's entry.
+  {
+    type: 'vulnerability_management',
+    name: 'Service evidence — Vulnerability management',
+    config: {
+      sites: [],
+      severityFloor: 'high',
+      topN: 25,
+      includeAccepted: true,
+    },
+  },
+  // #5784 W06 — MANAGED EVIDENCE, not self-service, and the one that carries the
+  // most PII in the feature (user principal names, IP addresses, cities). Same
+  // rule as W02 above: absent from PORTAL_REPORT_TYPES and from both allowlist
+  // literals in reportGenerationService.ts (OD-10 = A), so a customer can read a
+  // DELIVERED artifact but can never generate one on demand.
+  //
+  // No `sites` key: M365 identity data has no site dimension (OD-8 = A).
+  {
+    type: 'identity_access_review',
+    name: 'Service evidence — Identity and access review',
+    config: {
+      dormantDays: 45,
+      homeCountries: [],
+      adminDetail: true,
+    },
+  },
 ] as const;
+
+/** Exported for `managedEvidenceRegistry.test.ts`, which pins this array
+ *  against MANAGED_EVIDENCE_REGISTRY. Not part of the module's API. */
+export const PORTAL_DEFINITIONS_FOR_TEST = PORTAL_DEFINITIONS;
 
 type PortalReportInsertExecutor = Pick<typeof db, 'insert'>;
 type PortalReportProvisionArgs = {
@@ -191,16 +263,11 @@ async function tightenPortalReportStatementTimeout(): Promise<void> {
 }
 
 /**
- * The org's `enable_lifecycle` and `enable_self_service` visibility flags in
- * one row read, inside the ambient organization-scoped RLS transaction the
- * portal auth middleware already opened. Fail closed exactly like
- * `createPortalFeatureGateStrict`: a missing portal_branding row, or anything
- * that is not literally `true`, is `false` for either flag.
- *
- * Both flags live on the same `portal_branding` row, so `latestPortalHardwareLifecycleRun`
- * (which needs both — see #5880) reads them together rather than issuing a
- * second query; `portalLifecycleEnabled` below is a thin boolean view onto
- * this for its other callers, which only ever needed the one flag.
+ * Read lifecycle visibility and Devices access in the ambient org-scoped RLS
+ * transaction. Lifecycle visibility requires an explicit true; device links
+ * require either enable_devices or enable_self_service to be explicitly true.
+ * The legacy enableSelfService result field carries this combined link grant.
+ * Missing branding values fail closed.
  */
 async function portalBrandingLifecycleFlags(
   orgId: string,
@@ -209,6 +276,7 @@ async function portalBrandingLifecycleFlags(
     .select({
       enableLifecycle: portalBranding.enableLifecycle,
       enableSelfService: portalBranding.enableSelfService,
+      enableDevices: portalBranding.enableDevices,
     })
     .from(portalBranding)
     .where(eq(portalBranding.orgId, orgId))
@@ -216,7 +284,7 @@ async function portalBrandingLifecycleFlags(
 
   return {
     enableLifecycle: row?.enableLifecycle === true,
-    enableSelfService: row?.enableSelfService === true,
+    enableSelfService: row?.enableSelfService === true || row?.enableDevices === true,
   };
 }
 
@@ -347,7 +415,12 @@ function toDto(row: {
   id: string;
   reportId: string;
   name: string;
-  type: PortalReportType;
+  // The DTO's own union, NOT PortalReportType: portalRunListPredicate has no
+  // type filter, so a managed-evidence run of a type outside the three
+  // self-service ones legitimately flows through here. Typing it as
+  // PortalReportType was a lie the compiler could not see, because the value
+  // comes from the database (#5784 W02, W03, W04).
+  type: PortalRunDto['type'];
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: Date | null;
   completedAt: Date | null;
@@ -593,11 +666,8 @@ export async function generatePortalReport(args: {
 export type HardwareLifecyclePortalLatestDto = {
   run: { id: string; generatedAt: string };
   summary: HardwareLifecycleSummary | null;
-  // The org's `enable_self_service` flag (#5880): the portal page needs this
-  // to decide whether a device row's Computer cell may link to
-  // /portal/devices — that route itself redirects home when self-service is
-  // off, so linking there unconditionally silently dumps the customer on
-  // Proposals instead.
+  // Legacy field name: device deep-links are enabled by either the Devices
+  // visibility flag or self-service, matching the Devices page's access grants.
   enableSelfService: boolean;
 };
 

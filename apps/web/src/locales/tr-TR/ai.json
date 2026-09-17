@@ -128,6 +128,8 @@
   "aiToolCallCard": {
     "running": "Koşuyor...",
     "approvedRunning": "Onaylandı · çalışıyor",
+    "approvedFailed": "Onaylandı · başarısız",
+    "approvedCompleted": "Onaylandı · tamamlandı",
     "input": "Giriş:",
     "error": "Hata:",
     "output": "Çıktı:"
@@ -138,7 +140,7 @@
     "tabs": {
       "orgs": "Organizasyonlar",
       "sessions": "Oturumlar",
-      "usage": "Kullanım",
+      "usage": "Office eklentisi kullanımı",
       "templates": "Şablonlar"
     }
   },

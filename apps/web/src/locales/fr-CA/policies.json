@@ -1335,6 +1335,8 @@
       "readyToDeployStandalone": "Prêts à être déployés."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Installation automatique activée",
+      "complianceCheckQueued": "Vérification de conformité mise en file d’attente",
       "failedToLoadSoftwarePolicyData": "Impossible de charger les données de politique logicielle",
       "couldNotLoadLatestPolicyDetailsShowing": "Impossible de charger les derniers détails de la stratégie. Affichage des données mises en cache.",
       "couldNotLoadPolicyDetailsShowingCached": "Impossible de charger les détails de la stratégie. Affichage des données mises en cache.",
@@ -1610,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 appareil — généralement parce que cette stratégie n’est encore affectée à aucun appareil, mais un parc entièrement conforme ou une liste de sites vide donne aussi 0",
+      "manageAssignments": "Gérer les affectations des stratégies de configuration",
+      "gracePeriodHelp": "Appliqué lors de la prochaine vérification de conformité",
       "scope": "Portée",
       "allOrganizations": "Toutes les organisations",
       "partnerWideTemplate": "(modèle à l’échelle du partenaire)",

@@ -90,5 +90,24 @@
       "approvedPromoteFailed": "Onaylandı, ancak ön yetkilendirme isteği gönderilemedi. Aracı ayarlarından yeniden deneyin.",
       "policyDecideDisabled": "Onaylandı. Bu dağıtım için kapalı olduğundan ön yetkilendirme istenemedi."
     }
+  },
+  "recent": {
+    "title": "Son işlemler",
+    "subtitle": "Karara bağlanmış veya tamamlanmış",
+    "loading": "Son onaylar yükleniyor…",
+    "error": "Son onaylar yüklenemedi.",
+    "retry": "Yeniden dene",
+    "empty": "Son zamanlarda tamamlanan bir şey yok.",
+    "status": {
+      "failed": "Başarısız",
+      "rejected": "Reddedildi",
+      "expired": "Süresi doldu",
+      "cancelled": "İptal edildi",
+      "completed": "Tamamlandı",
+      "denied": "Reddedildi",
+      "approved": "Onaylandı",
+      "reported": "Bildirildi",
+      "unknown": "Bilinmiyor"
+    }
   }
 }

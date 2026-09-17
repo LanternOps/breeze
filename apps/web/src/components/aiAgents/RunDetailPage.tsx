@@ -679,9 +679,11 @@ function patchFailureClassLabel(t: (key: string) => string, failureClass: string
  */
 function PatchPlanItem({
   item,
+  intentStatus,
   t,
 }: {
   item: AiAgentRunPatchItemDto;
+  intentStatus?: string;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   const refused = item.disposition === 'refused';
@@ -796,7 +798,14 @@ function PatchPlanItem({
           })}
         </p>
       )}
-      {intentCreated && (
+      {intentCreated && (intentStatus && intentStatus !== 'pending_approval' && intentStatus !== 'pending' ? (
+        <p
+          data-testid={`ai-agent-run-patch-item-${item.index}-intent`}
+          className="mt-1 text-xs text-muted-foreground"
+        >
+          {intentStatusLabel(t, intentStatus)}
+        </p>
+      ) : (
         <a
           href={`/approvals#intent-${item.intentId}`}
           data-testid={`ai-agent-run-patch-item-${item.index}-intent`}
@@ -804,7 +813,7 @@ function PatchPlanItem({
         >
           {t('aiAgentsPage.runs.patch.intentCreated')}
         </a>
-      )}
+      ))}
       {unconfirmed && (
         <p
           className="mt-1 text-xs text-amber-700 dark:text-amber-400"
@@ -2092,7 +2101,12 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           ) : (
             <ul className="mt-2 divide-y" data-testid="ai-agent-run-patch-items">
               {run.patch.items.map((item) => (
-                <PatchPlanItem key={item.index} item={item} t={t} />
+                <PatchPlanItem
+                  key={item.index}
+                  item={item}
+                  intentStatus={run.intents.find((intent) => intent.id === item.intentId)?.status}
+                  t={t}
+                />
               ))}
             </ul>
           )}

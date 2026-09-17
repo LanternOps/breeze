@@ -3,6 +3,7 @@ import { CheckCircle, Clock, Download, Loader2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AiAgentRunStatus } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
+import { downloadArtifact } from '@/lib/downloadArtifact';
 import type { ChatRunState } from '@/stores/processStreamEvent';
 
 /** Poll cadence, matching the run detail page's DETAIL_POLL_INTERVAL_MS. */
@@ -65,15 +66,21 @@ function formatBytes(bytes: number): string {
  * The chat surface for an `analysis` run (execution-plane spec §5.5).
  *
  * POLLING IS THE SOURCE OF TRUTH, not the `run` prop. The SSE stream only
- * exists for the duration of a turn, and `workspace_launch_analysis` returns
- * immediately — so for the common case (ask, wait, read) no event ever reaches
- * the browser. `run` is a live upgrade for the case where the technician kept
- * typing while the run worked.
+ * exists for the duration of a turn, so for a run whose turn already closed
+ * (the common case: ask, wait, read) no event ever reaches the browser. `run`
+ * is a live upgrade for the case where the technician kept typing while the
+ * run worked. (Chat-initiated launch is currently disabled — #6086 — so today
+ * every run reaching this card was started by a preconfigured agent; this
+ * polling contract is unaffected either way and stays ready for when
+ * delegated authorization lands.)
  *
- * Artifacts are anchors with `download`, pointing at the API route that serves
- * them as `Content-Disposition: attachment` (spec §8). Nothing here renders
- * artifact CONTENT: a name and a size, and the bytes only ever leave as a file.
- * The name is rendered as a React text child, so an artifact called
+ * Artifacts are anchors with `download`, but the click handler
+ * (`downloadArtifact`) fetches through the authenticated API and saves a Blob
+ * instead of letting the browser navigate to the route directly — the same
+ * pattern as `RunArtifactsSection`. The route serves the bytes as
+ * `Content-Disposition: attachment` (spec §8). Nothing here renders artifact
+ * CONTENT: a name and a size, and the bytes only ever leave as a file. The
+ * name is rendered as a React text child, so an artifact called
  * `<img src=x onerror=…>` is escaped, never parsed.
  */
 export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps) {
@@ -185,6 +192,7 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
               data-testid={`ai-run-card-artifact-${a.id}`}
               href={a.downloadPath}
               download={a.name}
+              onClick={downloadArtifact}
               className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-900 dark:hover:bg-gray-800"
             >
               <Download className="h-3 w-3" />

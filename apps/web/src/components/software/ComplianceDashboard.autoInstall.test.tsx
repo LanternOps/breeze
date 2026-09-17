@@ -511,3 +511,63 @@ describe("ComplianceDashboard — install-remediation status display (#5509)", (
     expect(block).toHaveTextContent("per-pass install cap");
   });
 });
+
+
+describe("ComplianceDashboard — policy list feedback (#6026)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function mockPolicy(autoInstall: boolean, checkResponse = json({ jobId: "raw-bullmq-job-123" }), enforceMode = true) {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/check")) return Promise.resolve(checkResponse);
+      if (url.startsWith("/software-policies?")) return Promise.resolve(json({ data: [{
+        id: "pol-1", name: "Required Apps", mode: "allowlist", isActive: true,
+        enforceMode, remediationOptions: { autoInstall },
+      }] }));
+      if (url.includes("/overview")) return Promise.resolve(json(OVERVIEW));
+      return Promise.resolve(json({ data: [] }));
+    });
+  }
+
+  it("shows the armed badge on auto-install policies", async () => {
+    mockPolicy(true);
+    render(<ComplianceDashboard />);
+    expect(await screen.findByTestId("policy-autoinstall-badge")).toHaveTextContent("Auto-install armed");
+  });
+
+  it("does not show the armed badge when enforcement is off, even with a stale autoInstall flag", async () => {
+    mockPolicy(true, undefined, false);
+    render(<ComplianceDashboard />);
+    await screen.findByText("Required Apps");
+    expect(screen.queryByTestId("policy-autoinstall-badge")).not.toBeInTheDocument();
+  });
+
+  it("does not show the armed badge on disarmed policies", async () => {
+    mockPolicy(false);
+    render(<ComplianceDashboard />);
+    await screen.findByTestId("policy-check-compliance-pol-1");
+    expect(screen.queryByTestId("policy-autoinstall-badge")).not.toBeInTheDocument();
+  });
+
+  it("confirms that compliance is queued without exposing the job id", async () => {
+    mockPolicy(true);
+    render(<ComplianceDashboard />);
+    fireEvent.click(await screen.findByTestId("policy-check-compliance-pol-1"));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success", message: "Compliance check queued" }),
+    ));
+    expect(fetchMock).toHaveBeenCalledWith("/software-policies/pol-1/check", {
+      method: "POST", body: "{}",
+    });
+    expect(JSON.stringify(showToast.mock.calls)).not.toContain("raw-bullmq-job-123");
+  });
+
+  it("reports a rejected check without a success toast", async () => {
+    mockPolicy(true, json({ error: "Check unavailable" }, false, 500));
+    render(<ComplianceDashboard />);
+    fireEvent.click(await screen.findByTestId("policy-check-compliance-pol-1"));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "error" }),
+    ));
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+});

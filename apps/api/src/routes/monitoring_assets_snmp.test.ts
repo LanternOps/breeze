@@ -31,6 +31,7 @@ vi.mock('../db/schema', () => ({
     hostname: 'discoveredAssets.hostname',
     ipAddress: 'discoveredAssets.ipAddress',
     assetType: 'discoveredAssets.assetType',
+    snmpData: 'discoveredAssets.snmpData',
     approvalStatus: 'discoveredAssets.approvalStatus',
     isOnline: 'discoveredAssets.isOnline',
     lastSeenAt: 'discoveredAssets.lastSeenAt',
@@ -124,6 +125,12 @@ vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => true),
 }));
 
+vi.mock('../services/snmpTemplateSuggest', () => ({
+  suggestTemplate: vi.fn(),
+}));
+
+import { suggestTemplate } from '../services/snmpTemplateSuggest';
+
 import { monitoringRoutes } from './monitoring';
 import { db } from '../db';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
@@ -142,6 +149,7 @@ describe('monitoring routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.select).mockReset();
+    vi.mocked(suggestTemplate).mockReset();
     vi.mocked(db.insert).mockReset();
     vi.mocked(db.update).mockReset();
     vi.mocked(db.delete).mockReset();
@@ -755,4 +763,142 @@ describe('monitoring routes', () => {
     });
   });
 
+  describe('PUT /monitoring/assets/:id/snmp — template suggestion (spec §8)', () => {
+    const asset = {
+      id: ASSET_ID, orgId: ORG_ID, siteId: SITE_ALLOWED, hostname: 'xerox-01', ipAddress: '10.0.0.5',
+      assetType: 'printer', snmpData: { sysObjectId: '.1.3.6.1.4.1.253.8.62.1.37.1.4.1.1' },
+    };
+
+    function mockPutChain(existing: Record<string, unknown> | null) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([asset]) }),
+            }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(existing ? [existing] : []) }),
+            }),
+          }),
+        } as never);
+    }
+
+    const put = (body: unknown) => app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      body: JSON.stringify(body),
+    });
+
+    it('applies the suggestion when templateId is omitted on create, and echoes it', async () => {
+      mockPutChain(null);
+      vi.mocked(suggestTemplate).mockResolvedValue({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer', reason: 'Detected Xerox printer, using Xerox Printer',
+      });
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:mock', username: null, templateId: 'tpl-xerox', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: 'public' });
+
+      expect(res.status).toBe(200);
+      expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ templateId: 'tpl-xerox' });
+      const body = await res.json();
+      expect(body.templateSuggestion).toEqual({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer',
+        reason: 'Detected Xerox printer, using Xerox Printer', applied: true,
+      });
+    });
+
+    it('reports applied false when the returned row did not retain the suggested template', async () => {
+      mockPutChain(null);
+      vi.mocked(suggestTemplate).mockResolvedValue({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer', reason: 'Detected Xerox printer, using Xerox Printer',
+      });
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:mock', username: null, templateId: null, pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: 'public' });
+
+      expect(res.status).toBe(200);
+      expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ templateId: 'tpl-xerox' });
+      expect((await res.json()).templateSuggestion).toEqual({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer',
+        reason: 'Detected Xerox printer, using Xerox Printer', applied: false,
+      });
+    });
+
+    it('does not suggest, and stores null, when templateId is explicitly null', async () => {
+      mockPutChain(null);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:mock', username: null, templateId: null, pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: 'public', templateId: null });
+
+      expect(res.status).toBe(200);
+      expect(suggestTemplate).not.toHaveBeenCalled();
+      expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ templateId: null });
+      expect((await res.json()).templateSuggestion).toBeNull();
+    });
+
+    it('keeps an already-assigned template when templateId is omitted', async () => {
+      mockPutChain({ id: SNMP_DEVICE_ID, templateId: 'tpl-chosen', community: 'enc:v1:old', isActive: true });
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:old', username: null, templateId: 'tpl-chosen', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: '********' });
+
+      expect(res.status).toBe(200);
+      expect(suggestTemplate).not.toHaveBeenCalled();
+      expect(updateSet.mock.calls[0]?.[0]).toMatchObject({ templateId: 'tpl-chosen' });
+    });
+  });
+
+  describe('PATCH /monitoring/assets/:id/snmp — null-as-unset is preserved', () => {
+    it('writes templateId null and never consults the suggester', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([{ id: ASSET_ID, orgId: ORG_ID, siteId: SITE_ALLOWED, ipAddress: '10.0.0.5' }]) }),
+            }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, templateId: 'tpl-old' }]) }),
+            }),
+          }),
+        } as never);
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: null, pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+        body: JSON.stringify({ templateId: null }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(suggestTemplate).not.toHaveBeenCalled();
+      expect(updateSet.mock.calls[0]?.[0]).toMatchObject({ templateId: null });
+    });
+  });
 });

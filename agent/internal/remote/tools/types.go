@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -794,4 +795,45 @@ func GetPayloadStringSlice(payload map[string]any, key string) []string {
 		}
 	}
 	return result
+}
+
+// GetPayloadObjectSlice reads a JSON array of objects from a command payload —
+// e.g. the SNMP poll command's `oidSpecs`. Same contract as
+// GetPayloadStringSlice: a missing key, a non-array value, or a nil payload all
+// yield nil, and members of the wrong shape are dropped rather than failing the
+// whole command. A server that sends junk must not take the agent down with it.
+func GetPayloadObjectSlice(payload map[string]any, key string) []map[string]any {
+	raw, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	slice, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(slice))
+	for _, v := range slice {
+		if obj, ok := v.(map[string]any); ok {
+			result = append(result, obj)
+		}
+	}
+	if dropped := len(slice) - len(result); dropped > 0 {
+		slog.Warn("dropped malformed payload object entries", "key", key, "dropped", dropped)
+	}
+	return result
+}
+
+// GetPayloadObject reads a single JSON object from a command payload — e.g. the
+// SNMP poll command's `limits`. Returns nil for a missing key or a non-object
+// value, so callers fall back to their own defaults.
+func GetPayloadObject(payload map[string]any, key string) map[string]any {
+	raw, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return obj
 }

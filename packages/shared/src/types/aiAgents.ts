@@ -301,6 +301,22 @@ export interface AiAgentTriggers {
    * `ruleId === null` alert fails a non-empty `alertRuleIds`.
    */
   alertCategories?: string[];
+  /**
+   * Resource filters. ABSENT means unrestricted; an EMPTY array means NOTHING
+   * is allowed — the two are NOT interchangeable, and the validator rejects
+   * `[]` on write (`.min(1)`) precisely so a stored `[]` can only ever arrive
+   * from a merge. `effectivePolicy.ts` intersects a partner baseline with an
+   * org override, and disjoint filters legitimately intersect to `[]`; that
+   * result must keep meaning "no device matches", never "unrestricted".
+   *
+   * These are an EXECUTION boundary, not just a trigger filter (#6086): a run
+   * of a scoped agent is admitted only for an exact device inside the scope,
+   * and that scope is rechecked before execution and before every tool call
+   * (`services/aiAgents/runResourceScope.ts`). The boundary is over DEVICES,
+   * not tools: a scoped run keeps its agent's full tool allowlist, and every
+   * device-keyed tool is bounded to the run's own device by the exact-device
+   * allowlist the run's auth context carries (`agentAuthContext.ts`).
+   */
   siteIds?: string[];
   deviceGroupIds?: string[];
   deviceTags?: string[];
@@ -455,7 +471,9 @@ export interface AiAgentProtectedResources {
  * unattended execution: a saved script can read secrets, rewrite config, or do
  * anything else its author wrote, so allowlisting the TOOL must not silently
  * authorize every script an org happens to have. `scriptIds` is the closed set
- * an operator has explicitly opted into for act mode; empty/absent means
+ * an operator has explicitly opted into for act mode. This is an ALLOWLIST,
+ * not a narrowing filter, so it does NOT follow the absent-means-unrestricted
+ * split of `AiAgentTriggers`' resource filters: empty AND absent both mean
  * run_script is never act-eligible for this agent — the model may still call
  * it, and it still records as a proposal exactly like any other unmatched
  * Tier-3 mutation (Global Constraints, plan header).

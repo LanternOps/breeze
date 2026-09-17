@@ -90,5 +90,24 @@
       "approvedPromoteFailed": "Genehmigt, aber die Anfrage zur Vorautorisierung konnte nicht gesendet werden. Versuchen Sie es erneut in den Agenteneinstellungen.",
       "policyDecideDisabled": "Genehmigt. Die Vorautorisierung konnte nicht angefordert werden, da sie für diese Bereitstellung deaktiviert ist."
     }
+  },
+  "recent": {
+    "title": "Kürzlich",
+    "subtitle": "Bereits entschieden oder abgeschlossen",
+    "loading": "Kürzliche Genehmigungen werden geladen…",
+    "error": "Kürzliche Genehmigungen konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Kürzlich wurde nichts abgeschlossen.",
+    "status": {
+      "failed": "Fehlgeschlagen",
+      "rejected": "Abgelehnt",
+      "expired": "Abgelaufen",
+      "cancelled": "Abgebrochen",
+      "completed": "Abgeschlossen",
+      "denied": "Abgelehnt",
+      "approved": "Genehmigt",
+      "reported": "Gemeldet",
+      "unknown": "Unbekannt"
+    }
   }
 }

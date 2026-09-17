@@ -30,7 +30,7 @@ vi.mock('../../db', () => ({
   },
 }));
 
-import { loadSyncSummary } from './summary';
+import { loadDomainFreshness, loadSyncSummary } from './summary';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const TENANT = '22222222-2222-4222-8222-222222222222';
@@ -166,5 +166,85 @@ describe('loadSyncSummary', () => {
   it("is null-safe on an unknown stored status, reporting 'never' rather than leaking it", async () => {
     mocks.stateRows = [state({ lastStatus: 'weird' })];
     expect((await loadSyncSummary(ORG, TENANT))!.domains[0]!.status).toBe('never');
+  });
+});
+
+// #5784 W03/W06 — the per-domain freshness reader the report generators use.
+// Same name and shape in both waves so they converge rather than fork.
+describe('loadDomainFreshness', () => {
+  it('reads asOf from last_complete_snapshot_at, never last_success_at', async () => {
+    mocks.stateRows = [state({
+      domain: 'intune_devices',
+      lastStatus: 'partial',
+      lastSuccessAt: new Date('2026-09-30T04:00:00Z'),
+      lastCompleteSnapshotAt: new Date('2026-09-02T04:00:00Z'),
+      truncated: true,
+      sources: { intuneDevices: 'ok' },
+    })];
+    const got = await loadDomainFreshness(ORG, ['intune_devices']);
+    // A partial run advances last_success_at without enumerating the tenant.
+    // Using it would claim a freshness the data does not have (summary.ts).
+    expect(got.intune_devices.asOf).toBe('2026-09-02T04:00:00.000Z');
+    expect(got.intune_devices.lastStatus).toBe('partial');
+    expect(got.intune_devices.truncated).toBe(true);
+    expect(got.intune_devices.sources).toEqual({ intuneDevices: 'ok' });
+  });
+
+  it('reports a never-scheduled domain as asOf null rather than omitting it', async () => {
+    const got = await loadDomainFreshness(ORG, ['intune_devices']);
+    expect(got.intune_devices).toEqual({
+      asOf: null, lastStatus: null, truncated: false, sources: null, unlicensed: false,
+    });
+  });
+
+  it('flags the domain as unlicensed from its OWN primary source key', async () => {
+    mocks.stateRows = [state({ domain: 'skus', lastStatus: 'success', sources: { subscribedSkus: 'unlicensed' } })];
+    const got = await loadDomainFreshness(ORG, ['skus']);
+    expect(got.skus.unlicensed).toBe(true);
+  });
+
+  it('issues exactly one query for several domains', async () => {
+    const got = await loadDomainFreshness(ORG, ['intune_devices', 'skus']);
+    expect(mocks.selectCalls).toBe(1);
+    expect(Object.keys(got).sort()).toEqual(['intune_devices', 'skus']);
+  });
+
+  it('reads asOf from last_complete_snapshot_at for signin_events, never last_success_at', async () => {
+    mocks.stateRows = [state({
+      domain: 'signin_events',
+      lastStatus: 'partial',
+      lastSuccessAt: new Date('2026-09-30T04:00:00.000Z'),
+      lastCompleteSnapshotAt: new Date('2026-09-02T04:00:00.000Z'),
+      truncated: true,
+      sources: { signinEvents: 'ok' },
+    })];
+    const got = await loadDomainFreshness(ORG, ['signin_events']);
+    // A partial run advances last_success_at without enumerating the tenant.
+    // Using it would claim a freshness the data does not have (summary.ts).
+    expect(got.signin_events.asOf).toBe('2026-09-02T04:00:00.000Z');
+    expect(got.signin_events.lastStatus).toBe('partial');
+    expect(got.signin_events.truncated).toBe(true);
+    expect(got.signin_events.unlicensed).toBe(false);
+  });
+
+  it('reports a never-scheduled signin_events domain as asOf null rather than omitting it', async () => {
+    const got = await loadDomainFreshness(ORG, ['signin_events']);
+    expect(got.signin_events).toEqual({
+      asOf: null, lastStatus: null, truncated: false, sources: null, unlicensed: false,
+    });
+  });
+
+  it('flags signin_events unlicensed from ITS OWN primary source key', async () => {
+    mocks.stateRows = [state({
+      domain: 'signin_events',
+      sources: { signinEvents: 'unlicensed' },
+    })];
+    const got = await loadDomainFreshness(ORG, ['signin_events']);
+    expect(got.signin_events.unlicensed).toBe(true);
+  });
+
+  it('issues exactly one query for several domains including signin_events', async () => {
+    await loadDomainFreshness(ORG, ['signin_events', 'ca_policies', 'users']);
+    expect(mocks.selectCalls).toBe(1);
   });
 });

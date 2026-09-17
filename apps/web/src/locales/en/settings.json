@@ -211,7 +211,8 @@
       "actionPlan": "Action Plan",
       "autoApprove": "Auto Approve",
       "hybridPlan": "Hybrid Plan"
-    }
+    },
+    "overridesOrgTab": "Fields you set here override and lock the same field on every organization's AI tab."
   },
   "aiBudgetThresholds": {
     "invalid": "Enter up to five whole numbers between 1 and 99, separated by commas."
@@ -1133,6 +1134,10 @@
       "description": "Choose which service insights this customer can see in the portal.",
       "enableAll": "Enable all visibility",
       "toggles": {
+        "enableDevices": {
+          "label": "Devices",
+          "description": "Show the Devices page. Self-service also grants access to this page."
+        },
         "enableDashboard": {
           "label": "Dashboard",
           "description": "Show a service-health summary when customers sign in."
@@ -1444,7 +1449,7 @@
     "completeReview": "Complete Review"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "AI Usage & Budget",
+    "aIUsageBudget": "AI Usage",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitor AI assistant usage and configure budget limits",
     "budgetConfiguration": "Budget Configuration",
     "aIEnabled": "AI Enabled",
@@ -1494,7 +1499,19 @@
     "untitled": "Untitled",
     "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits",
     "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}}: AI usage goes to your own Anthropic account, not Breeze AI credits",
-    "creditsRemaining": "Breeze AI credits remaining"
+    "creditsRemaining": "Breeze AI credits remaining",
+    "defaultValue": "Default ({{value}})",
+    "viewPartnerWideBudgets": "Partner AI budgets",
+    "monitorAIAssistantUsage": "Monitor AI assistant usage",
+    "effectiveBudget": "Effective budget",
+    "effectiveBudgetHelp": "The limits in force for this organization right now, and where each one was set.",
+    "sourcePartner": "Set by partner",
+    "sourceOrganization": "Set by organization",
+    "sourceDefault": "Default",
+    "selectOrgForEffectiveBudget": "Select an organization to see its effective budget, or edit partner-wide defaults.",
+    "editPartnerWideDefaults": "Edit partner-wide defaults",
+    "thresholdsOff": "Off",
+    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again."
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2102,11 +2119,13 @@
           "title": "Files this run produced",
           "download": "Download",
           "preview": "Preview",
-          "attachToTicket": "Attach to a ticket",
-          "attach": "Attach {{name}}",
+          "attachToTicket": "Attach as internal note",
+          "attach": "Attach {{name}} as internal note",
           "ticketIdPlaceholder": "Ticket ID",
-          "attachedToTicket": "Attached to the ticket",
-          "attachFailed": "Could not attach the file to that ticket"
+          "attachedToTicket": "Attached to the ticket as an internal note",
+          "attachFailed": "Could not attach the file to that ticket",
+          "attachedButCommentFailed": "The file was attached, but the ticket note could not be added",
+          "downloadExpired": "This file has expired and is no longer available to download."
         },
         "workspace": {
           "title": "What ran in the workspace",
@@ -4081,6 +4100,7 @@
     "languageLoadFailed": "Preference saved, but the language failed to load — showing English. Check your connection and try again."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Default time entry (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes and hourly rate must be numbers.",
     "categoryUpdated": "Category updated",
     "ticketing": "Ticketing",
@@ -4389,7 +4409,9 @@
       "notifications": "Notifications",
       "notificationsDescription": "Email, Slack, webhooks",
       "ticketing": "Ticketing",
-      "ticketingDescription": "SLA and billing overrides"
+      "ticketingDescription": "SLA and billing overrides",
+      "ai": "AI",
+      "aiDescription": "AI assistant budget, rate limits and approval mode"
     },
     "overview": {
       "title": "Organization overview",
@@ -5216,6 +5238,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organization-owned variables are listed under each organization.",
     "title": "Variables",
     "description": "Define a value once — a vendor site token, an internal repo URL — and reference it from scripts instead of hardcoding it per customer.",
     "loading": "Loading variables…",
@@ -5559,5 +5582,10 @@
     "saveFailed": "Those settings could not be saved.",
     "loading": "Loading…",
     "loadFailed": "Script authoring settings could not be loaded."
+  },
+  "orgAiBudgetSettings": {
+    "title": "AI budget",
+    "description": "Spending caps, rate limits and approval mode for the AI assistant in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
+    "selectOrganization": "Select an organization to configure its AI budget."
   }
 }

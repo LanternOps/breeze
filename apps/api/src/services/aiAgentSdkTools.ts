@@ -21,7 +21,7 @@ import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
-import { buildToolHandoffResult, type ToolHandoffStatus } from './aiToolHandoff';
+import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
@@ -53,14 +53,6 @@ import {
   googleResetTwoSvHandler, googleAddMailDelegateHandler, googleRemoveMailDelegateHandler,
   googleListLicensesHandler, googleAssignLicenseHandler, googleRemoveLicenseHandler,
 } from './aiToolsGoogle';
-// Execution plane (spec §5.5) — session-only, dispatched through
-// makeSessionAwareHandler like the M365/Google helpdesk handlers above.
-import { workspaceLaunchAnalysisHandler } from './workspace/workspaceLaunchTool';
-import {
-  WORKSPACE_LAUNCH_MAX_GOAL_CHARS,
-  WORKSPACE_LAUNCH_MAX_INPUT_DEVICES,
-  WORKSPACE_LAUNCH_MAX_INPUT_HANDLES,
-} from './workspace/workspaceLaunchLimits';
 import {
   sealToolSecrets,
   isSecretBearingTool,
@@ -371,10 +363,6 @@ export const TOOL_TIERS = {
   google_list_licenses: 1,
   google_assign_license: 3,
   google_remove_license: 3,
-  // Execution plane (spec §5.5). Tier 1: it queues work, it touches nothing.
-  // Absent here, a tool is invisible to chat and to every run profile even
-  // though it is registered in `aiTools`.
-  workspace_launch_analysis: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -409,6 +397,12 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  * handoff payload carries `status` (machine-readable, what the clients switch
  * on) and never an `error` field, so nothing downstream can mistake it for a
  * failure by shape either.
+ *
+ * `isError` is derived from the handoff STATUS, not from "a handoff marker is
+ * present" (#6022). The read-back added there rides this same channel, and
+ * `approved_failed` — an action the worker ran and that did NOT take effect —
+ * is a genuine failure. Treating the marker itself as "not an error" would
+ * paint a guardrail refusal as "Approved · running", which is the bug.
  */
 function preToolUseDenialResult(
   toolName: string,
@@ -419,7 +413,7 @@ function preToolUseDenialResult(
     : { error: check.error };
   return {
     text: compactToolResultForChat(toolName, JSON.stringify(payload)),
-    isError: !check.handoff,
+    isError: check.handoff ? handoffIsError(check.handoff) : true,
   };
 }
 
@@ -3088,26 +3082,8 @@ export function createBreezeMcpServer(
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
 
-    // Execution plane (spec §5.5): start a sandboxed `analysis` run from chat.
-    // Session-aware, not `makeHandler`: the handler is called as
-    // `(args, auth, session.breezeSessionId)` and the factory refuses with
-    // `no_active_session` BEFORE any enforcement when there is no live chat
-    // session — so no run is ever admitted without one to deliver it to.
-    // Declared here, inside createBreezeMcpServer, because `getActiveSession`
-    // is its parameter: a factory that was never handed it compiles happily and
-    // then answers `no_active_session` to every call.
-    tool(
-      'workspace_launch_analysis',
-      'Start a sandboxed analysis run that computes over fleet data and returns findings plus '
-        + 'downloadable files. Returns a run id immediately; the result arrives later in this conversation.',
-      {
-        goal: z.string().min(1).max(WORKSPACE_LAUNCH_MAX_GOAL_CHARS),
-        deviceIds: z.array(uuid).max(WORKSPACE_LAUNCH_MAX_INPUT_DEVICES).optional(),
-        siteId: uuid.optional(),
-        inputHandles: z.array(uuid).max(WORKSPACE_LAUNCH_MAX_INPUT_HANDLES).optional(),
-      },
-      makeSessionAwareHandler('workspace_launch_analysis', getAuth, getActiveSession, workspaceLaunchAnalysisHandler, onPreToolUse, onPostToolUse),
-    ),
+    // Chat background launches are disabled pending delegated authorization design (#6086).
+
   ];
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are

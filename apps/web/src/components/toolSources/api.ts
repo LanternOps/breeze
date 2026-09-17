@@ -14,6 +14,7 @@
 
 import type { ToolSourceDto, ToolSourceToolDto, ToolTier } from '@breeze/shared';
 import { unwrapData, type Fetcher } from '../../lib/api/serviceDeliverables';
+import { extractApiError } from '../../lib/apiError';
 import { ActionError } from '../../lib/runAction';
 
 export type { Fetcher };
@@ -71,27 +72,59 @@ export async function getToolSource(f: Fetcher, id: string): Promise<ToolSourceD
   return unwrapData<ToolSourceDto>(await f(sourcePath(id)));
 }
 
+export type DiscoveryWarning = { warning?: 'discovery_not_queued' };
+export type SavedToolSource = ToolSourceDto & DiscoveryWarning;
+
+async function unwrapDiscoveryResult<T>(response: Response): Promise<T & DiscoveryWarning> {
+  const envelope = await response.clone().json().catch(() => null);
+  const data = await unwrapData<T>(response);
+  return envelope?.warning === 'discovery_not_queued'
+    ? { ...data, warning: 'discovery_not_queued' }
+    : data as T & DiscoveryWarning;
+}
+
 export async function createToolSource(
   f: Fetcher,
   body: CreateToolSourceBody,
-): Promise<ToolSourceDto> {
-  return unwrapData<ToolSourceDto>(await f(BASE, jsonInit('POST', body)));
+): Promise<SavedToolSource> {
+  return unwrapDiscoveryResult<ToolSourceDto>(await f(BASE, jsonInit('POST', body)));
 }
 
 export async function updateToolSource(
   f: Fetcher,
   id: string,
   body: UpdateToolSourceBody,
-): Promise<ToolSourceDto> {
-  return unwrapData<ToolSourceDto>(await f(sourcePath(id), jsonInit('PATCH', body)));
+): Promise<SavedToolSource> {
+  return unwrapDiscoveryResult<ToolSourceDto>(await f(sourcePath(id), jsonInit('PATCH', body)));
 }
 
+/**
+ * DELETE /tool-sources/:id answers `{ success: true, id }` — the repo's normal
+ * delete-route shape (CLAUDE.md "Web Mutation Handlers") — never a `{ data }`
+ * envelope. `unwrapData` requires that envelope, so running the DELETE through
+ * it turned every successful delete into a toasted "missing data envelope"
+ * error and stranded the user on the page (found by the 2026-09-16 pre-release
+ * sweep). Any 2xx is success here; a non-2xx is reported the same way
+ * `unwrapData` reports one, so callers still get a real error message/code.
+ */
 export async function deleteToolSource(f: Fetcher, id: string): Promise<void> {
-  await unwrapData<unknown>(await f(sourcePath(id), { method: 'DELETE' }));
+  const res = await f(sourcePath(id), { method: 'DELETE' });
+  if (res.ok) return;
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    body = undefined;
+  }
+  const code =
+    body && typeof body === 'object' && typeof (body as { code?: unknown }).code === 'string'
+      ? (body as { code: string }).code
+      : undefined;
+  throw new ActionError(extractApiError(body, `Request failed (${res.status})`), res.status, code, body);
 }
 
-export async function discoverToolSource(f: Fetcher, id: string): Promise<void> {
-  await unwrapData<unknown>(await f(`${sourcePath(id)}/discover`, { method: 'POST' }));
+export async function discoverToolSource(f: Fetcher, id: string): Promise<DiscoveryWarning> {
+  return unwrapDiscoveryResult<DiscoveryWarning>(await f(`${sourcePath(id)}/discover`, { method: 'POST' }));
 }
 
 export async function listSourceTools(f: Fetcher, id: string): Promise<ToolSourceToolDto[]> {

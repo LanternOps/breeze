@@ -16,9 +16,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 
-const { queryMock, capturedMcpArgs } = vi.hoisted(() => ({
+const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   capturedMcpArgs: [] as Array<{ getAuth: () => unknown }>,
+  capturedTenantSdkToolArgs: [] as Array<{ getOrgId: () => string }>,
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -64,6 +65,13 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (s: unknown) => s,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+vi.mock('./toolSources/sdkBridge', () => ({
+  buildTenantSdkTools: vi.fn((_descriptors: unknown, _getAuth: unknown, getOrgId: () => string) => {
+    capturedTenantSdkToolArgs.push({ getOrgId });
+    return [];
+  }),
+  tenantMcpToolNames: vi.fn(() => []),
+}));
 
 import { StreamingSessionManager, buildDeviceBoundSessionAuth } from './streamingSessionManager';
 import { buildOrgAccessClosures, dbAccessContextFromAuth } from '../middleware/auth';
@@ -75,6 +83,7 @@ const DEVICE_ORG = 'bbbbbbbb-1111-4222-8333-444455556666';
 const PARTNER_ID = 'cccccccc-1111-4222-8333-444455556666';
 const DEVICE_ID = 'dddddddd-1111-4222-8333-444455556666';
 const USER_ID = 'eeeeeeee-1111-4222-8333-444455556666';
+const MOVED_DEVICE_ORG = 'ffffffff-1111-4222-8333-444455556666';
 
 /**
  * Partner-scope login: orgId is null (partner tokens never carry one) and
@@ -202,6 +211,7 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
   beforeEach(() => {
     vi.clearAllMocks();
     capturedMcpArgs.length = 0;
+    capturedTenantSdkToolArgs.length = 0;
     queryMock.mockImplementation(() => ({
       // Never-yielding stream: the background processor just parks.
       async *[Symbol.asyncIterator]() {
@@ -321,6 +331,55 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
     const expected = { kind: 'ai_assistant', sessionId: 'sess-origin-refresh' };
     expect(session.auth.aiOrigin).toEqual(expected);
     expect(session.toolAuth.aiOrigin).toEqual(expected);
+  });
+
+  // #6023 follow-up: execute.ts now threads the tenant-tool `targetOrgId`
+  // (sourced from this getOrgId thunk) into the DISPATCH-TIME owner-predicate
+  // reload, not just audit labeling. `session.orgId` is a readonly field set
+  // once at session creation and never refreshed on reuse — unlike
+  // `session.toolAuth`, which the reuse branch explicitly re-narrows to the
+  // CURRENT device org every turn (see the block above, #3087). If the
+  // tenant-tool thunk read the stale `session.orgId` instead of the FRESH
+  // `session.toolAuth.orgId`, a device that moved to a different org
+  // mid-session would keep dispatching an org-owned tool under its OLD org's
+  // credentials.
+  it('the tenant-tool targetOrgId thunk tracks the device\'s CURRENT org across reuse, not the org captured at session creation', async () => {
+    const movableAuth = {
+      ...makePartnerAuth(),
+      accessibleOrgIds: [LOGIN_ORG, DEVICE_ORG, MOVED_DEVICE_ORG],
+      ...buildOrgAccessClosures([LOGIN_ORG, DEVICE_ORG, MOVED_DEVICE_ORG]),
+    } as unknown as AuthContext;
+
+    // Session created while the device is in DEVICE_ORG.
+    await manager.getOrCreate(
+      'sess-org-move',
+      { ...DB_SESSION, orgId: DEVICE_ORG, deviceId: DEVICE_ID },
+      movableAuth,
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+    expect(capturedTenantSdkToolArgs).toHaveLength(1);
+    expect(capturedTenantSdkToolArgs[0]!.getOrgId()).toBe(DEVICE_ORG);
+
+    // Follow-up message after the device has moved to MOVED_DEVICE_ORG. The
+    // in-memory session is REUSED (mcpServer/buildTenantSdkTools is not
+    // rebuilt), so the thunk captured above must itself reflect the move.
+    await manager.getOrCreate(
+      'sess-org-move',
+      { ...DB_SESSION, orgId: MOVED_DEVICE_ORG, deviceId: DEVICE_ID },
+      movableAuth,
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    // Still only ONE buildTenantSdkTools call (session reused, not rebuilt) —
+    // the SAME thunk instance must now report the moved org.
+    expect(capturedTenantSdkToolArgs).toHaveLength(1);
+    expect(capturedTenantSdkToolArgs[0]!.getOrgId()).toBe(MOVED_DEVICE_ORG);
   });
 
   it('leaves non-device sessions untouched (partner techs keep fleet-wide reach in general chat)', async () => {

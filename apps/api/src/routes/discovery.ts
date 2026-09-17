@@ -1234,6 +1234,10 @@ discoveryRoutes.get(
         // through the device IT WAS LINKED TO is a loopback).
         suggestedBridgeDeviceId: bridgeDevices.id,
         siteName: sites.name,
+        // The site's IANA zone. The page formats every absolute timestamp in
+        // it (spec §11 Formatting); `sites` is already left-joined for the
+        // name, so this costs one more column and no extra query.
+        siteTimezone: sites.timezone,
       })
       .from(discoveredAssets)
       .leftJoin(devices, and(
@@ -1266,12 +1270,18 @@ discoveryRoutes.get(
         orgId: a.orgId,
         siteId: a.siteId,
         siteName: row.siteName ?? null,
+        siteTimezone: row.siteTimezone ?? null,
         assetType: a.assetType,
         approvalStatus: a.approvalStatus,
         isOnline: a.isOnline,
         // W01 (spec §4.4). `isOnline` is retained for one release and means
         // "last scan/controller verdict"; everything new reads this.
         reachability,
+        probe: a.lastProbeStatus ? {
+          state: a.lastProbeStatus,
+          observedAt: a.lastProbeAt?.toISOString() ?? null,
+          responseMs: a.lastProbeResponseMs ?? null,
+        } : null,
         hostname: a.hostname,
         label: a.label,
         ipAddress: a.ipAddress,

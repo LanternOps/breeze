@@ -35,6 +35,28 @@ const runAt = (id: string): PortalRunDto => ({ ...run, id });
 describe('ReportRunList', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // #5784 W03 (OD-10 = A). A managed-evidence run reaches the portal list only
+  // after its occurrence is delivered; the customer may never generate one, so
+  // the toolbar must NOT gain a fourth button.
+  it('lists a delivered endpoint management review run with no generate button for it', () => {
+    const evidenceRun: PortalRunDto = {
+      ...run,
+      id: 'run-epm',
+      name: 'Service evidence — Endpoint management review',
+      type: 'endpoint_management_review',
+    };
+
+    render(<ReportRunList initialRuns={[evidenceRun]} timezone="America/Denver" />);
+
+    expect(screen.getByTestId('portal-report-run-row-run-epm')).toBeTruthy();
+    expect(screen.getByText('Service evidence — Endpoint management review')).toBeTruthy();
+    expect(
+      screen.getByTestId('portal-report-run-pdf-run-epm').getAttribute('href'),
+    ).toBe('/api/v1/portal/reports/runs/run-epm/pdf');
+    expect(screen.queryByTestId('portal-reports-generate-endpoint-management')).toBeNull();
+    expect(screen.queryByText(/generate endpoint management/i)).toBeNull();
+  });
+
   it('generates a report and renders PDF/CSV download links', async () => {
     generateMock.mockResolvedValue({ data: run });
     listMock.mockResolvedValue({ data: [run] });
@@ -226,5 +248,69 @@ describe('ReportRunList', () => {
       'Report generation is temporarily limited. Try again in about 2 minutes.',
     );
     expect(screen.getByTestId('portal-reports-status').textContent).toBe('');
+  });
+
+  // #5784 W02 / OD-10 = A: the customer SEES and downloads what their service
+  // plan produced, but cannot generate it — only the three self-service types
+  // get a button. The type reaches this list through portalRunListPredicate,
+  // which has no type filter, so an unwidened union would be a type lie the
+  // compiler cannot see.
+  it('labels a threat detection run without offering a generate button', () => {
+    const threatRun: PortalRunDto = {
+      ...run,
+      id: 'run-td',
+      name: 'Service evidence — Threat detection review',
+      type: 'threat_detection_review',
+    };
+    render(<ReportRunList initialRuns={[threatRun]} timezone="UTC" />);
+    expect(screen.getByTestId('portal-report-run-row-run-td')).toBeInTheDocument();
+    expect(screen.getByText(/threat detection review/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-reports-generate-threat_detection_review')).toBeNull();
+    // Downloadable, though: delivery already gated visibility server-side.
+    expect(screen.getByTestId('portal-report-run-pdf-run-td')).toBeInTheDocument();
+  });
+
+  // #5784 W04, OD-10 = A. A delivered vulnerability-management run is LISTED
+  // and downloadable, but the portal user never gets a button to produce one.
+  it('lists a delivered vulnerability management run with no generate action for it', () => {
+    render(
+      <ReportRunList
+        initialRuns={[{
+          ...run,
+          id: 'run-vuln',
+          name: 'Service evidence — Vulnerability management',
+          type: 'vulnerability_management',
+        }]}
+        timezone="UTC"
+      />,
+    );
+
+    // `reportDisplayName` trims only the MSP's "Customer portal —" prefix; a
+    // managed-evidence name reads correctly to a customer as-is.
+    expect(screen.getByText('Service evidence — Vulnerability management')).toBeTruthy();
+    expect(screen.getByTestId('portal-report-runs-table')).toBeTruthy();
+    expect(screen.queryByTestId('portal-reports-generate-vulnerability')).toBeNull();
+    // Exactly the three self-service actions, unchanged.
+    expect(screen.getByTestId('portal-reports-generate-posture')).toBeTruthy();
+    expect(screen.getByTestId('portal-reports-generate-executive')).toBeTruthy();
+    expect(screen.getByTestId('portal-reports-generate-lifecycle')).toBeTruthy();
+  });
+
+  // #5784 W06 / OD-10 = A, and the PII case: this artifact carries user
+  // principal names and IP addresses, so it must be listed-but-not-generatable
+  // for exactly the same reason as the threat review above, only more so.
+  it('labels an identity access run without offering a generate button', () => {
+    const identityRun: PortalRunDto = {
+      ...run,
+      id: 'run-ia',
+      name: 'Service evidence — Identity and access review',
+      type: 'identity_access_review',
+    };
+    render(<ReportRunList initialRuns={[identityRun]} timezone="UTC" />);
+    expect(screen.getByTestId('portal-report-run-row-run-ia')).toBeInTheDocument();
+    expect(screen.getByText(/identity and access review/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-reports-generate-identity_access_review')).toBeNull();
+    // Downloadable, though: delivery already gated visibility server-side.
+    expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
   });
 });

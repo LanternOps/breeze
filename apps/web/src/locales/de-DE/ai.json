@@ -128,6 +128,8 @@
   "aiToolCallCard": {
     "running": "Wird ausgeführt…",
     "approvedRunning": "Genehmigt · läuft",
+    "approvedFailed": "Genehmigt · fehlgeschlagen",
+    "approvedCompleted": "Genehmigt · abgeschlossen",
     "input": "Eingabe:",
     "error": "Fehler:",
     "output": "Ausgabe:"
@@ -138,7 +140,7 @@
     "tabs": {
       "orgs": "Organisationen",
       "sessions": "Sitzungen",
-      "usage": "Nutzung",
+      "usage": "Nutzung des Office-Add-Ins",
       "templates": "Vorlagen"
     }
   },

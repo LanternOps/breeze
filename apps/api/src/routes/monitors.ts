@@ -448,6 +448,11 @@ monitorRoutes.get(
         lastResponseMs: m.lastResponseMs,
         lastError: m.lastError,
         consecutiveFailures: m.consecutiveFailures,
+        tlsState: m.tlsState,
+        tlsNotAfter: m.tlsNotAfter?.toISOString() ?? null,
+        tlsIssuer: m.tlsIssuer,
+        tlsObservedHost: m.tlsObservedHost,
+        tlsObservedAt: m.tlsObservedAt?.toISOString() ?? null,
         createdAt: m.createdAt.toISOString(),
         updatedAt: m.updatedAt.toISOString()
       })),

@@ -23,10 +23,14 @@ function orgAuth(orgId: string): AuthContext {
   return { scope: 'organization', orgId, partnerId: null, user: { id: 'user-1' } } as unknown as AuthContext;
 }
 
-function partnerAuth(partnerId: string, targetOrgId: string | null = null): AuthContext {
+// `orgId` is ALWAYS null here — #6023's whole point is that a partner session
+// never carries a request-targeted org on `auth.orgId` (nothing on the web
+// request path ever sets it). Org targeting is passed as an explicit
+// `targetOrgId` argument to the functions under test instead.
+function partnerAuth(partnerId: string): AuthContext {
   return {
     scope: 'partner',
-    orgId: targetOrgId,
+    orgId: null,
     partnerId,
     user: { id: 'user-1' },
   } as unknown as AuthContext;
@@ -81,12 +85,38 @@ describe('buildResolveTenantToolsQuery — owner predicate (DB-less, real db.toS
     expect(text).not.toContain('select "organizations"."partner_id" from "organizations"');
   });
 
-  it('partner scope targeting one org (org-targeted partner session): adds that org\'s own tools too', () => {
-    const built = buildResolveTenantToolsQuery(partnerAuth(PARTNER_A, ORG_A))!;
+  it('partner scope + targeted org (org-targeted partner session, e.g. the Test drawer\'s validated ?orgId=): adds that org\'s own tools too', () => {
+    const built = buildResolveTenantToolsQuery(partnerAuth(PARTNER_A), ORG_A)!;
     const { sql: text, params } = built.toSQL();
     expect(text).toContain('"tool_source_tools"."org_id" is null');
     expect(params).toContain(PARTNER_A);
     expect(params).toContain(ORG_A);
+    // The target org's own partner is re-derived LIVE via a correlated
+    // subquery against `organizations` — never trusted directly off the
+    // caller-supplied targetOrgId (same reasoning as the org-scope branch).
+    expect(text).toContain('select "organizations"."partner_id" from "organizations"');
+  });
+
+  it('partner scope + targeted org of ANOTHER partner is still admitted structurally, but gated behind the live partner-match subquery — never a bare org_id match', () => {
+    // A DB-less `.toSQL()` test can only prove the SHAPE of the predicate: the
+    // org branch is always `AND`-ed with the live-derived partner match, never
+    // a bare `org_id = targetOrgId`. Actual cross-partner exclusion (the target
+    // org's real partner_id disagreeing with auth.partnerId) is proven against
+    // a real database in
+    // `__tests__/integration/toolSourcesPartnerRls.integration.test.ts`.
+    const built = buildResolveTenantToolsQuery(partnerAuth(PARTNER_A), ORG_A)!;
+    const { sql: text } = built.toSQL();
+    // The org-id equality and the live partner-match subquery must both be
+    // present and ANDed together (not just OR'd loosely into the predicate).
+    const andedOrgBranch = /"tool_source_tools"\."org_id" = \$\d+ and \(select "organizations"\."partner_id"/;
+    expect(text).toMatch(andedOrgBranch);
+  });
+
+  it('partner scope: a stray auth.orgId (never set on the real request path, but asserted defensively) is IGNORED — only the explicit targetOrgId argument can target an org', () => {
+    const authWithStrayOrgId = { scope: 'partner', orgId: ORG_A, partnerId: PARTNER_A, user: { id: 'user-1' } } as unknown as AuthContext;
+    const built = buildResolveTenantToolsQuery(authWithStrayOrgId)!;
+    const { params } = built.toSQL();
+    expect(params).not.toContain(ORG_A);
   });
 
   it('system scope resolves to no query — system callers get no tenant tools', () => {

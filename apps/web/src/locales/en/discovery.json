@@ -1,35 +1,12 @@
 {
   "assetDetailModal": {
-    "actions": {
-      "connect": "Connect",
-      "connecting": "Connecting...",
-      "deleteAsset": "Delete Asset",
-      "deleting": "Deleting...",
-      "enabling": "Enabling...",
-      "linkAsset": "Link asset",
-      "linking": "Linking...",
-      "resetType": "Reset to auto-detected",
-      "unlink": "Unlink",
-      "working": "Working..."
-    },
     "assetInfoTitle": "Asset Info",
-    "confirmDelete": "Delete discovered asset \"{{name}}\"?",
     "confirmUnlink": "Unlink this device?",
-    "deleteDescription": "Remove this asset from discovery results.",
     "detailsUnavailableDescription": "We couldn’t load this device’s record. It may have been removed or you may not have access to it.",
     "detailsUnavailableTitle": "Details unavailable",
     "deviceDetailsTitle": "Device details",
     "errors": {
-      "createAllowlist": "Failed to create allowlist entry",
-      "createProxyTunnel": "Failed to create proxy tunnel",
-      "createTunnel": "Failed to create tunnel",
-      "delete": "Failed to delete asset",
-      "generic": "An error occurred",
-      "link": "Failed to link asset",
-      "resetType": "Failed to reset type",
-      "saveInfo": "Failed to save asset info",
-      "selectDeviceToLink": "Select a device to link.",
-      "unlink": "Failed to unlink asset"
+      "generic": "An error occurred"
     },
     "fields": {
       "assetType": "Asset Type",
@@ -41,23 +18,10 @@
     },
     "lastSeen": "Last seen {{time}}",
     "loadingDetails": "Loading device details…",
-    "messages": {
-      "linked": "Asset linked. It is now marked approved.",
-      "linkedToDevice": "Asset linked to {{device}}. It is now marked approved.",
-      "unlinked": "Device unlinked."
-    },
     "networkDetailsTitle": "Network Details",
     "noOpenPorts": "No open ports detected.",
     "noSnmpData": "No SNMP data was collected — the device may not have responded, or SNMP was not probed. Check that the SNMP method is enabled and the community string is set on the discovery profile.",
     "openPorts": "Open Ports",
-    "options": {
-      "selectManagedDevice": "Select a managed device"
-    },
-    "placeholders": {
-      "displayName": "e.g. Main Switch",
-      "notes": "e.g. Located in Closet A, 2nd floor",
-      "tags": "e.g. critical, floor-2, networking"
-    },
     "proxy": {
       "manageOnDevicePage": "Manage proxy access on the network device page",
       "title": "Proxy Access"
@@ -67,41 +31,27 @@
       "systemName": "System Name",
       "objectId": "Object ID"
     },
-    "sameDeviceAs": "Same device as {{name}}"
-  },
-  "assetMonitoringSection": {
-    "actions": {
-      "addUpdate": "Add / Update Monitoring",
-      "disableActive": "Disable Active Monitoring",
-      "disabling": "Disabling...",
-      "enable": "Enable Monitoring",
-      "open": "Open Monitoring"
-    },
-    "activeChecks": "{{active}}/{{total}} network checks active",
-    "errors": {
-      "disable": "Failed to disable monitoring",
-      "loadMonitors": "Failed to load network monitors",
-      "loadStatus": "Failed to load monitoring status"
-    },
-    "loading": "Loading monitoring status...",
-    "monitorTypes": {
-      "icmp_ping": "ICMP Ping",
-      "tcp_port": "TCP Port",
-      "http_check": "HTTP Check",
-      "dns_check": "DNS Check"
-    },
-    "networkMonitorsTitle": "Network Monitors ({{count}})",
-    "noChecks": "No network checks configured",
-    "snmpSummary": "{{version}} · every {{seconds}}s",
-    "snmpTitle": "SNMP Device Monitor",
-    "state": {
-      "active": "Active",
-      "configuredPaused": "Configured (Paused)",
-      "paused": "Paused",
-      "notConfigured": "Not Configured"
-    },
-    "title": "Monitoring",
-    "lastPolled": " • last polled {{time}}"
+    "sameDeviceAs": "Same device as {{name}}",
+    "peek": {
+      "manageTitle": "Manage this asset",
+      "manageDescription": "Identity, monitoring, linking and removal all live on the device page.",
+      "openDevicePage": "Open device page",
+      "settings": "Settings…",
+      "reachabilityLine": "{{state}} · {{source}} {{age}}",
+      "lastSeenLine": "Last seen · {{source}} {{age}}",
+      "state": {
+        "responding": "Responding",
+        "notResponding": "Not responding",
+        "unverified": "Unverified"
+      },
+      "source": {
+        "networkCheck": "network check",
+        "probe": "check now",
+        "scan": "scan",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      }
+    }
   },
   "discoveredAssetList": {
     "actions": {
@@ -117,7 +67,8 @@
       "selectAllVisible": "Select all visible",
       "selectAllVisibleAssets": "Select all visible assets",
       "selectAsset": "Select asset {{asset}}",
-      "viewDetails": "View details"
+      "viewDetails": "View details",
+      "settings": "Settings…"
     },
     "columns": {
       "approval": "Approval",
@@ -377,39 +328,6 @@
     },
     "title": "Discovery Profiles",
     "tryAgain": "Try again"
-  },
-  "enableMonitoringForm": {
-    "actions": {
-      "addNetworkMonitor": "Add Network Monitor",
-      "enableSnmp": "Enable SNMP Monitoring",
-      "enabling": "Enabling..."
-    },
-    "description": "Monitoring supports SNMP polling and network checks Ping/TCP/HTTP/DNS . You can configure either or both.",
-    "errors": {
-      "communityRequired": "Community string is required for SNMP v1/v2c",
-      "enable": "Failed to enable monitoring",
-      "generic": "An error occurred",
-      "loadTemplates": "Failed to load templates",
-      "usernameRequired": "Username is required for SNMP v3"
-    },
-    "fields": {
-      "authPassword": "Auth Password",
-      "authProtocol": "Auth Protocol",
-      "community": "Community String",
-      "pollingInterval": "Polling Interval (seconds)",
-      "privacyPassword": "Privacy Password",
-      "privacyProtocol": "Privacy Protocol",
-      "snmpVersion": "SNMP Version",
-      "template": "Template",
-      "username": "Username"
-    },
-    "networkChecksDescription": "Add ping, TCP, HTTP, or DNS monitors for this asset.",
-    "networkChecksTitle": "Network Checks",
-    "noTemplate": "No template",
-    "placeholders": {
-      "community": "public"
-    },
-    "snmpTitle": "SNMP Device Monitoring"
   },
   "networkBaselinesPanel": {
     "actions": {

@@ -20,7 +20,7 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import type {
   FleetDesignApproval,
@@ -69,6 +69,7 @@ import { applyFleetDesign } from '../../services/fleetDesign/apply';
 import { loadLedger } from '../../services/fleetDesign/ledger';
 import { FleetDesignApplyError, previewFleetDesignApply } from '../../services/fleetDesign/preview';
 import { rollbackFleetDesign } from '../../services/fleetDesign/rollback';
+import * as scriptBundle from '../../services/scriptBundle';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -913,5 +914,66 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     expect(rollback.refused).toEqual([{ itemRef: 'automation:file_server:script:0', reason: 'scripts_write_required' }]);
     expect(rollback.rolledBack).toContain('functions:file_server');
     expect(await scriptTagNames(scriptId)).toEqual(['fleet-design']);
+  });
+
+  runDb('14. a failure after script import rolls back every step-4 write and preserves completed steps', async () => {
+    const f = await seedFixture();
+    const submission: FleetDesignSubmission = {
+      ...buildSubmission({ functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE }),
+      automation: [{ functionKey: 'file_server', playbooks: [], scripts: [{ name: 'Rollback probe', purpose: 'Exercise the apply savepoint', osTypes: ['windows'], language: 'powershell', content: 'Write-Output "savepoint probe"' }] }],
+    };
+    const outcome = fleetDesignOutcomeFromSubmission(submission, {
+      deviceIds: new Set(f.deviceIds), baseline: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] }, generatedAt: new Date().toISOString(),
+    });
+    const runId = await seedReportRun(f.envA.orgId, outcome);
+    const approval: FleetDesignApproval = {
+      ...fullApproval(f.deviceIds, [f.baselinePolicyId]),
+      automation: ['automation:file_server:script:0'],
+    };
+    const importBundle = scriptBundle.importBundle;
+    let importedScriptId: string | undefined;
+    // Invalid entries are rejected by preview. Fail only AFTER the real
+    // importer has written the script, v1 version, tag, and tag association.
+    const importer = vi.spyOn(scriptBundle, 'importBundle').mockImplementation(async (...args) => {
+      const imported = await importBundle(...args);
+      if ('error' in imported) throw new Error(imported.error);
+      expect(imported.errors).toEqual([]);
+      importedScriptId = imported.scripts[0]?.scriptId;
+      expect(importedScriptId).toBeDefined();
+      throw new Error('injected failure after script import');
+    });
+    try {
+      const result = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
+      expect(result.partial).toEqual({ failedStep: 4, reason: 'injected failure after script import' });
+      expect(result.applied.sort()).toEqual([
+        'functions:file_server', 'retired:0', 'policy:file_server', 'monitoring:file_server:watch:0', 'monitoring:file_server:rule:0',
+      ].sort());
+      expect(result.rollbackAvailable).toBe(true);
+    } finally {
+      importer.mockRestore();
+    }
+
+    // Check the real ids, including child tables, after the outer request
+    // commits. No statement issued by the failed step may escape its savepoint.
+    expect(importedScriptId).toBeDefined();
+    expect(await getTestDb().select().from(scripts).where(eq(scripts.id, importedScriptId!))).toEqual([]);
+    expect(await getTestDb().select().from(scriptVersions).where(eq(scriptVersions.scriptId, importedScriptId!))).toEqual([]);
+    expect(await getTestDb().select().from(scriptToTags).where(eq(scriptToTags.scriptId, importedScriptId!))).toEqual([]);
+    expect(await getTestDb().select().from(scriptTags).where(and(eq(scriptTags.orgId, f.envA.orgId), eq(scriptTags.name, 'fleet-design')))).toEqual([]);
+
+    const ledger = await readLedger(runId);
+    expect(ledger.find((r) => r.itemRef === 'step:4')).toMatchObject({ status: 'failed', itemKind: 'script', error: 'injected failure after script import' });
+    expect(ledger.some((r) => r.itemKind === 'script' && r.status === 'applied')).toBe(false);
+    const group = await readGroupByName(f.envA.orgId, 'Fleet Design: File server');
+    expect(group).toBeDefined();
+    expect((await readGroupMembers(group!.id)).sort()).toEqual([...f.deviceIds].sort());
+    expect(await readActiveAssessment(f.deviceIds[0])).toMatchObject({ reportRunId: runId, functionKey: 'file_server' });
+    const policyId = ledger.find((r) => r.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
+    expect(await readPolicy(policyId)).toMatchObject({ status: 'active' });
+    const retiredLink = await readMonitoringLink(f.baselinePolicyId);
+    expect((retiredLink?.inlineSettings as { watches: Array<{ name: string; enabled: boolean }> }).watches)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'Spooler', enabled: false })]));
+    // Step 5 was never entered after the failure.
+    expect(await readDevice(f.deviceIds[1])).toMatchObject({ deviceRole: 'unknown', deviceRoleSource: 'auto' });
   });
 });

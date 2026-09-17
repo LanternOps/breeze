@@ -23,7 +23,6 @@ vi.mock('../db/schema', () => ({
     name: 'ci.name',
     itemType: 'ci.item_type',
     sku: 'ci.sku',
-    unitPrice: 'ci.unit_price',
     isBundle: 'ci.is_bundle',
     isActive: 'ci.is_active',
     partnerId: 'ci.partner_id',
@@ -141,7 +140,7 @@ describe('aiToolsCatalog: search_catalog', () => {
     expect(conds).toHaveLength(2);
   });
 
-  it('selects the per-currency price book as string values instead of the deprecated unitPrice mirror', async () => {
+  it('selects the per-currency price book as string values and never an item-level unitPrice', async () => {
     vi.mocked(db.select).mockReturnValue(makeChain([], {}) as any);
 
     await tools().get('search_catalog')!.handler({}, partnerAuth());

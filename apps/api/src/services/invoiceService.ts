@@ -251,7 +251,7 @@ export async function addCatalogLine(invoiceId: string, catalogItemId: string, q
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
     // Price book in the invoice's currency (org override → catalog_item_prices),
-    // never the deprecated catalog_items.unit_price mirror, never converted.
+    // never another currency's row, never converted.
     const resolved = await resolveInvoicePrice(tx, catalogItemId, inv, actor);
     const [item] = await tx.select({ name: catalogItems.name, description: catalogItems.description, isBundle: catalogItems.isBundle }).from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
     if (item?.isBundle) throw new InvoiceServiceError('Use addBundleLine for bundles', 400, 'INVALID_STATE');

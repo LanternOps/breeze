@@ -892,6 +892,7 @@ describe('discovery routes', () => {
         profileSubnets: null,
         suggestedBridgeDeviceId: null as string | null,
         siteName: 'Main Office' as string | null,
+        siteTimezone: 'America/Chicago' as string | null,
       };
     };
     const mockSingleAsset = (rows: unknown[]) => {
@@ -912,6 +913,36 @@ describe('discovery routes', () => {
       });
     };
 
+    it('returns the site timezone alongside the site name', async () => {
+      mockSingleAsset([buildRow()]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.siteTimezone).toBe('America/Chicago');
+    });
+
+    it('returns a null site timezone when the asset has no site', async () => {
+      const row = buildRow();
+      row.asset.siteId = null as unknown as string;
+      row.siteName = null;
+      row.siteTimezone = null;
+      mockSingleAsset([row]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Null, not the string 'UTC': a site-less asset has no site zone, and
+      // the page falls back to the browser's rather than guessing UTC.
+      expect(body.data.siteTimezone).toBeNull();
+    });
+
     it('returns the single asset detail (topology node click / deep link)', async () => {
       reachabilityByAsset.set(ASSET_ID, {
         state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
@@ -931,6 +962,41 @@ describe('discovery routes', () => {
       expect(body.data.reachability).toEqual({
         state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
       });
+    });
+
+    it.each([
+      { state: 'pending', observedAt: '2026-09-16T11:59:00.000Z', responseMs: null },
+      { state: 'ok', observedAt: '2026-09-16T11:59:00.000Z', responseMs: 3.2 },
+      { state: 'failed', observedAt: '2026-09-16T11:59:00.000Z', responseMs: null },
+    ])('returns the persisted $state probe alongside reachability', async (probe) => {
+      const row = buildRow();
+      mockSingleAsset([{
+        ...row,
+        asset: {
+          ...row.asset,
+          lastProbeStatus: probe.state,
+          lastProbeAt: new Date(probe.observedAt),
+          lastProbeResponseMs: probe.responseMs,
+        },
+      }]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.probe).toEqual(probe);
+    });
+
+    it('returns a null probe when the asset has never been probed', async () => {
+      mockSingleAsset([buildRow()]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.probe).toBeNull();
     });
 
     it('returns siteName alongside siteId', async () => {

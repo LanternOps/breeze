@@ -176,6 +176,20 @@ describe('get_script_execution', () => {
     expect(result.error).toBe('Execution not found');
   });
 
+  it('denies an execution for a sibling device in the allowed site', async () => {
+    mockExecutionRows([executionRow]);
+    const auth = { ...makeAuth(), allowedDeviceIds: ['55555555-5555-4555-8555-555555555555'] };
+    const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, auth));
+    expect(result.error).toBe('Execution not found');
+  });
+
+  it('preserves execution access for the exact allowed device', async () => {
+    mockExecutionRows([executionRow]);
+    const auth = { ...makeAuth(), allowedDeviceIds: [DEVICE_ID] };
+    const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, auth));
+    expect(result.execution.deviceId).toBe(DEVICE_ID);
+  });
+
   it('anchors the org condition on the EXECUTION\'s own org_id, not the (possibly absent) script row', async () => {
     // TENANCY MOVED (Task 19): the predicate used to ride scripts.orgId with
     // an isNull carve-out for partner-wide/system scripts. A left join makes

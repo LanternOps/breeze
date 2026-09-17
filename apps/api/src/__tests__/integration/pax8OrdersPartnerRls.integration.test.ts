@@ -281,7 +281,6 @@ describe('Pax8 ordering partner-axis RLS and integrity (breeze_app)', () => {
           partnerId: partnerA.id,
           itemType: 'service',
           name: 'Pax8-backed service',
-          unitPrice: '10.00',
           costCurrency: 'USD',
         })
         .returning({ id: catalogItems.id });
