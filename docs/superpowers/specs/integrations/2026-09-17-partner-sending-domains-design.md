@@ -1,7 +1,7 @@
 ---
 title: Partner sending domains (custom outbound email domains, hosted and self-hosted)
 date: 2026-09-17
-status: Draft — awaiting Todd's review (Gate A). Advisor quorum applied (Fable + Opus; Codex capped until 2026-09-19)
+status: Approved by Todd 2026-09-17 (Gate A) as written — D1–D7 resolved per the recommendations in §12. Advisor quorum applied (Fable + Opus; Codex capped until 2026-09-19)
 tracking_issue: none yet — register with feature-lifecycle after approval
 related:
   - docs/superpowers/specs/ticketing/2026-06-13-ticketing-phase4-email-to-ticket-design.md
@@ -970,7 +970,10 @@ The partner-lane key can read every message sent through that account. It
 lives only in env, is never logged, and the account carries partner-lane mail
 only.
 
-## 12. Open decisions for Todd
+## 12. Decisions (resolved 2026-09-17)
+
+Todd approved the spec as written on 2026-09-17; each recommendation below is
+the decision. The alternatives are kept for the record.
 
 - **D1 — Plan gating.** Recommend **none in v1**: trusted partners on any plan.
   Nothing in the repo gates on `partners.plan`, an entitlement system is its
