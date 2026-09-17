@@ -154,22 +154,29 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
     buttonLabel: 'Review & accept',
     html:
       `<p>Hi there,</p>
-<p>{{partner_name}} has sent you proposal <strong>{{quote_number}}</strong> for <strong>{{total}}</strong>.</p>`,
+<p>{{partner_name}} has sent you proposal <strong>{{quote_number}}</strong> for <strong>{{total}}</strong>. A PDF copy is attached.</p>
+<p>{{cta_button}}</p>
+<p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>`,
   },
   invoice_send: {
     subject: 'Invoice {{invoice_number}} from {{partner_name}}',
     heading: 'Invoice {{invoice_number}}',
-    buttonLabel: 'View invoice',
+    buttonLabel: 'View & pay invoice',
     html:
       `<p>Hi there,</p>
-<p>{{partner_name}} has sent you invoice <strong>{{invoice_number}}</strong>.</p>`,
+<p>{{partner_name}} has sent you invoice <strong>{{invoice_number}}</strong>. A PDF copy is attached to this email.</p>
+<p>Amount due now: <strong>{{total}}</strong> by <strong>{{due_date}}</strong>.</p>
+<p>{{cta_button}}</p>
+<p>You can view this invoice and download a copy any time using this link — no sign-in needed.</p>`,
   },
   portal_invite: {
     subject: "You're invited to the {{org_name}} support portal",
     heading: 'Join the {{org_name}} portal',
     buttonLabel: 'Set your password',
     html:
-      `<p>You have been invited to the support portal, where you can open tickets, view invoices, and track your devices.</p>`,
+      `<p>{{requester_name}} invited you to the {{org_name}} support portal, where you can open tickets, view invoices, and track your devices.</p>
+<p>{{cta_button}}</p>
+<p>This invite link expires in 7 days. If you didn't expect this, you can ignore this email.</p>`,
   },
 };
 

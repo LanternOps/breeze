@@ -184,7 +184,7 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: str
   } else if (inboundBody) {
     inner = `<p>${substitute(escapeHtml(inboundBody), escaped).replace(/\r?\n/g, '<br>')}</p>`;
   } else {
-    inner = renderRichInner(defaultHtml(args.id, vars), escaped);
+    inner = renderRichInner(defaultHtml(args.id, { ...args.vars, ...vars }), escaped);
   }
 
   inner = spliceBeforeCta(inner, args.bodyBeforeCta);

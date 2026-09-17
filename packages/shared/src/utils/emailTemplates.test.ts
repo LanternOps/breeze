@@ -111,4 +111,14 @@ describe('emailTemplateFieldDefaults', () => {
     expect(emailTemplateFieldDefaults('ticket_autoresponse').buttonLabel).toBe('');
     expect(emailTemplateFieldDefaults('ticket_comment_notification').buttonLabel).toBe('View ticket');
   });
+
+  it('invoice default copy matches the customer invoice email', () => {
+    const fields = emailTemplateFieldDefaults('invoice_send');
+    expect(fields.buttonLabel).toBe('View & pay invoice');
+    expect(fields.html).toContain('A PDF copy is attached to this email.');
+    expect(fields.html).toContain('Amount due now:');
+    expect(fields.html).toContain('{{total}}');
+    expect(fields.html).toContain('{{due_date}}');
+    expect(fields.html).toContain('no sign-in needed');
+  });
 });

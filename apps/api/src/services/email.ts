@@ -1072,6 +1072,7 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     : '';
   const expiryLine = `<p style="${MUTED_PARA}">This invite link expires in 7 days. If you didn't expect this, you can ignore this email.</p>`;
   const custom = params.custom ?? null;
+  const customHtml = custom?.html?.trim() || null;
   const rendered = renderPartnerEmail({
     id: 'portal_invite',
     custom,
@@ -1085,7 +1086,7 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     footer: supportFooter(params.supportEmail, 'Need help? Contact'),
     preheader: 'Set your password to access your support portal.',
     bodyBeforeCta: messageBlock,
-    bodyAfterCta: expiryLine,
+    bodyAfterCta: customHtml ? expiryLine : '',
   });
   const support = getSupportEmail(params.supportEmail);
   const text = [
@@ -1233,28 +1234,30 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
 
   const custom = params.custom ?? null;
   const perSendSubject = params.subject?.trim() || null;
+  const customHtml = custom?.html?.trim() || null;
   const rendered = renderPartnerEmail({
     id: 'invoice_send',
     custom: {
       subject: perSendSubject ?? custom?.subject ?? null,
       heading: custom?.heading ?? null,
       buttonLabel: custom?.buttonLabel ?? null,
-      html: custom?.html ?? null,
+      html: customHtml,
     },
     vars: {
       invoice_number: number,
       partner_name: params.partnerName,
-      total: params.total,
+      total: dueNow,
       due_date: params.dueDate ?? '',
       portal_url: params.portalUrl,
+      pdf_attached: pdfAttached ? '1' : '0',
     },
     ctaUrl: params.portalUrl,
-    ctaLabel: params.payEnabled ? 'View & pay invoice' : undefined,
+    ctaLabel: params.payEnabled ? 'View & pay invoice' : 'View invoice',
     brandName: params.partnerName,
     footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
     preheader: `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`,
-    bodyBeforeCta: `${pdfBlock}${messageBlock}${dueLine}${paidLine}`,
-    bodyAfterCta: `${noSignIn}${signatureBlock}`,
+    bodyBeforeCta: `${customHtml ? pdfBlock : ''}${messageBlock}${customHtml ? dueLine : ''}${paidLine}`,
+    bodyAfterCta: `${customHtml ? noSignIn : ''}${signatureBlock}`,
   });
 
   const support = getSupportEmail(params.supportEmail);

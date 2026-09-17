@@ -48,9 +48,22 @@ export function defaultFooter(id: EmailTemplateId): string | undefined {
 }
 
 export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = {}): string {
-  const html = emailTemplateFieldDefaults(id).html;
+  let html = emailTemplateFieldDefaults(id).html;
   if (id === 'ticket_resolved' && !vars.resolution_note?.trim()) {
-    return html.replace('<p>{{resolution_note}}</p>\n', '');
+    html = html.replace('<p>{{resolution_note}}</p>\n', '');
+  }
+  if ((id === 'invoice_send' || id === 'quote_send') && vars.pdf_attached === '0') {
+    html = html.replace(' A PDF copy is attached to this email.', '');
+    html = html.replace(' A PDF copy is attached.', '');
+  }
+  if (id === 'invoice_send' && !vars.due_date?.trim()) {
+    html = html.replace(' by <strong>{{due_date}}</strong>', '');
+  }
+  if (id === 'quote_send' && !vars.expiry_date?.trim()) {
+    html = html.replace('<p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>\n', '');
+  }
+  if (id === 'portal_invite' && !vars.requester_name?.trim()) {
+    html = html.replace('{{requester_name}} invited you to', 'You have been invited to');
   }
   return html;
 }

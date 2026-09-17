@@ -8,8 +8,20 @@ describe('email template defaults', () => {
       const shared = emailTemplateFieldDefaults(id);
       expect(defaultHeading(id)).toBe(shared.heading);
       expect(defaultButtonLabel(id)).toBe(shared.buttonLabel);
-      expect(defaultHtml(id, { resolution_note: 'note' })).toBe(shared.html);
+      expect(defaultHtml(id, {
+        resolution_note: 'note',
+        requester_name: 'Tess',
+        due_date: '2026-09-01',
+        expiry_date: '2026-07-01',
+      })).toBe(shared.html);
     }
+  });
+
+  it('drops the PDF sentence from invoice default html when the PDF is not attached', () => {
+    expect(defaultHtml('invoice_send', { pdf_attached: '0', due_date: '2026-09-01' }))
+      .not.toContain('PDF copy is attached');
+    expect(defaultHtml('invoice_send', { pdf_attached: '1', due_date: '2026-09-01' }))
+      .toContain('A PDF copy is attached to this email.');
   });
 
   it('interpolates the shared subject template', () => {

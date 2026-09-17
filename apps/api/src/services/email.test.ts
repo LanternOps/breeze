@@ -332,8 +332,18 @@ describe('buildInvoiceTemplate', () => {
     expect(t.html).toContain('has sent you invoice');
     expect(t.html).toContain('INV-0001');
     expect(t.html).toContain('Amount due now');
+    expect(t.html).toContain('A PDF copy is attached to this email.');
+    expect(t.html).toContain('no sign-in needed');
+    expect(t.html).toContain('View invoice');
     expect(t.html).toContain(`href="${base.portalUrl}"`);
     expect(t.text).toContain(base.portalUrl);
+  });
+
+  it('uses View & pay invoice when payment is enabled', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({ ...base, payEnabled: true });
+    expect(t.html).toContain('View &amp; pay invoice');
+    expect(t.html).not.toContain('>View invoice<');
   });
 
   it('custom html substitutes invoice_number and keeps the server pay URL', async () => {

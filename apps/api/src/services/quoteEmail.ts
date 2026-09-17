@@ -49,13 +49,14 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
 
   const custom: PartnerEmailCustom | null = params.custom ?? null;
   const perSendSubject = params.subject?.trim() || null;
+  const customHtml = custom?.html?.trim() || null;
   const rendered = renderPartnerEmail({
     id: 'quote_send',
     custom: {
       subject: perSendSubject ?? custom?.subject ?? null,
       heading: custom?.heading ?? null,
       buttonLabel: custom?.buttonLabel ?? null,
-      html: custom?.html ?? null,
+      html: customHtml,
     },
     vars: {
       quote_number: number,
@@ -63,13 +64,14 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
       total: params.total,
       expiry_date: params.expiryDate ?? '',
       accept_url: params.acceptUrl,
+      pdf_attached: pdfAttached ? '1' : '0',
     },
     ctaUrl: params.acceptUrl,
     brandName: params.partnerName,
     footer: supportFooter(params.supportEmail, 'Questions about this proposal? Contact'),
     preheader: `Proposal ${number} — ${params.total}${params.expiryDate ? `, valid until ${params.expiryDate}` : ''}.`,
-    bodyBeforeCta: `${pdfBlock}${messageBlock}`,
-    bodyAfterCta: `${expiryLine}${signatureBlock}`,
+    bodyBeforeCta: `${customHtml ? pdfBlock : ''}${messageBlock}`,
+    bodyAfterCta: `${customHtml ? expiryLine : ''}${signatureBlock}`,
   });
 
   const support = getSupportEmail(params.supportEmail);
