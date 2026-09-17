@@ -1,18 +1,49 @@
-import {createHash} from 'node:crypto';
 import {and,eq,isNull,inArray} from 'drizzle-orm';
 import {networkContextFullSchema,topologyContextSectionSchema,createTopologyDiagnosticSchema,type CreateTopologyDiagnosticRequest,type TopologyOriginEligibility} from '@breeze/shared';
 import {db} from '../../db';
 import {devices,topologyNodes,topologyRelationships,topologyNodeBindings,topologyInterfaces,topologyCollectionSources,topologyRelationshipSupport,topologyProbeTargets,topologySiteState} from '../../db/schema';
 import {assertDeviceExecuteAllowed} from '../partnerTrust.commands';
-import {hasPermission} from '../permissions';
+import {hasPermission,type UserPermissions} from '../permissions';
 import {requireTopologySiteAccess,type TopologyRequestContext} from './access';
 import {scopedWrite} from './writes';
 import {loadTopologyConfiguration} from './siteConfiguration';
+import {topologyConfigurationRevision} from './collectionAuthority';
 import {TopologyOperationError} from './operationErrors';
 import {topologyFactKey} from './collectionFactKeys';
 import type {DiagnosticCandidate,DiagnosticPlanningRepository,DiagnosticPlanningSnapshot} from './diagnosticTypes';
 
 export const topologyDiagnosticRepository:DiagnosticPlanningRepository={load:loadDiagnosticPlanningSnapshot};
+
+/**
+ * Configuration authority the agent must already have accepted: the collector's
+ * own enrollment secret bound to the exact site settings revision. Shares one
+ * definition with the negotiation writer so a drift cannot silently pass.
+ */
+export function expectedCollectorConfigurationRevision(agentTokenHash:string|null,settingsRevision:string):string{
+ return topologyConfigurationRevision(agentTokenHash??'',settingsRevision);
+}
+
+/** Ordered, stable eligibility findings. An empty array is the only pass. */
+export type CollectorEligibilityInput={
+ now:number;
+ settingsRevision:string;
+ capabilities:Set<string>;
+ permissions:UserPermissions;
+ device:{status:string|null;lastSeenAt:Date|null;agentTokenHash:string|null;agentTokenSuspendedAt:Date|null};
+ source:{revokedAt:Date|null;freshUntil:Date|null;producerEpoch:string};
+ root:{revokedAt:Date|null;lastReceivedAt:Date|null;producerEpoch:string;configurationRevision:string|null}|undefined;
+};
+export function collectorEligibilityReasons({now,settingsRevision,capabilities,permissions,device,source,root}:CollectorEligibilityInput):string[]{
+ const reasons:string[]=[];
+ if(device.status!=='online'||!device.lastSeenAt||now-device.lastSeenAt.getTime()>180_000)reasons.push('origin_offline');
+ if(!device.agentTokenHash||device.agentTokenSuspendedAt)reasons.push('origin_not_enrolled');
+ if(!capabilities.has('network_diagnostic'))reasons.push('diagnostics_unavailable');
+ if(!capabilities.has('route_lookup'))reasons.push('unsupported_context');
+ if(source.revokedAt||root?.revokedAt||!source.freshUntil||source.freshUntil.getTime()<=now||!root?.lastReceivedAt||now-root.lastReceivedAt.getTime()>900_000)reasons.push('context_stale');
+ if(!root||source.producerEpoch!==root.producerEpoch||root.configurationRevision!==expectedCollectorConfigurationRevision(device.agentTokenHash,settingsRevision))reasons.push('context_changed');
+ if(!hasPermission(permissions,'topology','execute')||!hasPermission(permissions,'devices','execute'))reasons.push('origin_permission_denied');
+ return reasons;
+}
 async function loadDiagnosticPlanningSnapshot(ctx:TopologyRequestContext,input:CreateTopologyDiagnosticRequest):Promise<DiagnosticPlanningSnapshot>{
  const request=createTopologyDiagnosticSchema.parse(input);
  const current=await requireTopologySiteAccess(ctx.auth,ctx.permissions,ctx.scope.siteId,'read');
@@ -51,14 +82,7 @@ async function loadDiagnosticPlanningSnapshot(ctx:TopologyRequestContext,input:C
   const envelope=networkContextFullSchema.safeParse(root?.currentBaseline);const caps=new Set(envelope.success?envelope.data.capabilities.filter(cap=>cap.supported&&cap.version===1).map(cap=>cap.name):[]);
   for(const source of sources.filter(row=>row.producerId===device.id&&row.protocol==='routes'&&(!request.contextKey||row.contextKey===request.contextKey)&&(!request.family||row.addressFamily===request.family))){
    const routeSection=topologyContextSectionSchema.safeParse(source.publishedBaseline.section);if(!routeSection.success||routeSection.data.kind!=='routes')continue;
-   const reasons:string[]=[];
-   if(device.status!=='online'||!device.lastSeenAt||now-device.lastSeenAt.getTime()>180_000)reasons.push('origin_offline');
-   if(!device.agentTokenHash||device.agentTokenSuspendedAt)reasons.push('origin_not_enrolled');
-   if(!caps.has('network_diagnostic'))reasons.push('diagnostics_unavailable');
-   if(!caps.has('route_lookup'))reasons.push('unsupported_context');
-   if(source.revokedAt||root?.revokedAt||!source.freshUntil||source.freshUntil.getTime()<=now||!root?.lastReceivedAt||now-root.lastReceivedAt.getTime()>900_000)reasons.push('context_stale');
-   if(!root||source.producerEpoch!==root.producerEpoch||root.configurationRevision!==createHash('sha256').update(device.agentTokenHash??'').update(':').update(settings.settingsRevision).digest('hex'))reasons.push('context_changed');
-   if(!hasPermission(ctx.permissions,'topology','execute')||!hasPermission(ctx.permissions,'devices','execute'))reasons.push('origin_permission_denied');
+   const reasons=collectorEligibilityReasons({now,settingsRevision:settings.settingsRevision,capabilities:caps,permissions:ctx.permissions,device,source,root});
    try{await assertDeviceExecuteAllowed(device.id,'network_diagnostic',ctx.auth.user.id);}catch{reasons.push('trust_denied');}
    const gateways:DiagnosticCandidate['gatewayEvidence']=[];const usedInterfaces=new Set<string>();
    const mapping=source.publishedBaseline._rowRelationships as Record<string,string[]>|undefined;

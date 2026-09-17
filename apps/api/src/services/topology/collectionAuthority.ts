@@ -20,7 +20,11 @@ async function activeDevice(deviceId: string) {
   if (!row || !row.agent_token_hash) throw new Error('producer_unavailable');
   return {id:uuid.parse(row.id),orgId:uuid.parse(row.org_id),siteId:uuid.parse(row.site_id),credential:String(row.agent_token_hash)};
 }
-const revision = (credential: string,settingsRevision: bigint) => createHash('sha256').update(credential).update(':').update(settingsRevision.toString()).digest('hex');
+/** Single definition of the accepted producer configuration authority. Readers
+ * (diagnostic origin eligibility) must compare against this exact value. */
+export const topologyConfigurationRevision = (credential: string,settingsRevision: bigint | string) =>
+  createHash('sha256').update(credential).update(':').update(settingsRevision.toString()).digest('hex');
+const revision = topologyConfigurationRevision;
 
 /** Heartbeat handshake only. Graph/configuration GETs never call this writer. */
 export async function negotiateTopologyContext(deviceId: string, reset?: {previousEpoch: string}) {
