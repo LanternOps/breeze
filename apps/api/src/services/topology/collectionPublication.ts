@@ -42,6 +42,7 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
   for(const source of sources)for(const change of readTopologyAbsence(source.pendingMisses).lifecycle??[])if(BigInt(change.inputRevision)<=through)events.push({kind:'lifecycle',source,change,revision:BigInt(change.inputRevision)});
   events.sort((a,b)=>a.revision<b.revision?-1:a.revision>b.revision?1:a.kind.localeCompare(b.kind));
   const checkpoint=new Map<string,CollectionPublication['checkpoints'][number]>();
+  const originByDevice=new Map<string,string>();for(const b of inventory.bindings)if(b.deviceId&&!originByDevice.has(b.deviceId))originByDevice.set(b.deviceId,b.nodeId);
   for(const event of events){
     const source=event.source;
     if(event.kind==='snapshot')result.consumedRuns.push(event.run.id);
@@ -72,7 +73,7 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
       checkpoint.set(source.id,{sourceId:source.id,epoch:source.producerEpoch,sequence:event.miss.qualifyingSequence!,digest:previous?.digest??source.publishedDigest??event.miss.digest,baseline});
       continue;
     }
-    const origin=inventory.bindings.find(b=>b.deviceId===source.producerId)?.nodeId;
+    const origin=originByDevice.get(source.producerId);
     if(!origin||!nodes.has(origin)||nodes.get(origin)?.deletedAt)throw new Error('Topology producer inventory is not published');
     const snapshot=event.run.snapshot as unknown as NormalizedTopologySnapshot;
     const delta=projectTopology({scope,source,run:event.run,snapshot,originNodeId:origin,nodes:[...nodes.values()],relationships:[...relationships.values()],interfaces:[...interfaceMap.values()]});
@@ -87,11 +88,14 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
   // Revocation is a source transition, never a deletion of other observers' facts.
   for(const [key,row]of support){const source=sourceMap.get(row.sourceId);if(source&&(source.revokedAt||row.producerEpoch!==source.producerEpoch)&&row.lifecycle==='active'){support.set(key,{...row,lifecycle:'withdrawn'});changedSupport.add(key);}}
   const affected=new Set([...changedSupport].map(key=>support.get(key)!.relationshipId));
+  // Index once: an epoch reset can touch every relationship a site has.
+  const supportByRelationship=new Map<string,SupportPublication[]>();
+  for(const row of support.values())supportByRelationship.set(row.relationshipId,[...(supportByRelationship.get(row.relationshipId)??[]),row]);
   for(const id of affected){
     const row=relationships.get(id);if(!row||row.evidenceClass==='manual')continue;
-    const active=[...support.values()].filter(s=>s.relationshipId===id&&s.lifecycle==='active');
+    const rows=supportByRelationship.get(id)??[],active=rows.filter(s=>s.lifecycle==='active');
     const {createdAt:_created,updatedAt:_updated,revision:_revision,graphRevision:_graph,...publication}=row as typeof row & {createdAt?:Date;updatedAt?:Date;revision?:bigint;graphRevision?:bigint};
-    result.relationships.push({...publication,supportCount:BigInt(active.length),lifecycle:active.length?'active':[...support.values()].some(s=>s.relationshipId===id&&s.lifecycle==='archived')?'archived':'withdrawn',
+    result.relationships.push({...publication,supportCount:BigInt(active.length),lifecycle:active.length?'active':rows.some(s=>s.lifecycle==='archived')?'archived':'withdrawn',
       lastSupportedAt:active.length?new Date(Math.max(...active.map(s=>s.lastPositiveAt.getTime()))):row.lastSupportedAt});
   }
   result.nodes=[...new Map(result.nodes.map(row=>[row.id,row])).values()];
