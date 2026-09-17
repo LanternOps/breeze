@@ -2,7 +2,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PortalRunDto } from '@breeze/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ReportRunList } from './ReportRunList';
+import { ReportRunList, reportDisplayName } from './ReportRunList';
 
 const { generateMock, listMock } = vi.hoisted(() => ({
   generateMock: vi.fn(),
@@ -49,7 +49,10 @@ describe('ReportRunList', () => {
     render(<ReportRunList initialRuns={[evidenceRun]} timezone="America/Denver" />);
 
     expect(screen.getByTestId('portal-report-run-row-run-epm')).toBeTruthy();
-    expect(screen.getByText('Service evidence — Endpoint management review')).toBeTruthy();
+    // #6101: the internal "Service evidence —" prefix is trimmed, same as
+    // the MSP-side "Customer portal —" prefix.
+    expect(screen.getByText('Endpoint management review')).toBeTruthy();
+    expect(screen.queryByText(/Service evidence/)).toBeNull();
     expect(
       screen.getByTestId('portal-report-run-pdf-run-epm').getAttribute('href'),
     ).toBe('/api/v1/portal/reports/runs/run-epm/pdf');
@@ -113,6 +116,43 @@ describe('ReportRunList', () => {
     const row = screen.getByTestId('portal-report-run-row-run-1');
     expect(row.textContent).toContain('Executive summary');
     expect(row.textContent).not.toContain('Customer portal');
+  });
+
+  // #6101: `MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX` in
+  // apps/api/src/services/managedEvidenceRegistry.ts is an internal label —
+  // customers should never see "Service evidence —" any more than they see
+  // "Customer portal —".
+  describe('reportDisplayName', () => {
+    it('trims the "Customer portal —" prefix (em dash)', () => {
+      expect(reportDisplayName('Customer portal — Executive summary')).toBe(
+        'Executive summary',
+      );
+    });
+
+    it('trims the "Service evidence —" prefix (em dash)', () => {
+      expect(reportDisplayName('Service evidence — Threat detection review')).toBe(
+        'Threat detection review',
+      );
+    });
+
+    it('tolerates the en dash and hyphen variants for both prefixes', () => {
+      expect(reportDisplayName('Customer portal – Executive summary')).toBe(
+        'Executive summary',
+      );
+      expect(reportDisplayName('Customer portal - Executive summary')).toBe(
+        'Executive summary',
+      );
+      expect(reportDisplayName('Service evidence – Vulnerability management')).toBe(
+        'Vulnerability management',
+      );
+      expect(reportDisplayName('Service evidence - Vulnerability management')).toBe(
+        'Vulnerability management',
+      );
+    });
+
+    it('leaves a name with neither prefix untouched', () => {
+      expect(reportDisplayName('Executive summary')).toBe('Executive summary');
+    });
   });
 
   it('totals the ledger in a foot line', () => {
@@ -285,9 +325,10 @@ describe('ReportRunList', () => {
       />,
     );
 
-    // `reportDisplayName` trims only the MSP's "Customer portal —" prefix; a
-    // managed-evidence name reads correctly to a customer as-is.
-    expect(screen.getByText('Service evidence — Vulnerability management')).toBeTruthy();
+    // #6101: `reportDisplayName` trims both the MSP's "Customer portal —"
+    // prefix and the internal "Service evidence —" prefix.
+    expect(screen.getByText('Vulnerability management')).toBeTruthy();
+    expect(screen.queryByText(/Service evidence/)).toBeNull();
     expect(screen.getByTestId('portal-report-runs-table')).toBeTruthy();
     expect(screen.queryByTestId('portal-reports-generate-vulnerability')).toBeNull();
     // Exactly the three self-service actions, unchanged.

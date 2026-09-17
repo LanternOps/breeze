@@ -57,9 +57,16 @@ const GENERATING_COPY: Record<GeneratableReportType, string> = {
  * ("Customer portal — Security & compliance posture"); inside the customer's
  * own list the prefix is noise — they know whose portal they are in. The
  * MSP-side name is untouched, this is a render-time trim only.
+ *
+ * Managed-evidence definitions (#5784 W01) are provisioned with a second,
+ * internal-only prefix — `MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX` in
+ * `apps/api/src/services/managedEvidenceRegistry.ts` ('Service evidence — ')
+ * — and those runs reach this same list once delivered (#6101). The portal
+ * app doesn't depend on `@breeze/shared`, so this is a local mirror of that
+ * literal rather than a shared import; keep the two in sync.
  */
 export function reportDisplayName(name: string): string {
-  return name.replace(/^customer portal\s*[—–-]\s*/i, '');
+  return name.replace(/^(customer portal|service evidence)\s*[—–-]\s*/i, '');
 }
 
 /**
