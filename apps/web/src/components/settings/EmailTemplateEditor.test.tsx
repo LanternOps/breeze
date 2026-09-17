@@ -169,4 +169,66 @@ describe('EmailTemplateEditor', () => {
     expect(preview.innerHTML).not.toMatch(/<script/i);
     expect((window as unknown as { __emailTplPwned?: number }).__emailTplPwned).toBeUndefined();
   });
+
+  it('strips javascript hrefs, style, base, and form from the preview', () => {
+    render(
+      <EmailTemplateEditor
+        templateId="ticket_comment_notification"
+        value={{
+          subject: null,
+          heading: null,
+          buttonLabel: null,
+          html:
+            '<p style="color:red"><a href="javascript:alert(1)">x</a></p><base href="https://evil.example"><form action="https://evil.example"><input name="q"></form>',
+        }}
+        onBack={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    const html = screen.getByTestId('email-template-preview').innerHTML;
+    expect(html).not.toMatch(/javascript:/i);
+    expect(html).not.toMatch(/\sstyle=/i);
+    expect(html).not.toMatch(/<base/i);
+    expect(html).not.toMatch(/<form/i);
+    expect(html).not.toMatch(/<input/i);
+  });
+
+  it('applies the sanitized html from the save response, not the pre-save editor value', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({
+      id: 'p-1',
+      settings: {
+        emailTemplates: {
+          ticket_comment_notification: {
+            subject: 'Hi',
+            heading: 'Hello',
+            buttonLabel: 'Go',
+            html: '<p>clean</p>',
+          },
+        },
+      },
+    }));
+    const onSaved = vi.fn();
+    render(
+      <EmailTemplateEditor
+        templateId="ticket_comment_notification"
+        value={{ subject: 'Hi', heading: 'Hello', buttonLabel: 'Go', html: '<p>dirty</p>' }}
+        onBack={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId('email-template-html'), {
+      target: { value: '<p>dirty<script>x</script></p>' },
+    });
+    fireEvent.click(screen.getByTestId('email-template-save'));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith({
+      subject: 'Hi',
+      heading: 'Hello',
+      buttonLabel: 'Go',
+      html: '<p>clean</p>',
+    }));
+    expect((screen.getByTestId('email-template-html') as HTMLTextAreaElement).value).toBe('<p>clean</p>');
+  });
 });

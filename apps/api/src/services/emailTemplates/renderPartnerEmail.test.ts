@@ -146,6 +146,33 @@ describe('renderPartnerEmail', () => {
     expect(out.html).not.toContain('javascript:');
   });
 
+  it('does not splice the CTA button into an attribute value', () => {
+    const out = renderPartnerEmail(commentArgs({
+      custom: {
+        subject: null,
+        heading: null,
+        buttonLabel: null,
+        html: '<p><a href="{{cta_button}}">click</a></p>',
+      },
+    }));
+    expect(out.html).not.toMatch(/href="[^"]*<a[\s>]/i);
+    expect(out.html).not.toContain('%%BREEZE_CTA_BUTTON%%');
+    expect(out.html).toContain(`href="${PORTAL_HREF}"`);
+  });
+
+  it('omits the empty resolution_note paragraph from default resolved mail', () => {
+    const out = renderPartnerEmail({
+      id: 'ticket_resolved',
+      vars: { resolution_note: '' },
+      ctaUrl: PORTAL_HREF,
+      internalNumber: 'T-2026-0001',
+      ticketSubject: 'Printer is down',
+    });
+    expect(out.html).toContain('Your ticket has been resolved.');
+    expect(out.html).not.toContain('<p></p>');
+    expect(out.html).toContain(`href="${PORTAL_HREF}"`);
+  });
+
   it('appends the CTA when hasCta html omits {{cta_button}}', () => {
     const out = renderPartnerEmail(commentArgs({
       custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Thanks for waiting.</p>' },

@@ -84,12 +84,24 @@ function renderRichInner(source: string, escaped: Record<string, string>): strin
   return sanitizeRichTextHtml(substituted);
 }
 
+/** Drop the CTA sentinel from quoted attribute values so applyCta cannot
+ *  splice an anchor into href/src. Text-position sentinels are left for
+ *  button replacement. */
+function stripSentinelFromAttributes(html: string): string {
+  return html
+    .replace(/(\s[A-Za-z_:][\w:.-]*=)("[^"]*")/g, (_m, eq: string, quoted: string) =>
+      eq + quoted.replaceAll(CTA_SENTINEL, ''))
+    .replace(/(\s[A-Za-z_:][\w:.-]*=)('[^']*')/g, (_m, eq: string, quoted: string) =>
+      eq + quoted.replaceAll(CTA_SENTINEL, ''));
+}
+
 function applyCta(
   inner: string,
   id: EmailTemplateId,
   ctaUrl: string | undefined,
   label: string,
 ): string {
+  inner = stripSentinelFromAttributes(inner);
   const slotted = inner.includes(CTA_SENTINEL);
   const safeUrl = ctaUrl && isSafeHttpUrl(ctaUrl) ? ctaUrl : null;
   if (emailTemplateHasCta(id) && safeUrl) {
@@ -135,7 +147,7 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: str
   } else if (inboundBody) {
     inner = `<p>${substitute(escapeHtml(inboundBody), escaped).replace(/\r?\n/g, '<br>')}</p>`;
   } else {
-    inner = renderRichInner(defaultHtml(args.id), escaped);
+    inner = renderRichInner(defaultHtml(args.id, vars), escaped);
   }
 
   inner = applyCta(inner, args.id, args.ctaUrl, buttonLabel);

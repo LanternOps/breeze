@@ -54,7 +54,11 @@ export function defaultFooter(id: EmailTemplateId): string | undefined {
   return FOOTER_BY_ID[id];
 }
 
-export function defaultHtml(id: EmailTemplateId): string {
+export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = {}): string {
+  if (id === 'ticket_resolved' && !vars.resolution_note?.trim()) {
+    return `<p>Your ticket has been resolved.</p>
+<p>{{cta_button}}</p>`;
+  }
   return HTML_BY_ID[id];
 }
 
