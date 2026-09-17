@@ -8,6 +8,7 @@ export function selectedTopologyEntity(graph: GraphResponse, selection?: Topolog
 }
 export const isPresentation = (entity: object) => 'authority' in entity && entity.authority === false;
 export function topologyHealthLabel(status: string, reasons: { code: string; message: string }[]) {
-  if (reasons.some((reason) => reason.code === 'no_icmp_response')) return 'No ICMP response';
+  // The API's vocabulary (diagnosticHealth.ts): `icmp_no_response`, not `no_icmp_response`.
+  if (reasons.some((reason) => reason.code === 'icmp_no_response')) return 'No ICMP response';
   return ({ healthy: 'Healthy', degraded: 'Degraded', failed_check: 'Check failed', unknown: 'Not measured' })[status] ?? 'Not measured';
 }

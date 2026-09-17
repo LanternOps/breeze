@@ -238,7 +238,7 @@ function readRun(scope: TopologyScope, runId: string) {
 
 async function settleRun(
   run: RunRow,
-  state: 'cancelled' | 'expired',
+  state: 'cancelled' | 'expired' | 'completed',
   failureReason: string,
   now: Date,
 ): Promise<void> {
@@ -307,6 +307,15 @@ export async function dispatchTopologyDiagnosticRun(
       }
       if (run.commandId !== null) {
         return { run, commandId: run.commandId, payload: commandPayloadForRun(run, run.commandId) };
+      }
+      // An accepted plan with no steps (`target_not_configured`, `outbound_disabled`,
+      // `gateway_not_observed`, …) has nothing for an agent to execute. Minting a
+      // command for it would put a payload on the wire that can only sit until its
+      // deadline, so the run settles here and never reaches a device.
+      if (run.plan.steps.length === 0) {
+        await settleRun(run, 'completed', run.plan.reasons[0] ?? 'plan_not_executable', now);
+        await setIntentState(runId, 'settled');
+        return null;
       }
       if (run.queueDeadline.getTime() <= now.getTime()) {
         await settleRun(run, 'expired', 'dispatch_timeout', now);

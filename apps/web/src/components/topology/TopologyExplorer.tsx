@@ -111,7 +111,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     {searchError && <p role="alert">{searchError}</p>}
     {error && <p role="alert" className="text-destructive">{error} <button className="underline" onClick={refreshGraph}>{t('retry')}</button></p>}
     {graph && <>
-      <div className="flex flex-wrap items-center gap-3 text-sm"><span>{t('coverage', { state: graph.coverage.state })}</span><span>{t('counts', { nodes: graph.counts.visibleNodes, edges: graph.counts.visibleRelationships })}</span><span>{t('omitted', { nodes: graph.counts.omittedNodes, edges: graph.counts.omittedRelationships })}</span></div>
+      <div className="flex flex-wrap items-center gap-3 text-sm"><span data-testid="topology-coverage">{t('coverage', { state: graph.coverage.state })}</span><span data-testid="topology-counts">{t('counts', { nodes: graph.counts.visibleNodes, edges: graph.counts.visibleRelationships })}</span><span>{t('omitted', { nodes: graph.counts.omittedNodes, edges: graph.counts.omittedRelationships })}</span></div>
       {graph.coverage.reasons.map((reason) => <p className="text-sm text-muted-foreground" key={reason.code}>{reason.message}</p>)}
       <p data-testid="topology-health-internet" className="text-sm">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</p>
       <div className="flex flex-wrap items-center gap-2">
@@ -122,7 +122,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
         {draft.dirty && <span data-testid="topology-unsaved-layout" className="text-sm text-muted-foreground">{graph.permissions.canEdit ? t('unsaved') : t('localLayout')}</span>}
       </div>
       {conflict && <div data-testid="topology-layout-conflict" role="alert" className="rounded border p-3"><p>{t('layoutConflict')}</p><button className="mt-2 underline" onClick={() => { draft.dirty = false; setConflict(false); refreshGraph(); }}>{t('reloadLayout')}</button></div>}
-      {warning && <p role="status">{t(/* i18n-dynamic */ warning)}</p>}
+      {warning && <p data-testid="topology-layout-warning" role="status">{t(/* i18n-dynamic */ warning)}</p>}
       {!nodes.length ? <p className="py-12 text-center text-muted-foreground">{t('empty')}</p> : <div className="flex flex-col overflow-hidden rounded-lg border lg:flex-row">
         <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select} /> : <TopologyCanvas graph={graph} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} />}</div>
         {selection && selected && <TopologyInspector graph={graph} selection={selection} canDiagnose={!isPresentation(selected) && graph.permissions.canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
