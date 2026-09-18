@@ -6,6 +6,7 @@ export interface Features {
   billing: boolean;
   support: boolean;
   aiOperatorTasks: boolean;
+  aiAgentsSweepAct: boolean;
   /** Tool catalog W01 (#5216): the server's TOOL_SOURCES_ENABLED kill switch.
    *  Off ⇒ every /tool-sources route answers 404, so the nav item and pages
    *  must be hidden rather than linking to a dead surface. */
@@ -38,7 +39,7 @@ interface FeaturesState {
 // flags are off by default (decision D2). An unreachable or older /config
 // (missing the field) must hide the "Delegate to Operator" button, never
 // show it.
-const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, toolSources: false };
+const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false };
 const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 // Default closed: until /config confirms registration is open we hide the
 // registration UI rather than flash a link that may be disabled (#1308).
@@ -74,6 +75,7 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => ({
           billing: !!data.features?.billing,
           support: !!data.features?.support,
           aiOperatorTasks: !!data.features?.aiOperatorTasks,
+          aiAgentsSweepAct: data.features?.aiAgentsSweepAct === true,
           // Default CLOSED, like aiOperatorTasks: an older or unreachable
           // /config must hide a surface that authors credentials reaching
           // customer systems, never flash it.

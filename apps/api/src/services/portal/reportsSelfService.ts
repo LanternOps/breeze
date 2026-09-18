@@ -666,6 +666,7 @@ export async function generatePortalReport(args: {
 export type HardwareLifecyclePortalLatestDto = {
   run: { id: string; generatedAt: string };
   summary: HardwareLifecycleSummary | null;
+  contact: { name: string | null; email: string } | null;
   // Legacy field name: device deep-links are enabled by either the Devices
   // visibility flag or self-service, matching the Devices page's access grants.
   enableSelfService: boolean;
@@ -709,9 +710,14 @@ export async function latestPortalHardwareLifecycleRun(
     timeStyle: 'short',
   }).format(row.completedAt ?? new Date());
 
+  const branding = await getReportBranding(orgId);
+
   return {
     run: { id: row.id, generatedAt },
     summary: (result?.summary as HardwareLifecycleSummary | undefined) ?? null,
+    contact: branding.contactEmail
+      ? { name: branding.contactName ?? null, email: branding.contactEmail }
+      : null,
     enableSelfService: flags.enableSelfService,
   };
 }

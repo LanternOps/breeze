@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -512,6 +513,42 @@ func TestWalkRejectsEmptyOID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "root OID is required") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetMulti_PacketStatus(t *testing.T) {
+	oids := []string{"1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.3.0"}
+	for _, tt := range []struct {
+		name   string
+		status gosnmp.SNMPError
+		index  uint8
+	}{
+		{"indexed NoSuchName", gosnmp.NoSuchName, 2},
+		{"unindexed GenErr", gosnmp.GenErr, 0},
+		{"out of range", gosnmp.GenErr, 3},
+		{"NoError", gosnmp.NoError, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			packet := &gosnmp.SnmpPacket{Error: tt.status, ErrorIndex: tt.index, Variables: []gosnmp.SnmpPDU{
+				{Name: oids[0], Type: gosnmp.Null}, {Name: oids[1], Type: gosnmp.Null},
+			}}
+			pdus, err := getMulti(oids, func(got []string) (*gosnmp.SnmpPacket, error) {
+				if !reflect.DeepEqual(got, oids) {
+					t.Fatalf("requested OIDs = %v", got)
+				}
+				return packet, nil
+			})
+			if tt.status == gosnmp.NoError {
+				if err != nil || !reflect.DeepEqual(pdus, packet.Variables) {
+					t.Fatalf("pdus=%v error=%v", pdus, err)
+				}
+				return
+			}
+			var statusErr *SnmpStatusError
+			if !errors.As(err, &statusErr) || statusErr.Status != tt.status || statusErr.Index != tt.index || len(pdus) != 0 {
+				t.Fatalf("pdus=%v error=%v, want no values and status %s index %d", pdus, err, tt.status, tt.index)
+			}
+		})
 	}
 }
 

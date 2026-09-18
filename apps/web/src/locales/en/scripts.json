@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Elevated",
     "relativeTime": {
       "justNow": "Just now",
       "minutesAgo": "{{count}}m ago",

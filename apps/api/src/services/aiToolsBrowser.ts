@@ -595,23 +595,13 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
         const queued: Array<{ id: string; deviceId: string }> = [];
         const queueFailures: Array<{ deviceId: string; error: string }> = [];
         for (const device of targetDevices) {
-          // `previouslyRejected: false` is load-bearing, not boilerplate. The
-          // insert this replaced wrote a pending row unconditionally, ONLINE OR
-          // NOT -- a browser policy is meant to land whenever the machine next
-          // checks in. `queueCommandForExecution` is the adapter for callers
-          // that HARD-REJECTED offline devices before #5128 (it passes
-          // previouslyRejected: true), so routing through it would make this
-          // tool start refusing offline devices the moment
-          // DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED is turned off. Going straight
-          // at `dispatchDeviceCommand` with `false` preserves the old
-          // always-queue behaviour under every flag setting.
+          // Persist browser policies for delivery on the next device check-in.
           const result = await aiDispatchDeviceCommand(auth, 'manage_browser_policy', {
             deviceId: device.id,
             type: 'apply_browser_policy',
             payload: browserPolicyPayload,
             userId: auth.user.id,
             expectedOrgId: policy.orgId,
-            previouslyRejected: false,
           });
           if (result.ok) {
             queued.push({ id: result.command.id, deviceId: result.command.deviceId });

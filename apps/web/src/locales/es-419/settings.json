@@ -1548,6 +1548,7 @@
       "actMode": {
         "label": "Modo de actuación",
         "hint": "Cuando está activado, este programa puede aplicar ciertas correcciones automáticamente en lugar de esperar aprobación.",
+        "deploymentDisabledHint": "El modo de acción no está disponible porque BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED está desactivado en esta instalación. Contacta a tu administrador para activarlo.",
         "disabledHint": "Activar el modo de actuación requiere acceso total del partner a todas las organizaciones.",
         "scopeNote": "Las correcciones no supervisadas se limitan a reiniciar un servicio detenido, y solo en dispositivos cuya organización ya cuenta con el permiso manage_services:restart. Todo lo demás sigue esperando aprobación.",
         "disableForOrg": "Desactivar el modo de actuación para esta organización",
@@ -1622,7 +1623,8 @@
       "actConsequence": "Ejecuta las operaciones permitidas sin un clic. No hay reversión automática.",
       "actUnavailable": "Todavía no está disponible para este agente.",
       "designerAct": "Activado",
-      "designerActConsequence": "Se ejecuta según programación o bajo demanda y escribe un Fleet Design. Nunca cambia un dispositivo."
+      "designerActConsequence": "Se ejecuta según programación o bajo demanda y escribe un Fleet Design. Nunca cambia un dispositivo.",
+      "shadowApprovalNotice": "Las propuestas llegan a Aprobaciones; aprobar una la ejecuta de verdad, no es una simulación."
     },
     "allOrgs": "Todas las organizaciones",
     "allOrgsHint": "Para todo el partner: se aplica a cada organización, salvo que una organización la restrinja.",

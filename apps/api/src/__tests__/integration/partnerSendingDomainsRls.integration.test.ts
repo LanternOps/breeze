@@ -27,6 +27,10 @@ import { releaseSendingDomainsForPartner } from '../../services/emailDomains/dom
 import { cascadeDeletePartner } from '../../services/tenantCascade';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
+import { runSendingDomainsSweep } from '../../jobs/sendingDomainsWorker';
+import { syncSendingDomain } from '../../services/emailDomains/domainSync';
+import { listAllSendingDomains, suspendSendingDomain } from '../../services/emailDomains/sendingDomainService';
+import { resetEmailDomainProviderForTests } from '../../services/emailDomains/providerRegistry';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null
@@ -497,5 +501,152 @@ describe('cascadeDeletePartner with live sending domains', () => {
         .where(eq(emailProviderDomainReleases.providerDomainId, 'dom_adopted'));
       expect(outbox, 'an adopted domain must never be queued for provider deletion').toHaveLength(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W03: the release ORDER and the sweep claim, against real Postgres.
+//
+// Adapted to this file's own fixtures rather than the plan's assumed ones:
+// `createdPartnerIds` / `uniqueDomain` / `seedDomain` / `SYSTEM_CTX` +
+// `withDbAccessContext` are what W02 actually shipped, and the guard's message
+// is read by walking the `.cause` chain, exactly as the guard suite above does
+// (reading only the outer DrizzleQueryError is what made it vacuous).
+// ---------------------------------------------------------------------------
+
+/** The trigger's MESSAGE/DETAIL/HINT, flattened out of the wrapped error chain. */
+async function captureRaiseText(fn: () => Promise<unknown>): Promise<string | undefined> {
+  let raised: unknown;
+  try {
+    await fn();
+  } catch (err) {
+    raised = err;
+  }
+  if (!raised) return undefined;
+  const chain: string[] = [];
+  for (let err: unknown = raised; err; err = (err as { cause?: unknown }).cause) {
+    const e = err as { detail?: string; hint?: string; message?: string };
+    chain.push(e.detail ?? '', e.hint ?? '', e.message ?? '');
+  }
+  return chain.join('\n');
+}
+
+describe('W03 — provider release guard and sweep claim (breeze_app role)', () => {
+  beforeEach(() => {
+    process.env.EMAIL_DOMAINS_PROVIDER = 'fake';
+    resetEmailDomainProviderForTests();
+  });
+
+  afterEach(() => {
+    delete process.env.EMAIL_DOMAINS_PROVIDER;
+    resetEmailDomainProviderForTests();
+  });
+
+  it('the BEFORE DELETE guard raises while provider_domain_id is set, and syncSendingDomain gets the order right', async () => {
+    const partner = await createPartner();
+    createdPartnerIds.push(partner.id);
+
+    const [seeded] = await seedDomain(partner.id, {
+      domain: uniqueDomain('release'),
+      providerDomainId: 'pd-guard',
+      providerManaged: true,
+      status: 'removing',
+      statusReason: 'user_removed',
+      statusChangedAt: new Date(),
+      nextCheckAt: new Date(),
+    });
+
+    // CONTROL: a delete that skips the release raises, so the assertion below
+    // is not vacuous. (This is what a future path that "just deletes the row"
+    // would hit.)
+    const guardMessage = await captureRaiseText(() => withDbAccessContext(SYSTEM_CTX, () => db
+      .delete(partnerSendingDomains)
+      .where(eq(partnerSendingDomains.id, seeded!.id))));
+    expect(guardMessage).toBeDefined();
+    expect(guardMessage).toMatch(/provider domain/i);
+
+    // The real path: null the handle first, then delete.
+    await expect(syncSendingDomain(seeded!.id)).resolves.toBe('deleted');
+
+    const remaining = await withDbAccessContext(SYSTEM_CTX, () => db
+      .select({ id: partnerSendingDomains.id })
+      .from(partnerSendingDomains)
+      .where(eq(partnerSendingDomains.id, seeded!.id)));
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('never deletes at the provider, and writes no outbox row, for a provider_managed = false row', async () => {
+    const partner = await createPartner();
+    createdPartnerIds.push(partner.id);
+
+    const [seeded] = await seedDomain(partner.id, {
+      domain: uniqueDomain('adopted'),
+      providerDomainId: 'pd-preexisting',
+      providerManaged: false,
+      status: 'removing',
+      statusReason: 'user_removed',
+      statusChangedAt: new Date(),
+      nextCheckAt: new Date(),
+    });
+
+    await expect(syncSendingDomain(seeded!.id)).resolves.toBe('deleted');
+
+    const outbox = await withDbAccessContext(SYSTEM_CTX, () => db
+      .select({ id: emailProviderDomainReleases.id })
+      .from(emailProviderDomainReleases)
+      .where(eq(emailProviderDomainReleases.providerDomainId, 'pd-preexisting')));
+    expect(outbox).toHaveLength(0);
+  });
+
+  it('the sweep claim runs under SYSTEM scope and sees due rows across partners', async () => {
+    const a = await createPartner();
+    const b = await createPartner();
+    createdPartnerIds.push(a.id, b.id);
+
+    const past = new Date(Date.now() - 60_000);
+    await seedDomain(a.id, { domain: uniqueDomain('sweep-a'), providerDomainId: null, status: 'pending', statusChangedAt: past, nextCheckAt: past });
+    await seedDomain(b.id, { domain: uniqueDomain('sweep-b'), providerDomainId: null, status: 'pending', statusChangedAt: past, nextCheckAt: past });
+    await seedDomain(b.id, { domain: uniqueDomain('sweep-susp'), providerDomainId: null, status: 'suspended', statusChangedAt: past, nextCheckAt: past });
+
+    const result = await runSendingDomainsSweep(new Date());
+    // Both partners' due rows, and never the suspended one (spec §6.1).
+    expect(result.enqueued).toBeGreaterThanOrEqual(2);
+
+    // The same query under a PARTNER context sees only its own row — proof the
+    // sweep genuinely needs system scope and is not accidentally tenant-blind.
+    const partnerAView = await withDbAccessContext(
+      partnerContext(a.id, []),
+      () => db.select({ id: partnerSendingDomains.id }).from(partnerSendingDomains),
+    );
+    expect(partnerAView.every((r) => typeof r.id === 'string')).toBe(true);
+    expect(partnerAView.length).toBe(1);
+  });
+
+  // `withSystemDbAccessContext` RETAINS an already-open context rather than
+  // replacing it, so a platform-admin action invoked from inside the request's
+  // own partner-scoped transaction would silently stay scoped to the ADMIN'S
+  // partner: the kill switch would report 'not_found' for every other partner's
+  // domain. The service escapes with `runOutsideDbContext` first; this is the
+  // only test that can prove it against real RLS.
+  it('platform-admin actions reach ANOTHER partner from inside a partner-scoped request context', async () => {
+    const f = await fixture();
+    const [bRow] = await seedDomain(f.partnerB, { domain: uniqueDomain('admin-cross') });
+
+    await withDbAccessContext(partnerContext(f.partnerA, [f.orgA]), async () => {
+      const listed = await listAllSendingDomains({ limit: 200 });
+      expect(
+        listed.some((d) => d.id === bRow!.id),
+        "admin list run under partner A's context did not see partner B's domain",
+      ).toBe(true);
+
+      await expect(suspendSendingDomain(bRow!.id)).resolves.toBeUndefined();
+    });
+
+    const [after] = await withDbAccessContext(SYSTEM_CTX, () => db
+      .select({ status: partnerSendingDomains.status, statusReason: partnerSendingDomains.statusReason })
+      .from(partnerSendingDomains)
+      .where(eq(partnerSendingDomains.id, bRow!.id)));
+    expect(after?.status).toBe('suspended');
+    expect(after?.statusReason).toBe('platform_suspended');
   });
 });

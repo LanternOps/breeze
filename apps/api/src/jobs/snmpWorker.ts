@@ -444,7 +444,11 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     eq(devices.isEphemeral, false),
     eq(devices.status, 'online'),
   ];
-  if (executionSiteId) agentConditions.push(eq(devices.siteId, executionSiteId));
+  // Strict null check, not truthiness: `executionSiteId` is `string | null`,
+  // and an empty-string site (unreachable today since site_id is a UUID FK,
+  // but not guaranteed forever) must still scope the agent lookup rather than
+  // falling back to an org-wide pick (#5777).
+  if (executionSiteId !== null) agentConditions.push(eq(devices.siteId, executionSiteId));
 
   const [onlineAgent] = await db
     .select({ agentId: devices.agentId })

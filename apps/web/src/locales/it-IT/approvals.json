@@ -110,5 +110,6 @@
       "reported": "Segnalata",
       "unknown": "Sconosciuto"
     }
-  }
+  },
+  "proposedByAgentExecuteNotice": "Approvare questo lo esegue subito — non è una simulazione, nemmeno in modalità ombra."
 }

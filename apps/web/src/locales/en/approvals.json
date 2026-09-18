@@ -10,6 +10,7 @@
   },
   "requestedBy": "Requested by {{client}}",
   "proposedByAgent": "Proposed by {{agent}} (AI agent)",
+  "proposedByAgentExecuteNotice": "Approving this runs it now — not a dry run, even in shadow mode.",
   "targetDevice": "Target device: {{hostname}}",
   "batch": {
     "approveAll": "Approve all ({{count}})",

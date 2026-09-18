@@ -22,7 +22,7 @@ import {
   classifyResendSendError,
   RESEND_SEND_ERROR_FIXTURES
 } from './resend';
-import { PartnerLaneSendFailure, ProviderDomainConflictError } from '../provider';
+import { PartnerLaneSendFailure, ProviderDomainConflictError, ProviderDomainRejectedError, ProviderManagementAuthError } from '../provider';
 
 const KEYS = ['EMAIL_DOMAINS_RESEND_API_KEY', 'EMAIL_DOMAINS_RESEND_SENDING_KEY', 'EMAIL_DOMAINS_REGION'];
 const SAVED: Record<string, string | undefined> = {};
@@ -143,10 +143,51 @@ describe('createDomain', () => {
       .rejects.toBeInstanceOf(ProviderDomainConflictError);
   });
 
-  it('raises a rejection for any other provider error', async () => {
+  it('raises a rejection for a 4xx refusal of THIS domain', async () => {
     domainsCreate.mockResolvedValue({ data: null, error: { name: 'invalid_parameter', statusCode: 400, message: 'bad name' } });
     await expect(createResendDomainProvider().createDomain({ domain: 'acme.com', partnerRef: 'p1' }))
-      .rejects.toThrow(/bad name/);
+      .rejects.toBeInstanceOf(ProviderDomainRejectedError);
+  });
+
+  // `provider_rejected` is a TERMINAL state that mails the partner "the provider
+  // refused this domain" and stops retrying. A 5xx or a bodiless transport error
+  // is the provider being unavailable, not a refusal, so it must stay a plain
+  // Error for BullMQ to retry.
+  it.each([
+    ['a 5xx', { name: 'application_error', statusCode: 503, message: 'service unavailable' }],
+    ['no status at all', { name: 'application_error', statusCode: null, message: 'socket hang up' }],
+  ])('does NOT reject the domain on %s', async (_label, error) => {
+    domainsCreate.mockResolvedValue({ data: null, error });
+    const call = createResendDomainProvider().createDomain({ domain: 'acme.com', partnerRef: 'p1' });
+    await expect(call).rejects.toThrow(/transient/);
+    await expect(call).rejects.not.toBeInstanceOf(ProviderDomainRejectedError);
+  });
+
+  it.each([
+    ['401', { name: 'application_error', statusCode: 401, message: 'unauthorized' }],
+    ['403', { name: 'application_error', statusCode: 403, message: 'forbidden' }],
+    ['restricted_api_key', { name: 'restricted_api_key', statusCode: 422, message: 'this key is restricted' }],
+    ['invalid_api_key', { name: 'invalid_api_key', statusCode: 422, message: 'bad key' }],
+    ['missing_api_key', { name: 'missing_api_key', statusCode: 422, message: 'no key' }],
+  ])('classifies %s as a MANAGEMENT KEY refusal, not a domain refusal', async (_label, error) => {
+    domainsCreate.mockResolvedValue({ data: null, error });
+    await expect(createResendDomainProvider().createDomain({ domain: 'acme.com', partnerRef: 'p1' }))
+      .rejects.toBeInstanceOf(ProviderManagementAuthError);
+  });
+});
+
+describe('listDomains', () => {
+  it('raises ProviderManagementAuthError when the key cannot manage domains', async () => {
+    domainsList.mockResolvedValue({ data: null, error: { name: 'restricted_api_key', statusCode: 422, message: 'restricted' } });
+    await expect(createResendDomainProvider().listDomains())
+      .rejects.toBeInstanceOf(ProviderManagementAuthError);
+  });
+
+  it('raises a PLAIN error for a transient list failure, so the key verdict is not touched', async () => {
+    domainsList.mockResolvedValue({ data: null, error: { name: 'application_error', statusCode: 503, message: 'unavailable' } });
+    const call = createResendDomainProvider().listDomains();
+    await expect(call).rejects.toThrow(/listDomains failed/);
+    await expect(call).rejects.not.toBeInstanceOf(ProviderManagementAuthError);
   });
 });
 

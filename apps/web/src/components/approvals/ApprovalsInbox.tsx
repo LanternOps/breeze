@@ -1075,6 +1075,19 @@ export default function ApprovalsInbox() {
                 {expiryLabel(approval.expiresAt)}
               </span>
             </p>
+            {approval.origin === 'ai_agent' && (
+              // #6202: an operator read "shadow" as "observe only" and
+              // approved cards expecting a dry run. This row has no access to
+              // the proposing run's mode (shadow vs act), so the wording is
+              // generic to any agent-proposed intent rather than claiming a
+              // specific mode.
+              <p
+                className="mt-1 text-sm font-medium text-warning-strong"
+                data-testid={`approval-agent-execute-notice-${approval.id}`}
+              >
+                {t('proposedByAgentExecuteNotice')}
+              </p>
+            )}
             {approval.targetDevice && (
               // Under a group header every card names the same tool and
               // action, so the hostname is the ONLY thing that tells the

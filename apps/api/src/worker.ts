@@ -96,6 +96,7 @@ import { sql } from 'drizzle-orm';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { partnerTrustMode } from './config/partnerTrustMode';
+import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { resolveReadinessTiming } from './config/readinessConfig';
 import { validateConfig } from './config/validate';
@@ -600,6 +601,7 @@ export async function bootWorker(): Promise<void> {
     auditChainVerifyEnabled: auditChainVerifyEnabled(),
     eventDispatchEnabled: eventDispatchMode() !== 'off',
     aiAgentsEnabled: AI_AGENTS_ENABLED,
+    sendingDomainsConfigured: isPartnerLaneConfigured(),
     registry: workerReadinessRegistry,
   });
 

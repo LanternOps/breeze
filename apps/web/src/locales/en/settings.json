@@ -1548,6 +1548,7 @@
       "actMode": {
         "label": "Act mode",
         "hint": "When armed, this schedule may apply certain fixes automatically instead of waiting for approval.",
+        "deploymentDisabledHint": "Act mode is unavailable because BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED is off for this deployment. Contact your administrator to enable it.",
         "disabledHint": "Arming act mode requires full partner access to all organizations.",
         "scopeNote": "Unattended fixes are limited to restarting a stopped service, and only on devices whose organization has already been granted manage_services:restart. Everything else still waits for approval.",
         "disableForOrg": "Disable act mode for this organization",
@@ -1622,7 +1623,8 @@
       "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
       "actUnavailable": "Not available for this agent yet.",
       "designerAct": "On",
-      "designerActConsequence": "Runs on schedule or on demand and writes a Fleet Design. Never changes a device."
+      "designerActConsequence": "Runs on schedule or on demand and writes a Fleet Design. Never changes a device.",
+      "shadowApprovalNotice": "Proposals land in Approvals; approving one runs it for real, not a dry run."
     },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",

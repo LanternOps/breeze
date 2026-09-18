@@ -1548,6 +1548,7 @@
       "actMode": {
         "label": "Mode d'action",
         "hint": "Une fois activé, ce planning peut appliquer certains correctifs automatiquement au lieu d'attendre une approbation.",
+        "deploymentDisabledHint": "Le mode action est indisponible car BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED est désactivé pour ce déploiement. Contactez votre administrateur pour l’activer.",
         "disabledHint": "L'activation du mode d'action nécessite un accès partenaire complet à toutes les organisations.",
         "scopeNote": "Les correctifs non supervisés se limitent au redémarrage d'un service arrêté, uniquement sur les appareils dont l'organisation dispose déjà de l'autorisation manage_services:restart. Tout le reste continue d'attendre une approbation.",
         "disableForOrg": "Désactiver le mode d'action pour cette organisation",
@@ -1622,7 +1623,8 @@
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
       "actUnavailable": "Pas encore disponible pour cet agent.",
       "designerAct": "Activé",
-      "designerActConsequence": "S'exécute selon un planning ou à la demande et rédige un Fleet Design. Ne modifie jamais un appareil."
+      "designerActConsequence": "S'exécute selon un planning ou à la demande et rédige un Fleet Design. Ne modifie jamais un appareil.",
+      "shadowApprovalNotice": "Les propositions arrivent dans Approbations ; approuver l'une d'elles l'exécute pour de vrai, ce n'est pas un essai."
     },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",

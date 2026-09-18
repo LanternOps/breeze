@@ -4,6 +4,8 @@ import {
   PartnerLaneSendFailure,
   ProviderDomainConflictError,
   ProviderDomainRejectedError,
+  ProviderManagementAuthError,
+  ProviderQuotaExhaustedError,
   type CreateProviderDomainInput,
   type EmailDomainProvider,
   type PartnerLaneMessage,
@@ -19,6 +21,27 @@ const RESEND_REGIONS = ['us-east-1', 'eu-west-1', 'sa-east-1', 'ap-northeast-1']
 type ResendRegion = (typeof RESEND_REGIONS)[number];
 
 interface ResendErrorShape { name: string; statusCode: number | null; message: string }
+
+/**
+ * Resend's named key failures. Alongside a bare 401/403 these are the ONLY
+ * responses that prove the management key cannot manage domains; a 5xx, a
+ * timeout or a socket reset prove nothing about the key and must stay
+ * transient so BullMQ retries and the key-probe verdict is left alone.
+ */
+const MANAGEMENT_AUTH_ERROR_NAMES = new Set(['restricted_api_key', 'invalid_api_key', 'missing_api_key']);
+
+function isManagementAuthError(error: Partial<ResendErrorShape>): boolean {
+  return error.statusCode === 401
+    || error.statusCode === 403
+    || MANAGEMENT_AUTH_ERROR_NAMES.has(String(error.name));
+}
+
+/** Throws the typed auth error when `error` is a key refusal; otherwise returns. */
+function assertNotManagementAuthError(operation: string, error: Partial<ResendErrorShape>): void {
+  if (isManagementAuthError(error)) {
+    throw new ProviderManagementAuthError(operation, `${error.name}: ${error.message}`);
+  }
+}
 
 /**
  * Spec §5.2, keyed on whether SENDING is usable.
@@ -205,6 +228,21 @@ export function createResendDomainProvider(): EmailDomainProvider {
         if (lower.includes('already exists') || lower.includes('already registered') || error.statusCode === 409) {
           throw new ProviderDomainConflictError(input.domain, error.message);
         }
+        assertNotManagementAuthError('createDomain', error);
+        // The account ceiling, not a refusal of this name: `quota_exhausted`
+        // carries its own partner copy and alerts support (statusMail.ts).
+        if (lower.includes('domain limit') || lower.includes('maximum number of domains') || lower.includes('quota')) {
+          throw new ProviderQuotaExhaustedError(input.domain, `${error.name}: ${error.message}`);
+        }
+        // ONLY a 4xx is the provider REFUSING this domain. A 5xx (or an error
+        // with no status at all: a timeout or a reset) is the provider being
+        // unavailable, and mapping that to `provider_rejected` would fail the
+        // domain permanently, tell the partner we were refused, and rob
+        // BullMQ's retries of the chance to succeed.
+        const status = error.statusCode ?? 0;
+        if (status < 400 || status >= 500) {
+          throw new Error(`[emailDomains/resend] createDomain failed (transient): ${error.name}: ${error.message}`);
+        }
         throw new ProviderDomainRejectedError(input.domain, `${error.name}: ${error.message}`);
       }
       return toProviderDomain(data as unknown as Record<string, unknown>, input.domain);
@@ -216,6 +254,7 @@ export function createResendDomainProvider(): EmailDomainProvider {
         // Reporting "not found" on a list failure would make W03 create a
         // domain the account already holds, which is the one call that can
         // trigger Resend's cross-team claim flow. Throw instead.
+        assertNotManagementAuthError('findDomainByName', error);
         throw new Error(`[emailDomains/resend] listDomains failed: ${error.name}: ${error.message}`);
       }
       const target = domain.trim().toLowerCase();
@@ -253,7 +292,10 @@ export function createResendDomainProvider(): EmailDomainProvider {
 
     async listDomains(): Promise<Array<{ providerDomainId: string; domain: string }>> {
       const { data, error } = await management.domains.list();
-      if (error) throw new Error(`[emailDomains/resend] listDomains failed: ${error.name}: ${error.message}`);
+      if (error) {
+        assertNotManagementAuthError('listDomains', error);
+        throw new Error(`[emailDomains/resend] listDomains failed: ${error.name}: ${error.message}`);
+      }
       return (data?.data ?? []).map((d) => ({ providerDomainId: String(d.id), domain: String(d.name) }));
     },
 

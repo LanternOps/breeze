@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Privilegi elevati",
     "relativeTime": {
       "justNow": "Adesso",
       "minutesAgo": "{{count}} min fa",

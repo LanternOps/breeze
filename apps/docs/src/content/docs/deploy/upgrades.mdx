@@ -644,7 +644,7 @@ which is validated when set. Full descriptions are in
 
 | Variable | Why you might set it |
 |---|---|
-| `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` | Already **on**. Set `false` only to restore the old hard-failure behaviour while you adjust your automations — this escape hatch is removed in a later release. |
+| Offline work queue | Queueing is always enabled for queueable actions. The former opt-out has been removed; use action-specific offline policies where available. |
 | `DEVICE_COMMAND_QUEUE_TTL_HOURS`, `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS`, `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | Shorten or lengthen how long queued work waits for an offline device (7 days / 24 hours / 24 hours). |
 | `MFA_FORCE_FOR_PARTNER_ADMIN` | **Now defaults to `false`.** Set `true` to enforce forced MFA for Partner Admins immediately. |
 | `AI_OPERATOR_TASKS_ENABLED`, `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` | Turn on the opt-in [AI Operator](/features/ai-agents/#ai-operator-preview) preview. Both ship off. |

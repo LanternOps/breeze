@@ -129,6 +129,7 @@ import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
 import { partnerTrustRoutes } from './routes/partnerTrust';
+import { partnerSendingDomainsRoutes } from './routes/partnerSendingDomains';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
@@ -263,6 +264,7 @@ import {
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { partnerTrustMode } from './config/partnerTrustMode';
+import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
@@ -1002,6 +1004,10 @@ api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
 // W04 (#5612): the partner CEILING for the unattended script lane.
 api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
+// W03 (partner sending domains). MUST stay above the catch-all `/partner`
+// mount below, the same ordering `/partner/trust` relies on — Hono matches in
+// registration order, so a later specific mount is never reached.
+api.route('/partner/sending-domains', partnerSendingDomainsRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
@@ -1176,6 +1182,7 @@ async function initializeWorkers(): Promise<void> {
     auditChainVerifyEnabled: auditChainVerifyEnabled(),
     eventDispatchEnabled: eventDispatchMode() !== 'off',
     aiAgentsEnabled: AI_AGENTS_ENABLED,
+    sendingDomainsConfigured: isPartnerLaneConfigured(),
     registry: workerReadinessRegistry,
   });
 

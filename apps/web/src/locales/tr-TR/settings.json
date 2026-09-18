@@ -1548,6 +1548,7 @@
       "actMode": {
         "label": "Eylem modu",
         "hint": "Etkinleştirildiğinde, bu zamanlama onay beklemek yerine belirli düzeltmeleri otomatik olarak uygulayabilir.",
+        "deploymentDisabledHint": "Bu dağıtımda BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED kapalı olduğundan eylem modu kullanılamıyor. Etkinleştirmek için yöneticinizle iletişime geçin.",
         "disabledHint": "Eylem modunu etkinleştirmek için tüm kuruluşlara tam iş ortağı erişimi gerekir.",
         "scopeNote": "Gözetimsiz düzeltmeler yalnızca durmuş bir hizmeti yeniden başlatmakla sınırlıdır ve yalnızca kuruluşuna manage_services:restart izni zaten verilmiş cihazlarda uygulanır. Bunun dışındaki her şey onay beklemeye devam eder.",
         "disableForOrg": "Bu kuruluş için eylem modunu devre dışı bırak",
@@ -1622,7 +1623,8 @@
       "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
       "actUnavailable": "Bu aracı için henüz kullanılamıyor.",
       "designerAct": "Açık",
-      "designerActConsequence": "Zamanlamaya göre veya isteğe bağlı çalışır ve bir Fleet Design yazar. Hiçbir cihazı değiştirmez."
+      "designerActConsequence": "Zamanlamaya göre veya isteğe bağlı çalışır ve bir Fleet Design yazar. Hiçbir cihazı değiştirmez.",
+      "shadowApprovalNotice": "Öneriler Onaylar'a düşer; birini onaylamak onu gerçekten çalıştırır — deneme çalıştırması değildir."
     },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",

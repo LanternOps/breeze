@@ -110,5 +110,6 @@
       "reported": "Gemeldet",
       "unknown": "Unbekannt"
     }
-  }
+  },
+  "proposedByAgentExecuteNotice": "Eine Genehmigung führt dies jetzt aus — kein Testlauf, auch nicht im Schattenmodus."
 }

@@ -18,4 +18,4 @@ Last release: **v0.114.0** (2026-09-17).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
-- (nothing yet)
+- **Site-restricted technicians (intentional, #5545 / #5777):** a technician limited to certain sites now loses a parent software deployment entirely, not just its out-of-ceiling child results, when any target device sits outside their site ceiling. That includes multi-site deployments they created themselves.

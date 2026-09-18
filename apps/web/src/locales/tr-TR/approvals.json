@@ -110,5 +110,6 @@
       "reported": "Bildirildi",
       "unknown": "Bilinmiyor"
     }
-  }
+  },
+  "proposedByAgentExecuteNotice": "Bunu onaylamak şimdi çalıştırır — gölge modunda bile bu bir deneme çalıştırması değildir."
 }

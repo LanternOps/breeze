@@ -1548,6 +1548,7 @@
       "actMode": {
         "label": "Aktionsmodus",
         "hint": "Wenn aktiviert, kann dieser Zeitplan bestimmte Korrekturen automatisch anwenden, anstatt auf eine Genehmigung zu warten.",
+        "deploymentDisabledHint": "Der Aktionsmodus ist nicht verfügbar, da BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED für diese Bereitstellung deaktiviert ist. Wenden Sie sich zur Aktivierung an Ihren Administrator.",
         "disabledHint": "Zum Aktivieren des Aktionsmodus ist vollständiger Partnerzugriff auf alle Organisationen erforderlich.",
         "scopeNote": "Unbeaufsichtigte Korrekturen beschränken sich auf den Neustart eines gestoppten Dienstes, und das nur auf Geräten, deren Organisation bereits die Berechtigung manage_services:restart erhalten hat. Alles andere wartet weiterhin auf eine Genehmigung.",
         "disableForOrg": "Aktionsmodus für diese Organisation deaktivieren",
@@ -1622,7 +1623,8 @@
       "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
       "actUnavailable": "Für diesen Agenten noch nicht verfügbar.",
       "designerAct": "Ein",
-      "designerActConsequence": "Läuft nach Zeitplan oder auf Abruf und schreibt ein Fleet Design. Ändert nie ein Gerät."
+      "designerActConsequence": "Läuft nach Zeitplan oder auf Abruf und schreibt ein Fleet Design. Ändert nie ein Gerät.",
+      "shadowApprovalNotice": "Vorschläge landen im Genehmigungsposteingang; wer einen genehmigt, führt ihn tatsächlich aus — kein Testlauf."
     },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",

@@ -136,12 +136,19 @@ func (c *SNMPClient) GetMulti(oids []string) ([]gosnmp.SnmpPDU, error) {
 	if len(oids) == 0 {
 		return nil, nil
 	}
-	packet, err := c.client.Get(oids)
+	return getMulti(oids, c.client.Get)
+}
+
+func getMulti(oids []string, get func([]string) (*gosnmp.SnmpPacket, error)) ([]gosnmp.SnmpPDU, error) {
+	packet, err := get(oids)
 	if err != nil {
 		return nil, err
 	}
 	if packet == nil {
 		return nil, errors.New("SNMP response was empty")
+	}
+	if packet.Error != gosnmp.NoError {
+		return nil, &SnmpStatusError{Status: packet.Error, Index: packet.ErrorIndex}
 	}
 	return packet.Variables, nil
 }

@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Yükseltilmiş yetkiler",
     "relativeTime": {
       "justNow": "Az önce",
       "minutesAgo": "{{count}}m önce",

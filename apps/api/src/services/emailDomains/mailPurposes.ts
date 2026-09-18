@@ -58,6 +58,11 @@ export const MAIL_PURPOSES = {
   'staff.ai_budget_alert': { lane: 'platform' },
   'staff.contract_renewal': { lane: 'platform' },
   'staff.quote_outcome': { lane: 'platform' },
+  // W03. The notice that a partner's own sending domain is verified / at risk
+  // / failed / suspended / auto-removed. PLATFORM on purpose: a mail saying
+  // "your sending domain is broken" must never be sent from that domain
+  // (spec §6.3). Its send site is services/emailDomains/statusMail.ts.
+  'staff.sending_domain_status': { lane: 'platform' },
   'staff.alert_notification': { lane: 'platform' },
   'staff.workspace_drift_report': { lane: 'platform' },
   'staff.report_failure': { lane: 'platform' },

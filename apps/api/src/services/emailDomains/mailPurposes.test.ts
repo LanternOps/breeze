@@ -50,6 +50,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'staff.ai_budget_alert': { lane: 'platform' },
       'staff.contract_renewal': { lane: 'platform' },
       'staff.quote_outcome': { lane: 'platform' },
+      'staff.sending_domain_status': { lane: 'platform' },
       'staff.alert_notification': { lane: 'platform' },
       'staff.workspace_drift_report': { lane: 'platform' },
       'staff.report_failure': { lane: 'platform' },
@@ -75,11 +76,13 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
     expect(branded.sort()).toEqual(['invoice.sent', 'quote.sent']);
   });
 
-  // Index amendment 5: the test send bypasses sendEmail entirely and
-  // staff.sending_domain_status arrives with its send site in W03. Neither
-  // may be added here early, or the "no dead entries" scan (Task 9) fails.
-  it('does not carry W03-owned or tag-only purposes', () => {
-    expect(ALL_PURPOSES).not.toContain('staff.sending_domain_status');
+  // Index amendment 5: the test send bypasses sendEmail entirely, so its
+  // `sending_domain.test` tag is NOT a mail purpose and must never appear here
+  // — an entry with no send site fails the "no dead entries" scan
+  // (mailPurposes.callSites.test.ts). `staff.sending_domain_status` was the
+  // other half of this guard until W03, which added it together with its send
+  // site, services/emailDomains/statusMail.ts.
+  it('does not carry tag-only purposes', () => {
     expect(ALL_PURPOSES).not.toContain('sending_domain.test');
   });
 
