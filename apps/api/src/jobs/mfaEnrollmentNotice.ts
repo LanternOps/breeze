@@ -276,7 +276,7 @@ export async function runMfaEnrollmentNoticeSweep(): Promise<MfaEnrollmentNotice
 
       // Only after a successful send do we claim — a failed send must retry
       // tomorrow, never be silently suppressed.
-      await emailService.sendEmail({ to: row.email, subject, html, text });
+      await emailService.sendEmail({ to: row.email, subject, html, text, purpose: 'security.mfa_enrollment' });
 
       if (claimNotice) await claimNoticeColumn(row.id, 'notice_sent_at');
       if (claimReminder) await claimNoticeColumn(row.id, 'reminded_at');

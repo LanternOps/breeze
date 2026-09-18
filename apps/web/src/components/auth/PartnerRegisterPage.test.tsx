@@ -31,7 +31,7 @@ const mockNavigateTo = vi.mocked(navigateTo);
 // "loaded + enabled" so the form renders; the disabled path has its own test.
 function setRegistration(enabled: boolean, loaded = true) {
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks: false },
+    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false },
     cfAccessLogin: { enabled: false },
     registration: { enabled },
     loaded,

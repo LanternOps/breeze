@@ -1,6 +1,7 @@
+import { isUtf8 } from 'node:buffer';
 import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import type { AiArtifactKind, AiRunArtifactDto } from '@breeze/shared';
+import { isTextArtifactContentType, type AiArtifactKind, type AiRunArtifactDto } from '@breeze/shared';
 import { db } from '../../db';
 import { aiRunArtifacts } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -111,13 +112,36 @@ export function sanitizeArtifactName(raw: string): string {
   return cleaned.slice(0, 200).trim() || 'artifact';
 }
 
+/** Workspace outputs arrive with a generic MIME type; infer only known extensions. */
+function artifactContentType(contentType: string, name: string): string {
+  if (contentType.trim().toLowerCase() !== 'application/octet-stream') return contentType;
+  const extension = name.split('.').pop()?.toLowerCase() ?? '';
+  const known: Record<string, string> = {
+    txt: 'text/plain', log: 'text/plain', csv: 'text/csv', tsv: 'text/tab-separated-values',
+    json: 'application/json', jsonl: 'application/jsonl', ndjson: 'application/x-ndjson',
+    md: 'text/markdown', pdf: 'application/pdf', png: 'image/png', jpeg: 'image/jpeg', jpg: 'image/jpeg',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  };
+  return known[extension] ?? contentType;
+}
+
 /**
  * Head/tail of the RAW content (spec §5.2), NOT a compacted or rendered form —
- * the whole point is that the technician can see what the model saw. NUL is
- * stripped because Postgres `text` rejects it outright, and bare secrets are
- * redacted with the same patterns the chat path already applies.
+ * the whole point is that the technician can see what the model saw. A Buffer
+ * that is not valid UTF-8, or contains a NUL byte, gets NO preview at all
+ * (both slices come back empty) — a text MIME label cannot make arbitrary
+ * binary bytes safe to display. A string input has NUL stripped (Postgres
+ * `text` rejects it outright) rather than being blanked, since a caller that
+ * already decoded the bytes to a string has vouched for them being text.
+ * Bare secrets are redacted with the same patterns the chat path already
+ * applies.
  */
 export function buildPreviews(raw: Buffer | string): { headPreview: string; tailPreview: string } {
+  // A text MIME label cannot make arbitrary binary bytes safe to display.
+  if (Buffer.isBuffer(raw) && (!isUtf8(raw) || raw.includes(0))) {
+    return { headPreview: '', tailPreview: '' };
+  }
   const text = (typeof raw === 'string' ? raw : raw.toString('utf8')).replace(/\u0000/g, '');
   const head = redactAiToolOutputText(text.slice(0, ARTIFACT_PREVIEW_BYTES));
   const tail = redactAiToolOutputText(text.slice(-ARTIFACT_PREVIEW_BYTES));
@@ -131,16 +155,23 @@ export function buildPreviews(raw: Buffer | string): { headPreview: string; tail
 
 export async function createArtifact(input: CreateArtifactInput): Promise<ArtifactRecord> {
   const blobs = getBlobStorage();
+  const contentType = artifactContentType(input.contentType, input.name);
   // Buffer the body once when it is already a Buffer so the previews describe
   // exactly the bytes that were stored. A stream body is previewed from the
   // head/tail the blob layer read back (see below).
   const put = await blobs.put({
     region: input.region,
-    contentType: input.contentType,
+    contentType,
     body: input.body,
     maxBytes: input.maxBytes,
   });
 
+  // Previews are gated by CONTENT, not the content-type label —
+  // `buildPreviews` already refuses non-UTF-8/NUL bytes. `workspace_collect`
+  // stores unknown extensions as `application/octet-stream`, so gating by
+  // name here would permanently blank previews for legitimate text outputs
+  // (`findings`, `summary.out`, …). `isTextArtifactContentType` remains a
+  // render-time gate only (see `toArtifactDto`).
   const previewSource = Buffer.isBuffer(input.body)
     ? input.body
     // A stream was consumed by `put`; re-read the head/tail from the stored
@@ -148,6 +179,20 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
     : await readPreviewSlice(put.key, put.bytes);
 
   const { headPreview, tailPreview } = buildPreviews(previewSource);
+  // `artifactContentType` above only promotes a KNOWN extension; an unnamed or
+  // unrecognised one (e.g. `findings`, `summary.out`) is left as
+  // application/octet-stream even though `buildPreviews` just proved the
+  // content decodes as valid, printable UTF-8 text (that's the only way it
+  // produced a non-empty preview — see the doc on `buildPreviews`). Persist
+  // text/plain in that case so `isTextArtifactContentType` — the render-time
+  // gate in `toArtifactDto` and the web preview toggle
+  // (RunArtifactsSection.tsx) — doesn't blank a preview we already know is
+  // safe. A genuinely binary octet-stream artifact produces an empty preview
+  // and is left unpromoted.
+  const persistedContentType = contentType.trim().toLowerCase() === 'application/octet-stream'
+    && (headPreview !== '' || tailPreview !== '')
+    ? 'text/plain'
+    : contentType;
   const ttlDays = input.ttlDays ?? ARTIFACT_DEFAULT_TTL_DAYS;
 
   try {
@@ -159,7 +204,7 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
         sessionId: input.sessionId ?? null,
         kind: input.kind,
         name: sanitizeArtifactName(input.name),
-        contentType: input.contentType.slice(0, 128),
+        contentType: persistedContentType.slice(0, 128),
         bytes: put.bytes,
         sha256: put.sha256,
         blobKey: put.key,
@@ -267,8 +312,8 @@ export function toArtifactDto(record: ArtifactRecord): AiRunArtifactDto {
     contentType: record.contentType,
     bytes: record.bytes,
     sha256: record.sha256,
-    headPreview: record.headPreview,
-    tailPreview: record.tailPreview,
+    headPreview: isTextArtifactContentType(record.contentType) ? record.headPreview : '',
+    tailPreview: isTextArtifactContentType(record.contentType) ? record.tailPreview : '',
     sourceDeviceId: record.sourceDeviceId,
     createdByTool: record.createdByTool,
     expiresAt: record.expiresAt.toISOString(),

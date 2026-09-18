@@ -10,9 +10,14 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
+  AI_TOOL_APPROVED_COMPLETED,
   AI_TOOL_APPROVED_EXECUTING,
+  AI_TOOL_APPROVED_FAILED,
+  AI_TOOL_HANDOFF_STATUSES,
+  aiToolHandoffIsError,
   aiToolLabel,
   isAiToolHandoffOutput,
+  type AiToolHandoffStatus,
 } from "@breeze/shared";
 
 interface AiToolCallCardProps {
@@ -52,28 +57,51 @@ export default function AiToolCallCard({
   const inputPreview = useMemo(() => stringifyForPreview(input), [input]);
   const outputPreview = useMemo(() => stringifyForPreview(output), [output]);
 
-  // #5107 — a human approved this and the durable approval worker is running
-  // it; this session declined to run it twice.
+  // #5107 / #6022 — the post-approval outcome of an action the durable
+  // approval worker owns: still running, completed, or FAILED.
   //
   // TRUST ORDER: `handoff` comes from the server's own pre-tool-use gate. The
   // `output` shape is only a fallback for rows replayed from history, where
-  // the SSE-level field is not persisted — and it is gated on `!isError`
-  // because a tool owns its output payload: an ungated check would let any
-  // tool emit `{ error: 'restart failed', status: 'approved_executing' }` and
-  // have the collapsed row (the one techs scan by) read as an approved,
-  // in-flight action.
-  const isApprovedExecuting =
-    handoff === AI_TOOL_APPROVED_EXECUTING || (!isError && isAiToolHandoffOutput(output));
+  // the SSE-level field is not persisted — and it is cross-checked against
+  // `isError` because a tool owns its output payload: an ungated check would
+  // let any tool emit `{ error: 'restart failed', status: 'approved_executing' }`
+  // and have the collapsed row (the one techs scan by) read as an approved,
+  // in-flight action. The check is now two-way: a replayed payload is trusted
+  // only when the failure it claims MATCHES the server's own `isError`, so a
+  // tool can neither forge a success nor forge a failure.
+  const handoffStatus: AiToolHandoffStatus | null = useMemo(() => {
+    if (handoff && (AI_TOOL_HANDOFF_STATUSES as readonly string[]).includes(handoff)) {
+      return handoff as AiToolHandoffStatus;
+    }
+    if (isAiToolHandoffOutput(output) && aiToolHandoffIsError(output.status) === Boolean(isError)) {
+      return output.status;
+    }
+    return null;
+  }, [handoff, output, isError]);
 
-  const StatusIcon = isApprovedExecuting
-    ? () => <ShieldCheck className="h-3.5 w-3.5 text-amber-400" />
-    : isExecuting
-      ? () => <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
-      : isError
-        ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
-        : output !== undefined
-          ? () => <CheckCircle className="h-3.5 w-3.5 text-green-400" />
-          : () => <Wrench className="h-3.5 w-3.5 text-gray-400" />;
+  const isApprovedExecuting = handoffStatus === AI_TOOL_APPROVED_EXECUTING;
+  const isApprovedCompleted = handoffStatus === AI_TOOL_APPROVED_COMPLETED;
+  // #6022: the whole point of this issue. An approved action the worker then
+  // REFUSED must read as failed at a glance, not as "Approved · running".
+  const isApprovedFailed = handoffStatus === AI_TOOL_APPROVED_FAILED;
+
+  // The worker's own reason, shown WITHOUT expanding the card — an operator
+  // who has to click to discover the platform refused their action is the bug.
+  const handoffMessage = isAiToolHandoffOutput(output) ? output.message : undefined;
+
+  const StatusIcon = isApprovedFailed
+    ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
+    : isApprovedExecuting
+      ? () => <ShieldCheck className="h-3.5 w-3.5 text-amber-400" />
+      : isApprovedCompleted
+        ? () => <ShieldCheck className="h-3.5 w-3.5 text-green-400" />
+        : isExecuting
+          ? () => <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
+          : isError
+            ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
+            : output !== undefined
+              ? () => <CheckCircle className="h-3.5 w-3.5 text-green-400" />
+              : () => <Wrench className="h-3.5 w-3.5 text-gray-400" />;
 
   return (
     <div className="my-1 rounded-md border border-gray-200 bg-gray-50/50 dark:border-gray-700 dark:bg-gray-800/50">
@@ -90,14 +118,32 @@ export default function AiToolCallCard({
         <span className="font-medium text-gray-700 dark:text-gray-300">
           {aiToolLabel(toolName, isExecuting ? "running" : "completed", input)}
         </span>
-        {isApprovedExecuting ? (
-          <span className="text-amber-400">
+        {isApprovedFailed ? (
+          <span className="text-red-400" data-testid="ai-tool-approved-failed">
+            {t("aiToolCallCard.approvedFailed")}
+          </span>
+        ) : isApprovedCompleted ? (
+          <span className="text-green-400" data-testid="ai-tool-approved-completed">
+            {t("aiToolCallCard.approvedCompleted")}
+          </span>
+        ) : isApprovedExecuting ? (
+          <span className="text-amber-400" data-testid="ai-tool-approved-running">
             {t("aiToolCallCard.approvedRunning")}
           </span>
         ) : isExecuting ? (
           <span className="text-gray-500">{t("aiToolCallCard.running")}</span>
         ) : null}
       </button>
+
+      {/* #6022: a refusal the operator must not have to expand to find. */}
+      {isApprovedFailed && handoffMessage ? (
+        <p
+          className="border-t border-red-200 px-3 py-1.5 text-xs text-red-500 dark:border-red-900/50 dark:text-red-400"
+          data-testid="ai-tool-approved-failed-reason"
+        >
+          {handoffMessage}
+        </p>
+      ) : null}
 
       {expanded && (
         <div className="border-t border-gray-200 px-3 py-2 text-xs dark:border-gray-700">

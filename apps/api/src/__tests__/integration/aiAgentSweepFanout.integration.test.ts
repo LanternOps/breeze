@@ -22,7 +22,7 @@
  *     release fail closed with `agent_scope_lost`. The tombstone transition is
  *     enforced by a DB trigger; there is no way to exercise it without a DB.
  *
- * It ALSO executes all six `loadSweepEvidence` statements (task 5) against
+ * It ALSO executes every `loadSweepEvidence` statement (task 5) against
  * live Postgres for the first time — that module's own suite verifies the
  * statements STATICALLY (it reads the SQL text back), so nothing had ever
  * asked Postgres to parse or plan them. The fixture deliberately includes a
@@ -71,6 +71,7 @@ import {
   deviceDisks,
   deviceVulnerabilities,
   devices,
+  networkMonitors,
   organizations,
   serviceProcessCheckResults,
   vulnerabilities,
@@ -248,6 +249,13 @@ async function seedFixture(): Promise<Fixture> {
         sweepKinds: BASELINE_KINDS,
         enabled: true,
         createdBy: user.id,
+        // A LONG-STANDING baseline, not one created this second. The tick
+        // refuses to catch up on an occurrence that predates `created_at`
+        // (#6201), and this fixture's hourly occurrence is the top of the
+        // current hour — i.e. before "now" on every run but one that happens
+        // to land exactly on :00. Without this the CAS test below would pass
+        // or fail depending on the wall clock.
+        createdAt: new Date(Date.now() - 24 * 3_600_000),
         updatedAt: new Date(),
       })
       .returning(),
@@ -495,6 +503,37 @@ describe('sweep fan-out (real Postgres)', () => {
     expect(job!.data).toMatchObject({ scheduleId: f.baseline.id, occurrenceKey: expected!.key });
   });
 
+  it('a baseline created AFTER its last occurrence is not caught up, and fires on its next one (#6201)', async () => {
+    const f = await seedFixture();
+    expect(AI_AGENTS_ENABLED).toBe(true);
+
+    // Re-point created_at so the schedule came into existence at 06:30, half
+    // an hour AFTER the 06:00 occurrence its hourly cron last had. Both ticks
+    // below take an explicit `now`, so this is wall-clock independent.
+    await withSystemDbAccessContext(() =>
+      db
+        .update(aiAgentSchedules)
+        .set({ createdAt: new Date('2026-08-29T06:30:00Z') })
+        .where(eq(aiAgentSchedules.id, f.baseline.id)),
+    );
+
+    // 06:35 — five minutes into the schedule's life. The latest occurrence
+    // (06:00) predates it, so nothing is enqueued and, critically, the key
+    // stays NULL so the real firing still has the NULL-keyed CAS to win.
+    const early = await processSweepTick(new Date('2026-08-29T06:35:00Z'));
+    expect(early).toMatchObject({ scanned: 1, enqueued: 0 });
+    const afterEarly = await readSchedule(f.baseline.id);
+    expect(afterEarly.lastOccurrenceKey).toBeNull();
+    expect(afterEarly.lastEnqueuedAt).toBeNull();
+
+    // 07:02 — the first occurrence that actually belongs to this schedule.
+    const due = await processSweepTick(new Date('2026-08-29T07:02:00Z'));
+    expect(due).toMatchObject({ scanned: 1, enqueued: 1 });
+    const afterDue = await readSchedule(f.baseline.id);
+    expect(afterDue.lastOccurrenceKey).toBe('2026-08-29T07:00@UTC');
+    expect(afterDue.lastEnqueuedAt).not.toBeNull();
+  });
+
   it('a scoped intent created from the device-less run releases with allowedDeviceIds pinned to the scope device', async () => {
     const f = await seedFixture();
     await processSweepOccurrence({ scheduleId: f.baseline.id, occurrenceKey: OCCURRENCE_KEY });
@@ -567,14 +606,14 @@ describe('sweep fan-out (real Postgres)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task 5's six evidence statements, executed for real
+// Task 5's evidence statements, executed for real
 // ---------------------------------------------------------------------------
 
 /** One stale-matching device more than the loader's `MAX + 1` fetch window,
  *  so `truncated` has something to be true about. */
 const STALE_WITH_LAST_SEEN = 27;
 
-describe('loadSweepEvidence against real Postgres (all six statements)', () => {
+describe('loadSweepEvidence against real Postgres (every statement)', () => {
   async function seedEvidence(): Promise<{ orgId: string; neverSeenDeviceId: string }> {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -677,6 +716,43 @@ describe('loadSweepEvidence against real Postgres (all six statements)', () => {
       }),
     );
 
+    // expiring_certs (#5754) — the one kind that is about a MONITOR, not a
+    // device, so it seeds no device at all. The values must satisfy every
+    // predicate the loader applies: active, observed, refreshed inside the
+    // 7-day staleness bound, and expiring inside the 45-day window.
+    await withSystemDbAccessContext(() =>
+      db.insert(networkMonitors).values({
+        orgId: org.id,
+        partnerId: null,
+        name: 'Portal TLS',
+        monitorType: 'http_check',
+        target: 'https://portal.example',
+        config: { url: 'https://portal.example' },
+        tlsState: 'observed',
+        tlsNotAfter: new Date(Date.now() + 10 * 24 * 3_600_000),
+        tlsObservedAt: new Date(Date.now() - 3_600_000),
+        tlsObservedHost: 'portal.example:443',
+        tlsIssuer: 'CN=Fixture CA',
+      }),
+    );
+    // A monitor that is NOT expiring, to prove the 45-day window is doing work
+    // rather than the loader simply returning every observed row.
+    await withSystemDbAccessContext(() =>
+      db.insert(networkMonitors).values({
+        orgId: org.id,
+        partnerId: null,
+        name: 'Healthy TLS',
+        monitorType: 'http_check',
+        target: 'https://healthy.example',
+        config: { url: 'https://healthy.example' },
+        tlsState: 'observed',
+        tlsNotAfter: new Date(Date.now() + 300 * 24 * 3_600_000),
+        tlsObservedAt: new Date(Date.now() - 3_600_000),
+        tlsObservedHost: 'healthy.example:443',
+        tlsIssuer: 'CN=Fixture CA',
+      }),
+    );
+
     return { orgId: org.id, neverSeenDeviceId: neverSeen.id };
   }
 
@@ -717,6 +793,17 @@ describe('loadSweepEvidence against real Postgres (all six statements)', () => {
       (evidence.kinds.unpatched_critical!.rows[0]!.fields.deviceVulnerabilityIds as string).length,
     ).toBeGreaterThan(0);
 
+    // expiring_certs: only the monitor inside the 45-day window, and it names
+    // the OBSERVED host with no device attached.
+    expect(evidence.kinds.expiring_certs).toMatchObject({ total: 1, truncated: false });
+    const cert = evidence.kinds.expiring_certs!.rows[0]!;
+    expect(cert.deviceId).toBeNull();
+    expect(cert.fields).toMatchObject({
+      monitorName: 'Portal TLS',
+      observedHost: 'portal.example:443',
+      issuer: 'CN=Fixture CA',
+    });
+
     // stale_agents: the REAL count (never-seen + every long-silent device),
     // not the capped sample — the model may quote `total` and name `rows`.
     const stale = evidence.kinds.stale_agents!;
@@ -750,10 +837,15 @@ describe('loadSweepEvidence against real Postgres (all six statements)', () => {
     const otherPartner = await createPartner();
     const otherOrg = await createOrganization({ partnerId: otherPartner.id });
 
-    const mine = await withSystemDbAccessContext(() => loadSweepEvidence(orgId, ['disk_pressure']));
-    const theirs = await withSystemDbAccessContext(() => loadSweepEvidence(otherOrg.id, ['disk_pressure']));
+    const kinds: AiSweepKind[] = ['disk_pressure', 'expiring_certs'];
+    const mine = await withSystemDbAccessContext(() => loadSweepEvidence(orgId, kinds));
+    const theirs = await withSystemDbAccessContext(() => loadSweepEvidence(otherOrg.id, kinds));
 
     expect(mine.kinds.disk_pressure!.total).toBe(1);
     expect(theirs.kinds.disk_pressure!.total).toBe(0);
+    // expiring_certs has no join, so its single org_id predicate is the WHOLE
+    // isolation boundary under this system context — worth proving for real.
+    expect(mine.kinds.expiring_certs!.total).toBe(1);
+    expect(theirs.kinds.expiring_certs!.total).toBe(0);
   });
 });

@@ -135,6 +135,23 @@ export const softwareComplianceStatus = pgTable('software_compliance_status', {
   remediationStatus: varchar('remediation_status', { length: 20 }).default('none'),
   lastRemediationAttempt: timestamp('last_remediation_attempt'),
   remediationErrors: jsonb('remediation_errors').$type<RemediationError[]>(),
+  // Feature #5505 W02 (contract D1): the SECOND remediation axis, for the
+  // `missing`-violation install verb. Deliberately separate columns rather than
+  // widening remediationStatus — two verbs sharing one status field would lie
+  // (a successful install alongside a failed uninstall has no honest single
+  // value), and separate columns leave every uninstall read/write untouched.
+  // Types mirror remediationStatus/lastRemediationAttempt above exactly.
+  // Allowed values are the TS union SoftwarePolicyInstallRemediationStatus in
+  // services/softwarePolicyService.ts — there is no DB enum, matching how
+  // remediation_status is already constrained.
+  installRemediationStatus: varchar('install_remediation_status', { length: 20 }).default('none'),
+  lastInstallRemediationAttempt: timestamp('last_install_remediation_attempt'),
+  // CONSECUTIVE attempts, not lifetime: reset to 0 the moment this
+  // (policy, device) has no `missing` violation left, incremented on every
+  // queue. This is the install-loop guard from spec Risks §1 — grace and
+  // cooldown bound the RATE of a mismatched-rule reinstall loop but never stop
+  // it; this counter is what terminates it, at 'gave_up'.
+  installRemediationAttempts: integer('install_remediation_attempts').notNull().default(0),
 }, (table) => ({
   deviceIdIdx: index('software_compliance_device_id_idx').on(table.deviceId),
   policyIdIdx: index('software_compliance_policy_id_idx').on(table.policyId),

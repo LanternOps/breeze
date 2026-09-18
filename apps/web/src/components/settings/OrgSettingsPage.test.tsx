@@ -26,7 +26,11 @@ vi.mock('@/lib/navigation', () => ({
 
 // Stub the heavy child editors — they're unrelated to name editing, and several
 // pull in their own fetches/effects; stubbing keeps these tests focused and fast.
-vi.mock('./OrgBrandingEditor', () => ({ default: () => <div data-testid="branding-editor" /> }));
+const brandingProps: Array<{ onSave: (data: Record<string, unknown>) => unknown }> = [];
+vi.mock('./OrgBrandingEditor', () => ({ default: (props: { onSave: (data: Record<string, unknown>) => unknown }) => {
+  brandingProps.push(props);
+  return <div data-testid="branding-editor" />;
+} }));
 vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="defaults-editor" /> }));
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
 vi.mock('./OrgSecuritySettings', () => ({ default: ({ onDirty, onSave }: {
@@ -35,6 +39,15 @@ vi.mock('./OrgSecuritySettings', () => ({ default: ({ onDirty, onSave }: {
   onDirty(); onSave({ allowedMethods: { totp: false, sms: false } });
 }}>Save security</button> }));
 vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
+// #6004: the AI budget editor. Capture its props — the tab is worthless if it
+// is not handed the org it is meant to edit.
+const aiBudgetProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgAiBudgetSettings', () => ({
+  default: (props: Record<string, unknown>) => {
+    aiBudgetProps.push(props);
+    return <div data-testid="org-ai-budget" />;
+  },
+}));
 // Capture the props the Remote Access tab is mounted with. #3432: the parent
 // used to hand it `onDirty`, which it fired AFTER already persisting a rule —
 // leaving the page permanently "unsaved" and firing a bogus beforeunload
@@ -372,6 +385,22 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(screen.getByTestId('branding-editor')).not.toBeNull();
   });
 
+  it.each([true, false])('returns branding save success (%s) without an independent success toast', async (ok) => {
+    window.location.hash = '#branding';
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url.endsWith('/effective-settings')) return makeJsonResponse({ locked: [] });
+      if (init?.method === 'PATCH') return makeJsonResponse(ok ? {} : { error: 'Branding rejected' }, ok);
+      return makeJsonResponse(orgDetails);
+    });
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('branding-editor');
+    let result: unknown;
+    await act(async () => { result = await brandingProps.at(-1)!.onSave({ primaryColor: '#123456' }); });
+    expect(result).toBe(ok);
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    if (!ok) expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
   it('deep-links the hash to the right section on mount', async () => {
     window.location.hash = '#remote-access';
 
@@ -396,6 +425,29 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     render(<OrgSettingsPage orgId="org-1" />);
     await screen.findByTestId('org-name-input');
     expect(screen.queryByRole('link', { name: /^contracts$/i })).not.toBeInTheDocument();
+  });
+
+  it('registers an AI tab that deep-links on #ai and mounts the budget editor for this org (#6004)', async () => {
+    aiBudgetProps.length = 0;
+    window.location.hash = '#ai';
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const link = await screen.findByRole('link', { name: /^ai$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('org-ai-budget')).not.toBeNull();
+    expect(aiBudgetProps.at(-1)).toMatchObject({ orgId: 'org-1' });
+  });
+
+  it('places the AI tab beside Approval Security in the nav (#6004)', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('org-name-input');
+
+    const links = screen.getAllByRole('link');
+    const approvalIdx = links.indexOf(screen.getByRole('link', { name: /^approval security$/i }));
+    const aiIdx = links.indexOf(screen.getByRole('link', { name: /^ai$/i }));
+    expect(approvalIdx).toBeGreaterThanOrEqual(0);
+    expect(aiIdx).toBe(approvalIdx + 1);
   });
 
   it('mounts the Remote Access tab without an onDirty channel, so it can never strand the page as unsaved (#3432)', async () => {

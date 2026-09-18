@@ -17,6 +17,7 @@
     "adminThirdPartyCatalog": "Catalogue tiers",
     "adminTrustAct": "Action de confiance du partenaire",
     "adminTrustQueue": "File d'attente de confiance du partenaire",
+    "adminSendingDomains": "Domaines d'envoi du partenaire",
     "adminUsersDetailDevices": "Appareils de l'utilisateur",
     "aiAgentsImpact": "Impact de l'IA",
     "aiAgentsRunsDetail": "Détail de l'exécution",
@@ -126,8 +127,9 @@
     "sensitiveData": "Données sensibles",
     "settingsAccessReviews": "Revues d'accès",
     "settingsAiAgents": "Agents IA",
-    "settingsAiUsage": "Utilisation et budget de l'IA",
+    "settingsAiUsage": "Utilisation de l’IA",
     "settingsAiScriptAuthoring": "Rédaction de scripts",
+    "settingsToolSources": "Sources d'outils",
     "settingsAlertTemplatesDetail": "Modèle d'alerte",
     "settingsAlertTemplates": "Modèles d'alerte",
     "settingsApiKeys": "Clés API",
@@ -161,7 +163,12 @@
     "timesheet": "Feuille de temps",
     "vulnerabilities": "Vulnérabilités",
     "workspace": "Assistant IA",
-    "aiAgentsFleetDesign": "Conception de flotte"
+    "aiAgentsFleetDesign": "Conception de flotte",
+    "agreementTemplates": "Modèles de convention",
+    "agreementTemplateDetail": "Modèle de convention",
+    "agreementTemplateNew": "Nouveau modèle de convention",
+    "signedAgreements": "Conventions signées",
+    "settingsTicketing": "Paramètres de tickets"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -224,6 +231,10 @@
       "deliverableTemplates": {
         "title": "Modèles de livrables",
         "description": "Définissez une offre de service une seule fois et appliquez ses livrables à tout client."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Modèles de liste de contrôle de tickets",
+        "description": "Des listes d'étapes réutilisables que vos techniciens peuvent appliquer à n'importe quel ticket."
       }
     }
   },

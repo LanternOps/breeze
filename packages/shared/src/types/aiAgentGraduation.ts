@@ -42,6 +42,11 @@ export type AiAgentGraduationState = (typeof AI_AGENT_GRADUATION_STATES)[number]
 /** Why a `tracking`/`demoted` key isn't `eligible` yet. */
 export const AI_AGENT_GRADUATION_BLOCKED_REASONS = [
   'needs_partner_baseline', 'below_threshold', 'too_recent', 'has_failures', 'not_policy_decidable',
+  // #4442 W05 — the sweep lane's own bar: `sweepPromoteThreshold` verified
+  // rows whose evidence came from a SWEEP-chosen target. Reported AFTER
+  // `below_threshold` so an operator short of both is told about the ordinary
+  // bar first.
+  'below_sweep_threshold',
 ] as const;
 export type AiAgentGraduationBlockedReason = (typeof AI_AGENT_GRADUATION_BLOCKED_REASONS)[number];
 
@@ -72,6 +77,23 @@ export const AI_AGENT_GRADUATION_BY_ORG_LIMIT = 400;
 export interface AiAgentGraduationWindow {
   executed: number;
   verified: number;
+  /**
+   * #4442 W05 — the subset of `verified` whose evidence traces back to a
+   * SCHEDULED SWEEP: either the intent row itself is `trigger_kind =
+   * 'sweep_finding'`, or the subject-anchored fix watch that graded it (W02)
+   * wrote the row. Always `<= verified`. Gated by `sweepPromoteThreshold`.
+   */
+  sweepVerified: number;
+  /**
+   * #4442 W05 — the subset of `executed` with the same sweep provenance (arm
+   * A only in practice: `executed` is written on the intent's own row). It is
+   * the key's SWEEP-LANE EXPOSURE: `sweepPromoteThreshold` is applied only
+   * when this is `> 0`. A key the sweep lane has never acted through (an
+   * alert-lane key) keeps the ordinary P2-5 ladder — otherwise no such key
+   * could ever graduate, and every alert-lane key that met the ordinary bar
+   * would sit at `below_sweep_threshold` forever.
+   */
+  sweepExecuted: number;
   failed: number;
   recurred: number;
   /** ISO timestamp of the window's earliest `verified` row, or null if none. */

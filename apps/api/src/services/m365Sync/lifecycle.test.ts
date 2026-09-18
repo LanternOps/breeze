@@ -89,10 +89,10 @@ describe('every claim escapes the ambient DB context first', () => {
 });
 
 describe('onConnectionConsented (spec §5.8)', () => {
-  it('seeds all six domains due now, bound to the org and connection, and claims them at priority 1', async () => {
+  it('seeds all seven domains due now, bound to the org and connection, and claims them at priority 1', async () => {
     await onConnectionConsented({ id: CONNECTION, orgId: ORG, tenantId: TENANT, status: 'active' });
     expect(mocks.insertedRows.map((r) => r.domain).sort()).toEqual([
-      'ca_policies', 'intune_devices', 'secure_score', 'signin_activity', 'skus', 'users',
+      'ca_policies', 'intune_devices', 'secure_score', 'signin_activity', 'signin_events', 'skus', 'users',
     ]);
     for (const row of mocks.insertedRows) {
       expect(row).toMatchObject({ orgId: ORG, connectionId: CONNECTION });
@@ -110,7 +110,7 @@ describe('onConnectionConsented (spec §5.8)', () => {
 
   it('seeds a DEGRADED connection too', async () => {
     await onConnectionConsented({ id: CONNECTION, orgId: ORG, tenantId: TENANT, status: 'degraded' });
-    expect(mocks.insertedRows).toHaveLength(6);
+    expect(mocks.insertedRows).toHaveLength(7);
     expect(mocks.claim).toHaveBeenCalledOnce();
   });
 
@@ -144,7 +144,7 @@ describe('onConnectionConsented (spec §5.8)', () => {
       await expect(onConnectionConsented({ id: CONNECTION, orgId: ORG, tenantId: TENANT, status: 'active' }))
         .resolves.toBeUndefined();
     } finally { spy.mockRestore(); }
-    expect(mocks.insertedRows).toHaveLength(6);
+    expect(mocks.insertedRows).toHaveLength(7);
   });
 });
 
@@ -156,6 +156,9 @@ describe('onConnectionDisconnected (spec §5.8)', () => {
     ]);
     expect(mocks.deletedTables).not.toContain('m365_secure_score_snapshots');
     expect(mocks.deletedTables).not.toContain('m365_posture_rollups');
+    // #5784 W05: sign-in events are history too. Graph keeps ~30 days, so a
+    // disconnect that dropped them would destroy evidence nothing can reproduce.
+    expect(mocks.deletedTables).not.toContain('m365_signin_events');
     expect(mocks.claim).not.toHaveBeenCalled();
   });
 
@@ -213,7 +216,11 @@ describe('onConnectionUpgraded (spec §5.7, §5.8)', () => {
 
 describe('requestOnDemandSync (spec §5.2)', () => {
   it('claims the five non-sign-in domains at priority 1', async () => {
+    // #5784 W05: BOTH sign-in domains are excluded — signin_events hits
+    // /auditLogs/signIns with its own app-wide bucket, so one technician
+    // pressing "Sync now" must not be able to spend the region's budget.
     expect(ON_DEMAND_SYNC_DOMAINS).not.toContain('signin_activity');
+    expect(ON_DEMAND_SYNC_DOMAINS).not.toContain('signin_events');
     expect(ON_DEMAND_SYNC_DOMAINS).toHaveLength(5);
     await requestOnDemandSync({ orgId: ORG, connectionId: CONNECTION });
     expect(mocks.claim).toHaveBeenCalledWith(ORG, [...ON_DEMAND_SYNC_DOMAINS], 1);

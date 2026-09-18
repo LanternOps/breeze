@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Yükseltilmiş yetkiler",
     "relativeTime": {
       "justNow": "Az önce",
       "minutesAgo": "{{count}}m önce",
@@ -1342,6 +1343,11 @@
       "confirmSuffix": "Bu işlem geri alınamaz."
     },
     "library": {
+      "target": "İçe aktarma hedefi",
+      "allOrgs": "Tüm kuruluşlar (iş ortağı genelinde)",
+      "chooseOrg": "Bir kuruluş seçin",
+      "partnerPermission": "Tüm kuruluşlar için betik içe aktaramazsınız. Bunun yerine bir kuruluş seçin.",
+      "importSuccess": "“{{name}}” içe aktarıldı",
       "title": "Sistem Komut Dosyası Kitaplığı",
       "description": "Komut dosyalarını kuruluşunuza aktarın",
       "searchPlaceholder": "Sistem komut dosyalarını arayın...",

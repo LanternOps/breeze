@@ -84,7 +84,7 @@ function stubSelect(rows: unknown[]) {
     orderBy: () => Promise.resolve(rows),
     then: (resolve: (v: unknown[]) => unknown) => Promise.resolve(rows).then(resolve)
   };
-  dbMock.select.mockReturnValue({ from: () => ({ where: () => terminal }) });
+  dbMock.select.mockReturnValue({ from: () => ({ leftJoin() { return this; }, where: () => terminal }) });
 }
 
 /** Capacity count first, then the row lookup. */
@@ -97,7 +97,7 @@ function stubSelectSequence(...results: unknown[][]) {
       orderBy: () => Promise.resolve(rows),
       then: (resolve: (v: unknown[]) => unknown) => Promise.resolve(rows).then(resolve)
     };
-    return { from: () => ({ where: () => terminal }) };
+    return { from: () => ({ leftJoin() { return this; }, where: () => terminal }) };
   });
 }
 
@@ -123,6 +123,27 @@ describe('tenant variable routes', () => {
   });
 
   describe('GET /tenant-variables', () => {
+    it.each([
+      ['?scope=invalid', 'partner', undefined],
+      ['?scope=org', 'partner', 'ORG_ID_REQUIRED'],
+      ['?scope=partner', 'organization', 'PARTNER_SCOPE_REQUIRED'],
+      ['?scope=partner', 'system', 'PARTNER_SCOPE_REQUIRED']
+    ] as const)('rejects invalid list request %s for %s', async (query, scope, code) => {
+      currentAuth.scope = scope;
+      stubSelect([]);
+      const res = await app.request(`/tenant-variables${query}`);
+      expect(res.status).toBe(400);
+      if (code) expect(await res.json()).toMatchObject({ code });
+      expect(dbMock.select).not.toHaveBeenCalled();
+    });
+
+    it('returns the owning organization name', async () => {
+      stubSelect([{ ...makeRow(), orgName: 'Acme' }]);
+      const res = await app.request(`/tenant-variables?scope=org&orgId=${ORG_ID}`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data[0]).toMatchObject({ orgId: ORG_ID, orgName: 'Acme' });
+    });
+
     it('returns the plaintext for a non-secret variable', async () => {
       stubSelect([makeRow()]);
       const res = await app.request('/tenant-variables', { headers: { Authorization: 'Bearer token' } });

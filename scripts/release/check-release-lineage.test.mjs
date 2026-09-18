@@ -347,6 +347,50 @@ test('the only release tag promotion consumes and verifies the signed manifest',
   }
 });
 
+test('the out-of-band image promotion workflow keeps every guarantee of the in-release job', () => {
+  // promote-release-images.yml exists so a release whose create-release job
+  // died AFTER signing the image inventory (a stalled asset upload, v0.114.0)
+  // can still get its version tags — without a hand-run `imagetools create`.
+  // It must be at least as strict as promote-signed-release-images.
+  const path = join(REPO_ROOT, '.github', 'workflows', 'promote-release-images.yml');
+  const text = readFileSync(path, 'utf8');
+
+  // Dispatch-only, from main, for one exact tag: never a push/PR/schedule trigger.
+  assert.match(text, /^on:\n  workflow_dispatch:\n    inputs:\n      tag:/m);
+  assert.ok(!/^  (push|pull_request|pull_request_target|schedule|workflow_run):/m.test(text));
+  // Footgun guard (NOT a trust boundary — a dispatch runs the dispatched ref's
+  // copy of this file): it must FAIL the run, never skip it green.
+  assert.ok(text.includes('"$DISPATCH_REF" != "refs/heads/main"'), 'must refuse a non-main dispatch');
+  assert.ok(!/^    if: github\.ref/m.test(text), 'a job-level if: skips green; refuse in a failing step');
+
+  // Moving channels only ever move forward: gated on newest-stable, not just the matrix flag.
+  assert.ok(text.includes('"$MOVING_CHANNELS" == "true" && "$NEWEST_STABLE" == "true"'));
+  assert.ok(text.includes('sort -V | tail -n 1'));
+  assert.ok(text.includes('git/ref/tags/'), 'the tag must be resolved through refs/tags, not an ambiguous ref');
+
+  // Same trust decision: the signed inventory, the official key, exact digests.
+  assert.ok(text.includes('release-image-manifest.mjs verify'));
+  assert.ok(text.includes('RELEASE_MANIFEST_ED25519_PUBLIC_KEY'));
+  assert.ok(text.includes('docker buildx imagetools create'));
+  assert.ok(text.includes('@${SIGNED_IMAGE_DIGEST}'), 'must retag the exact signed digest');
+  assert.ok(!text.includes('docker/build-push-action@'), 'promotion must never rebuild image bytes');
+
+  // The inventory comes from the release run FOR THAT TAG, bound to the tag's commit.
+  assert.ok(text.includes('name: signed-release-image-manifest'));
+  assert.ok(text.includes('run-id:'));
+  assert.ok(text.includes('sourceCommit'), 'manifest sourceCommit must be bound to the tag commit');
+  assert.ok(text.includes('headSha'), 'the source run must be bound to the tag commit');
+
+  // Same image set and moving-channel policy as release.yml.
+  const promotion = jobText(requiredReleaseJob('promote-signed-release-images'));
+  const matrixRows = promotion.match(/- \{ name: [^}]+\}/g);
+  assert.ok(matrixRows && matrixRows.length >= 7);
+  for (const row of matrixRows) assert.ok(text.includes(row), `image matrix drifted: ${row}`);
+  // ...and in the other direction: no image promoted here that release.yml does not promote.
+  const ownRows = text.match(/- \{ name: [^}]+\}/g) ?? [];
+  assert.deepEqual([...ownRows].sort(), [...matrixRows].sort());
+});
+
 test('drift monitoring classifies candidates before the side-branch fallback', () => {
   const driftText = readFileSync(DRIFT_WORKFLOW, 'utf8');
   const classifierIndex = driftText.indexOf('scripts/release/check-release-lineage.sh');

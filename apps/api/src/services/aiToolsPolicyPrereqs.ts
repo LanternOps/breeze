@@ -27,6 +27,8 @@ import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import {
   auditSoftwarePolicyToolEvent,
   summarizeEnforcementChange,
+  AI_AUTO_INSTALL_REFUSAL_MESSAGE,
+  remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
@@ -359,7 +361,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           mode: { type: 'string', enum: ['allowlist', 'blocklist', 'audit'], description: 'Policy mode (required for create)' },
           rules: { type: 'object', description: 'Rules definition: { software: [{ name, vendor?, minVersion?, maxVersion?, catalogId?, reason? }], allowUnknown?: false }' },
           enforceMode: { type: 'boolean', description: 'Whether to enforce (block/uninstall) or just alert (default: false)' },
-          remediationOptions: { type: 'object', description: '{ autoUninstall?: false, notifyUser?: true, gracePeriod?: number, cooldownMinutes?: 30, maintenanceWindowOnly?: false }' },
+          remediationOptions: { type: 'object', description: '{ autoUninstall?: false, notifyUser?: true, gracePeriod?: number, cooldownMinutes?: 30, maintenanceWindowOnly?: false }. autoInstall is NOT settable via AI tools — arming software installation requires a human operator with devices.execute and MFA.' },
           isActive: { type: 'boolean', description: 'Active state (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
         },
@@ -430,6 +432,11 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (!input.name) return JSON.stringify({ error: 'name is required' });
         if (!input.mode) return JSON.stringify({ error: 'mode is required (allowlist, blocklist, or audit)' });
 
+        // Contract-A D4: AI callers may never arm software installation.
+        if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+          return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
+        }
+
         const rows = await db.insert(softwarePolicies).values({
           orgId: owner.orgId,
           partnerId: owner.partnerId,
@@ -480,6 +487,11 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         // only with the partner-wide capability (same gate as the HTTP route).
         if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
           return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
+        }
+
+        // Contract-A D4: AI callers may never arm software installation.
+        if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+          return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
         }
 
         const updates: Record<string, unknown> = {

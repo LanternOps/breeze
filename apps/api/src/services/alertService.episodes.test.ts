@@ -245,9 +245,12 @@ beforeEach(() => {
   callOrder.length = 0;
   insertedAlerts.length = 0;
   vi.clearAllMocks();
-  resolveMonitorsForDeviceMock.mockResolvedValue([
-    { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: 'p1', sourceLevel: 'organization' },
-  ]);
+  resolveMonitorsForDeviceMock.mockResolvedValue({
+    kind: 'resolved',
+    monitors: [
+      { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: 'p1', sourceLevel: 'organization' },
+    ],
+  });
   isCooldownActiveMock.mockResolvedValue(false);
   isFlappingMock.mockResolvedValue(false);
   recordMonitorEvaluationMock.mockImplementation(async () => {
@@ -332,7 +335,7 @@ describe('evaluateDeviceAlerts — monitor episodes (#5290)', () => {
   });
 
   it('does NOT touch episodes for a rule with no managedByMonitorId', async () => {
-    resolveMonitorsForDeviceMock.mockResolvedValue([]);
+    resolveMonitorsForDeviceMock.mockResolvedValue({ kind: 'resolved', monitors: [] });
     pushSweepQueue({ triggered: true, managedByMonitorId: null, monitorRow: null });
 
     await evaluateDeviceAlerts(DEVICE_ID);

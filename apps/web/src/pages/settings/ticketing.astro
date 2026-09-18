@@ -1,6 +1,14 @@
 ---
-// Ticketing config now lives on the Partner settings hub (issue #1327). Keep this
-// route as a permanent alias so existing bookmarks / in-app links land on the
-// new Ticketing tab instead of 404ing.
-return Astro.redirect('/settings/partner#ticketing', 301);
+// Ticketing config gets its own standalone page again (M0, #6224) — symmetrical
+// with /settings/billing. The old /settings/partner#ticketing embed (issue
+// #1327) is now a link-out card, not a mount point; this file was a permanent
+// redirect *to* that embed, so it becomes the real page instead of a second
+// redirect layer (a redirect to this exact path would be a no-op route
+// conflict with itself).
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import TicketingHubPage from '../../components/settings/TicketingHubPage';
 ---
+
+<DashboardLayout titleKey="titles.settingsTicketing">
+  <TicketingHubPage client:load />
+</DashboardLayout>

@@ -30,6 +30,7 @@ describe('GET /config', () => {
   const originalReg = process.env.ENABLE_REGISTRATION;
 
   beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', undefined);
     delete process.env.BREEZE_BILLING_URL;
     delete process.env.ENABLE_REGISTRATION;
     mocks.authRef.current = {
@@ -54,6 +55,7 @@ describe('GET /config', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (originalEnv === undefined) {
       delete process.env.BREEZE_BILLING_URL;
     } else {
@@ -75,14 +77,14 @@ describe('GET /config', () => {
   it('returns both flags false when BREEZE_BILLING_URL unset', async () => {
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false });
+    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false });
   });
 
   it('returns both flags true when BREEZE_BILLING_URL is set', async () => {
     process.env.BREEZE_BILLING_URL = 'http://localhost:4000';
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false });
+    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, aiAgentsSweepAct: false });
   });
 
   it('features.aiOperatorTasks is false when neither AI Operator env var is set', async () => {
@@ -111,6 +113,29 @@ describe('GET /config', () => {
     vi.stubEnv('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', 'true');
     const { body } = await request();
     expect(body.features.aiOperatorTasks).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    [undefined, false],
+    ['false', false],
+    ['true', true],
+  ])('features.aiAgentsSweepAct reflects deployment flag %s', async (flag, enabled) => {
+    vi.stubEnv('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', flag);
+    const { status, body } = await request();
+    expect(status).toBe(200);
+    expect(body.features.aiAgentsSweepAct).toBe(enabled);
+  });
+
+  it('features.toolSources is false when TOOL_SOURCES_ENABLED is unset', async () => {
+    const { body } = await request();
+    expect(body.features.toolSources).toBe(false);
+  });
+
+  it('features.toolSources is true when TOOL_SOURCES_ENABLED=true', async () => {
+    vi.stubEnv('TOOL_SOURCES_ENABLED', 'true');
+    const { body } = await request();
+    expect(body.features.toolSources).toBe(true);
     vi.unstubAllEnvs();
   });
 

@@ -19,6 +19,7 @@ import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 import { useOrgStore } from '@/stores/orgStore';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
+import AlertDeviceInfo from './AlertDeviceInfo';
 import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
 import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
 import {
@@ -49,6 +50,9 @@ type Alert = {
   orgId: string;
   ruleId?: string;
   ruleName?: string;
+  // #5287 — the authored monitor behind a compiled rule, when this alert was
+  // raised by a rule compiled from a monitor definition.
+  monitorId?: string | null;
   triggeredAt: string;
   acknowledgedAt?: string;
   acknowledgedBy?: string;
@@ -467,26 +471,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.deviceInformation')}</h3>
           <div className="space-y-3">
-            <div>
-              <p className="text-xs text-muted-foreground">{t('alertDetailPage.device')}</p>
-              <a
-                href={`/devices/${alert.deviceId}`}
-                className="flex items-center gap-1 text-sm font-medium hover:underline"
-              >
-                {alert.deviceName}
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            </div>
-            {alert.ruleName && (
-              <div>
-                <p className="text-xs text-muted-foreground">{t('alertDetailPage.alertRule')}</p>
-                <p className="text-sm font-medium">{alert.ruleName}</p>
-                <a href="/configuration-policies" className="mt-1 flex items-center gap-1 text-xs hover:underline">
-                  {t('alertDetailPage.managedInConfigurationPolicies')}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-            )}
+            <AlertDeviceInfo
+              deviceId={alert.deviceId}
+              deviceName={alert.deviceName}
+              ruleName={alert.ruleName}
+              monitorId={alert.monitorId}
+            />
           </div>
         </div>
 

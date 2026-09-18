@@ -1474,6 +1474,49 @@ describe('portal ticket attachments (W08 #3902)', () => {
     expect(res.headers.get('Content-Disposition')).toBe(`inline; filename="photo.png"; filename*=UTF-8''photo.png`);
   });
 
+  // Execution plane W05 (#5716, spec §6.3) — an artifact-backed attachment is
+  // the whole point of the attach-to-ticket flow: a technician puts a finding in
+  // front of a CUSTOMER. This route serves that customer.
+  it('serves an artifact-backed attachment, passing the attachment org to openBytes', async () => {
+    // Without `artifactId` and `orgId` in the projection, openBytes reads both
+    // as undefined and raises AttachmentExpiredError unconditionally — so every
+    // artifact download 503s at the customer while the file is perfectly alive.
+    rigContent([TICKET_ROW], [{
+      attachment: attRow({
+        storageBackend: 'artifact',
+        storageKey: null,
+        data: null,
+        artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        orgId: 'o-1',
+      }),
+    }]);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(200);
+    expect(openBytesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ storageBackend: 'artifact', artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }),
+      { orgId: 'o-1' },
+    );
+  });
+
+  it('answers 410, not 503, when the attachment artifact has expired', async () => {
+    // A 503 tells the customer to retry something that will never work, and
+    // fires a Sentry exception on every attempt. An expired file is a 410.
+    const { AttachmentExpiredError } = await import('../../services/ticketAttachmentStorage');
+    openBytesMock.mockRejectedValue(new AttachmentExpiredError());
+    rigContent([TICKET_ROW], [{
+      attachment: attRow({
+        storageBackend: 'artifact', storageKey: null, data: null, artifactId: null, orgId: 'o-1',
+      }),
+    }]);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(410);
+    expect((await res.json()).error).toMatch(/expired/i);
+  });
+
   it('304s on a matching If-None-Match without fetching the bytes', async () => {
     rigContent([TICKET_ROW], [{ attachment: attRow() }]);
     const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {

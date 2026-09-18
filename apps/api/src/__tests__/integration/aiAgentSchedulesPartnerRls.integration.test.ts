@@ -32,7 +32,7 @@ import { AI_AGENT_RUN_PROFILES, AI_AGENT_SCHEDULE_KINDS, AI_SWEEP_KINDS, type Ai
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents, aiAgentSchedules, actionIntents, devices, reports } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
-import { listSchedules } from '../../services/aiAgents/scheduleService';
+import { effectiveSchedule, listSchedules } from '../../services/aiAgents/scheduleService';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const createdSchedules: string[] = [];
@@ -194,6 +194,56 @@ describe('ai_agent_schedules RLS — dual-axis (2026-09-23 migration)', () => {
           db
             .insert(aiAgentSchedules)
             .values({ ...BASE, orgId: org.id, partnerId: null, agentId, baselineScheduleId: null, createdBy: by })
+            .returning(),
+        ),
+      '23514',
+    );
+  });
+
+  // #5751 W03 (#5754). The set-equality contract below proves the CHECK's
+  // vocabulary matches the catalog, but not that a real INSERT of the new
+  // value actually lands — a constraint re-declared in a later migration
+  // could have failed to replace the shipped one and this is what notices.
+  it('accepts a baseline sweeping every kind, expiring_certs included', async () => {
+    const partner = await createPartner();
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const rows = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          cron: BASE.cron,
+          sweepKinds: [...AI_SWEEP_KINDS],
+          orgId: null,
+          partnerId: partner.id,
+          agentId,
+          baselineScheduleId: null,
+          createdBy: by,
+        })
+        .returning(),
+    );
+    expect(rows[0]?.sweepKinds).toContain('expiring_certs');
+    createdSchedules.push(rows[0]!.id);
+  });
+
+  it('still rejects that same array plus a bogus value (23514)', async () => {
+    const partner = await createPartner();
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    await expectSqlState(
+      () =>
+        withDbAccessContext(partnerContext(partner.id, []), () =>
+          db
+            .insert(aiAgentSchedules)
+            .values({
+              cron: BASE.cron,
+              sweepKinds: [...AI_SWEEP_KINDS, 'not_a_real_kind'] as never,
+              orgId: null,
+              partnerId: partner.id,
+              agentId,
+              baselineScheduleId: null,
+              createdBy: by,
+            })
             .returning(),
         ),
       '23514',
@@ -452,6 +502,115 @@ describe('ai_agent_schedules RLS — dual-axis (2026-09-23 migration)', () => {
 // production (#3828 blocker 1). A source-scan unit test cannot see this: the
 // migration's CHECK and @breeze/shared's AI_SWEEP_KINDS are two independently
 // hand-maintained lists with nothing structurally tying them together.
+// #4442 W04 — `act_mode` is the arming switch for UNATTENDED Tier-3 execution,
+// so its tighten-only shape is asserted against real Postgres rather than only
+// through the pure merge: a partner arms, an org may disarm and may never arm,
+// and every unresolved combination is NOT armed.
+describe('ai_agent_schedules.act_mode — tighten-only against live Postgres (#4442 W04)', () => {
+  async function armedBaseline(partnerId: string, actMode: boolean | null) {
+    const by = await creator(partnerId);
+    const agentId = await createAgent(partnerId, by);
+    const [row] = await withDbAccessContext(partnerContext(partnerId, []), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          ...BASE, orgId: null, partnerId, agentId, baselineScheduleId: null, createdBy: by, actMode,
+        })
+        .returning(),
+    );
+    createdSchedules.push(row!.id);
+    return { baseline: row!, by, agentId };
+  }
+
+  async function orgOverride(
+    orgId: string,
+    partnerId: string,
+    baselineId: string,
+    agentId: string,
+    by: string,
+    actMode: boolean | null,
+  ) {
+    const [row] = await withDbAccessContext(orgContext(orgId, partnerId), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          ...BASE, orgId, partnerId: null, agentId, baselineScheduleId: baselineId, createdBy: by, actMode,
+        })
+        .returning(),
+    );
+    createdSchedules.push(row!.id);
+    return row!;
+  }
+
+  it('a partner arming act_mode resolves ARMED for an org with no override', async () => {
+    const partner = await createPartner();
+    const { baseline } = await armedBaseline(partner.id, true);
+
+    expect(effectiveSchedule(baseline, null).actMode).toBe(true);
+  });
+
+  it('an org override with act_mode = false resolves DISARMED', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const { baseline, by, agentId } = await armedBaseline(partner.id, true);
+    const override = await orgOverride(org.id, partner.id, baseline.id, agentId, by, false);
+
+    expect(override.actMode).toBe(false);
+    expect(effectiveSchedule(baseline, override).actMode).toBe(false);
+  });
+
+  it('an org override with act_mode = true over an UNARMED baseline still resolves disarmed', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const { baseline, by, agentId } = await armedBaseline(partner.id, null);
+    const override = await orgOverride(org.id, partner.id, baseline.id, agentId, by, true);
+
+    // The column itself accepts `true` on an override — the app layer is what
+    // refuses an org-scoped caller setting it (`act_mode_org_cannot_arm`) — so
+    // the merge has to hold even for a row written some other way.
+    expect(effectiveSchedule(baseline, override).actMode).toBe(false);
+  });
+
+  it('act_mode is NULL by default on both arms — no backfill materialised a false', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const [baseline] = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({ ...BASE, orgId: null, partnerId: partner.id, agentId, baselineScheduleId: null, createdBy: by })
+        .returning(),
+    );
+    createdSchedules.push(baseline!.id);
+    const override = await orgOverride(org.id, partner.id, baseline!.id, agentId, by, null);
+
+    expect(baseline!.actMode).toBeNull();
+    expect(override.actMode).toBeNull();
+    expect(effectiveSchedule(baseline!, override).actMode).toBe(false);
+  });
+
+  it('a cross-partner forge of an ARMED baseline is still 42501 — act_mode changes no tenancy', async () => {
+    const attacker = await createPartner();
+    const victim = await createPartner();
+    const by = await creator(attacker.id);
+    const agentId = await createAgent(attacker.id, by);
+
+    await expectSqlState(
+      () =>
+        withDbAccessContext(partnerContext(attacker.id, []), () =>
+          db
+            .insert(aiAgentSchedules)
+            .values({
+              ...BASE, orgId: null, partnerId: victim.id, agentId, baselineScheduleId: null, createdBy: by, actMode: true,
+            })
+            .returning(),
+        ),
+      '42501',
+    );
+  });
+});
+
 describe('ai_agent_schedules_kinds_chk — DB constraint matches AI_SWEEP_KINDS', () => {
   it('the constraint value set equals AI_SWEEP_KINDS exactly', async () => {
     const rows = (await db.execute(sql`

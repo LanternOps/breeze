@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { scriptExecutions, scripts } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
@@ -53,6 +53,12 @@ scriptsRoutes.get(
         // the operator to guess. NULL on rows written before the column.
         runAs: scriptExecutions.runAs,
         targetSessionId: scriptExecutions.targetSessionId,
+        aiInitiatorKind: scriptExecutions.aiInitiatorKind,
+        // Presence only. The ids themselves are an authorization decision, not a
+        // projection: an ai_sessions transcript is owner-bound (aiAgent.ts:229),
+        // and a device that moved tenants can hold a pointer into the source org.
+        // Disclosure happens in GET /devices/:id/ai-origin, per-row, on demand.
+        hasAiOrigin: sql<boolean>`(${scriptExecutions.aiSessionId} IS NOT NULL OR ${scriptExecutions.aiAgentRunId} IS NOT NULL)`,
         startedAt: scriptExecutions.startedAt,
         completedAt: scriptExecutions.completedAt,
         createdAt: scriptExecutions.createdAt

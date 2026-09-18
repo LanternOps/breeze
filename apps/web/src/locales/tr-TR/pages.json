@@ -17,6 +17,7 @@
     "adminThirdPartyCatalog": "Üçüncü Taraf Kataloğu",
     "adminTrustAct": "Ortak güven eylemi",
     "adminTrustQueue": "Ortak güven kuyruğu",
+    "adminSendingDomains": "İş ortağı gönderim alan adları",
     "adminUsersDetailDevices": "Kullanıcı cihazları",
     "aiAgentsImpact": "Yapay Zeka Etkisi",
     "aiAgentsRunsDetail": "Çalıştırma Detayı",
@@ -126,8 +127,9 @@
     "sensitiveData": "Hassas Veriler",
     "settingsAccessReviews": "Erişim İncelemeleri",
     "settingsAiAgents": "Yapay Zeka Aracıları",
-    "settingsAiUsage": "Yapay Zeka Kullanımı ve Bütçe",
+    "settingsAiUsage": "Yapay Zeka Kullanımı",
     "settingsAiScriptAuthoring": "Betik yazımı",
+    "settingsToolSources": "Araç Kaynakları",
     "settingsAlertTemplatesDetail": "Uyarı Şablonu",
     "settingsAlertTemplates": "Uyarı Şablonları",
     "settingsApiKeys": "API Anahtarları",
@@ -161,7 +163,12 @@
     "timesheet": "Zaman Çizelgesi",
     "vulnerabilities": "Güvenlik Açıkları",
     "workspace": "Yapay Zeka Asistanı",
-    "aiAgentsFleetDesign": "Filo Tasarımı"
+    "aiAgentsFleetDesign": "Filo Tasarımı",
+    "agreementTemplates": "Anlaşma şablonları",
+    "agreementTemplateDetail": "Anlaşma şablonu",
+    "agreementTemplateNew": "Yeni anlaşma şablonu",
+    "signedAgreements": "İmzalı anlaşmalar",
+    "settingsTicketing": "Bilet Ayarları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -224,6 +231,10 @@
       "deliverableTemplates": {
         "title": "Teslimat şablonları",
         "description": "Bir hizmet katmanını bir kez tanımlayın ve teslimatlarını istediğiniz müşteriye uygulayın."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Bilet kontrol listesi şablonları",
+        "description": "Teknisyenlerinizin herhangi bir bilete uygulayabileceği yeniden kullanılabilir adım listeleri."
       }
     }
   },

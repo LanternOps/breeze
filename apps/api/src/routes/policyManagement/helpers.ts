@@ -368,6 +368,22 @@ export function complianceSiteCondition(allowedSiteIds?: string[] | null): SQL |
 }
 
 /**
+ * Exact-device predicate for aggregate queries on automation_policy_compliance.
+ *
+ * The site axis above is not a substitute (#6096): a device-LESS AI analysis run
+ * carries `allowedDeviceIds` with NO `allowedSiteIds`, so a site-only narrowing
+ * leaves it reading fleet-wide counts. null/undefined means unrestricted; an
+ * empty allowlist compiles to a predicate that matches nothing (callers
+ * short-circuit before reaching it, but the fallback must fail closed).
+ */
+export function complianceDeviceCondition(
+  allowedDeviceIds?: readonly string[] | null
+): SQL | undefined {
+  if (!allowedDeviceIds) return undefined;
+  return inArray(automationPolicyCompliance.deviceId, [...allowedDeviceIds]);
+}
+
+/**
  * Per-policy compliance summaries for legacy automation policies.
  * @param allowedSiteIds Site allowlist from the caller's permissions; only
  *   devices in these sites are counted. null/undefined = unrestricted, [] = none.
@@ -475,15 +491,19 @@ export async function getConfigPolicyComplianceRuleInfo(
  * and configPolicyId IS NOT NULL), scoped to a set of featureLinkIds.
  * @param allowedSiteIds Site allowlist from the caller's permissions; only
  *   devices in these sites are counted. null/undefined = unrestricted, [] = none.
+ * @param allowedDeviceIds Exact-device allowlist (`auth.allowedDeviceIds`, set
+ *   only for AI agent runs); only these devices are counted. null/undefined =
+ *   unrestricted, [] = none. Intersected with the site allowlist.
  */
 export async function getConfigPolicyComplianceStats(
   featureLinkIds: string[],
-  allowedSiteIds?: string[] | null
+  allowedSiteIds?: string[] | null,
+  allowedDeviceIds?: readonly string[] | null
 ): Promise<{
   complianceRows: Array<{ status: string; count: number }>;
   byFeatureLink: Map<string, ReturnType<typeof buildComplianceSummary>>;
 }> {
-  if (featureLinkIds.length === 0 || allowedSiteIds?.length === 0) {
+  if (featureLinkIds.length === 0 || allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0) {
     return {
       complianceRows: [],
       byFeatureLink: new Map(),
@@ -502,7 +522,8 @@ export async function getConfigPolicyComplianceStats(
         isNull(automationPolicyCompliance.policyId),
         isNotNull(automationPolicyCompliance.configPolicyId),
         inArray(automationPolicyCompliance.configPolicyId, featureLinkIds),
-        complianceSiteCondition(allowedSiteIds)
+        complianceSiteCondition(allowedSiteIds),
+        complianceDeviceCondition(allowedDeviceIds)
       )
     )
     .groupBy(automationPolicyCompliance.configPolicyId, automationPolicyCompliance.status);

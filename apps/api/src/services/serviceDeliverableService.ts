@@ -10,6 +10,9 @@ import { users } from '../db/schema/users';
 import { reports, reportRuns } from '../db/schema/reports';
 import { orgDocuments } from '../db/schema/orgDocuments';
 import { ticketCategories } from '../db/schema/tickets';
+import { ticketChecklistItems, ticketChecklistTemplateItems } from '../db/schema/ticketChecklists';
+import { checklistCountsForTickets } from './ticketChecklistService';
+import { ticketComments } from '../db/schema/portal';
 import type {
   CreateDeliverableInput, UpdateDeliverableInput, DeliverOccurrenceInput, WaiveOccurrenceInput,
   RescheduleOccurrenceInput, EvidenceRef,
@@ -20,6 +23,7 @@ import { addDaysISO } from './contractMath';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
 import { captureException } from './sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { assertChecklistTemplateUsableByOrg } from './checklistTemplateReference';
 
 /**
  * Spec #5573 §5–§7, §12. Every read and write filters by `orgId` in addition to
@@ -47,6 +51,18 @@ export interface DeliverableSummary extends ServiceDeliverableRow {
 export interface OccurrenceView extends ServiceDeliverableOccurrenceRow {
   late: boolean;
   evidence: Array<{ id: string; kind: 'document' | 'report_run'; documentId: string | null; reportId: string | null; reportRunId: string | null; createdAt: string }>;
+  /**
+   * #5808 W03 — MSP-only checklist progress for the occurrence's ticket. `null`
+   * when the occurrence has no ticket or its ticket has no checklist.
+   *
+   * Present on EVERY OccurrenceView, not just the list: the drawer replaces a
+   * row in place with whatever a mutation returns, so a mutation view that
+   * omitted this would blank the chip the moment an occurrence is delivered.
+   *
+   * The customer portal builds its own DTOs in services/portal/serviceReadModel.ts
+   * and must never gain this field (spec §5).
+   */
+  checklist: { done: number; total: number } | null;
 }
 
 /**
@@ -154,7 +170,7 @@ async function loadSummaries(orgId: string, filters: { id?: string; contractId?:
 // Reference validation (create / update)
 // ---------------------------------------------------------------------------
 
-type RefInput = Pick<UpdateDeliverableInput, 'contractId' | 'ownerUserId' | 'ticketCategoryId' | 'autoEvidenceReportId'>;
+type RefInput = Pick<UpdateDeliverableInput, 'contractId' | 'ownerUserId' | 'ticketCategoryId' | 'autoEvidenceReportId' | 'checklistTemplateId'>;
 
 /** Only keys PRESENT on the input are validated, so a PATCH that omits a
  *  reference never re-validates it (and a null clears it without a lookup). */
@@ -164,7 +180,7 @@ async function validateReferences(orgId: string, input: RefInput, executor: DbEx
       .where(and(eq(contracts.id, input.contractId), eq(contracts.orgId, orgId))).limit(1);
     if (!c) throw new DeliverableServiceError('Contract does not belong to this organization', 400, 'CONTRACT_NOT_IN_ORG');
   }
-  if (input.ownerUserId != null || input.ticketCategoryId != null) {
+  if (input.ownerUserId != null || input.ticketCategoryId != null || input.checklistTemplateId != null) {
     const [org] = await executor.select({ partnerId: organizations.partnerId }).from(organizations)
       .where(eq(organizations.id, orgId)).limit(1);
     if (!org) throw notFound();
@@ -177,6 +193,15 @@ async function validateReferences(orgId: string, input: RefInput, executor: DbEx
       const [cat] = await executor.select({ id: ticketCategories.id }).from(ticketCategories)
         .where(and(eq(ticketCategories.id, input.ticketCategoryId), eq(ticketCategories.partnerId, org.partnerId))).limit(1);
       if (!cat) throw new DeliverableServiceError('Ticket category must belong to the organization\'s partner', 400, 'CATEGORY_NOT_ALLOWED');
+    }
+    if (input.checklistTemplateId != null) {
+      // #5808 W03. The FK is single-column on purpose (a composite one could
+      // never match a partner-wide template), so this app-layer check IS the
+      // constraint. Validated against the ORG'S partner rather than the actor's:
+      // the deliverable's org is what the sweep will later fan the template out
+      // to, and requireOrgAccess has already established the actor may write
+      // here. A refusal is 404, never 403.
+      await assertChecklistTemplateUsableByOrg(input.checklistTemplateId, orgId, org.partnerId, executor);
     }
   }
   if (input.autoEvidenceReportId != null) {
@@ -273,6 +298,8 @@ export async function createDeliverable(orgId: string, input: CreateDeliverableI
       autoEvidenceReportId: input.autoEvidenceReportId ?? null,
       ownerUserId: input.ownerUserId ?? null,
       ticketCategoryId: input.ticketCategoryId ?? null,
+      instructions: input.instructions ?? null,
+      checklistTemplateId: input.checklistTemplateId ?? null,
       portalVisible: input.portalVisible,
       sortOrder: input.sortOrder,
       createdBy: actor.userId,
@@ -373,9 +400,14 @@ function toEvidenceView(e: EvidenceListRow): OccurrenceView['evidence'][number] 
   return { id: e.id, kind: e.kind, documentId: e.documentId, reportId: e.reportId, reportRunId: e.reportRunId, createdAt: e.createdAt.toISOString() };
 }
 
-function toView(loaded: LoadedOccurrence, evidence: EvidenceListRow[], today: string): OccurrenceView {
+function toView(
+  loaded: LoadedOccurrence,
+  evidence: EvidenceListRow[],
+  today: string,
+  checklist: { done: number; total: number } | null = null,
+): OccurrenceView {
   const { artifactRequired: _a, completionMode: _c, graceDays: _g, leadDays: _l, ...row } = loaded;
-  return { ...row, late: isLate(row, today), evidence: evidence.map(toEvidenceView) };
+  return { ...row, late: isLate(row, today), evidence: evidence.map(toEvidenceView), checklist };
 }
 
 async function loadView(orgId: string, occurrenceId: string, executor: DbExecutor): Promise<OccurrenceView> {
@@ -383,7 +415,11 @@ async function loadView(orgId: string, occurrenceId: string, executor: DbExecuto
   const evidence = await executor.select(evidenceColumns).from(serviceDeliverableEvidence)
     .where(and(eq(serviceDeliverableEvidence.occurrenceId, occurrenceId), eq(serviceDeliverableEvidence.orgId, orgId)))
     .orderBy(asc(serviceDeliverableEvidence.createdAt));
-  return toView(loaded, evidence, todayISO());
+  // The chip has to survive a mutation: the drawer swaps the row in place with
+  // whatever comes back here, so omitting the summary would blank it on every
+  // deliver/waive/reschedule.
+  const counts = loaded.ticketId ? await checklistCountsForTickets([loaded.ticketId]) : null;
+  return toView(loaded, evidence, todayISO(), counts?.get(loaded.ticketId!) ?? null);
 }
 
 async function countEvidence(orgId: string, occurrenceId: string, executor: DbExecutor): Promise<number> {
@@ -486,8 +522,18 @@ export async function listOccurrences(
     list.push(e);
     byOccurrence.set(e.occurrenceId, list);
   }
+  // ONE grouped query for every occurrence's checklist progress, folded into
+  // the payload the drawer already fetches. The alternative — 24 self-fetching
+  // checklist cards on drawer open — is 24 requests for a chip.
+  const ticketIds = rows.map((r) => r.ticketId).filter((v): v is string => !!v);
+  const counts = ticketIds.length > 0 ? await checklistCountsForTickets(ticketIds) : null;
   const today = todayISO();
-  return rows.map((r) => toView(r, byOccurrence.get(r.id) ?? [], today));
+  return rows.map((r) => toView(
+    r,
+    byOccurrence.get(r.id) ?? [],
+    today,
+    r.ticketId ? counts?.get(r.ticketId) ?? null : null,
+  ));
 }
 
 export async function deliverOccurrence(
@@ -831,6 +877,8 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
       ownerUserId: serviceDeliverables.ownerUserId,
       ticketCategoryId: serviceDeliverables.ticketCategoryId,
       description: serviceDeliverables.description,
+      instructions: serviceDeliverables.instructions,
+      checklistTemplateId: serviceDeliverables.checklistTemplateId,
     }).from(serviceDeliverables).where(eq(serviceDeliverables.id, d.id)).limit(1);
 
   // Any failure other than Service Management `off` (and a stale owner or
@@ -859,6 +907,79 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
   await db.update(serviceDeliverableOccurrences)
     .set({ ticketId: created.ticketId, updatedAt: new Date() })
     .where(eq(serviceDeliverableOccurrences.id, occ.id));
+
+  // ── #5808 W03: seed the checklist, then snapshot the instructions ────────
+  //
+  // Both run on the ambient `db` handle, inside the SAME per-occurrence system
+  // transaction as the claim and the ticket creation (see this function's
+  // docstring). A failure here therefore rolls the claim back and the
+  // occurrence retries tomorrow, rather than being stranded `open` with a
+  // ticket and no checklist. Do NOT open a nested transaction here, and do not
+  // reach for a fresh pool handle.
+  if (cfg?.checklistTemplateId) {
+    const steps = await db.select({
+        id: ticketChecklistTemplateItems.id,
+        label: ticketChecklistTemplateItems.label,
+        detail: ticketChecklistTemplateItems.detail,
+      })
+      .from(ticketChecklistTemplateItems)
+      .where(eq(ticketChecklistTemplateItems.templateId, cfg.checklistTemplateId))
+      .orderBy(asc(ticketChecklistTemplateItems.sortOrder), asc(ticketChecklistTemplateItems.label));
+    if (steps.length === 0) {
+      // A referenced template with NO items is indistinguishable, downstream,
+      // from a deliverable that was never given a checklist at all: the ticket
+      // opens, `checklist` reads null, and nothing anywhere says a checklist
+      // was supposed to be here. That is the exact silent-empty failure the
+      // delete guard exists to prevent, arriving by a different route (an admin
+      // removed every step from a template a live deliverable still points at).
+      // Warn so it is visible in logs and Sentry rather than only in a customer
+      // complaint weeks later. Matches the service_management_off branch above.
+      console.warn(
+        '[deliverables] a deliverable references a checklist template with no items — its ticket opened with an empty checklist',
+        `orgId=${d.orgId}`, `deliverableId=${d.id}`, `checklistTemplateId=${cfg.checklistTemplateId}`,
+      );
+    } else {
+      await db.insert(ticketChecklistItems).values(steps.map((step, index) => ({
+        // The DELIVERABLE's org. NEVER the template's, which is NULL for a
+        // partner-wide template — a partner-wide template produces org-scoped
+        // rows inside each customer's own tenant, and no cross-tenant row is
+        // ever created.
+        orgId: d.orgId,
+        ticketId: created.ticketId,
+        label: step.label,
+        detail: step.detail,
+        position: index,
+        source: 'deliverable' as const,
+        sourceTemplateItemId: step.id,
+        // NULL, not DELIVERABLE_SWEEP_ACTOR.userId: that is the nil UUID
+        // '00000000-…-0000' and is not a users row, so writing it would 23503
+        // and abort this occurrence every single night.
+        createdBy: null,
+      })));
+    }
+  }
+
+  if (cfg?.instructions) {
+    // A point-in-time SNAPSHOT, matching the nameSnapshot precedent: editing
+    // the deliverable's instructions tomorrow must not silently rewrite what a
+    // technician was told to do last month.
+    //
+    // commentType 'internal' matches deliverableAutoEvidence.ts — the other
+    // comment this same sweep posts on this same ticket. `isPublic: false` is
+    // what keeps it out of the portal (routes/portal/tickets.ts filters on
+    // is_public = true), and originPrincipalKind 'system' keeps the helpdesk
+    // loop guard from ever re-admitting it as a human reply.
+    await db.insert(ticketComments).values({
+      ticketId: created.ticketId,
+      userId: null,
+      authorName: 'Breeze',
+      authorType: 'system',
+      commentType: 'internal',
+      content: `Internal instructions for this deliverable:\n\n${cfg.instructions}`,
+      isPublic: false,
+      originPrincipalKind: 'system',
+    });
+  }
   return 1;
 }
 /**
@@ -866,13 +987,21 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
  * untouched: a missed deliverable's work may still be in flight, and closing
  * its ticket would destroy that signal.
  */
-export async function markDueOccurrencesMissedForDeliverable(d: SweepDeliverable, today: string): Promise<number> {
-  const cutoff = addDaysISO(today, -d.graceDays);   // due_at < cutoff ⇔ due_at + grace < today (isPastGrace)
+export async function markDueOccurrencesMissedForDeliverable(
+  d: SweepDeliverable, today: string, options: { closing?: boolean } = {},
+): Promise<number> {
+  // Closing mode (#5609): the deliverable has left its window (inactive or past
+  // effective_until), so the main sweep will never visit it again. Retire every
+  // not-yet-terminal occurrence, including `scheduled` rows that never opened,
+  // but keep the grace window: `active` is reversible, and a paused deliverable
+  // must not stamp `missed` earlier than the normal sweep would.
+  const statuses = options.closing ? (['scheduled', ...MISSABLE] as const) : MISSABLE;
+  const cutoff = addDaysISO(today, -d.graceDays);
   const rows = await db.update(serviceDeliverableOccurrences)
     .set({ status: 'missed', updatedAt: new Date() })
     .where(and(
       eq(serviceDeliverableOccurrences.deliverableId, d.id),
-      inArray(serviceDeliverableOccurrences.status, MISSABLE),
+      inArray(serviceDeliverableOccurrences.status, statuses),
       lt(serviceDeliverableOccurrences.dueAt, cutoff),
     ))
     .returning({ id: serviceDeliverableOccurrences.id });

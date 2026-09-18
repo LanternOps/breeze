@@ -7,7 +7,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
-import { devices, alerts } from '../db/schema';
+import { devices } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
@@ -33,6 +33,7 @@ import type { ToolExecutionContext } from './toolExecutionContext';
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { registerVulnerabilityTools } from './aiToolsVulnerability';
+import { registerWorkspaceTools } from './workspace/workspaceTools';
 import { registerBackupTools } from './aiToolsBackup';
 import { registerBackupVmTools } from './aiToolsBackupVm';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
@@ -87,13 +88,13 @@ import { registerDeliverableTools } from './aiToolsDeliverables';
 import { registerQuoteTools } from './aiToolsQuotes';
 import { registerOrgTools } from './aiToolsOrgs';
 import { registerPamTools } from './aiToolsPam';
+import { registerExportTools } from './aiToolsExport';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
 // getToolTier so checkGuardrails can gate them; import the tier tables for fallback.
 import { m365ToolTiers, registerM365Tools } from './aiToolsM365';
 import { googleToolTiers } from './aiToolsGoogle';
-
 // ============================================
 // Shared Types
 // ============================================
@@ -225,13 +226,22 @@ export async function enforceDeviceArgs(
   return { ok: true };
 }
 
-export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(alerts.id, alertId)];
-  const orgCond = auth.orgCondition(alerts.orgId);
-  if (orgCond) conditions.push(orgCond);
-  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  return alert || null;
-}
+/**
+ * Resolve one alert the caller may actually reach, on ALL THREE axes (org,
+ * exact-device, site).
+ *
+ * RE-EXPORT, not a second body (#6096 I6 follow-up). This module and
+ * `aiToolsAlerts.ts` each carried a byte-identical copy with their own
+ * callers — exactly the shape that drifted once already. The implementation
+ * lives in `aiToolsAlerts.ts` and is re-exported here because THIS is the
+ * import direction that already exists at runtime (this module imports
+ * `registerAlertTools` from that one); pointing the new edge the other way
+ * would close a genuine ESM cycle between the tool hub and one of its domain
+ * modules. Both public paths — `services/aiTools` and `services/aiToolsAlerts`
+ * (which `aiToolsTicketing.ts` imports) — keep working and now resolve to the
+ * SAME function object, pinned by `aiTools.findAlertWithAccess.test.ts`.
+ */
+export { findAlertWithAccess } from './aiToolsAlerts';
 
 export function resolveWritableToolOrgId(
   auth: AuthContext,
@@ -327,7 +337,10 @@ registerAiAgentGovernanceTools(aiTools);
 registerUITools(aiTools);
 registerPamTools(aiTools);
 registerVulnerabilityTools(aiTools);
+// Execution plane W04 — sandbox workspace tools (services/workspace/).
+registerWorkspaceTools(aiTools);
 registerM365Tools(aiTools);
+registerExportTools(aiTools);
 
 // ============================================
 // Exports
@@ -340,7 +353,8 @@ registerM365Tools(aiTools);
 // behavior identical to the pre-extraction version; see aiToolNames.ts's
 // header and aiToolNames.test.ts.
 registerReservedAiToolNamePredicate(
-  (toolName) => m365ToolTiers[toolName] !== undefined || googleToolTiers[toolName] !== undefined,
+  (toolName) => m365ToolTiers[toolName] !== undefined
+    || googleToolTiers[toolName] !== undefined,
 );
 
 /** The state-store surface the extension AI-tool gate needs (injectable for tests). */

@@ -18,6 +18,7 @@ import {
   notQueueableTitle,
 } from "./bulkActionGating";
 import { fetchWithAuth } from "../../stores/auth";
+import { acquire, DEFAULT_FETCH_LIMIT } from "@/lib/fetchLimiter";
 import { formatLastSeen } from "@/lib/formatTime";
 import { asRecord, toPercentNullable } from "@/lib/deviceUtils";
 import { useTranslation } from "react-i18next";
@@ -108,6 +109,80 @@ function parseMetricHistory(payload: unknown): MetricHistoryPoint[] {
   return parsed;
 }
 
+type MetricsRequest = {
+  controller: AbortController;
+  promise: Promise<MetricHistoryPoint[]>;
+  subscribers: number;
+  started: boolean;
+  settled: boolean;
+  abortTimer?: ReturnType<typeof setTimeout>;
+};
+
+const metricsRequests = new Map<string, MetricsRequest>();
+
+async function loadMetricHistory(id: string, signal: AbortSignal) {
+  let request = metricsRequests.get(id);
+  if (!request || request.controller.signal.aborted) {
+    const controller = new AbortController();
+    const entry: MetricsRequest = {
+      controller,
+      promise: Promise.resolve([]),
+      subscribers: 0,
+      started: false,
+      settled: false,
+    };
+    entry.promise = (async () => {
+      let release: (() => void) | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        release = await acquire("device-metrics", DEFAULT_FETCH_LIMIT, controller.signal);
+        controller.signal.throwIfAborted();
+        entry.started = true;
+        // fetchWithAuth skips its default timeout when given a caller signal.
+        timeout = setTimeout(() => controller.abort(), 30_000);
+        const response = await fetchWithAuth(`/devices/${id}/metrics?range=1h`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Failed to fetch device metric history");
+        return parseMetricHistory(await response.json());
+      } finally {
+        entry.settled = true;
+        clearTimeout(timeout);
+        clearTimeout(entry.abortTimer);
+        release?.();
+        if (metricsRequests.get(id) === entry) metricsRequests.delete(id);
+      }
+    })();
+    metricsRequests.set(id, entry);
+    request = entry;
+  }
+
+  const entry = request;
+  entry.subscribers++;
+  clearTimeout(entry.abortTimer);
+  let detached = false;
+  const detach = () => {
+    if (detached) return;
+    detached = true;
+    if (--entry.subscribers !== 0 || entry.settled) return;
+    if (!entry.started) {
+      // Queued cards must never consume a slot after leaving the grid.
+      entry.controller.abort();
+    } else {
+      // Allow a quick grid/list/grid switch to reuse the active request.
+      entry.abortTimer = setTimeout(() => entry.controller.abort(), 1_000);
+    }
+  };
+  signal.addEventListener("abort", detach, { once: true });
+  if (signal.aborted) detach();
+  try {
+    return await entry.promise;
+  } finally {
+    signal.removeEventListener("abort", detach);
+    detach();
+  }
+}
+
 function MiniSparkline({ data, testId }: { data: number[]; testId: string }) {
   const { t } = useTranslation("devices");
   const max = Math.max(...data, 100);
@@ -180,19 +255,12 @@ export default function DeviceCard({
     if (isNetwork || isManual) return;
 
     let isCancelled = false;
+    const controller = new AbortController();
 
     const loadHistory = async () => {
       setHistoryState("loading");
       try {
-        const response = await fetchWithAuth(
-          `/devices/${device.id}/metrics?range=1h`,
-        );
-        if (!response.ok) {
-          throw new Error("Failed to fetch device metric history");
-        }
-
-        const payload = await response.json();
-        const parsed = parseMetricHistory(payload);
+        const parsed = await loadMetricHistory(device.id, controller.signal);
         if (isCancelled) return;
 
         if (parsed.length === 0) {
@@ -214,6 +282,7 @@ export default function DeviceCard({
 
     return () => {
       isCancelled = true;
+      controller.abort();
     };
   }, [device.id, isNetwork, isManual]);
 

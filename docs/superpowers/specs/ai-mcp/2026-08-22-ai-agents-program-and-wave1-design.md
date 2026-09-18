@@ -83,6 +83,20 @@ Decisions fixed for the whole program (2026-08-22):
 - **Agents are never hard-deleted.** Attribution on runs, sessions and (from
   wave 3) intents must survive; `ai_agents` rows are disabled, not removed.
 
+> **Amendment (2026-09-13) — the execution plane.** §2's authority model said
+> an agent's only effects are Breeze tool calls under the tier gate. That still
+> holds, and one thing has been added beside it: an `analysis`-profile run may
+> also execute MODEL-WRITTEN CODE inside a per-run vendor microVM with no
+> network, no credentials and no device reach, over data the run was
+> explicitly given. The sandbox is not a path around the tier gate —
+> `execute_command` and `run_script` remain exactly as gated as they are
+> today, and the workspace tools are Tier 1 precisely because they cannot
+> touch the fleet. See
+> `docs/superpowers/specs/ai-mcp/2026-09-13-ai-agent-execution-plane-design.md`
+> §2.1 for the amendment in full, §5.3 for the capability surface and §8 for
+> the security model (hosted-only, per-org `ai_external_processing` opt-in,
+> region assertion, caps).
+
 ## 3. Identity: the `ai_agent` principal
 
 An agent acts as itself, never as a user. Wave 1 ships the principal and its

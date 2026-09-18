@@ -21,6 +21,14 @@ export interface ConfirmDialogProps {
   confirmDisabled?: boolean;
   /** data-testid for the confirm button (e2e suites are testid-only). */
   confirmTestId?: string;
+  /**
+   * data-testid for the dialog body. A call site cannot get this by wrapping
+   * <ConfirmDialog> — Dialog renders through createPortal into document.body,
+   * so a wrapper element ends up empty. Needed when a test or e2e spec must
+   * assert on the dialog's TEXT (e.g. the agreement-template archive confirm,
+   * which repeats the usage counts) rather than just click Confirm.
+   */
+  dialogTestId?: string;
   /** Optional extra content (e.g. a note field) rendered under the message. */
   children?: ReactNode;
 }
@@ -36,6 +44,7 @@ export function ConfirmDialog({
   isLoading = false,
   confirmDisabled = false,
   confirmTestId,
+  dialogTestId,
   children,
 }: ConfirmDialogProps) {
   const { t } = useTranslation('common');
@@ -102,7 +111,7 @@ export function ConfirmDialog({
 
   return (
     <Dialog open={open} onClose={onClose} title={title} maxWidth="md" className="p-6">
-      <div className="flex gap-4">
+      <div className="flex gap-4" data-testid={dialogTestId}>
         <div
           className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
             variant === 'destructive' ? 'bg-destructive/10' : 'bg-warning/10'

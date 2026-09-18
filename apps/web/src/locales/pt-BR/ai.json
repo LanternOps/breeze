@@ -30,6 +30,7 @@
     "contentChanged": "Os detalhes desta solicitação mudaram após a criação, portanto ela não pode mais ser aprovada.",
     "expired": "Esta solicitação expirou antes de ser decidida.",
     "notSoleApprover": "Agora é necessário outro aprovador — você não pode mais aprovar a sua própria solicitação.",
+    "siteCeiling": "Esta aprovação concede autoridade em toda a organização. Seu acesso é limitado a sites específicos — outro aprovador precisa decidir esta solicitação.",
     "noApproverDevice": "Aprovar a sua própria solicitação requer Touch ID / Windows Hello.",
     "registerDevice": "Registrar este dispositivo",
     "decideFailed": "Falha ao enviar a decisão",
@@ -128,6 +129,8 @@
   "aiToolCallCard": {
     "running": "Executando...",
     "approvedRunning": "Aprovado · em execução",
+    "approvedFailed": "Aprovado · falhou",
+    "approvedCompleted": "Aprovado · concluído",
     "input": "Entrada:",
     "error": "Erro:",
     "output": "Saída:"
@@ -138,7 +141,7 @@
     "tabs": {
       "orgs": "Organizações",
       "sessions": "Sessões",
-      "usage": "Uso",
+      "usage": "Uso do complemento do Office",
       "templates": "Modelos"
     }
   },
@@ -487,5 +490,19 @@
     "ownerScopeOrganization": "Somente esta organização",
     "ownerScopePartner": "Todas as organizações deste parceiro",
     "nameRequired": "É necessário informar um nome."
+  },
+  "aiRunCard": {
+    "title": "Execução de análise",
+    "openRun": "Abrir a execução completa",
+    "resultOnRunPage": "Isso terminou depois que a conversa avançou — o resultado completo fica disponível na página da execução.",
+    "status": {
+      "queued": "na fila",
+      "running": "em execução",
+      "completed": "concluído",
+      "failed": "falhou",
+      "cancelled": "cancelado",
+      "expired": "expirado",
+      "skipped": "ignorado"
+    }
   }
 }

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,8 +57,17 @@ type TestRestoreResult struct {
 // VerifyIntegrity checks a snapshot's manifest and validates each file
 // can be downloaded and read from the provider.
 func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*VerifyResult, error) {
+	return VerifyIntegrityContext(context.Background(), provider, snapshotID)
+}
+
+func VerifyIntegrityContext(ctx context.Context, provider providers.BackupProvider, snapshotID string) (*VerifyResult, error) {
 	start := time.Now()
 	result := &VerifyResult{SnapshotID: snapshotID}
+
+	if err := ctx.Err(); err != nil {
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, err
+	}
 
 	// Download and parse manifest
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
@@ -78,6 +88,10 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, nil
 	}
+	if err := ctx.Err(); err != nil {
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, err
+	}
 
 	manifestData, err := os.ReadFile(tempManifestPath)
 	if err != nil {
@@ -97,6 +111,10 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 
 	// Verify each file by downloading through the provider
 	for _, file := range snapshot.Files {
+		if err := ctx.Err(); err != nil {
+			result.DurationMs = time.Since(start).Milliseconds()
+			return result, err
+		}
 		if !file.HasContent() {
 			// Content-less entry (symlink/directory): no uploaded object to
 			// verify — see SnapshotFile.HasContent's doc comment.
@@ -114,6 +132,11 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 
 		// Download the file from provider (provider validates gzip on .gz files)
 		dlErr := provider.Download(file.BackupPath, tempPath)
+		if err := ctx.Err(); err != nil {
+			_ = os.Remove(tempPath)
+			result.DurationMs = time.Since(start).Milliseconds()
+			return result, err
+		}
 		if dlErr != nil {
 			os.Remove(tempPath)
 			result.FilesFailed++
@@ -216,8 +239,15 @@ const restoreTestPrefix = "breeze-restore-test"
 // verifies each file. workRoot must be the privileged agent data directory.
 // progressFn is called after each file with (current, total) counts. Can be nil.
 func TestRestore(provider providers.BackupProvider, snapshotID, workRoot string, progressFn func(current, total int)) (*TestRestoreResult, error) {
+	return TestRestoreContext(context.Background(), provider, snapshotID, workRoot, progressFn)
+}
+
+func TestRestoreContext(ctx context.Context, provider providers.BackupProvider, snapshotID, workRoot string, progressFn func(current, total int)) (*TestRestoreResult, error) {
 	start := time.Now()
 	result := &TestRestoreResult{SnapshotID: snapshotID}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if err := validateSnapshotID(snapshotID); err != nil {
 		return nil, err
 	}
@@ -245,6 +275,9 @@ func TestRestore(provider providers.BackupProvider, snapshotID, workRoot string,
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("manifest not found: %v", err)
 		return result, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
 	}
 
 	manifestData, err := os.ReadFile(tempManifestPath)
@@ -275,9 +308,23 @@ func TestRestore(provider providers.BackupProvider, snapshotID, workRoot string,
 	}
 	result.RestorePath = restoreDir
 
+	cancelResult := func(cancelErr error) (*TestRestoreResult, error) {
+		result.RestoreTimeSeconds = int(time.Since(start).Seconds())
+		if cleanErr := os.RemoveAll(restoreDir); cleanErr != nil {
+			log.Warn("cleanup after cancellation failed", "phase", "restore", "path", restoreDir, "error", cleanErr.Error())
+			result.CleanedUp = false
+		} else {
+			result.CleanedUp = true
+		}
+		return result, cancelErr
+	}
+
 	// Restore each file
 	total := len(snapshot.Files)
 	for i, file := range snapshot.Files {
+		if err := ctx.Err(); err != nil {
+			return cancelResult(err)
+		}
 		if !file.HasContent() {
 			// Content-less entry (symlink/directory): no uploaded object to
 			// restore — see SnapshotFile.HasContent's doc comment. The real
@@ -310,6 +357,9 @@ func TestRestore(provider providers.BackupProvider, snapshotID, workRoot string,
 		}
 
 		dlErr := provider.Download(file.BackupPath, destPath)
+		if err := ctx.Err(); err != nil {
+			return cancelResult(err)
+		}
 		info, statErr := os.Stat(destPath)
 		switch {
 		case dlErr != nil:

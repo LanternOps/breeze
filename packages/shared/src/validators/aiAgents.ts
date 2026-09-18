@@ -5,8 +5,10 @@ import {
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_MODES,
   AI_ALERT_VERDICT_CLASSIFICATIONS,
+  ANALYSIS_FINDING_SEVERITIES,
   allowedModesForKind,
   type AlertVerdictOutcome,
+  type AnalysisOutcome,
 } from '../types/aiAgents';
 
 const TOOL_REF = /^[a-z0-9_]+(:[a-z0-9_]+)?$/;
@@ -81,6 +83,38 @@ const limitsFields = z.object({
   maxDesignRunsPerDay: z.number().int().min(1).max(24),
   designBudgetCentsPerRun: z.number().int().min(25).max(2000),
   designMaxTurns: z.number().int().min(8).max(120),
+  // #5870 — pinned design-profile wall clock; same bounds as
+  // analysisWallClockSeconds (60s floor, 1800s ceiling — the validator's
+  // global wallClockSeconds max).
+  designWallClockSeconds: z.number().int().min(60).max(1800),
+  // Patch-profile admission caps (AI patch agent W01) — see
+  // AiAgentLimits.maxConcurrentPatchRuns's docstring. Per-day cap over a
+  // 24h window like design; a patch run is one-per-org-per-day.
+  maxConcurrentPatchRuns: z.number().int().min(1).max(4),
+  maxPatchRunsPerDay: z.number().int().min(1).max(12),
+  patchBudgetCentsPerRun: z.number().int().min(10).max(500),
+  patchMaxTurns: z.number().int().min(4).max(60),
+  // Analysis-profile caps (execution plane W04, spec §5.4 table) — see
+  // AiAgentLimits.analysisMaxInputDevicesPerRun's docstring. Byte caps are
+  // stored in bytes; the bounds below are 1 MiB … 1 GiB / 512 MiB.
+  analysisMaxInputDevicesPerRun: z.number().int().min(1).max(200),
+  analysisMaxTurnsPerRun: z.number().int().min(1).max(80),
+  analysisWallClockSeconds: z.number().int().min(60).max(1800),
+  analysisMaxComputeSeconds: z.number().int().min(30).max(3600),
+  analysisMaxComputeCentsPerRun: z.number().int().min(1).max(200),
+  analysisMaxStagedBytesPerRun: z.number().int().min(1024 * 1024).max(1024 * 1024 * 1024),
+  analysisMaxArtifactBytesPerRun: z.number().int().min(1024 * 1024).max(512 * 1024 * 1024),
+  analysisMaxBudgetCentsPerRun: z.number().int().min(1).max(500),
+  analysisMaxRunsPerHour: z.number().int().min(1).max(100),
+  analysisMaxConcurrentRuns: z.number().int().min(1).max(5),
+  analysisMaxStepTimeoutSeconds: z.number().int().min(10).max(600),
+  analysisMaxStepsPerRun: z.number().int().min(1).max(100),
+  // Sweep act-mode caps (#4442 W05) — see
+  // AiAgentLimits.maxUnattendedDevicesPerSweep's docstring. The device cap
+  // has no 0-disables value: "unattended on zero devices" is act mode off,
+  // which is the `act_mode` flag's job, not a limit's.
+  maxUnattendedDevicesPerSweep: z.number().int().min(1).max(50),
+  sweepPromoteThreshold: z.number().int().min(1).max(200),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
@@ -94,6 +128,10 @@ export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
 const triggersFields = z.object({
   alertSeverities: z.array(z.enum(ALERT_SEVERITIES)).min(1),
   alertRuleIds: z.array(z.string().guid()).min(1).max(200),
+  // AI patch agent W04 (#5750) — alert TEMPLATE category filter, same
+  // undefined-means-unrestricted / .min(1) convention as ticketCategories
+  // below. Free text capped to alert_templates.category's varchar(100).
+  alertCategories: z.array(z.string().trim().min(1).max(100)).min(1).max(50),
   siteIds: z.array(z.string().guid()).min(1).max(500),
   deviceGroupIds: z.array(z.string().guid()).min(1).max(500),
   deviceTags: z.array(z.string().trim().min(1).max(64)).min(1).max(100),
@@ -135,6 +173,17 @@ const triggersFields = z.object({
   ticketAutonomousWrites: z.boolean(),
 });
 export const aiAgentTriggersPatchSchema = triggersFields.partial();
+/**
+ * AI patch agent W04 (#5750) — the UPDATE shape of the trigger filters. The
+ * PATCH merge is shallow (`{ ...stored.triggers, ...input.triggers }`), so an
+ * absent key keeps the stored list and `[]` is rejected by `.min(1)`;
+ * `alertCategories: null` is the one representable "clear back to
+ * unrestricted" — `agentService` deletes the key when it sees it. Update-only:
+ * a stored row never carries a null.
+ */
+export const aiAgentTriggersUpdateSchema = aiAgentTriggersPatchSchema.extend({
+  alertCategories: triggersFields.shape.alertCategories.nullable().optional(),
+});
 export const aiAgentTriggersSchema = aiAgentTriggersPatchSchema.transform((v) => ({
   alertSeverities: ['critical', 'high'] as Array<(typeof ALERT_SEVERITIES)[number]>,
   respectMaintenanceWindows: true,
@@ -247,7 +296,7 @@ export const updateAiAgentSchema = z.object({
   toolAllowlist: z.array(z.string().regex(TOOL_REF)).max(300).optional(),
   protectedResources: aiAgentProtectedResourcesPatchSchema.optional(),
   limits: aiAgentLimitsPatchSchema.optional(),
-  triggers: aiAgentTriggersPatchSchema.optional(),
+  triggers: aiAgentTriggersUpdateSchema.optional(),
   recipients: aiAgentRecipientsPatchSchema.optional(),
   actAssets: aiAgentActAssetsPatchSchema.optional(),
   instructions: z.string().max(2000).nullable().optional(),
@@ -326,4 +375,31 @@ export const alertVerdictOutcomeSchema: z.ZodType<AlertVerdictOutcome> = z.objec
     evidenceAlertIds: z.array(z.string().uuid()).max(50),
   }).optional(),
   suggestedAction: alertVerdictSuggestedActionSchema.optional(),
+}).strict();
+
+// Execution plane W04 — the `submit_analysis` outcome (spec §7 step 5).
+// `.strict()` everywhere: a model that smuggles an `execute: true` or a
+// handle-shaped URL onto a proposal must be rejected, not silently trimmed.
+// A proposal is a PROPOSAL — a technician turns it into an intent through the
+// existing approval UI; nothing here is ever executed by the run.
+const analysisProposedActionSchema = z.object({
+  tool: z.string().regex(TOOL_REF).max(80),
+  action: z.string().regex(/^[a-z0-9_]+$/).max(80).optional(),
+  deviceId: z.string().uuid().optional(),
+  args: z.record(z.string().max(80), z.unknown()),
+  rationale: z.string().min(1).max(600),
+}).strict();
+
+const analysisFindingSchema = z.object({
+  title: z.string().min(1).max(120),
+  severity: z.enum(ANALYSIS_FINDING_SEVERITIES),
+  detail: z.string().min(1).max(2000),
+  artifactHandles: z.array(z.string().uuid()).max(20),
+}).strict();
+
+export const analysisOutcomeSchema: z.ZodType<AnalysisOutcome> = z.object({
+  summary: z.string().min(1).max(4000),
+  findings: z.array(analysisFindingSchema).max(50),
+  artifactHandles: z.array(z.string().uuid()).max(100),
+  proposedActions: z.array(analysisProposedActionSchema).max(20),
 }).strict();

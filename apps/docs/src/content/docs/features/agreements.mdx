@@ -1,0 +1,80 @@
+---
+title: Agreements
+description: The MSA and standard-terms documents you attach to a quote, the versions your customers signed, and how a signed agreement connects to the contract it governs.
+sidebar:
+  label: "Agreements"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Three things in Breeze are easy to confuse, so it is worth naming them once: an **agreement template** is the legal document you keep on file -- your MSA or standard terms. A **signed agreement** is the frozen copy a customer signed when they accepted a quote carrying that template. A **contract** is the recurring biller that the same accepted quote creates. The signed agreement is filed against the contract it governs, and both live one click apart.
+
+Open **Agreements** from the sidebar. It has two tabs: **Agreement templates** (the library) and **Signed agreements** (everything your customers have signed).
+
+{/* Explicit anchor: this section used to live at
+    /features/contracts/#contract-templates, and Starlight would otherwise slug
+    the new heading as #agreement-templates, silently breaking every old link.
+    MDX parses `{#id}` heading syntax as a JS expression, hence the element. */}
+<a id="contract-templates"></a>
+
+## Agreement templates
+
+An agreement template is owned either by your whole partner (usable on any customer's quotes) or by a single organization, chosen when you create it.
+
+### Creating an agreement template
+
+<Steps>
+1. Go to **Agreements → Agreement templates** and click **New agreement template**.
+2. Name it and choose its owner: your **partner** (available to every organization) or one **organization** (available only there).
+3. Add a version -- either **author** the document as rich text directly in Breeze, or **upload a PDF** (up to 10MB). An uploaded file must be a readable, unencrypted PDF.
+4. **Publish** the version once it's ready to use on quotes.
+</Steps>
+
+A template's own page shows what it is used by -- how many quotes carry it and how many signed agreements came from it -- so you can see the blast radius before you archive one.
+
+### Versions
+
+Each template can have multiple versions. A new version starts as a **draft** you can keep editing; **publishing** it locks the content and assigns it a version number -- published versions are immutable, so a template already attached to a quote never changes underneath the customer. To revise a published template, add another version and publish that one; existing quotes stay pinned to whichever version they were attached with (see [Contract blocks](/features/quotes/#contract-blocks) in the quote editor).
+
+**Archive** a template to stop it from being used on new quotes. Archiving doesn't touch versions already attached to existing quotes or the signed agreements generated from them.
+
+<Aside type="note" title="Templates attach to drafts, not to accepted quotes">
+  You add an agreement template to a quote while the quote is still being built. Acceptance is what freezes it: the customer sees the exact version that was attached, and accepting the quote turns that version into a signed agreement.
+</Aside>
+
+### Variables
+
+An authored template can include `{{variable}}` placeholders that Breeze fills in per quote when the block is rendered or sent. Each placeholder is either:
+
+- **Auto** -- filled automatically from the quote, with no data entry required. The built-in auto variables are the customer's name and address, your organization's (seller) name, the quote number and title, the one-time/monthly/annual/total amounts, and the effective and expiry dates.
+- **Manual** -- anything else. The technician attaching the template to a quote fills these in by hand (for example, a scope note or a specific term).
+
+Publishing a version scans its body for `{{variable}}` tokens and classifies each one automatically -- a name that matches a built-in auto variable is treated as auto, everything else as manual.
+
+## Signed agreements
+
+**Agreements → Signed agreements** lists every agreement your customers have signed, newest first, with the template and version they signed, the organization, the signer, the date, the quote they accepted, and the contract the agreement is filed against. Each row can be downloaded as the PDF the customer saw.
+
+An agreement ends up **unlinked** when the accepting quote produced no contract, or produced one later -- the signed copy exists, but nothing points at it from the billing side. Turn on the **Unlinked only** chip to triage exactly those, and use **Link** on a row to file it against the right contract. The page shows everything by default: it is your inventory, not a to-do list.
+
+Two other places show the same list, scoped:
+
+- A **contract's** page has a **Signed agreements** section listing what was signed for that contract, and its header names the agreement the contract sits under.
+- An **organization's record** has an **Agreements** section under Contracts & Billing, listing everything that customer has signed.
+
+## Permissions
+
+| Action | Permission |
+|---|---|
+| View agreement templates and signed agreements | `agreements:read` |
+| Create, edit, publish and archive templates; link a signed agreement to a contract | `agreements:write` |
+
+Managing partner-wide templates additionally requires full partner organization access.
+
+These are **separate** from contract permissions, deliberately: a technician who needs to pull up a customer's signed MSA does not need contract billing authority, and a billing clerk who runs recurring contracts does not need to author legal terms. Assign them through **Settings → Users & Roles**.
+
+## Related
+
+- [Recurring Contracts](/features/contracts/) -- the billing side, where a signed agreement is filed
+- [Quotes → Contract blocks](/features/quotes/#contract-blocks) -- attach an agreement template to a quote
+- [Customer Portal](/features/portal/) -- what the customer sees when they accept

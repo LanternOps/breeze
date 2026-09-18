@@ -92,7 +92,20 @@ vi.mock('../db/schema', () => ({
     reason: 'group_membership_log.reason',
     createdAt: 'group_membership_log.created_at'
   },
-  sites: { id: 'sites.id', orgId: 'sites.org_id' }
+  sites: { id: 'sites.id', orgId: 'sites.org_id' },
+  configPolicyAssignments: {
+    id: 'config_policy_assignments.id',
+    configPolicyId: 'config_policy_assignments.config_policy_id',
+    level: 'config_policy_assignments.level',
+    targetId: 'config_policy_assignments.target_id',
+    priority: 'config_policy_assignments.priority',
+    createdAt: 'config_policy_assignments.created_at',
+  },
+  configurationPolicies: {
+    id: 'configuration_policies.id',
+    name: 'configuration_policies.name',
+    status: 'configuration_policies.status',
+  }
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -441,7 +454,8 @@ describe('group routes', () => {
           { groupId: GROUP_SITE_X, deviceId: DEVICE_IN_SITE_X, siteId: SITE_X },
           { groupId: GROUP_SITE_X, deviceId: DEVICE_IN_SITE_Y, siteId: SITE_Y },
           { groupId: GROUP_SITE_Y, deviceId: DEVICE_IN_SITE_Y, siteId: SITE_Y }
-        ]));
+        ]))
+        .mockReturnValueOnce(mockJoinedOrderedRows([]));
 
       const res = await app.request('/groups?includeMemberships=true');
 
@@ -471,7 +485,8 @@ describe('group routes', () => {
           { groupId: GROUP_SITE_X, deviceId: DEVICE_IN_SITE_X, siteId: SITE_X },
           { groupId: GROUP_SITE_X, deviceId: DEVICE_IN_SITE_Y, siteId: SITE_Y },
           { groupId: GROUP_SITE_Y, deviceId: DEVICE_IN_SITE_Y, siteId: SITE_Y }
-        ]));
+        ]))
+        .mockReturnValueOnce(mockJoinedOrderedRows([]));
 
       const res = await app.request('/groups?includeMemberships=true');
 

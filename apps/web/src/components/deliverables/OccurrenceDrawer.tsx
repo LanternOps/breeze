@@ -20,6 +20,7 @@ import { ActionError, handleActionError } from '../../lib/runAction';
 import { formatDate } from '../billing/shared/format';
 import { Drawer } from '../shared/Drawer';
 import { runClientAction } from '../../lib/runClientAction';
+import TicketChecklistCard from '../tickets/TicketChecklistCard';
 
 export interface OccurrenceDrawerProps {
   fetcher: Fetcher;
@@ -86,6 +87,10 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   const [dueAt, setDueAt] = useState('');
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // #5808 W03 — lazy checklist expansion: at most one occurrence's
+  // TicketChecklistCard is ever mounted at a time, so opening a fleet-sized
+  // deliverable never fires two dozen checklist fetches on drawer open.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,6 +240,14 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                   </div>
                   <div className="flex items-center gap-1.5">
                     {occ.late && <span className={LATE_PILL}>{t('drawer.late')}</span>}
+                    {occ.checklist !== null && (
+                      <span
+                        className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                        data-testid={`occurrence-checklist-chip-${occ.id}`}
+                      >
+                        {t('drawer.checklistProgress', { done: occ.checklist.done, total: occ.checklist.total })}
+                      </span>
+                    )}
                     <span
                       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_PILL[occ.status]}`}
                       data-testid={`occurrence-status-${occ.id}`}
@@ -296,6 +309,22 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                       {t('drawer.upload')}
                     </button>
                     <span className="text-muted-foreground">{t('drawer.uploadEvidenceHint')}</span>
+                  </div>
+                )}
+
+                {occ.checklist !== null && occ.ticketId && (
+                  <div className="text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId((cur) => (cur === occ.id ? null : occ.id))}
+                      className="text-muted-foreground underline hover:text-foreground"
+                      data-testid={`occurrence-checklist-expand-${occ.id}`}
+                    >
+                      {expandedId === occ.id ? t('drawer.hideChecklist') : t('drawer.showChecklist')}
+                    </button>
+                    {expandedId === occ.id && (
+                      <TicketChecklistCard ticketId={occ.ticketId} mode="compact" />
+                    )}
                   </div>
                 )}
 

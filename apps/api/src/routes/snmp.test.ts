@@ -199,7 +199,10 @@ describe('snmp routes', () => {
         description: null,
         vendor: null,
         deviceType: null,
-        oids: [{ oid: '1.3.6.1.2.1.1.5.0', name: 'sysName' }],
+        oids: [
+          { oid: '1.3.6.1.2.1.1.5.0', name: 'sysName' },
+          { oid: '1.3.6.1.2.1.43.11.1.1.9', name: 'prtMarkerSuppliesLevel', mode: 'walk', cadence: 'slow' },
+        ],
         isBuiltIn: false,
         createdAt: new Date('2026-05-01T00:00:00.000Z')
       }])
@@ -211,7 +214,10 @@ describe('snmp routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: 'Tenant Template',
-        oids: [{ oid: '1.3.6.1.2.1.1.5.0', name: 'sysName' }],
+        oids: [
+          { oid: '1.3.6.1.2.1.1.5.0', name: 'sysName' },
+          { oid: '1.3.6.1.2.1.43.11.1.1.9', name: 'prtMarkerSuppliesLevel', mode: 'walk', cadence: 'slow' },
+        ],
       }),
     });
 
@@ -219,6 +225,9 @@ describe('snmp routes', () => {
     expect(values).toHaveBeenCalledWith(expect.objectContaining({
       orgId: 'org-123',
       isBuiltIn: false,
+      oids: expect.arrayContaining([
+        { oid: '1.3.6.1.2.1.43.11.1.1.9', name: 'prtMarkerSuppliesLevel', mode: 'walk', cadence: 'slow' },
+      ]),
     }));
     const body = await res.json();
     expect(body.data.orgId).toBe('org-123');
