@@ -3347,7 +3347,7 @@ describe('outboundMessageIdPattern (derived from outboundThreading.ts)', () => {
   });
 
   it('does not match another domain, another prefix, or a lookalike suffix', () => {
-    expect(pattern.test('<ticket-abc@tickets.evil.com>')).toBe(false);
+    expect(pattern.test('<ticket-abc@tickets.attacker.example>')).toBe(false);
     expect(pattern.test('<quote-abc@tickets.example.com>')).toBe(false);
     expect(pattern.test('<ticket-abc@x.tickets.example.com>')).toBe(false);
     expect(pattern.test('<abc@tickets.example.com>')).toBe(false);
@@ -3375,7 +3375,7 @@ describe('ownOutboundReason (spec §8.5)', () => {
 
   it('leaves a customer reply alone — its In-Reply-To is ours, its Message-ID is not', () => {
     expect(ownOutboundReason(email({
-      messageId: '<CAF=abc@mail.gmail.com>',
+      messageId: '<CAF=abc@mail.example.com>',
       inReplyTo: '<ticket-t1@tickets.example.com>',
       references: ['<ticket-t1@tickets.example.com>'],
     }), INBOUND_DOMAIN)).toBeNull();
@@ -3571,7 +3571,7 @@ Expected: `Test Files  1 passed (1)` — the file's original `autoresponseSuppre
     createTicketMock.mockResolvedValue({ id: 't-reply', internalNumber: 'T-2026-0015' });
     await processInboundEmail(email({
       from: 'contact@customer.example',
-      messageId: '<CAF=abc@mail.gmail.com>',
+      messageId: '<CAF=abc@mail.example.com>',
       inReplyTo: '<ticket-t1@tickets.example.com>',
       references: ['<ticket-t1@tickets.example.com>'],
     }));

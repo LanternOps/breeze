@@ -3466,13 +3466,13 @@ describe('deleteDomain / requestVerification / listDomains', () => {
 
 describe('send', () => {
   const message = {
-    from: '"Acme Support" <support@open.com>', to: 'customer@example.com', subject: 'Ticket #1',
+    from: '"Acme Support" <support@example.com>', to: 'customer@example.com', subject: 'Ticket #1',
     html: '<p>hi</p>', partnerRef: 'p1', tags: { partner_id: 'p1', stream: 'support' }
   };
 
   it('hands the message to the platform transport verbatim, custom From included', async () => {
     const result = await createStaticDomainProvider().send(message);
-    expect(deliverRaw).toHaveBeenCalledWith(expect.objectContaining({ from: '"Acme Support" <support@open.com>', to: 'customer@example.com', subject: 'Ticket #1' }));
+    expect(deliverRaw).toHaveBeenCalledWith(expect.objectContaining({ from: '"Acme Support" <support@example.com>', to: 'customer@example.com', subject: 'Ticket #1' }));
     expect(result.providerMessageId).toMatch(/^static:/);
   });
 
