@@ -140,8 +140,15 @@ describe('AccountBoardTable', () => {
     fireEvent.click(nameLink, { metaKey: true });
     fireEvent.click(nameLink, { ctrlKey: true });
     fireEvent.click(nameLink, { shiftKey: true });
+    fireEvent.click(nameLink, { altKey: true });
     fireEvent.click(nameLink, { button: 1 });
     expect(onOpenRecord).not.toHaveBeenCalled();
+  });
+
+  it('plain left-click on the card surface name also opens the record (shared renderName)', () => {
+    const { onOpenRecord } = renderTable();
+    fireEvent.click(cards().getByTestId(`org-board-card-name-${A_ID}`));
+    expect(onOpenRecord).toHaveBeenCalledWith(expect.objectContaining({ id: A_ID }));
   });
 
   it('renders the meta line: exception-only status pill, workspace marker, device and site counts', () => {

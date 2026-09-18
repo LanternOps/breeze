@@ -105,7 +105,7 @@ export function AccountBoardTable({
       onKeyDown={(event) => onRowKeyDown(event, index)}
       onClick={(event) => {
         event.stopPropagation();
-        if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
         event.preventDefault();
         onOpenRecord(row.org);
       }}
