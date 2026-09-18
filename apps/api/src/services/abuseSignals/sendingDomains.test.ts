@@ -5,7 +5,7 @@ import {
 } from './sendingDomains';
 
 const { executeMock, capHitWindowMock } = vi.hoisted(() => ({
-  executeMock: vi.fn(async () => ({ rows: [] as unknown[] })),
+  executeMock: vi.fn(async (_query: unknown) => ({ rows: [] as unknown[] })),
   capHitWindowMock: vi.fn(async () => new Map<string, number>()),
 }));
 vi.mock('../../db', () => ({ db: { execute: executeMock } }));
