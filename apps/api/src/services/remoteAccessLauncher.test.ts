@@ -150,16 +150,31 @@ describe('buildRemoteAccessLaunchUrl', () => {
     ).toBe(true);
   });
 
+  it('accepts a numeric zero custom-field identifier (not falsy-missing)', () => {
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: 0 } }, rustdeskSettings),
+    ).toBe('rustdesk://0?password=plain');
+  });
+
   it('accepts a boolean custom-field identifier as its string form', () => {
     expect(
       buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: true } }, rustdeskSettings),
     ).toBe('rustdesk://true?password=plain');
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: false } }, rustdeskSettings),
+    ).toBe('rustdesk://false?password=plain');
   });
 
-  it('rejects non-finite numeric identifiers', () => {
+  it('rejects non-finite numeric identifiers, via both entry points', () => {
     expect(
       buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: NaN } }, rustdeskSettings),
     ).toBeNull();
+    const result = checkRemoteAccessLaunchAvailability(
+      { customFields: { rustdesk_id: NaN } },
+      rustdeskSettings,
+    );
+    expect(result.available).toBe(false);
+    expect(result.skipReason).toBe('missing_device_identifier');
   });
 
   it('returns null when urlTemplate is empty', () => {
