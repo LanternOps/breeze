@@ -316,16 +316,28 @@ describe('createSendingDomain', () => {
 });
 
 describe('requestDomainCheck', () => {
-  it('limits a domain to one check a minute', async () => {
+  it('limits a domain to one check a minute, keyed by partner AND domain', async () => {
+    rows.push([{ id: DOMAIN_ID, partnerId: PARTNER_ID, status: 'pending', providerDomainId: 'pd-1', dnsRecords: [] }]);
     rateLimiterMock.mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date() });
     expect(await codeOf(() => requestDomainCheck({ partnerId: PARTNER_ID, domainId: DOMAIN_ID }))).toBe('rate_limited');
     const [, key, limit, window] = rateLimiterMock.mock.calls[0]!;
     expect(key).toContain(DOMAIN_ID);
+    expect(key).toContain(PARTNER_ID);
     expect(limit).toBe(1);
     expect(window).toBe(60);
   });
 
+  // The limiter was consumed BEFORE the row was loaded, so any authenticated
+  // partner could burn the owner's 1/min allowance by replaying a guessed
+  // domain id: they got a 404, the owner got a 429.
+  it('checks ownership BEFORE consuming the limiter', async () => {
+    rows.push([]);
+    expect(await codeOf(() => requestDomainCheck({ partnerId: OTHER_PARTNER_ID, domainId: DOMAIN_ID }))).toBe('not_found');
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+  });
+
   it('404s a domain that is not the caller\'s', async () => {
+    rows.push([]);
     rows.push([]);
     expect(await codeOf(() => requestDomainCheck({ partnerId: PARTNER_ID, domainId: DOMAIN_ID }))).toBe('not_found');
   });

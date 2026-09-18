@@ -34,7 +34,11 @@ export async function readProviderKeyProbe(): Promise<ProviderKeyProbe | null> {
   try {
     const value = await redis.get(KEY);
     return value === 'ok' || value === 'send_only' ? value : null;
-  } catch {
+  } catch (err) {
+    // `null` is reported to the UI as "unknown", which is indistinguishable
+    // from "the worker has not run yet" — so a Redis outage that permanently
+    // hides the key verdict left no trace at all.
+    console.warn('[SendingDomains] could not read the provider key probe:', err instanceof Error ? err.message : err);
     return null;
   }
 }

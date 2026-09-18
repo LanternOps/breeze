@@ -218,6 +218,11 @@ export async function createSendingDomain(input: { partnerId: string; domain: st
   }
 
   const config = getEmailDomainsConfig();
+  // READ-THEN-INSERT: two concurrent creates can both pass this count and take
+  // the partner one over maxPerPartner. Deliberately not locked — the 5/day
+  // create limiter below bounds the overshoot to a handful of rows a day, and
+  // the alternative (a partner-level advisory lock or a count trigger) costs
+  // more than the worst case is worth.
   const [existing] = await db
     .select({ count: count() })
     .from(partnerSendingDomains)
@@ -284,19 +289,24 @@ export async function createSendingDomain(input: { partnerId: string; domain: st
 export async function requestDomainCheck(input: { partnerId: string; domainId: string }): Promise<SendingDomainDto> {
   requireProvider();
 
-  const rate = await rateLimiter(
-    getRedis(), `rl:sending-domains:check:${input.domainId}`, CHECK_LIMIT_PER_MINUTE, CHECK_WINDOW_SECONDS,
-  );
-  if (!rate.allowed) {
-    throw new SendingDomainServiceError('rate_limited', 'You can check a domain once a minute. Try again shortly.', 429);
-  }
-
+  // OWNERSHIP FIRST, limiter second, and the limiter is keyed by PARTNER as
+  // well as domain. Consuming the budget before the ownership check let any
+  // authenticated partner burn another partner's 1/min allowance by replaying a
+  // guessed domain id — they still got a 404, but the owner got a 429.
   const [row] = await db
     .select()
     .from(partnerSendingDomains)
     .where(and(eq(partnerSendingDomains.id, input.domainId), eq(partnerSendingDomains.partnerId, input.partnerId)))
     .limit(1);
   if (!row) throw new SendingDomainServiceError('not_found', 'Sending domain not found.', 404);
+
+  const rate = await rateLimiter(
+    getRedis(), `rl:sending-domains:check:${input.partnerId}:${input.domainId}`, CHECK_LIMIT_PER_MINUTE, CHECK_WINDOW_SECONDS,
+  );
+  if (!rate.allowed) {
+    throw new SendingDomainServiceError('rate_limited', 'You can check a domain once a minute. Try again shortly.', 429);
+  }
+
   if (row.status === 'suspended' || row.status === 'removing') {
     throw new SendingDomainServiceError('domain_not_sendable', 'This domain cannot be checked in its current state.', 409);
   }
