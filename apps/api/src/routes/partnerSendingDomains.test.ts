@@ -30,7 +30,11 @@ const mocks = vi.hoisted(() => ({
   partnerWideAllowed: vi.fn(() => true),
   audit: vi.fn(),
   enqueueTestSend: vi.fn(async () => undefined),
-  rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 4, resetAt: new Date() })),
+  // Parameters declared, not inferred: a bare `vi.fn(async () => …)` infers a
+  // ZERO-argument signature, and `.mock.calls[0]![1]` is then a tsc error on an
+  // empty tuple. Vitest transpiles without types, so it only shows in tsc.
+  rateLimiter: vi.fn(async (_redis: unknown, _key: string, _limit: number, _window: number) =>
+    ({ allowed: true, remaining: 4, resetAt: new Date() })),
   service: {
     listSendingDomains: vi.fn(),
     createSendingDomain: vi.fn(),
@@ -82,7 +86,7 @@ vi.mock('../db', () => ({
   },
 }));
 
-import { SendingDomainServiceError } from '../services/emailDomains/sendingDomainService';
+import { SendingDomainServiceError, type SendingDomainErrorCode } from '../services/emailDomains/sendingDomainService';
 import { partnerSendingDomainsRoutes } from './partnerSendingDomains';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -247,7 +251,10 @@ describe('routes', () => {
   });
 
   it('maps every service error code to its status and never writes an audit row on failure', async () => {
-    const cases: Array<[string, number]> = [
+    // The real SendingDomainServiceError narrows its first argument to
+    // SendingDomainErrorCode, so this list is typed as that union rather than
+    // as `string`.
+    const cases: Array<[SendingDomainErrorCode, 400 | 404 | 409 | 429]> = [
       ['domain_invalid', 400], ['domain_unavailable', 409], ['domain_limit_reached', 409],
       ['rate_limited', 429], ['not_found', 404], ['domain_not_sendable', 409],
     ];
