@@ -362,15 +362,35 @@ describe('requestDomainCheck', () => {
 
 describe('requestDomainRemoval', () => {
   it('marks the row removing and lets the worker do the provider work', async () => {
-    rows.push([{ id: DOMAIN_ID, status: 'removing' }]);
+    rows.push([{ id: DOMAIN_ID, status: 'verified' }]);   // the ownership load
+    rows.push([{ id: DOMAIN_ID, status: 'removing' }]);   // the UPDATE ... RETURNING
     await requestDomainRemoval({ partnerId: PARTNER_ID, domainId: DOMAIN_ID });
     expect(updates.at(-1)).toMatchObject({ status: 'removing', statusReason: 'user_removed' });
     expect(enqueueSyncMock).toHaveBeenCalledWith(DOMAIN_ID);
   });
 
-  it('404s when the row is not the caller\'s (the UPDATE returns nothing under RLS)', async () => {
+  it('404s when the row is not the caller\'s (the load returns nothing under RLS)', async () => {
     rows.push([]);
     expect(await codeOf(() => requestDomainRemoval({ partnerId: PARTNER_ID, domainId: DOMAIN_ID }))).toBe('not_found');
+  });
+
+  // Without this guard a partner can escape a platform suspension: delete the
+  // suspended row, then re-create the same domain as a fresh pending one
+  // (spec §5.2, §9.1). Removal is the one partner-facing write the kill switch
+  // did not cover.
+  it('refuses to remove a platform-suspended domain', async () => {
+    rows.push([{ id: DOMAIN_ID, status: 'suspended' }]);
+    expect(await codeOf(() => requestDomainRemoval({ partnerId: PARTNER_ID, domainId: DOMAIN_ID })))
+      .toBe('domain_not_sendable');
+    expect(updates).toHaveLength(0);
+    expect(enqueueSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent for a row already removing', async () => {
+    rows.push([{ id: DOMAIN_ID, status: 'removing' }]);
+    rows.push([{ id: DOMAIN_ID, status: 'removing' }]);
+    await requestDomainRemoval({ partnerId: PARTNER_ID, domainId: DOMAIN_ID });
+    expect(updates.at(-1)).toMatchObject({ status: 'removing' });
   });
 });
 

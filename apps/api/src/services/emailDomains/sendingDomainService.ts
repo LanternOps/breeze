@@ -326,6 +326,23 @@ export async function requestDomainCheck(input: { partnerId: string; domainId: s
 
 export async function requestDomainRemoval(input: { partnerId: string; domainId: string }): Promise<void> {
   requireProvider();
+
+  // Load-and-guard before the write. A `suspended` row must NOT be removable:
+  // the domain name is unique platform-wide, so deleting it would free the name
+  // and let the same partner re-create it as a fresh `pending` row — undoing a
+  // platform suspension from a partner-facing route (spec §5.2, §9.1).
+  const [existing] = await db
+    .select({ status: partnerSendingDomains.status })
+    .from(partnerSendingDomains)
+    .where(and(eq(partnerSendingDomains.id, input.domainId), eq(partnerSendingDomains.partnerId, input.partnerId)))
+    .limit(1);
+  if (!existing) throw new SendingDomainServiceError('not_found', 'Sending domain not found.', 404);
+  if (existing.status === 'suspended') {
+    throw new SendingDomainServiceError(
+      'domain_not_sendable', 'This domain cannot be removed in its current state.', 409,
+    );
+  }
+
   const now = new Date();
   const [updated] = await db
     .update(partnerSendingDomains)
