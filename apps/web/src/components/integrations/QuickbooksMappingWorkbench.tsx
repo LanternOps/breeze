@@ -214,13 +214,18 @@ export default function QuickbooksMappingWorkbench({
                   syncStatus: mapping.syncStatus,
                   proposedRemoteId: mapping.remoteEntityId,
                   // The mapping payload carries no display name. Keep the one
-                  // we already have when the id is unchanged; otherwise drop it
-                  // so the picker labels the option with the id rather than
-                  // another record's name.
+                  // we already have when the id is unchanged. A row that was
+                  // "create new" just had its record created under the Breeze
+                  // display name (buildCustomerPayload / item payload), so that
+                  // name IS the new record's name. Otherwise drop it so the
+                  // picker labels the option with the id rather than another
+                  // record's name.
                   proposedRemoteName:
                     mapping.remoteEntityId && mapping.remoteEntityId === p.proposedRemoteId
                       ? p.proposedRemoteName
-                      : null,
+                      : mapping.remoteEntityId && p.linkStatus === "create_new"
+                        ? p.breezeDisplayName
+                        : null,
                   // A persisted remote id IS a link, not a guess — the same
                   // rule the API applies in confidenceForMapping().
                   confidence: mapping.remoteEntityId ? "existing_link" : "none",

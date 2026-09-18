@@ -887,6 +887,43 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
     );
   });
 
+  it("labels the picker with the org name (not the QBO Id) after Create new", async () => {
+    const created = {
+      breezeEntityType: "org",
+      breezeEntityId: ORG_ID,
+      remoteEntityType: "Customer",
+      remoteEntityId: "231",
+      linkStatus: "confirmed",
+      syncStatus: "synced",
+      lastSyncedAt: "2026-09-06T00:00:00Z",
+      lastError: null,
+    };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [ambiguousOrgProposal] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: { ...created, remoteEntityId: null, linkStatus: "create_new", syncStatus: "pending" },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: created }));
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-create-${ORG_ID}`));
+
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).toHaveTextContent(
+        "In QuickBooks",
+      ),
+    );
+    const select = screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`) as HTMLSelectElement;
+    expect(select.value).toBe("231");
+    expect(select.selectedOptions[0]!.textContent).toBe("Acme Corp");
+  });
+
   it("does NOT push to QuickBooks after an Unlink decision", async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
