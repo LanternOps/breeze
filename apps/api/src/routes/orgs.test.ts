@@ -2905,19 +2905,62 @@ describe('org routes', () => {
         partnerId: 'partner-123',
         accessibleOrgIds: [orgId]
       });
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org' }])
+      // Two DISTINCT selects now: the org lookup, then the partner default tax
+      // rate. Staged with mockReturnValueOnce rather than one shared
+      // mockReturnValue so the test cannot pass by a single mock silently
+      // answering a second, different query.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123' }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: null }])
+            })
+          })
+        } as any);
 
       const res = await app.request(`/orgs/organizations/${orgId}`);
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.id).toBe(orgId);
+      expect(body.partnerDefaultTaxRate).toBeNull();
+    });
+
+    it('includes the partner default tax rate', async () => {
+      const orgId = '33333333-3333-3333-3333-333333333333';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: '0.07250' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/orgs/organizations/${orgId}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.partnerDefaultTaxRate).toBe('0.07250');
     });
 
     it('should return 404 when organization not found', async () => {

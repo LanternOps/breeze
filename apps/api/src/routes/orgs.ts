@@ -1947,11 +1947,23 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   // get one shape regardless of who asked — including the `offboarding` half of
   // an archive drain (#4166), which the list route now serves flagged for both
   // scopes.
+  // Additive field for the org billing settings screen's inherited tax-rate
+  // control (settings consolidation, W02-WEB / M10). Read in the AMBIENT
+  // request context — no escalation: this route already requires `partner` or
+  // `system` scope, and `partners` RLS grants a partner-scoped actor its own
+  // partner row, so `readWithPartnerAxisVisibility` would buy nothing here.
+  const [partnerRow] = await db
+    .select({ defaultTaxRate: partners.defaultTaxRate })
+    .from(partners)
+    .where(eq(partners.id, organization.partnerId))
+    .limit(1);
+  const partnerDefaultTaxRate = partnerRow?.defaultTaxRate ?? null;
+
   if (isArchiveLifecycleRow(organization)) {
-    return c.json({ ...organization, archived: true as const });
+    return c.json({ ...organization, archived: true as const, partnerDefaultTaxRate });
   }
 
-  return c.json(organization);
+  return c.json({ ...organization, partnerDefaultTaxRate });
 });
 
 orgRoutes.get('/organizations/:id/effective-settings',
