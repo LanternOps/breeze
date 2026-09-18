@@ -96,7 +96,7 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     // getUserPermissions round-trips, so it's mocked wholesale here rather
     // than reconstructed from db-table mocks.
     intentApproversState: {
-      resolveIntentApprovers: vi.fn(async () => [] as string[]),
+      resolveIntentApprovers: vi.fn(async (_orgId?: string, _opts?: unknown) => [] as string[]),
       resolveAgentIntentApprovers: vi.fn(async () => [] as string[]),
       resolveIntentTargetScope: vi.fn(async () => ({ kind: 'indirect' }) as unknown),
     },
@@ -113,7 +113,7 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     // Wave 5 Part B (#3827): defaults OFF, matching the real flag's default —
     // most of this suite must stay behaviorally identical whether or not
     // policyDecideEnabled is even imported, proving flag-off inertness.
-    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    envMock: { policyDecideEnabled: vi.fn(() => false), sweepActEnabled: vi.fn(() => false) },
     // The dynamic import() inside triggerPolicyDecisionAttempt resolves
     // through this mock exactly like a static import would — vi.mock
     // intercepts both. A no-op async fn by default so a triggered attempt
@@ -232,6 +232,17 @@ vi.mock('./intentApprovers', () => ({
   resolveIntentApprovers: intentApproversState.resolveIntentApprovers,
   resolveAgentIntentApprovers: intentApproversState.resolveAgentIntentApprovers,
   resolveIntentTargetScope: intentApproversState.resolveIntentTargetScope,
+  // Org-wide governance classifier (audit §1.1) — REAL semantics, not a
+  // constant, so the fan-out filter flag is driven by the same tool/action
+  // shape production uses. Literals: vi.mock factories are hoisted.
+  // The identity-tenant helpdesk tools are WHOLE-TOOL entries in the real map
+  // (no `action` discriminator at all) — mirrored here, since the raise gate
+  // below keys off this classifier. Real membership is pinned by
+  // orgWideGovernanceCoverage.contract.test.ts.
+  isOrgWideGovernanceIntent: (toolName: string, args: Record<string, unknown> | null | undefined) =>
+    (toolName === 'manage_ai_agents' && args?.action === 'authorize_supervised_key')
+    || ['m365_disable_user', 'm365_reset_password', 'google_suspend_user', 'google_reset_password']
+      .includes(toolName),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -282,6 +293,8 @@ vi.mock('./effectDigest', () => ({
 
 vi.mock('../../config/env', () => ({
   policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04 sub-flag, default OFF (dark-ship).
+  sweepActEnabled: envMock.sweepActEnabled,
 }));
 
 vi.mock('./policyDecide', () => ({
@@ -339,6 +352,7 @@ import type { GuardrailCheck } from '../aiGuardrails';
 import { buildActionLabel } from './actionLabel';
 import { db, withDbAccessContext } from '../../db';
 import { computeEffectDigestOutcome } from './effectDigest';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -356,7 +370,14 @@ const DEVICE_ID = '99999999-9999-4999-8999-999999999999';
 const SITE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
-function makeAuth(overrides?: { partnerId?: string | null; principal?: unknown }) {
+function makeAuth(overrides?: {
+  partnerId?: string | null;
+  principal?: unknown;
+  /** A defined value (including []) is a SITE CEILING — see services/siteCeilingAccess.ts. */
+  allowedSiteIds?: string[];
+  /** A defined value (including []) is an EXACT-DEVICE ceiling (agent runs only). */
+  allowedDeviceIds?: string[];
+}) {
   return {
     principal: overrides?.principal ?? { kind: 'user_session' },
     user: { id: REQUESTER_ID, email: 'req@example.com', name: 'Requester' },
@@ -364,6 +385,8 @@ function makeAuth(overrides?: { partnerId?: string | null; principal?: unknown }
     partnerId: overrides?.partnerId ?? null,
     scope: 'organization' as const,
     accessibleOrgIds: [ORG_ID],
+    ...('allowedSiteIds' in (overrides ?? {}) ? { allowedSiteIds: overrides!.allowedSiteIds } : {}),
+    ...('allowedDeviceIds' in (overrides ?? {}) ? { allowedDeviceIds: overrides!.allowedDeviceIds } : {}),
   } as unknown as Parameters<typeof createActionIntent>[0];
 }
 
@@ -582,6 +605,102 @@ beforeEach(() => {
 // W03 (#5612): four-eyes fan-out filtered to scripts:write for STRICT proposals
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Audit §1.1: org-wide governance fan-out excludes site-restricted approvers
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — org-wide governance fan-out filter', () => {
+  const govInput = () => baseInput({
+    toolName: 'manage_ai_agents',
+    input: { action: 'authorize_supervised_key', agentId: 'agent-1', orgId: ORG_ID },
+    idempotencyKey: 'key-gov',
+  });
+
+  it('asks the resolver to drop site-restricted approvers for an org-wide governance intent', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-gov' }]);
+
+    await createActionIntent(makeAuth(), govInput()).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, expect.objectContaining({ alsoRequire: undefined, requireOrgWideGovernance: true }),
+    );
+  });
+
+  it.each(['m365_disable_user', 'google_suspend_user'])(
+    'asks the resolver to drop site-restricted approvers for %s',
+    async (toolName) => {
+      // The identity-tenant helpdesk tools are whole-tool governance entries,
+      // so the SAME fan-out filter the manage_ai_agents grant gets now applies
+      // to them: an approver who could never clear the decide-time ceiling is
+      // never queued, and the sole-operator re-derivation in
+      // decideApprovalRequest.ts stays in agreement with this fan-out.
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-identity' }]);
+
+      await createActionIntent(
+        makeAuth(),
+        baseInput({ toolName, input: { userPrincipalName: 'a@b.test' }, idempotencyKey: `key-${toolName}` }),
+      ).catch(() => undefined);
+
+      expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+        ORG_ID, expect.objectContaining({ requireOrgWideGovernance: true }),
+      );
+    },
+  );
+
+  it('does NOT ask for the filter on an ordinary (non-governance) action of the same tool', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-ord' }]);
+
+    await createActionIntent(
+      makeAuth(),
+      baseInput({ toolName: 'manage_ai_agents', input: { action: 'list', orgId: ORG_ID }, idempotencyKey: 'key-ord' }),
+    ).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, expect.objectContaining({ alsoRequire: undefined, requireOrgWideGovernance: false }),
+    );
+  });
+
+  it('cancels with a distinct errorCode and audits the diagnostics when everyone was dropped by the site ceiling (review finding #1)', async () => {
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+    const diagnostics = {
+      deciders: [APPROVER_1],
+      droppedBySiteCeiling: 1,
+      droppedUnresolvable: 0,
+      orgLookupMissed: false,
+    };
+    intentApproversState.resolveIntentApprovers.mockImplementationOnce(
+      (async (_orgId?: string, opts?: { onDiagnostics?: (d: typeof diagnostics) => void }) => {
+        opts?.onDiagnostics?.(diagnostics);
+        return [];
+      }) as any,
+    );
+    dbState.updateActionIntentsResults.push([
+      makeIntentRow({ status: 'cancelled', errorCode: 'no_eligible_approvers_site_ceiling' }),
+    ]);
+
+    const snapshot = await createActionIntent(makeAuth(), govInput());
+
+    expect(snapshot.status).toBe('cancelled');
+    expect(snapshot.errorCode).toBe('no_eligible_approvers_site_ceiling');
+    expect(dbState.updateActionIntentsSets[0]).toMatchObject({
+      status: 'cancelled',
+      errorCode: 'no_eligible_approvers_site_ceiling',
+    });
+    expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'cancelled',
+        details: expect.objectContaining({
+          errorCode: 'no_eligible_approvers_site_ceiling',
+          governanceDiagnostics: diagnostics,
+        }),
+      }),
+    );
+  });
+});
+
 describe('createActionIntent — STRICT proposal fan-out filter (W03)', () => {
   const proposalInput = (strictHits: string[]) => baseInput({
     input: { proposalId: '44444444-4444-4444-8444-444444444444', deviceIds: ['device-1'] },
@@ -599,7 +718,7 @@ describe('createActionIntent — STRICT proposal fan-out filter (W03)', () => {
     await createActionIntent(makeAuth(), proposalInput(['PowerShell HKLM write'])).catch(() => undefined);
 
     expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
-      ORG_ID, { alsoRequire: { resource: 'scripts', action: 'write' } },
+      ORG_ID, expect.objectContaining({ alsoRequire: { resource: 'scripts', action: 'write' }, requireOrgWideGovernance: false }),
     );
   });
 
@@ -610,7 +729,9 @@ describe('createActionIntent — STRICT proposal fan-out filter (W03)', () => {
 
     await createActionIntent(makeAuth(), proposalInput([])).catch(() => undefined);
 
-    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(ORG_ID, { alsoRequire: undefined });
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, expect.objectContaining({ alsoRequire: undefined, requireOrgWideGovernance: false }),
+    );
   });
 });
 
@@ -2787,5 +2908,123 @@ describe('buildImpactSummary (#5106)', () => {
 
   it.each(CASES)('$name', ({ toolName, input, guardrailDescription, expected }) => {
     expect(buildImpactSummary(toolName, input, catalogGuardrail(guardrailDescription))).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Raise-time site-ceiling gate for org-wide governance intents
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent org-wide governance site ceiling', () => {
+  beforeEach(() => {
+    resetDbState();
+    vi.clearAllMocks();
+  });
+
+  /**
+   * The gate has to sit at the RAISE, not only in the tool handler: an
+   * m365/google write is Tier-3 four-eyes, so the durable intent is minted in
+   * onPreToolUse BEFORE the handler runs, and the approved release re-enters
+   * through the headless `*Action` functions, which take no AuthContext at
+   * all. A site-restricted technician who could mint the row would get the
+   * action executed by someone else's approval.
+   */
+  it.each([
+    ['m365_disable_user', { userPrincipalName: 'victim@contoso.test' }],
+    ['google_suspend_user', { userKey: 'victim@example.test' }],
+  ])('refuses a site-restricted raiser for %s', async (toolName, input) => {
+    await expect(
+      createActionIntent(
+        makeAuth({ allowedSiteIds: ['site-1'] }),
+        baseInput({ toolName, input }),
+      ),
+    ).rejects.toMatchObject({
+      name: 'ActionIntentError',
+      code: 'site_ceiling',
+      message: SITE_CEILING_WRITE_DENIED_MESSAGE,
+    });
+
+    // Nothing was minted — the refusal precedes every DB write AND every read.
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+    expect(guardrailMock.checkGuardrails).not.toHaveBeenCalled();
+  });
+
+  it('leaves an ai_agent principal to the agent guardrails, not the human site ceiling', async () => {
+    // A device-bound run carries `allowedSiteIds`. If the human ceiling ran
+    // first it would mask the agent lane's own categorical denial
+    // (`agent_policy_denied`, secret-bearing / session-only) with the wrong
+    // error code — caught by agentIntentLifecycle.integration.test.ts in CI.
+    const agentAuth = { ...(makeAgentAuth() as object), allowedSiteIds: ['site-1'] } as Parameters<
+      typeof createActionIntent
+    >[0];
+    let caught: unknown;
+    try {
+      await createActionIntent(
+        agentAuth,
+        agentInput({ toolName: 'm365_reset_password', input: { userPrincipalName: 'a@b.test' } }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    // Whatever the agent lane decides, it is NOT the human site ceiling.
+    expect((caught as { code?: string } | undefined)?.code).not.toBe('site_ceiling');
+  });
+
+  it('refuses a raiser whose ceiling is the EMPTY site list', async () => {
+    // `allowedSiteIds: []` is a ceiling of zero sites, not "unrestricted".
+    await expect(
+      createActionIntent(
+        makeAuth({ allowedSiteIds: [] }),
+        baseInput({ toolName: 'm365_reset_password', input: { userPrincipalName: 'a@b.test' } }),
+      ),
+    ).rejects.toMatchObject({ code: 'site_ceiling' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('refuses a raiser carrying an exact-DEVICE ceiling', async () => {
+    // #6096: a device-less agent-style context carries allowedDeviceIds with
+    // no allowedSiteIds — a site-only check reads that as unrestricted.
+    await expect(
+      createActionIntent(
+        makeAuth({ allowedDeviceIds: ['device-1'] }),
+        baseInput({ toolName: 'm365_disable_user', input: { userPrincipalName: 'a@b.test' } }),
+      ),
+    ).rejects.toMatchObject({ code: 'site_ceiling' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('lets an UNRESTRICTED raiser past the gate for the same tool', async () => {
+    // Control: proves the refusals above are the ceiling, not the tool name.
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3, allowed: true, requiresApproval: true, readOnly: false,
+      approvalScope: 'four_eyes', description: 'Disable an M365 user.',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-identity' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
+
+    await createActionIntent(
+      makeAuth(),
+      baseInput({ toolName: 'm365_disable_user', input: { userPrincipalName: 'a@b.test' } }),
+    );
+
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+    expect(dbState.insertedActionIntentValues[0]?.actionName).toBe('m365_disable_user');
+  });
+
+  it('does not gate a NON-governance tool for a site-restricted raiser', async () => {
+    // Control on the other axis: the ceiling only bites org-wide governance.
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3, allowed: true, requiresApproval: true, readOnly: false,
+      approvalScope: 'four_eyes', description: 'Run a script.',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-plain' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-2' }]);
+
+    await createActionIntent(makeAuth({ allowedSiteIds: ['site-1'] }), baseInput());
+
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
   });
 });

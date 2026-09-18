@@ -28,6 +28,7 @@ import {
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { drainPendingRunResults } from '../services/workspace/chatRunBridge';
 import {
   calculateCatalogCostCents,
   calculateCostCents,
@@ -895,8 +896,17 @@ aiRoutes.post(
       }
     }
 
-    // Push message to the streaming input and start turn timeout
-    activeSession.inputController.pushMessage(sanitizedContent);
+    // Execution plane (spec §5.5): an `analysis` run associated with this
+    // session may have finished between turns (chat-initiated launch is
+    // currently disabled, #6086, but a preconfigured agent's run can still
+    // report back to a session this way). Its summary is prepended HERE
+    // rather than pushed when it arrived — pushing then would start a turn
+    // with no SSE subscriber, so the assistant's reply would never reach the
+    // browser.
+    const pendingRunResults = drainPendingRunResults(activeSession);
+    activeSession.inputController.pushMessage(
+      pendingRunResults ? `${pendingRunResults}\n\n${sanitizedContent}` : sanitizedContent,
+    );
     streamingSessionManager.startTurnTimeout(activeSession);
 
     const subscriptionId = crypto.randomUUID();

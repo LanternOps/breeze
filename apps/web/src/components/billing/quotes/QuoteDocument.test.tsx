@@ -228,7 +228,7 @@ describe('QuoteDocument', () => {
       },
     ];
     render(<QuoteDocument detail={d} customerName="Acme Industries" />);
-    expect(screen.getByTestId('contract-block')).toHaveTextContent('Contract file unavailable');
+    expect(screen.getByTestId('contract-block')).toHaveTextContent('Agreement file unavailable');
     expect(document.querySelector('iframe')).toBeNull();
     expect(fetchWithAuth).not.toHaveBeenCalled();
   });

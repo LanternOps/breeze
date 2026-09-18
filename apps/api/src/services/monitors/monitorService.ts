@@ -2,6 +2,8 @@ import { and, asc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
+import { escalationPolicies } from '../../db/schema/alerts';
+import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 import {
   canManagePartnerWidePolicies,
@@ -94,6 +96,63 @@ function resolveOwnerForCreate(input: CreateMonitorDefinitionInput, auth: AuthCo
 }
 
 /**
+ * Owner-compatibility guard for `escalation_policy_id` (#5676).
+ *
+ * `monitor_definitions` and `escalation_policies` are both dual-axis
+ * (org_id XOR partner_id, or partner-wide with org_id NULL) but nothing tied
+ * them together: a partner-wide monitor could reference an org-owned
+ * escalation policy, which resolves fine for devices in THAT org but fails
+ * closed for every other org the partner-wide monitor also applies to
+ * (misconfiguration, not a tenant leak — dispatch already fails closed on a
+ * cross-tenant policy id). Reject the mismatch at write time instead.
+ *
+ * Compatible pairings:
+ *   - partner-wide monitor (orgId null)  -> no policy, or a partner-wide
+ *     policy owned by the SAME partner.
+ *   - org-scoped monitor (orgId set)     -> no policy, a policy owned by
+ *     that same org, or a partner-wide policy owned by the org's partner.
+ *
+ * Deny on a lookup miss (matches `isMonitorAttachableToPolicy`'s
+ * COALESCE(..., false) posture) rather than letting a bad id fall through to
+ * the FK's own error shape.
+ */
+async function assertEscalationPolicyCompatible(
+  escalationPolicyId: string | null,
+  owner: MonitorOwner,
+): Promise<void> {
+  if (!escalationPolicyId) return;
+
+  const [policy] = await db
+    .select({ orgId: escalationPolicies.orgId, partnerId: escalationPolicies.partnerId })
+    .from(escalationPolicies)
+    .where(eq(escalationPolicies.id, escalationPolicyId))
+    .limit(1);
+  if (!policy) {
+    throw new MonitorValidationError('Escalation policy not found');
+  }
+
+  if (owner.partnerId) {
+    if (policy.orgId === null && policy.partnerId === owner.partnerId) return;
+    throw new MonitorValidationError(
+      'A partner-wide monitor may only reference a partner-wide escalation policy owned by the same partner',
+    );
+  }
+
+  if (policy.orgId === owner.orgId) return;
+  if (policy.orgId === null) {
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, owner.orgId!))
+      .limit(1);
+    if (org?.partnerId && org.partnerId === policy.partnerId) return;
+  }
+  throw new MonitorValidationError(
+    'Escalation policy must be owned by this organization or be partner-wide for its partner',
+  );
+}
+
+/**
  * Validate the condition against its kind and normalise the responses.
  *
  * Both are re-checked here rather than trusted from the zod layer because the
@@ -182,6 +241,7 @@ export async function createMonitorDefinition(
   auth: AuthContext,
 ): Promise<MonitorDefinitionRow> {
   const owner = resolveOwnerForCreate(input, auth);
+  await assertEscalationPolicyCompatible(input.escalationPolicyId ?? null, owner);
   const shape = validateDefinitionShape({
     kind: input.kind,
     condition: input.condition,
@@ -249,6 +309,15 @@ export async function updateMonitorDefinition(
     aiAgentId: input.aiAgentId !== undefined ? input.aiAgentId : existing.aiAgentId,
   };
   const shape = validateDefinitionShape(merged);
+
+  const effectiveEscalationPolicyId =
+    input.escalationPolicyId !== undefined
+      ? (input.escalationPolicyId ?? null)
+      : existing.escalationPolicyId;
+  await assertEscalationPolicyCompatible(effectiveEscalationPolicyId, {
+    orgId: existing.orgId,
+    partnerId: existing.partnerId,
+  });
 
   const recurrenceThreshold =
     input.recurrenceThreshold !== undefined ? input.recurrenceThreshold : existing.recurrenceThreshold;

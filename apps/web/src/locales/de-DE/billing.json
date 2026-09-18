@@ -70,7 +70,8 @@
         "autoIssue": "Automatisch ausstellen",
         "renewal": "Erneuerung",
         "estimatedPerPeriod": "Geschätzt / Zeitraum",
-        "notes": "Notizen"
+        "notes": "Notizen",
+        "invoiceNote": "Rechnungshinweis"
       },
       "values": {
         "noDrafts": "Nein (Entwürfe)"
@@ -147,7 +148,8 @@
         "confirm": "Entwurf löschen"
       },
       "documents": {
-        "title": "Ausgeführte Dokumente",
+        "title": "Unterzeichnete Vereinbarungen",
+        "subtitle": "Mit dem Angebot angenommen und auf die Vorlagenversion festgelegt, die der Kunde gesehen hat.",
         "columns": {
           "template": "Vorlage",
           "signer": "Unterzeichner",
@@ -155,8 +157,8 @@
           "quote": "Angebot"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Noch keine ausgeführten Dokumente.",
-        "loadError": "Ausgeführte Dokumente konnten nicht geladen werden.",
+        "empty": "Noch keine unterzeichneten Vereinbarungen.",
+        "loadError": "Unterzeichnete Vereinbarungen konnten nicht geladen werden.",
         "downloadError": "PDF konnte nicht heruntergeladen werden.",
         "download": "PDF herunterladen",
         "preparing": "Wird vorbereitet…",
@@ -218,8 +220,8 @@
       },
       "content": {
         "title": "Inhalt",
-        "notesOptional": "Notizen (optional)",
-        "termsOptional": "Bedingungen (optional, auf der Rechnung angegeben)",
+        "notesOptional": "Notizen (optional, werden dem Notizblock auf erzeugten Rechnungen hinzugefügt)",
+        "termsOptional": "Rechnungshinweis (optional, wird dem Notizblock auf erzeugten Rechnungen hinzugefügt)",
         "termsPlaceholder": "z.B. Netto 30. Automatische Verlängerung, sofern nicht 30 Tage vorher gekündigt."
       },
       "lines": {
@@ -316,6 +318,11 @@
       "estimateExcluded": "Schließt {{count}} Vertrag/Verträge aus, deren Schätzung nicht verfügbar ist"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} Verträge werden in einer anderen Währung als der ihrer Organisation abgerechnet.",
+        "countPlus": "{{count}}+ Verträge werden in einer anderen Währung als der ihrer Organisation abgerechnet.",
+        "review": "Prüfen"
+      },
       "title": "Verträge",
       "description": "Wiederkehrende Vereinbarungen, die in regelmäßigen Abständen automatisch Rechnungsentwürfe erstellen.",
       "newContract": "Neuer Vertrag",
@@ -397,8 +404,8 @@
     },
     "tabs": {
       "contracts": "Verträge",
-      "templates": "Vorlagen",
-      "documents": "Dokumente",
+      "templates": "Vereinbarungsvorlagen",
+      "documents": "Unterzeichnete Vereinbarungen",
       "currencyMismatches": "Währungsabweichungen"
     },
     "currencyMismatches": {
@@ -459,16 +466,16 @@
       }
     },
     "templatesTab": {
-      "title": "Vertragsvorlagen",
-      "description": "Wiederverwendbare Vertragsdokumente, die Sie an angenommene Angebote anhängen können.",
-      "newTemplate": "Neue Vorlage",
+      "title": "Vereinbarungsvorlagen",
+      "description": "Ihr Rahmenvertrag und Ihre Standardbedingungen. Fügen Sie eine Vorlage einem Angebot hinzu, und der Kunde unterzeichnet sie zusammen mit dem Angebot; die unterzeichnete Kopie wird beim Vertrag abgelegt, den dieses Angebot erzeugt.",
+      "newTemplate": "Neue Vereinbarungsvorlage",
       "includeArchived": "Archivierte anzeigen",
       "allOrgs": "Alle Orgs",
       "ownerOrg": "Organisation",
       "noVersions": "Noch keine Versionen",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Archivieren",
-      "loadError": "Vertragsvorlagen konnten nicht geladen werden",
+      "loadError": "Vereinbarungsvorlagen konnten nicht geladen werden",
       "createError": "Vorlage konnte nicht erstellt werden",
       "created": "Vorlage erstellt",
       "archiveError": "Vorlage konnte nicht archiviert werden",
@@ -484,11 +491,11 @@
         "archived": "Archiviert"
       },
       "empty": {
-        "title": "Noch keine Vorlagen",
-        "description": "Erstellen Sie Ihre erste Vertragsvorlage, um zu beginnen."
+        "title": "Noch keine Vereinbarungsvorlagen",
+        "description": "Hinterlegen Sie Ihren Rahmenvertrag oder Ihre Standardbedingungen einmalig und fügen Sie sie danach jedem beliebigen Angebot hinzu. Kunden unterzeichnen sie bei der Annahme."
       },
       "createDialog": {
-        "title": "Neue Vertragsvorlage",
+        "title": "Neue Vereinbarungsvorlage",
         "name": "Name",
         "namePlaceholder": "z. B. Rahmendienstleistungsvertrag",
         "description": "Beschreibung",
@@ -502,18 +509,18 @@
         "orgRequired": "Wählen Sie eine Organisation für eine organisationseigene Vorlage.",
         "nameRequired": "Geben Sie einen Vorlagennamen ein.",
         "cancel": "Abbrechen",
-        "create": "Vorlage erstellen",
+        "create": "Vereinbarungsvorlage erstellen",
         "creating": "Wird erstellt…"
       }
     },
     "documentsTab": {
-      "title": "Dokumente",
-      "description": "Ausgeführte Vertragsdokumente, die noch keinem Vertrag zugeordnet sind.",
+      "title": "Unterzeichnete Vereinbarungen",
+      "description": "Unterzeichnete Vereinbarungen, die noch keinem Vertrag zugeordnet sind. Ordnen Sie jede zu, damit sie beim zugehörigen Vertrag erscheint.",
       "empty": {
-        "title": "Keine nicht zugeordneten Dokumente",
-        "description": "Ausgeführte Dokumente erscheinen hier, bis sie einem Vertrag zugeordnet werden."
+        "title": "Keine nicht zugeordneten unterzeichneten Vereinbarungen",
+        "description": "Unterzeichnete Vereinbarungen erscheinen hier, bis sie einem Vertrag zugeordnet werden."
       },
-      "loadError": "Dokumente konnten nicht geladen werden.",
+      "loadError": "Unterzeichnete Vereinbarungen konnten nicht geladen werden.",
       "columns": {
         "template": "Vorlage",
         "signer": "Unterzeichner",
@@ -535,8 +542,8 @@
         "confirm": "Verknüpfen",
         "linking": "Wird verknüpft…"
       },
-      "linkSuccess": "Dokument mit Vertrag verknüpft.",
-      "linkError": "Dokument konnte nicht mit diesem Vertrag verknüpft werden."
+      "linkSuccess": "Unterzeichnete Vereinbarung mit Vertrag verknüpft.",
+      "linkError": "Die unterzeichnete Vereinbarung konnte nicht mit diesem Vertrag verknüpft werden."
     },
     "templateEditor": {
       "back": "Zurück",
@@ -562,7 +569,7 @@
       "publish": "Veröffentlichen",
       "publishDirtyHint": "Speichern Sie Ihren Entwurf vor dem Veröffentlichen",
       "body": "Inhalt",
-      "bodyAria": "Inhalt der Vertragsvorlage",
+      "bodyAria": "Inhalt der Vereinbarungsvorlage",
       "preview": "Vorschau",
       "edit": "Bearbeiten",
       "saveDraft": "Entwurf speichern",
@@ -579,28 +586,96 @@
       "publishError": "Version konnte nicht veröffentlicht werden",
       "publishSuccess": "Version veröffentlicht",
       "warnings": {
-        "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Vertragstexte unterstützen Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
+        "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Vereinbarungstexte unterstützen Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Vereinbarungsvorlagen",
+      "signed": "Unterzeichnete Vereinbarungen"
+    },
+    "signedPage": {
+      "title": "Unterzeichnete Vereinbarungen",
+      "description": "Alle Vereinbarungen, die Ihre Kunden unterzeichnet haben. Ordnen Sie eine einem Vertrag zu, damit sie bei dem Vertrag erscheint, den sie regelt.",
+      "unlinkedOnly": "Nur nicht zugeordnete",
+      "empty": {
+        "title": "Noch keine unterzeichneten Vereinbarungen",
+        "description": "Eine Vereinbarung gilt als unterzeichnet, sobald ein Kunde ein Angebot annimmt, das sie enthält."
+      },
+      "emptyUnlinked": {
+        "title": "Keine nicht zugeordneten unterzeichneten Vereinbarungen",
+        "description": "Jede unterzeichnete Vereinbarung ist bereits einem Vertrag zugeordnet."
+      },
+      "columns": {
+        "contract": "Vertrag"
+      },
+      "viewContract": "Vertrag ansehen",
+      "notLinked": "Nicht zugeordnet",
+      "rowSubtitle": "Mit Angebot {{quoteNumber}} angenommen von {{signer}} am {{date}}",
+      "rowSubtitleNoQuote": "Unterzeichnet von {{signer}} am {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",
+      "usageUnavailable": "Verwendung nicht verfügbar",
+      "backToTemplates": "Zurück zu den Vereinbarungsvorlagen",
+      "archiveConfirm": {
+        "title": "Diese Vereinbarungsvorlage archivieren?",
+        "message": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen. Bereits daran gebundene Angebote funktionieren weiter, es lassen sich aber keine neuen Vereinbarungsabschnitte mehr hinzufügen.",
+        "messageUnknownUsage": "Es ließ sich nicht prüfen, wo diese Vorlage verwendet wird. Bereits daran gebundene Angebote funktionieren weiter, es lassen sich aber keine neuen Vereinbarungsabschnitte mehr hinzufügen.",
+        "confirm": "Vorlage archivieren"
+      }
+    },
+    "contractPill": {
+      "under": "Gemäß {{template}} v{{n}}"
     }
   },
   "quotes": {
     "deviceSet": {
       "roleNoun": {
-        "workstation": "Arbeitsstationen", "server": "Server", "printer": "Drucker", "router": "Router", "switch": "Netzwerk-Switches", "firewall": "Firewalls",
-        "access_point": "Zugangspunkte", "phone": "Telefone", "iot": "IoT-Geräte", "camera": "Kameras", "nas": "NAS-Geräte"
+        "workstation": "Arbeitsstationen",
+        "server": "Server",
+        "printer": "Drucker",
+        "router": "Router",
+        "switch": "Netzwerk-Switches",
+        "firewall": "Firewalls",
+        "access_point": "Zugangspunkte",
+        "phone": "Telefone",
+        "iot": "IoT-Geräte",
+        "camera": "Kameras",
+        "nas": "NAS-Geräte"
       }
     },
     "editor": {
       "deviceSet": {
-        "toggle": "Nach Gerätesatz abrechnen", "typeLabel": "Gerätesatz",
-        "types": { "per_device": "Pro Gerät", "per_device_role": "Pro Geräterolle", "per_device_group": "Pro Gerätegruppe", "per_seat": "Pro Benutzerplatz" },
-        "rolesLabel": "Geräterollen", "groupLabel": "Gerätegruppe", "siteLabel": "Standort (optional)", "allSites": "Alle Standorte",
-        "quantityAuto": "Menge wird automatisch gezählt", "autoSummary": "Automatische Menge · {{count}} {{set}} · geschätzt",
-        "driftChip": "Anzahl geändert: {{stored}} → {{live}}", "refresh": "Anzahl aktualisieren", "estimateError": "Die aktuelle Geräteanzahl konnte nicht geprüft werden.", "pickerError": "Gerätegruppen oder Standorte konnten nicht geladen werden. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
-        "groupDeleted": "Gerätegruppe „{{name}}“ wurde gelöscht — bitte eine andere wählen", "siteDeleted": "Standort „{{name}}“ wurde gelöscht — bitte einen anderen wählen",
+        "toggle": "Nach Gerätesatz abrechnen",
+        "typeLabel": "Gerätesatz",
+        "types": {
+          "per_device": "Pro Gerät",
+          "per_device_role": "Pro Geräterolle",
+          "per_device_group": "Pro Gerätegruppe",
+          "per_seat": "Pro Benutzerplatz"
+        },
+        "rolesLabel": "Geräterollen",
+        "groupLabel": "Gerätegruppe",
+        "siteLabel": "Standort (optional)",
+        "allSites": "Alle Standorte",
+        "quantityAuto": "Menge wird automatisch gezählt",
+        "autoSummary": "Automatische Menge · {{count}} {{set}} · geschätzt",
+        "driftChip": "Anzahl geändert: {{stored}} → {{live}}",
+        "refresh": "Anzahl aktualisieren",
+        "estimateError": "Die aktuelle Geräteanzahl konnte nicht geprüft werden.",
+        "pickerError": "Gerätegruppen oder Standorte konnten nicht geladen werden. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
+        "groupDeleted": "Gerätegruppe „{{name}}“ wurde gelöscht — bitte eine andere wählen",
+        "siteDeleted": "Standort „{{name}}“ wurde gelöscht — bitte einen anderen wählen",
         "typeLocked": "Ein Gerätesatz kann nach dem Anlegen der Position nicht geändert werden — Position entfernen und neu hinzufügen.",
-        "allowanceGroupLabel": "Mengenkontingent", "allowanceToggle": "Feste Menge einschließen, Rest separat behandeln",
-        "includedLabel": "Enthaltene Menge", "overageModeLabel": "Über dem Kontingent", "overageBill": "Jede zusätzliche Einheit berechnen", "overageFlag": "Zur Prüfung melden", "overagePriceLabel": "Preis für Zusatzeinheiten",
+        "allowanceGroupLabel": "Mengenkontingent",
+        "allowanceToggle": "Feste Menge einschließen, Rest separat behandeln",
+        "includedLabel": "Enthaltene Menge",
+        "overageModeLabel": "Über dem Kontingent",
+        "overageBill": "Jede zusätzliche Einheit berechnen",
+        "overageFlag": "Zur Prüfung melden",
+        "overagePriceLabel": "Preis für Zusatzeinheiten",
         "driftToast": "{{count}} Position(en) entsprechen nicht mehr der aktuellen Geräteanzahl: {{lines}}",
         "retargetToast": "{{count}} Position(en) benötigen eine neu gewählte Gerätegruppe oder einen Standort für diese Organisation"
       },
@@ -684,7 +759,7 @@
         "image": "Bild",
         "pricingTable": "Preistabelle",
         "richText": "Rich-Text",
-        "contract": "Vertrag",
+        "contract": "Vereinbarung / Bedingungen",
         "table": "Tabelle",
         "callout": "Hinweisbox"
       },
@@ -755,7 +830,7 @@
       "emptyBlocks": "Noch kein Inhalt. Fügen Sie unten eine Überschrift, Rich-Text oder eine Preistabelle hinzu.",
       "errors": {
         "addCatalogItem": "Das Katalogelement konnte nicht hinzugefügt werden.",
-        "addContractSection": "Der Vertragsabschnitt konnte nicht hinzugefügt werden",
+        "addContractSection": "Der Vereinbarungsabschnitt konnte nicht hinzugefügt werden",
         "addDistributorItem": "Der Händlerartikel konnte nicht hinzugefügt werden.",
         "addImageSection": "Der Bildabschnitt konnte nicht hinzugefügt werden.",
         "addLine": "Die Position konnte nicht hinzugefügt werden.",
@@ -770,7 +845,7 @@
         "importPax8Product": "Das Pax8-Produkt konnte nicht importiert werden.",
         "lineAddedCatalogSaveFailed": "Position hinzugefügt, aber das Speichern im Katalog ist fehlgeschlagen.",
         "lineNeedsNameOrDescription": "Eine Position benötigt einen Namen oder eine Beschreibung.",
-        "loadContractTemplates": "Vertragsvorlagen konnten nicht geladen werden",
+        "loadContractTemplates": "Vereinbarungsvorlagen konnten nicht geladen werden",
         "moveLine": "Die Position konnte nicht verschoben werden.",
         "quantityWholeGreaterThanZero": "Geben Sie eine ganzzahlige Menge größer als 0 ein.",
         "removeLine": "Die Position konnte nicht entfernt werden.",
@@ -875,7 +950,7 @@
         "savedToCatalog": "Im Katalog gespeichert",
         "sectionAdded": "Abschnitt hinzugefügt",
         "sectionRemoved": "Abschnitt entfernt",
-        "contractSectionAdded": "Vertragsabschnitt hinzugefügt"
+        "contractSectionAdded": "Vereinbarungsabschnitt hinzugefügt"
       },
       "symbols": {
         "check": "✓",
@@ -921,8 +996,9 @@
         "reshapedWarning": "Diese Tabelle überschritt das Limit von {{columns}} Spalten x {{rows}} Zeilen und wurde angepasst. Beim Speichern wird die gespeicherte Tabelle durch die hier angezeigte ersetzt."
       },
       "terms": {
-        "placeholder": "Zahlungsbedingungen, Garantieklauseln usw.",
-        "title": "Allgemeine Geschäftsbedingungen"
+        "placeholder": "Zahlungsbedingungen, Lieferhinweise usw.",
+        "title": "Allgemeine Geschäftsbedingungen (Klartext)",
+        "helper": "Für wiederverwendbare Rechtstexte fügen Sie einen Abschnitt „Vereinbarung / Bedingungen“ hinzu – der Kunde unterzeichnet ihn zusammen mit dem Angebot."
       },
       "tidyAll": {
         "complete": "{{count}} Beschreibung(en) überprüft.",
@@ -941,10 +1017,10 @@
         "perYear": "/Jahr"
       },
       "contract": {
-        "templateLabel": "Vertragsvorlage",
+        "templateLabel": "Vereinbarungsvorlage",
         "templatePlaceholder": "Vorlage auswählen…",
-        "noTemplates": "Noch keine Vertragsvorlagen. Erstellen Sie eine unter Verträge → Vorlagen.",
-        "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie vor dem Anhängen.",
+        "noTemplates": "Noch keine Vereinbarungsvorlagen. <templatesLink>Erstellen Sie eine</templatesLink> unter Verträge → Vereinbarungsvorlagen.",
+        "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie, bevor Sie sie einem Angebot hinzufügen.",
         "pinnedVersion": "Angeheftet an v{{version}}",
         "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
         "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
@@ -953,7 +1029,7 @@
         "labelPlaceholder": "Optionale Bezeichnung (z. B. Rahmenvertrag)",
         "variableRequired": "Wert eingeben",
         "variableUnresolved": "Diese Variable ist noch nicht aufgelöst",
-        "untitledTemplate": "Vertrag",
+        "untitledTemplate": "Vereinbarung",
         "readOnlyHint": "Entfernen Sie diesen Abschnitt und fügen Sie ihn neu hinzu, um Vorlage, Version oder Variablen zu ändern.",
         "updateToVersion": "Auf v{{version}} aktualisieren",
         "saveVariables": "Variablen speichern",
@@ -1285,16 +1361,20 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Gesch.", "estimate": "Geschätzte Menge — abgerechnet wird die tatsächliche Anzahl {{set}} in jedem Abrechnungszeitraum.",
-        "setDevices": "Geräte", "setSeats": "Benutzerplätze", "setGroup": "Geräte in „{{name}}“", "atSite": "{{set}} am Standort {{site}}",
+        "badge": "Gesch.",
+        "estimate": "Geschätzte Menge — abgerechnet wird die tatsächliche Anzahl {{set}} in jedem Abrechnungszeitraum.",
+        "setDevices": "Geräte",
+        "setSeats": "Benutzerplätze",
+        "setGroup": "Geräte in „{{name}}“",
+        "atSite": "{{set}} am Standort {{site}}",
         "allowanceBill": "Enthält {{included}}; weitere Einheiten werden mit je {{price}} berechnet.",
         "allowanceFlag": "Enthält {{included}}; weitere Einheiten werden zur Prüfung gemeldet, nicht automatisch berechnet."
       },
       "additionalItems": "Zusätzliche Artikel",
       "contract": {
-        "download": "Vertrag herunterladen",
-        "previewTitle": "Vertragsdokument {{name}}",
-        "unavailable": "Vertragsdatei nicht verfügbar",
+        "download": "Vereinbarung herunterladen",
+        "previewTitle": "Vereinbarung {{name}}",
+        "unavailable": "Vereinbarungsdatei nicht verfügbar",
         "versionFooter": "{{name}} — Version {{version}}"
       },
       "draft": "Entwurf",
@@ -1780,6 +1860,7 @@
       },
       "reverseError": "Die Zahlung konnte nicht rückgängig gemacht werden.",
       "reverseSuccess": "Zahlung storniert",
+      "reverseInQuickbooksToo": "Stornieren Sie diese Zahlung auch in QuickBooks",
       "sendLink": "Zahlungslink senden",
       "setUp": "Einrichten",
       "shareLinkPrompt": "Teilen Sie diesen Zahlungslink mit Ihrem Kunden:",
@@ -1991,7 +2072,9 @@
       "total": "Insgesamt"
     },
     "title": "Rechnungen",
-    "tryAgain": "Versuchen Sie es erneut"
+    "tryAgain": "Versuchen Sie es erneut",
+    "exportBillables": "Abrechenbare Leistungen exportieren",
+    "exportBillablesDialogTitle": "Abrechenbare Leistungen exportieren"
   },
   "orgBillingSettings": {
     "address": {
@@ -2123,6 +2206,24 @@
     },
     "statusPill": {
       "prefix": "Status:"
+    }
+  },
+  "partnerBillingSettingsTabs": {
+    "defaults": "Standardwerte",
+    "documents": "Dokumente",
+    "connections": "Verbindungen"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Buchhaltung",
+      "description": "Stripe und QuickBooks werden unter Integrationen verbunden — dort verwalten.",
+      "cta": "Buchhaltungsverbindungen verwalten →"
+    },
+    "catalog": {
+      "title": "Katalog & Distributoren",
+      "description": "Produktkatalog und Distributorverbindungen (Pax8, TD SYNNEX) befinden sich an zwei Orten — hier wechseln.",
+      "catalogCta": "Produktkatalog öffnen →",
+      "distributorsCta": "Distributoren öffnen →"
     }
   }
 }

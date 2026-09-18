@@ -29,6 +29,7 @@ func vbvSizeForBitrate(bitrate int) uint32 {
 // via the MFT enumeration API, falling back to the software H264 MFT.
 type mftEncoder struct {
 	mu sync.Mutex
+	convertTimer
 
 	cfg    EncoderConfig
 	width  int

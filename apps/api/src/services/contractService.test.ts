@@ -1803,10 +1803,14 @@ describe('getContract billing outcome summaries (#3205 W07)', () => {
       { id: 'p0', snapshotDeviceTotal: null, uncoveredTotal: null, flaggedTotal: null, billedOverageTotal: null },
     ]);
     const { periods } = await svc.getContract('c1', actor);
-    expect(periods[0]).toMatchObject({ snapshotDeviceTotal: 12, uncoveredTotal: 2, flaggedTotal: 0, billedOverageTotal: 0 });
-    expect(periods[1]).toMatchObject({ snapshotDeviceTotal: null, uncoveredTotal: null });
-    expect(periods[0]).not.toHaveProperty('uncoveredByRole');
-    expect(periods[0]).not.toHaveProperty('overages');
+    // Non-null by construction: `periods` is only withheld (null) for a
+    // site-restricted actor whose read hid lines (#6110 finding 3); `actor` here
+    // is unrestricted.
+    expect(periods).not.toBeNull();
+    expect(periods![0]).toMatchObject({ snapshotDeviceTotal: 12, uncoveredTotal: 2, flaggedTotal: 0, billedOverageTotal: 0 });
+    expect(periods![1]).toMatchObject({ snapshotDeviceTotal: null, uncoveredTotal: null });
+    expect(periods![0]).not.toHaveProperty('uncoveredByRole');
+    expect(periods![0]).not.toHaveProperty('overages');
   });
 });
 

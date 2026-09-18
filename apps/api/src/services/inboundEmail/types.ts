@@ -57,6 +57,18 @@ export interface NormalizedInboundEmail {
   references?: string[];
   autoSubmitted?: string; // for loop-prevention (used in PR3)
   precedence?: string;
+  /**
+   * The value of X-Breeze-Outbound, when the message carries it — i.e. this is
+   * our OWN partner-lane mail coming back (spec §8.5).
+   *
+   * A named field, not a generic header bag, for the same reason autoSubmitted
+   * and precedence are: the two providers surface headers differently (Mailgun
+   * ships a JSON `message-headers` form field, Graph ships
+   * internetMessageHeaders) and `raw` is provider-shaped — Mailgun's is the
+   * whole form body, Graph's is two ids. Every provider that wants to
+   * participate in loop prevention must map this explicitly.
+   */
+  outboundMarker?: string;
   // Sender-authentication verdicts for the From domain (R4). Absent => caller must
   // treat the sender as NOT verified (fail closed).
   senderAuth?: SenderAuth;

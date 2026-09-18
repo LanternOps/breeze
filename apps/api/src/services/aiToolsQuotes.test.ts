@@ -653,3 +653,27 @@ describe('list_quotes / get_quote read tools (#2361)', () => {
     expect(quoteService.getQuote).not.toHaveBeenCalled();
   });
 });
+
+/** #6110 finding 1 — quote routes are `requireScope('partner','system')`
+ *  (routes/quotes/quotes.ts:40, lifecycle.ts:18, bulk.ts:14). */
+describe('quote tools refuse organization scope (#6110 finding 1)', () => {
+  const orgAuth = { ...auth, scope: 'organization' as const, orgId: 'org-1' };
+
+  it.each(['list_quotes', 'get_quote', 'manage_quotes'] as const)(
+    '%s refuses an organization-scoped caller', async (name) => {
+      vi.clearAllMocks();
+      const out = await getTool(name).handler({ quoteId: 'q-1', action: 'delete_draft' }, orgAuth);
+      expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+      expect(quoteService.getQuote).not.toHaveBeenCalled();
+      expect(quoteService.listQuotes).not.toHaveBeenCalled();
+      expect(quoteService.deleteDraftQuote).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still admits a partner-scoped caller', async () => {
+    vi.clearAllMocks();
+    const out = await getTool('get_quote').handler({ quoteId: 'q-1' }, auth);
+    expect(JSON.parse(out)).not.toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(quoteService.getQuote).toHaveBeenCalled();
+  });
+});

@@ -58,6 +58,13 @@ import {
   type DbConnectTimeoutWindowStats,
 } from '../services/dbConnectTimeoutStats';
 import { resolveRequestDatabaseConfig } from './requestDatabaseConfig';
+import {
+  getWedgedBackendMinAgeMs,
+  getWedgedBackendScanIntervalMs,
+  isWedgedBackendScanDisabled,
+  scanWedgedBackends,
+  type WedgedBackendScanner,
+} from './wedgedBackends';
 
 export type DbPoolHealthVerdict =
   /**
@@ -623,10 +630,199 @@ export function stopDbPoolHealthMonitor(): void {
 
 export function __resetDbPoolHealthMonitorForTests(): void {
   stopDbPoolHealthMonitor();
+  __resetWedgedBackendMonitorForTests();
   checkInFlight = false;
   lastAssessment = null;
   checkFailures = 0;
   probeCloseFailures = 0;
   lastCaptureAtByKey = new Map();
   suppressedSinceCaptureByKey = new Map();
+}
+
+// ---------------------------------------------------------------------------
+// #6048 — wedged-backend detector
+// ---------------------------------------------------------------------------
+//
+// A SECOND, INDEPENDENT signal, deliberately not folded into the verdict above.
+// The #3214 watchdog only probes once the CONNECT_TIMEOUT rate crosses a
+// threshold, and the #6048 incident produced zero connect timeouts: one slot
+// quietly disappeared and the pool absorbed it for three days. Gating this scan
+// on that rate would therefore have missed the very failure it exists to catch.
+//
+// It also cannot be answered from inside the process. The client has no way to
+// tell "this connection is wedged" from "this connection is busy" — the
+// evidence lives in `pg_stat_activity`, on the server. So the scan runs on its
+// own slower cadence over its own fresh side connection (see db/wedgedBackends.ts).
+//
+// Reported, never acted on: this detector NEVER terminates anything. Killing a
+// backend is the prologue deadline's job, on much stronger evidence (its own
+// budget expired, then two agreeing snapshots). A periodic scan firing
+// `pg_terminate_backend` from a threshold alone is how a monitor becomes an
+// outage.
+
+export interface WedgedBackendObservation {
+  /** Backends matching the pathological predicate, or null when the scan failed. */
+  count: number | null;
+  /** Pids observed, for the log line. Never a metric label — unbounded cardinality. */
+  pids: number[];
+  /** Age of the oldest match, in seconds. */
+  oldestAgeSeconds: number | null;
+  /** Threshold the scan used. */
+  minAgeMs: number;
+  /** Scan failure message, or null. */
+  error: string | null;
+  at: number;
+}
+
+let lastWedgedObservation: WedgedBackendObservation | null = null;
+let lastWedgedScanSuccessAt = 0;
+let wedgedScanFailures = 0;
+let wedgedScanTimer: NodeJS.Timeout | null = null;
+let wedgedScanInFlight = false;
+
+/**
+ * Latest observation, or null when the detector has not run yet or is disabled.
+ * A FAILED scan stores an observation whose `count` is null — consumers must
+ * publish that as "not observed", never as "no wedged backends", which is the
+ * same rule the verdict above follows and for the same reason.
+ */
+export function getLastWedgedBackendObservation(): WedgedBackendObservation | null {
+  return lastWedgedObservation;
+}
+
+/**
+ * Epoch ms of the last SUCCESSFUL scan, or 0. Publish it: a stale zero-count
+ * reading and a detector that has been dead for an hour look identical without it.
+ */
+export function getLastWedgedBackendScanSuccessAt(): number {
+  return lastWedgedScanSuccessAt;
+}
+
+/** Scans that failed before producing a count. Monotonic. */
+export function getWedgedBackendScanFailures(): number {
+  return wedgedScanFailures;
+}
+
+export interface RunWedgedBackendScanDeps {
+  scan?: WedgedBackendScanner;
+  minAgeMs?: number;
+  now?: number;
+  throttleMs?: number;
+}
+
+/**
+ * One detector pass. Never throws — same contract as the watchdog above.
+ */
+export async function runWedgedBackendScan(
+  deps: RunWedgedBackendScanDeps = {},
+): Promise<WedgedBackendObservation> {
+  const now = deps.now ?? Date.now();
+  const minAgeMs = deps.minAgeMs ?? getWedgedBackendMinAgeMs();
+  const scan = deps.scan ?? scanWedgedBackends;
+
+  try {
+    // `prologueOnly: false` — the detector reports the WHOLE class. The
+    // reclaimer's narrower `set_config` filter exists to bound what it may
+    // signal; applying it here would hide a wedge of a different shape, which is
+    // exactly as interesting and nobody would be looking for it.
+    const rows = await scan(minAgeMs, false);
+    const observation: WedgedBackendObservation = {
+      count: rows.length,
+      pids: rows.map((row) => row.pid),
+      oldestAgeSeconds: rows.length > 0 ? Math.max(...rows.map((row) => row.ageSeconds)) : null,
+      minAgeMs,
+      error: null,
+      at: now,
+    };
+    lastWedgedObservation = observation;
+    lastWedgedScanSuccessAt = now;
+
+    if (rows.length > 0) {
+      const detail = rows
+        .map(
+          (row) =>
+            `pid=${row.pid} age=${Math.round(row.ageSeconds)}s query=${JSON.stringify(row.query)}`,
+        )
+        .join('; ');
+      console.warn(
+        `[db-wedged-backend] ${rows.length} backend(s) have been active/ClientRead inside an open `
+          + `transaction for more than ${Math.round(minAgeMs / 1000)}s. Each one pins a pool slot `
+          + `that no server-side or driver timeout can reclaim (#6048). ${detail}`,
+      );
+      if (
+        claimDbPoolHealthCaptureSlot(
+          'wedged-backends',
+          now,
+          deps.throttleMs ?? getDbPoolHealthCaptureThrottleMs(),
+        )
+      ) {
+        try {
+          // Stable headline, count in the log only: Sentry groups by message
+          // text, and an interpolated count would mint a new issue per scrape —
+          // an alert bound to an issue that never repeats never fires twice.
+          captureMessage('[db-wedged-backend] wedged ClientRead backends detected (#6048)', {
+            eventCode: 'db_wedged_client_read_backends',
+            tags: { db_pool_health_verdict: 'wedged-backends' },
+          });
+        } catch (captureErr) {
+          console.error('[db-wedged-backend] failed to report to Sentry:', captureErr);
+        }
+      }
+    }
+    return observation;
+  } catch (err) {
+    wedgedScanFailures += 1;
+    const observation: WedgedBackendObservation = {
+      count: null,
+      pids: [],
+      oldestAgeSeconds: null,
+      minAgeMs,
+      error: err instanceof Error ? err.message : String(err),
+      at: now,
+    };
+    // Do NOT leave the previous observation standing: a stale count of 0
+    // republished on every scrape is an affirmative wrong answer about a
+    // detector that has been blind the whole time.
+    lastWedgedObservation = observation;
+    console.error('[db-wedged-backend] scan failed:', err);
+    return observation;
+  }
+}
+
+/** Start the detector. Idempotent. Returns the interval, or null when disabled. */
+export function startWedgedBackendMonitor(): number | null {
+  if (isDbPoolHealthMonitorDisabled() || isWedgedBackendScanDisabled()) return null;
+  if (wedgedScanTimer) return activeWedgedScanIntervalMs;
+
+  activeWedgedScanIntervalMs = getWedgedBackendScanIntervalMs();
+  wedgedScanTimer = setInterval(() => {
+    if (wedgedScanInFlight) {
+      console.warn('[db-wedged-backend] skipping tick — the previous scan is still in flight.');
+      return;
+    }
+    wedgedScanInFlight = true;
+    void runWedgedBackendScan().finally(() => {
+      wedgedScanInFlight = false;
+    });
+  }, activeWedgedScanIntervalMs);
+  wedgedScanTimer.unref?.();
+  return activeWedgedScanIntervalMs;
+}
+
+let activeWedgedScanIntervalMs: number | null = null;
+
+export function stopWedgedBackendMonitor(): void {
+  if (wedgedScanTimer) {
+    clearInterval(wedgedScanTimer);
+    wedgedScanTimer = null;
+    activeWedgedScanIntervalMs = null;
+  }
+}
+
+export function __resetWedgedBackendMonitorForTests(): void {
+  stopWedgedBackendMonitor();
+  wedgedScanInFlight = false;
+  lastWedgedObservation = null;
+  lastWedgedScanSuccessAt = 0;
+  wedgedScanFailures = 0;
 }

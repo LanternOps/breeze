@@ -6,6 +6,12 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
+// #5808 W03 — `get` now also reads the ticket's checklist. This suite's db stub
+// is shaped only for the by-id select chain, so the checklist read is mocked
+// out; its own behaviour is covered in aiToolsTicketing.test.ts.
+vi.mock('./ticketChecklistService', () => ({
+  listChecklist: vi.fn(async () => ({ done: 0, total: 0, items: [] })),
+}));
 vi.mock('./ticketService', () => ({
   createTicket: vi.fn(async () => ({ id: 't-new' })),
   changeTicketStatus: vi.fn(async () => ({ id: 't1', status: 'resolved' })),

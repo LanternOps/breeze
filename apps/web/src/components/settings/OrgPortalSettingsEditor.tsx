@@ -10,6 +10,7 @@ type PortalSettings = {
   enableAssetCheckout: boolean;
   enableSelfService: boolean;
   enablePasswordReset: boolean;
+  enableDevices: boolean;
   enableDashboard: boolean;
   enableSecurity: boolean;
   enableBackups: boolean;
@@ -50,6 +51,7 @@ const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string 
 ];
 
 type VisibilityToggleKey =
+  | 'enableDevices'
   | 'enableDashboard'
   | 'enableSecurity'
   | 'enableBackups'
@@ -64,6 +66,11 @@ const VISIBILITY_TOGGLES: Array<{
   labelKey: string;
   descriptionKey: string;
 }> = [
+  {
+    key: 'enableDevices',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDevices.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableDevices.description',
+  },
   {
     key: 'enableDashboard',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDashboard.label',
@@ -146,6 +153,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
   };
 
   const enableAllVisibility = () => update({
+    enableDevices: true,
     enableDashboard: true,
     enableSecurity: true,
     enableBackups: true,
@@ -168,6 +176,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableAssetCheckout: draft.enableAssetCheckout,
             enableSelfService: draft.enableSelfService,
             enablePasswordReset: draft.enablePasswordReset,
+            enableDevices: draft.enableDevices,
             enableDashboard: draft.enableDashboard,
             enableSecurity: draft.enableSecurity,
             enableBackups: draft.enableBackups,

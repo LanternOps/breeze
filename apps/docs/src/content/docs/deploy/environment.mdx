@@ -60,6 +60,22 @@ requires `POSTGRES_PASSWORD` anyway. Only set `DATABASE_URL_APP` explicitly when
 pointing at a database the api container can actually reach.
 :::
 
+### Database connection prologue and wedged-backend recovery
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS` | `15000` | | Timeout for the connection-setup work Breeze runs at the start of each request's database access (setting the row-level-security context). The request work that follows is never bounded by it. `0` disables the timeout; positive values below `1000` are clamped to `1000`. |
+| `DB_WEDGED_BACKEND_SCAN_DISABLED` | unset (scanning on) | | Set to disable the periodic scan that detects database connections stuck at session start. Detection only — it never terminates anything by itself. |
+| `DB_WEDGED_BACKEND_SCAN_INTERVAL_MS` | `300000` (5 min) | | How often the wedged-backend scan runs. |
+| `DB_WEDGED_BACKEND_MIN_AGE_MS` | `300000` (5 min) | | How long a backend must have been stuck before the scan reports it. |
+| `DB_WEDGED_BACKEND_RECLAIM_DISABLED` | unset (reclamation on) | | Set to detect wedged backends without terminating them. |
+| `DB_WEDGED_BACKEND_RECLAIM_MIN_INTERVAL_MS` | `60000` (1 min) | | Minimum time between reclamation passes. |
+| `DB_WEDGED_BACKEND_RECLAIM_MAX_PER_PASS` | `4` | | Maximum number of wedged backends reclaimed in a single pass. |
+| `DB_WEDGED_BACKEND_RECLAIM_TIMEOUT_MS` | `5000` | | Timeout for the reclamation connection itself. |
+| `DB_WEDGED_BACKEND_CONFIRM_DELAY_MS` | `250` | | Delay before confirming a backend is still wedged prior to reclaiming it — a backend is only reclaimed once two consecutive snapshots agree it hasn't moved. |
+
+Together, these detect and reclaim database connections stuck at session start (before they ever reach request work) — reclamation opens a fresh connection and signals the wedged one so its pool slot can reconnect, rather than leaving it to block a connection permanently. Defaults come from `.env.example`; leave them alone unless you're troubleshooting a specific incident.
+
 ## Redis
 
 | Variable | Default | Required | Description |
@@ -97,6 +113,9 @@ pointing at a database the api container can actually reach.
 | `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` | `525600` (365 days) | | Ceiling on the lifetime a caller may request when creating an enrollment key through `POST /partner-api/v1/enrollment-keys` |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
+| `WEBAUTHN_RP_ID` | derived from `PUBLIC_APP_URL` | | Set only when the browser reaches the app on a different host than `PUBLIC_APP_URL` (for example `WEBAUTHN_RP_ID=localhost` on a local stack). Without a correct value, every passkey ceremony fails with "The RP ID ... is invalid for this domain." |
+| `WEBAUTHN_ORIGIN` | derived from `PUBLIC_APP_URL` | | Companion to `WEBAUTHN_RP_ID` — set together when passkeys are served from a non-default host. |
+| `WEBAUTHN_RP_NAME` | `Breeze RMM` | | Display name shown to the user during a passkey registration/sign-in ceremony. |
 
 Access-token (15m) and refresh-token (7d) lifetimes are fixed in code
 (`apps/api/src/services/jwt.ts`) — short-lived access tokens backed by
@@ -480,6 +499,7 @@ Full explanation of what each one is for: [Rollout Modes & Compatibility Switche
 | `REMOTE_WS_REDIS_TOPOLOGY` | `standalone-single-primary` | Attestation that Redis is a single primary with AOF on, `noeviction`, cluster disabled. Only accepted value. Sentinel/Cluster/HA Redis will freeze remote admission by design. |
 | `REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT` | — | Timestamp the last pre-upgrade ticket writer stopped. Used to compute the barrier-reopen deadline. |
 | `REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT` | — | Timestamp the last legacy viewer-token issuer stopped. Gates the move to `pre_upgrade`. |
+| `REMOTE_DESKTOP_FENCE_REQUIRED` | `false` | When `true`, remote desktop refuses to start (`503 agent_upgrade_required`) on any agent that has not declared the durable start/terminal fence capability (`desktopFenceProtocolVersion=1`). Leave `false` for one release after upgrading so agents can auto-update, then flip to `true`. |
 | `OAUTH_AUTH_EPOCH_ENFORCE_AFTER` | — | **Required when MCP OAuth is enabled in production/staging.** Absolute UTC timestamp ending the compatibility window for access tokens issued before the live-revocation release. Must be ≥1800s after new token writers start. Choose once; never extend on restart. |
 
 ## Security Enforcement (opt-in)
@@ -514,7 +534,9 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `BREEZE_WORKSPACE_ENABLED` | `false` in the production compose files (`true` in the dev override) | Load the built-in **AI Workspace** extension. Off by default — leave it unset unless you want Workspace. **Requires a PostgreSQL image that provides the `pgvector` extension** (see the aside below). |
 | `BREEZE_AI_AGENTS_ENABLED` | `false` | Surface **AI Agents** (Settings → AI Agents). Off by default — no agent exists, runs, or appears in the UI until this is `true`. Enabling the flag does not by itself let an agent change anything: every agent starts in **Off**, and moving one to **Act** is a separate, MFA-confirmed opt-in per agent. Must also be mapped in the `api` service's `environment:` block, not just set in `.env`. |
 | `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` | `false` | Sub-flag of `BREEZE_AI_AGENTS_ENABLED` for the policy-decide capability, which is **not yet generally available** — leave it off. When enabled it lets an agent authorise a supervised-scope action on its own policy decision instead of sending it to a human approver, and it is what allows an operation to be **promoted** to that status from the Graduation panel. Automatic **demotion** is not gated by this flag and is always on. An operation only ever goes live on the organization's own agent — a partner-wide list is a ceiling, not a grant, so grant each organization explicitly before enabling this. See [AI Agents → Graduation](/features/ai-agents/#graduation-feedback-loop). An unrecognised value stops the API at boot rather than silently reading as off. |
-| `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` | `true` | Fire-and-forget device actions (scripts, patch installs, patch scans, software installs, reboots, automations, …) issued against an offline device are queued and delivered on its next successful heartbeat, up to a per-action-type deadline. Most action types — including scripts, patch installs, and patch scans — get **7 days**; a narrower set of self-superseding actions (device inventory/config-sync commands, plus reboot/shutdown/scheduled-restart) get **24 hours** instead, since a week-old copy of one of those would be stale by the time it lands. Set `false` to go back to the pre-#5128 behavior of rejecting the action outright when the device is offline. This escape hatch is temporary and is removed in a later release, so treat `false` as a window to adjust your automations, not a permanent setting. |
+| `BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED` | `false` | Sub-flag of `BREEZE_AI_AGENTS_ENABLED` (also requires `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`) that lets a sweep schedule opt into Act mode, so intents an AI sweep raises can reach the same policy-decide path as other agent actions. Off by default. |
+| `TOOL_SOURCES_ENABLED` | `false` | Enables external tool sources for AI Agents. Off by default; even when enabled, any tier-3 (destructive) external tool call still goes through the normal action-intent approval flow — this flag does not bypass approval. |
+| `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS` | `false` | Self-hosted only — refused when `IS_HOSTED=true`. Allows a tool source URL to resolve to a private, link-local, or loopback address. Leave off unless you specifically need a tool source on your internal network. |
 | `DEVICE_COMMAND_QUEUE_TTL_HOURS` | `168` (7 days) | How long a queued **standard** action may wait for its device before it expires undelivered. Covers scripts, patch installs, patch scans, software installs, and automation actions. |
 | `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS` | `24` | Deadline for **self-superseding** queued work — inventory refreshes, log-level changes, agent auto-update and rollback, browser-policy application, and the audit, security, reliability, hardware and encryption-key collections. The next run of any of these replaces the last, so a week-old copy would be stale by the time it landed. |
 | `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | `24` | Deadline for queued **power-state** work: reboot, shutdown, and scheduled restart. |

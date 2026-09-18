@@ -18,7 +18,11 @@ import { eq, and, desc, sql, ilike, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 import { scheduleHuntressSync } from '../jobs/huntressSync';
 import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
 
@@ -133,6 +137,14 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         agentScopedConditions.push(inArray(huntressAgents.deviceId, allowed));
         incidentScopedConditions.push(inArray(huntressIncidents.deviceId, allowed));
       }
+
+      // Exact-device axis, applied independently of the site axis: a device-LESS
+      // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+      // branch above no-ops for it and every aggregate covered the whole org (#6086).
+      const agentDeviceCondition = deviceScopeCondition(auth, huntressAgents.deviceId);
+      if (agentDeviceCondition) agentScopedConditions.push(agentDeviceCondition);
+      const incidentDeviceCondition = deviceScopeCondition(auth, huntressIncidents.deviceId);
+      if (incidentDeviceCondition) incidentScopedConditions.push(incidentDeviceCondition);
       const [[integrationCount], [summaryAgentCounts], [summaryIncidentCounts], agentCounts, incidentCounts, severityCounts] = await Promise.all([
         db
           .select({
@@ -307,6 +319,10 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(huntressIncidents.deviceId, allowed));
       }
+
+      // Exact-device axis, applied independently of the site axis (#6086).
+      const incidentDeviceCondition = deviceScopeCondition(auth, huntressIncidents.deviceId);
+      if (incidentDeviceCondition) conditions.push(incidentDeviceCondition);
 
       const where = conditions.length > 0 ? and(...conditions) : undefined;
       const [rows, [countRow]] = await Promise.all([

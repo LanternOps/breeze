@@ -274,6 +274,23 @@ describe('decideIntentApproval server rejections', () => {
     expect(toasted.message).not.toMatch(/failed to submit the decision/i);
     expect(toasted.message).toMatch(/another approver is now required/i);
   });
+
+  // Review finding #2: a 403 `site_ceiling` used to toast the generic
+  // "Failed to submit the decision" fallback (no mapping existed), which is
+  // wrong for a refusal that tells the caller exactly why and that retrying
+  // will never help.
+  it('maps a 403 site_ceiling to translated copy, not the raw token or decideFailed', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'site_ceiling' }), { status: 403 }),
+    );
+    const rejection = await decideIntentApproval('ap-1', 'approve').catch((e: unknown) => e);
+    expect(rejection).toBeInstanceOf(ActionError);
+    expect((rejection as ActionError).status).toBe(403);
+    const toasted = showToast.mock.calls[0][0] as { message: string };
+    expect(toasted.message).not.toBe('site_ceiling');
+    expect(toasted.message).not.toMatch(/failed to submit the decision/i);
+    expect(toasted.message).toMatch(/organization-wide/i);
+  });
 });
 
 /**

@@ -99,6 +99,13 @@ beforeAll(async () => {
 
 const ROUTES: Array<[string, string, RequestInit]> = [
   ['POST', `/${TICKET_ID}/attachments`, { method: 'POST', body: new FormData() }],
+  // Execution plane W05 (#5716) — attach an AI run artifact by reference. Same
+  // TICKETS_WRITE it takes to upload one: it is the same act, without the bytes.
+  ['POST', `/${TICKET_ID}/attachments/from-artifact`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ handle: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }),
+  }],
   ['GET', `/${TICKET_ID}/attachments/${ATT_ID}/content`, { method: 'GET' }],
   ['DELETE', `/${TICKET_ID}/attachments/${ATT_ID}`, { method: 'DELETE' }],
 ];
@@ -122,10 +129,12 @@ describe('attachment routes permission + scope contract (W08 #3902)', () => {
     expect(values.filter((p) => /attach/i.test(p.resource) || /attach/i.test(p.action))).toEqual([]);
   });
 
-  it('registers only existing tickets read/write permissions on the three routes', () => {
+  it('registers only existing tickets read/write permissions on the four routes', () => {
     // Registration happens at module import; the calls recorded above are
     // exactly the middleware the router mounted.
     expect(permissionCalls).toEqual([
+      [PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action],
+      // from-artifact (W05 #5716) — no new permission, deliberately.
       [PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action],
       [PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action],
       [PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action],
@@ -134,7 +143,7 @@ describe('attachment routes permission + scope contract (W08 #3902)', () => {
   });
 
   it('gates every route on the three tenant scopes', () => {
-    expect(scopeCalls).toHaveLength(3);
+    expect(scopeCalls).toHaveLength(4);
     for (const scopes of scopeCalls) {
       expect(scopes).toEqual(['organization', 'partner', 'system']);
     }

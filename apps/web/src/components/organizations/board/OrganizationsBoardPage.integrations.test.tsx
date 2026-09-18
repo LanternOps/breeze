@@ -58,11 +58,19 @@ function orgRow(orgId: string, extra: Partial<AccountReadinessResponse['orgs'][n
 const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: ok ? 'OK' : 'ERROR', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-/** Routes by URL: the org list (fetchAllOrganizations) and the readiness batches; everything else answers `{}`. */
-function mockApi(readiness: () => Omit<AccountReadinessResponse, 'partnerId'>) {
+/**
+ * Routes by URL: the org list (fetchAllOrganizations) and the readiness batches; everything else answers `{}`.
+ * `readinessDelayMs` pushes the readiness response onto a later macrotask, mirroring the real component's
+ * two-tick sequence (org list resolves -> row renders -> readiness effect fires -> chips render) so a test
+ * that queries chip data must actually wait for it rather than getting lucky on microtask ordering.
+ */
+function mockApi(readiness: () => Omit<AccountReadinessResponse, 'partnerId'>, opts: { readinessDelayMs?: number } = {}) {
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
-    if (url.includes('/orgs/account-readiness')) return jsonResponse({ partnerId: 'p', ...readiness() });
+    if (url.includes('/orgs/account-readiness')) {
+      if (opts.readinessDelayMs) await new Promise((resolve) => setTimeout(resolve, opts.readinessDelayMs));
+      return jsonResponse({ partnerId: 'p', ...readiness() });
+    }
     if (url.includes('/orgs/organizations')) return jsonResponse({ data: [ALPHA, BETA], pagination: { page: 1, limit: 100, total: 2 } });
     return jsonResponse({});
   });
@@ -116,15 +124,17 @@ describe('OrganizationsBoardPage — W03', () => {
   });
 
   it('renders the "No active contract" and "No backup configured" chips as repair links', async () => {
-    mockApi(fullReadiness);
+    mockApi(fullReadiness, { readinessDelayMs: 20 });
     render(<OrganizationsBoardPage />);
     await waitFor(() => expect(screen.getByTestId(`org-board-row-${B_ID}`)).toBeInTheDocument());
     const rowB = within(screen.getByTestId(`org-board-row-${B_ID}`));
-    const contract = rowB.getByTestId('org-board-chip-noActiveContract');
+    // Chips render only once the (separately-fetched) readiness batch lands — findByTestId waits for that,
+    // where a synchronous getByTestId races the second fetch and flakes under load (issue #5862).
+    const contract = await rowB.findByTestId('org-board-chip-noActiveContract');
     expect(contract).toHaveTextContent('No active contract');
     expect(contract).toHaveAttribute('href', `/organizations/${B_ID}#billing`);
     expect(contract).toHaveAttribute('title', 'Open the Billing tab for Beta Inc');
-    const backup = rowB.getByTestId('org-board-chip-noBackup');
+    const backup = await rowB.findByTestId('org-board-chip-noBackup');
     expect(backup).toHaveAttribute('href', '/backup');
     expect(backup).toHaveAttribute('title', 'Open backup for Beta Inc');
     expect(within(screen.getByTestId(`org-board-row-${A_ID}`)).queryByTestId('org-board-chip-noActiveContract')).not.toBeInTheDocument();
@@ -138,6 +148,12 @@ describe('OrganizationsBoardPage — W03', () => {
     }));
     render(<OrganizationsBoardPage />);
     await waitFor(() => expect(screen.getByTestId(`org-board-row-${A_ID}`)).toBeInTheDocument());
+    // The row itself renders from the org-list fetch alone, independent of readiness — waiting only for
+    // it would make the absence assertions below vacuous (they'd equally pass before readiness has
+    // loaded). Wait for a readiness-derived positive signal first (both default orgRow fixtures have no
+    // outstanding chips, so ReadinessChips renders "complete" once its batch lands) to prove readiness
+    // actually resolved with integrations withheld, not merely that it hasn't loaded yet.
+    await waitFor(() => expect(screen.getAllByTestId('org-board-chips-complete').length).toBeGreaterThan(0));
     expect(screen.queryByTestId('org-board-col-integrations')).not.toBeInTheDocument();
     expect(screen.queryByTestId('org-board-band-unlinked')).not.toBeInTheDocument();
     expect(screen.queryByTestId('org-board-filter-unlinked')).not.toBeInTheDocument();

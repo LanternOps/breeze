@@ -39,6 +39,8 @@ vi.mock('../jobs/peripheralJobs', () => ({
 vi.mock('./aiToolsSoftwarePolicyAudit', () => ({
   auditSoftwarePolicyToolEvent: vi.fn(),
   summarizeEnforcementChange: vi.fn(() => ({})),
+  remediationOptionsArmsAutoInstall: vi.fn(() => false),
+  AI_AUTO_INSTALL_REFUSAL_MESSAGE: 'AI_AUTO_INSTALL_REFUSAL_MESSAGE (mocked)',
 }));
 
 import { registerPolicyPrereqTools } from './aiToolsPolicyPrereqs';

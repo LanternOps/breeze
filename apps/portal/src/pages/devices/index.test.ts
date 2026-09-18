@@ -18,4 +18,15 @@ describe('devices page self-service gate', () => {
     // the copy for it.
     expect(pageSource).toMatch(/<DeviceList[\s\S]*error=\{response\.error\}/);
   });
+
+  it('hydrates DeviceList so its scroll-and-highlight mount effect actually runs (W03)', () => {
+    // DeviceList's useEffect (reading window.location.hash to scroll/highlight
+    // a row linked from the lifecycle plan table) only runs once the island
+    // hydrates. Astro components are static by default, so dropping
+    // client:load here — a merge conflict, a props refactor — would leave the
+    // feature silently dead in production with no other test catching it:
+    // DeviceList.test.tsx renders the component directly via RTL, bypassing
+    // Astro hydration entirely.
+    expect(pageSource).toMatch(/<DeviceList[\s\S]*client:load/);
+  });
 });

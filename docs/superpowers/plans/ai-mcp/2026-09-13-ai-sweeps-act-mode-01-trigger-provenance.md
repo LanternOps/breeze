@@ -10,7 +10,7 @@ branch: feature/<parent>-ai-sweeps-act-mode/wave-<sub-issue>
 
 **Goal:** Stamp *why* a remediation fired onto every row a report groups by — one shared three-column envelope (`trigger_kind`, `trigger_ref_id`, `trigger_key`) written at creation on `action_intents`, `script_executions` and `automation_action_results`, mirrored into `ai_agent_runs.outcome.executedActions` and into the existing `audit_logs.details` jsonb, and rendered as a second chip on the device Activities feed.
 
-**Architecture:** A new leaf module `packages/shared/src/types/remediationTrigger.ts` owns the closed `REMEDIATION_TRIGGER_KINDS` catalog, the `RemediationTrigger` envelope type and the pure `triggerKey*` builders; `packages/shared/src/validators/remediationTrigger.ts` owns its zod schema. One idempotent DDL-only migration adds the three columns plus a per-table `CHECK` to the three tables, a partial index on `action_intents(trigger_kind)`, and a fresh `CREATE OR REPLACE` of `action_intents_block_content_update()` naming the three new columns (that function is a DENY-list, so an unnamed column is silently mutable). `apps/api/src/services/remediationIdentity.ts` defines the canonical remediation identity across the four representations so reports neither omit nor double-count. Writers stamp at creation only: `createActionIntent` from a new optional `CreateActionIntentInput.trigger`, `dispatchScriptToDevice`/`queueScriptExecution` from a new optional `trigger`, `recordAutomationActionResults` from the run's own trigger, `runLoop`'s act branch onto `OutcomeExecutedAction`, and `auditService` copies the same envelope into `details`. `DeviceActivityFeed.tsx` renders `details.triggerKind`/`details.triggerKey` beside the existing initiator chip.
+**Architecture:** A new leaf module `packages/shared/src/types/remediationTrigger.ts` owns the closed `REMEDIATION_TRIGGER_KINDS` catalog, the `RemediationTrigger` envelope type and the pure `triggerKey*` builders; `packages/shared/src/validators/remediationTrigger.ts` owns its zod schema. One idempotent DDL-only migration adds the three columns plus a per-table `CHECK` to the three tables, a partial index on `action_intents(trigger_kind)`, and a fresh `CREATE OR REPLACE` of `action_intents_block_content_update()` naming the three new columns (that function is a DENY-list, so an unnamed column is silently mutable). `apps/api/src/services/remediationIdentity.ts` defines the canonical remediation identity across the four representations so reports neither omit nor double-count. Writers stamp at creation only: `createActionIntent` from a new optional `CreateActionIntentInput.trigger`, `dispatchScriptToDevice`/`executeScriptOnDevices` from a new optional `trigger`, `seedAutomationActionResults` from the run's own trigger, `runLoop`'s act branch onto `OutcomeExecutedAction`, and `auditService` copies the same envelope into `details`. `DeviceActivityFeed.tsx` renders `details.triggerKind`/`details.triggerKey` beside the existing initiator chip.
 
 **Tech Stack:** Hono, Drizzle ORM, PostgreSQL 16 (text + CHECK, no `pgEnum`), zod in `packages/shared`, React + i18next across 8 locales, Vitest (unit with Drizzle mocks; integration against real Postgres via `apps/api/src/__tests__/integration/setup`).
 
@@ -20,7 +20,7 @@ branch: feature/<parent>-ai-sweeps-act-mode/wave-<sub-issue>
 
 ## Global Constraints
 
-- Migration filename `apps/api/migrations/2026-10-16-181500-remediation-trigger-provenance.sql`. The `1815xx` block is reserved for this cluster (PR #5745). Before pushing, `ls apps/api/migrations | sort | tail -1` on `origin/main` must sort **before** it (newest at planning time: `2026-10-16-180200-monitor-definitions-builtin-key.sql`). Bump the `HHMMSS` upward if a later file has landed; never rename it for today's real date.
+- Migration filename `apps/api/migrations/2026-10-16-182900-remediation-trigger-provenance.sql`. The `1815xx` block is reserved for this cluster (PR #5745). Before pushing, `ls apps/api/migrations | sort | tail -1` on `origin/main` must sort **before** it (newest at planning time: `2026-10-16-180200-monitor-definitions-builtin-key.sql`). Bump the `HHMMSS` upward if a later file has landed; never rename it for today's real date.
 - **The migration is pure DDL — no `UPDATE`/`INSERT`/`DELETE`.** Backfilling historical rows is explicitly out of scope (spec §7): the columns are nullable and `NULL` reads as "unknown trigger". This keeps `apps/api/src/db/migrationRlsScope.test.ts` green with no `set_config` elevation needed; if you find yourself adding DML, stop — you have gone out of scope.
 - Idempotent: `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` then re-add, `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION`. No inner `BEGIN`/`COMMIT`.
 - **`text` + SQL `CHECK`, never `pgEnum`.** `action_intents` deliberately has no native enum type (`apps/api/src/db/schema/actionIntents.ts:40-48`) and this envelope follows it. On `script_executions` the new `trigger_kind` sits **beside** the existing `trigger_type` `pgEnum` (`schema/scripts.ts:23`: `manual|scheduled|alert|policy|automation`) — two different columns that may legitimately disagree. Both get a docstring saying so.
@@ -116,7 +116,7 @@ git commit -m "feat(shared): REMEDIATION_TRIGGER_KINDS envelope and key builders
 ### Task 2: Migration — three columns × three tables, CHECKs, index, immutability deny-list
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-16-181500-remediation-trigger-provenance.sql`
+- Create: `apps/api/migrations/2026-10-16-182900-remediation-trigger-provenance.sql`
 - Test: `apps/api/src/db/autoMigrate.test.ts` (existing, auto-discovers), `apps/api/src/db/migrationRlsScope.test.ts` (existing; stays green because the file has no DML)
 
 **Interfaces produced:** `action_intents.trigger_kind|trigger_ref_id|trigger_key`, `script_executions.trigger_kind|trigger_ref_id|trigger_key`, `automation_action_results.trigger_kind|trigger_ref_id|trigger_key`; CHECK constraints `<table>_trigger_kind_chk` and `<table>_trigger_key_shape_chk`; index `action_intents_trigger_kind_idx`; replaced function `action_intents_block_content_update()`.
@@ -453,11 +453,11 @@ Note the substring-filter trap: `src/services/actionIntents/intentService` delib
 - Modify: `apps/api/src/services/scriptDispatch.ts` (`DispatchScriptInput` near `:109`; the insert at `:536-550`; the second builder at `:850-874`)
 - Modify: `apps/api/src/services/scriptExecution.ts` (input type at `:29`; the insert at `:305-312`)
 - Modify: `apps/api/src/services/automationActionResults.ts` (the insert at `:493`)
-- Modify: the automation worker that calls `recordAutomationActionResults` (grep `recordAutomationActionResults(`) so the run's trigger reaches it
+- Modify: the automation worker that calls `seedAutomationActionResults` (grep `seedAutomationActionResults(`) so the run's trigger reaches it
 - Test: `apps/api/src/services/scriptDispatch.trigger.test.ts` (create), `apps/api/src/services/automationActionResults.test.ts` (existing)
 
 **Interfaces:**
-- Produces: `DispatchScriptInput.trigger?: RemediationTrigger`, `QueueScriptExecutionInput.trigger?: RemediationTrigger`, `RecordAutomationActionResultsInput.trigger?: RemediationTrigger`.
+- Produces: `DispatchScriptInput.trigger?: RemediationTrigger`, `ExecuteScriptOnDevicesInput.trigger?: RemediationTrigger`, `seedAutomationActionResults input.trigger?: RemediationTrigger`.
 
 - [ ] **Step 1 (RED): write the failing tests.** One per writer, asserting the three columns reach `.values()`, plus one asserting the **independence** of the two script columns:
 

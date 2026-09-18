@@ -23,8 +23,8 @@ Each provider block has its own **enabled** toggle, a **Test connection** button
   **Save settings** stores monitoring integration settings in the API process's memory, not the database. They do not survive an API restart or redeploy, and are not shared across multiple API instances -- expect to re-enter them after a deploy.
 </Aside>
 
-<Aside type="caution">
-  **Test connection** does not currently make a live request to the provider -- it always reports success. Use it to confirm the form accepted your input, not to verify the endpoint, key, or service ID is actually correct and reachable.
+<Aside type="note">
+  **Test connection** makes a live check against the provider: Prometheus and webhook endpoints are contacted for reachability, Grafana and Opsgenie are asked to validate the API key, and a PagerDuty integration key is format-checked only (the Events API has no dry-run, so a live call would page someone). A credential you have already saved is used as stored, so you can re-test without re-typing it; a credential you have never saved must be entered and saved first. A failed test names the provider's HTTP status or the connection error, never the credential.
 </Aside>
 
 ---
@@ -47,7 +47,7 @@ Publish Breeze metrics so a Prometheus server can scrape them on a schedule you 
 
 3. Choose which metrics are exposed in the [Metric export](#metric-selection) panel — only selected metrics are surfaced to external monitors.
 
-4. Click **Test connection** — the status badge turns **Active** (see the caution above: this does not actually check reachability yet).
+4. Click **Test connection** — the status badge turns **Active** once the endpoint answers, or **Failed** with the HTTP status or connection error.
 
 5. Click **Save settings** in the page header to persist the configuration.
 </Steps>

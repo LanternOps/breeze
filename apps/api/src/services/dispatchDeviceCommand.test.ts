@@ -81,7 +81,6 @@ function selectReturning(row: unknown) {
 describe('dispatchDeviceCommand (#5128 W1)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
     assertAllowedMock.mockResolvedValue(undefined);
     refreshMock.mockImplementation(async (_t: string, p: unknown) => p);
     inFlightMock.mockResolvedValue(0);
@@ -255,22 +254,19 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect((queueCommandMock.mock.calls[0]![4] as { deliverBy: Date | null }).deliverBy).toBeNull();
   });
 
-  it('flag off keeps a previouslyRejected caller rejecting an offline device', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+  it('queues patch installs against an offline device', async () => {
     selectReturning(deviceRow('offline'));
     const res = await dispatchDeviceCommand({
       deviceId: DEVICE,
       type: 'install_patches',
-      previouslyRejected: true,
     });
-    expect(res).toMatchObject({ ok: false, code: 'device_offline' });
-    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ ok: true, delivery: 'queued_offline' });
+    expect(queueCommandMock).toHaveBeenCalledTimes(1);
   });
 
-  it('flag off does NOT gate a caller that already queued today', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+  it('queues scripts against an offline device', async () => {
     selectReturning(deviceRow('offline'));
-    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'script', previouslyRejected: false });
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'script' });
     expect(res.ok && res.delivery).toBe('queued_offline');
   });
 

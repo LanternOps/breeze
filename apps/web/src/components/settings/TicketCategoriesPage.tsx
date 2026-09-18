@@ -18,6 +18,7 @@ interface Category {
   defaultPriority: string | null;
   responseSlaMinutes: number | null;
   resolutionSlaMinutes: number | null;
+  defaultTimeEntryMinutes: number | null;
   defaultBillable: boolean;
   defaultHourlyRate: string | null;
   /** Currency the rate was stamped in — always set when `defaultHourlyRate` is
@@ -34,6 +35,7 @@ interface EditDraft {
   defaultPriority: string;
   responseSlaMinutes: string;
   resolutionSlaMinutes: string;
+  defaultTimeEntryMinutes: string;
   defaultBillable: boolean;
   defaultHourlyRate: string;
 }
@@ -134,8 +136,13 @@ export default function TicketCategoriesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditDraft>({
     name: '', color: '#1c8a9e', parentId: '', defaultPriority: '',
-    responseSlaMinutes: '', resolutionSlaMinutes: '', defaultBillable: false, defaultHourlyRate: ''
+    responseSlaMinutes: '', resolutionSlaMinutes: '', defaultTimeEntryMinutes: '', defaultBillable: false, defaultHourlyRate: ''
   });
+
+  const validDefaultTimeEntryMinutes = draft.defaultTimeEntryMinutes === '' || (
+    Number.isInteger(Number(draft.defaultTimeEntryMinutes)) &&
+    Number(draft.defaultTimeEntryMinutes) >= 1 && Number(draft.defaultTimeEntryMinutes) <= 1440
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -213,13 +220,14 @@ export default function TicketCategoriesPage() {
       defaultPriority: cat.defaultPriority ?? '',
       responseSlaMinutes: cat.responseSlaMinutes?.toString() ?? '',
       resolutionSlaMinutes: cat.resolutionSlaMinutes?.toString() ?? '',
+      defaultTimeEntryMinutes: cat.defaultTimeEntryMinutes?.toString() ?? '',
       defaultBillable: cat.defaultBillable,
       defaultHourlyRate: cat.defaultHourlyRate ?? ''
     });
   }, []);
 
   const saveEdit = useCallback(async (id: string) => {
-    if (!draft.name.trim()) return;
+    if (!draft.name.trim() || !validDefaultTimeEntryMinutes) return;
     // Number('60a') is NaN and Number('1e999') is Infinity — both JSON-serialize
     // to null, so refuse anything non-finite instead of silently nulling.
     const numeric = [draft.responseSlaMinutes, draft.resolutionSlaMinutes, draft.defaultHourlyRate];
@@ -234,6 +242,7 @@ export default function TicketCategoriesPage() {
       defaultPriority: draft.defaultPriority || null,
       responseSlaMinutes: draft.responseSlaMinutes === '' ? null : Number(draft.responseSlaMinutes),
       resolutionSlaMinutes: draft.resolutionSlaMinutes === '' ? null : Number(draft.resolutionSlaMinutes),
+      defaultTimeEntryMinutes: draft.defaultTimeEntryMinutes === '' ? null : Number(draft.defaultTimeEntryMinutes),
       defaultBillable: draft.defaultBillable,
       defaultHourlyRate: draft.defaultHourlyRate === '' ? null : Number(draft.defaultHourlyRate)
     };
@@ -249,7 +258,7 @@ export default function TicketCategoriesPage() {
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
     }
-  }, [draft, load]);
+  }, [draft, load, validDefaultTimeEntryMinutes]);
 
   const move = useCallback(async (cat: Category, dir: -1 | 1) => {
     const order = moveWithinSiblings(categories, cat.id, dir);
@@ -479,6 +488,20 @@ export default function TicketCategoriesPage() {
                           data-testid="ticket-category-edit-resolution-sla"
                         />
                       </div>
+                      <div>
+                        <label className="text-xs font-medium" htmlFor="edit-time-entry-minutes">{t('ticketCategoriesPage.defaultTimeEntryMinutes')}</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={1440}
+                          step={1}
+                          value={draft.defaultTimeEntryMinutes}
+                          onChange={(e) => setDraft((d) => ({ ...d, defaultTimeEntryMinutes: e.target.value }))}
+                          className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+                          id="edit-time-entry-minutes"
+                          data-testid="category-default-time-entry-minutes"
+                        />
+                      </div>
                       <div className="flex items-center gap-2">
                         <input
                           type="checkbox"
@@ -507,7 +530,7 @@ export default function TicketCategoriesPage() {
                       <button
                         type="button"
                         onClick={() => void saveEdit(c.id)}
-                        disabled={!draft.name.trim()}
+                        disabled={!draft.name.trim() || !validDefaultTimeEntryMinutes}
                         className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                         data-testid={`ticket-category-save-${c.id}`}
                       >

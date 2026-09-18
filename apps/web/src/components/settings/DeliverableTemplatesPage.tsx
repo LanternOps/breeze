@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plus, Pencil, Trash2, LayoutTemplate } from 'lucide-react';
+import { MANAGED_EVIDENCE_REPORT_TYPES, type ManagedEvidenceReportType } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwnerScope';
@@ -16,6 +17,7 @@ import {
   type TemplateItem,
   type TemplateSet,
 } from '../../lib/api/deliverableTemplates';
+import { listChecklistTemplates, type ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
 import type { DeliverableCadence, DeliverableCompletionMode } from '../../lib/api/serviceDeliverables';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
@@ -30,6 +32,12 @@ interface LoadFailure {
 const CADENCES: readonly DeliverableCadence[] = ['monthly', 'quarterly', 'semiannual', 'annual', 'one_time'];
 const COMPLETION_MODES: readonly DeliverableCompletionMode[] = ['explicit', 'on_ticket_resolve'];
 
+/** Fallback label for a managed evidence type until its wave adds a locale key. */
+function humanizeReportType(type: string): string {
+  const words = type.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 interface ItemFormState {
   name: string;
   cadence: DeliverableCadence;
@@ -37,6 +45,11 @@ interface ItemFormState {
   graceDays: string;
   artifactRequired: boolean;
   completionMode: DeliverableCompletionMode;
+  autoEvidenceReportType: ManagedEvidenceReportType | null;
+  /** #5808 W03 — internal runbook prose. Never shown to the customer. */
+  instructions: string;
+  /** #5808 W03 — a pointer to a checklist template. '' means none. */
+  checklistTemplateId: string;
 }
 
 function blankItemForm(): ItemFormState {
@@ -47,6 +60,9 @@ function blankItemForm(): ItemFormState {
     graceDays: '14',
     artifactRequired: true,
     completionMode: 'on_ticket_resolve',
+    autoEvidenceReportType: null,
+    instructions: '',
+    checklistTemplateId: '',
   };
 }
 
@@ -58,7 +74,24 @@ function itemFormFrom(item: TemplateItem): ItemFormState {
     graceDays: String(item.graceDays),
     artifactRequired: item.artifactRequired,
     completionMode: item.completionMode,
+    autoEvidenceReportType: item.autoEvidenceReportType,
+    instructions: item.instructions ?? '',
+    checklistTemplateId: item.checklistTemplateId ?? '',
   };
+}
+
+/**
+ * #5808 W03 — the checklist-template options offered for a given set's items.
+ * A partner-wide set (`orgId === null`) may point ONLY at a partner-wide
+ * checklist template: offering an org-owned one would offer a choice the API
+ * refuses with a 404 (the owner-axis rule in
+ * `services/checklistTemplateReference.ts`). An org-owned set may point at
+ * either its own org's templates or a partner-wide one.
+ */
+function checklistTemplateOptionsFor(set: TemplateSet, all: ChecklistTemplate[]): ChecklistTemplate[] {
+  return set.orgId === null
+    ? all.filter((tpl) => tpl.orgId === null)
+    : all.filter((tpl) => tpl.orgId === set.orgId || tpl.orgId === null);
 }
 
 function intOr(value: string, fallback: number): number {
@@ -83,6 +116,11 @@ export default function DeliverableTemplatesPage() {
   const uid = useId();
 
   const [sets, setSets] = useState<TemplateSet[] | LoadFailure | null>(null);
+  // #5808 W03 — the full set of ACTIVE checklist templates this partner-scoped
+  // actor can see, filtered per-set (see checklistTemplateOptionsFor) when the
+  // item form renders. A failed load just leaves the picker showing only
+  // "None" — it is a picker convenience, not a mutation, so no toast.
+  const [checklistTemplates, setChecklistTemplates] = useState<ChecklistTemplate[]>([]);
 
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
@@ -120,6 +158,21 @@ export default function DeliverableTemplatesPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listChecklistTemplates(fetchWithAuth)
+      .then((rows) => {
+        if (!cancelled) setChecklistTemplates(rows.filter((tpl) => tpl.isActive));
+      })
+      .catch((err) => {
+        console.error('[DeliverableTemplatesPage] failed to load checklist templates', err);
+        if (!cancelled) setChecklistTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const resetSetForm = () => {
     setFormName('');
@@ -283,7 +336,10 @@ export default function DeliverableTemplatesPage() {
         graceDays: intOr(itemForm.graceDays, 14),
         artifactRequired: itemForm.artifactRequired,
         completionMode: itemForm.completionMode,
+        instructions: itemForm.instructions.trim() || null,
+        checklistTemplateId: itemForm.checklistTemplateId || null,
         sortOrder,
+        autoEvidenceReportType: itemForm.autoEvidenceReportType,
       };
       const saved = itemEditor.item
         ? await runClientAction(
@@ -501,6 +557,80 @@ export default function DeliverableTemplatesPage() {
                         />
                         {t('templates.form.artifactRequired')}
                       </label>
+                      <div>
+                        <label htmlFor={`${uid}-item-auto-evidence-${set.id}`} className={labelClass}>
+                          {t('templates.form.autoEvidenceReportType')}
+                        </label>
+                        <select
+                          id={`${uid}-item-auto-evidence-${set.id}`}
+                          data-testid="deliverable-template-item-auto-evidence"
+                          className={inputClass}
+                          value={itemForm.autoEvidenceReportType ?? ''}
+                          onChange={(e) =>
+                            setItemForm((f) => ({
+                              ...f,
+                              autoEvidenceReportType: (e.target.value || null) as ManagedEvidenceReportType | null,
+                            }))
+                          }
+                        >
+                          <option value="">{t('form.autoEvidenceNone')}</option>
+                          {/* Each report-type wave adds its label under
+                              `reports.types` when it lands (#5784 W02 first). */}
+                          {MANAGED_EVIDENCE_REPORT_TYPES.map((type) => (
+                            <option key={type} value={type}>{humanizeReportType(type)}</option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>
+                        {/* Widening cast: the tuple is a literal type, so
+                            `.length === 0` is a ts(2367) error once it has
+                            members (non-empty from #5784 W02 on). The empty
+                            state still has to render if every type is ever
+                            retired. */}
+                        {(MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).length === 0 && (
+                          <p
+                            className="mt-1 text-xs text-muted-foreground"
+                            data-testid="deliverable-template-item-auto-evidence-empty"
+                          >
+                            {t('form.autoEvidenceEmpty')}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <label htmlFor={`${uid}-item-instructions-${set.id}`} className={labelClass}>{t('form.instructions')}</label>
+                      <textarea
+                        id={`${uid}-item-instructions-${set.id}`}
+                        data-testid="deliverable-template-item-instructions"
+                        className={inputClass}
+                        rows={3}
+                        value={itemForm.instructions}
+                        onChange={(e) => setItemForm((f) => ({ ...f, instructions: e.target.value }))}
+                        maxLength={10000}
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">{t('form.instructionsHint')}</p>
+                    </div>
+                    <div>
+                      <label htmlFor={`${uid}-item-checklist-${set.id}`} className={labelClass}>{t('form.checklistTemplate')}</label>
+                      <select
+                        id={`${uid}-item-checklist-${set.id}`}
+                        data-testid="deliverable-template-item-checklist-template"
+                        className={inputClass}
+                        value={itemForm.checklistTemplateId}
+                        onChange={(e) => setItemForm((f) => ({ ...f, checklistTemplateId: e.target.value }))}
+                      >
+                        <option value="">{t('form.checklistTemplateNone')}</option>
+                        {checklistTemplateOptionsFor(set, checklistTemplates).map((tpl) => (
+                          <option key={tpl.id} value={tpl.id}>
+                            {tpl.orgId === null ? `${tpl.name} — ${t('form.checklistTemplateAllOrgs')}` : tpl.name}
+                          </option>
+                        ))}
+                      </select>
+                      <a
+                        href="/settings/ticket-checklist-templates"
+                        className="mt-1 inline-block text-xs text-muted-foreground underline hover:text-foreground"
+                      >
+                        {t('form.checklistTemplateManage')}
+                      </a>
                     </div>
                     {itemError && (
                       <p className="text-sm text-destructive" role="alert" data-testid="deliverable-template-item-error">

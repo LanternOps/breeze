@@ -26,6 +26,10 @@ export const M365_SYNC_ACTION_IDS = [
   'm365.sync.ca_policies',
   'm365.sync.skus',
   'm365.sync.secure_score',
+  // #5784 W05. /auditLogs/signIns over a bounded window — a DIFFERENT Graph
+  // surface from the interactive `m365.signins.list`, which keeps its 7-day /
+  // 100-row cap and is deliberately left untouched.
+  'm365.sync.signin_events',
 ] as const;
 
 export const M365_READ_ACTION_IDS = [
@@ -104,6 +108,20 @@ export const M365_READ_ACTION_FIELDS: Record<M365ReadActionId, readonly string[]
     'id', 'createdDateTime', 'currentScore', 'maxScore', 'activeUserCount',
     'licensedUserCount', 'controlScores',
   ],
+  // #5784 W05. `location` and `status` pass through as the small Graph objects
+  // they are and the PERSISTER flattens them into their own columns
+  // (location_city/location_country, status_error_code/status_failure_reason) —
+  // nothing jsonb-shaped is ever stored. deviceDetail and
+  // appliedConditionalAccessPolicies are deliberately NOT projected: they are
+  // the two fat sub-objects on the signIn resource and the report renders
+  // neither. riskLevelAggregated/riskState come from the signIn resource under
+  // AuditLog.Read.All — Identity Protection's riskyUsers collection is NOT
+  // fetched, which is what keeps the consent manifest at v3.
+  'm365.sync.signin_events': [
+    'id', 'createdDateTime', 'userId', 'userPrincipalName', 'appId', 'appDisplayName',
+    'clientAppUsed', 'ipAddress', 'location', 'conditionalAccessStatus', 'status',
+    'riskLevelAggregated', 'riskState', 'isInteractive',
+  ],
 };
 
 const INTERACTIVE_BRANCHES = [
@@ -175,7 +193,29 @@ const SYNC_BRANCHES = [
     // 90 daily scores on a first/re-seed run, 3 otherwise (spec §4.1).
     backfill: z.boolean().optional(),
   }).strict(),
+  z.object({
+    type: z.literal('m365.sync.signin_events'),
+    /**
+     * #5784 W05. The half-open event window `createdDateTime >= since` and
+     * `< until`, both ISO instants. BOTH are optional so a call that arrives
+     * without a window is still bounded rather than a full-tenant scan: the
+     * executor defaults `until` to its own fetch time and `since` to
+     * `until - SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS`, which is exactly the
+     * cold-start window the API asks for on an org's first run.
+     */
+    since: z.string().datetime().optional(),
+    until: z.string().datetime().optional(),
+    // Opaque to the API: AES-256-GCM ciphertext minted by the executor.
+    continuation: z.string().min(1).max(M365_SYNC_CONTINUATION_MAX_CHARS).optional(),
+  }).strict(),
 ] as const;
+
+/**
+ * Cold start for an org with no events yet. Graph retains ~30 days, but a first
+ * run pulling a month in one go would blow the per-run item cap; the next runs
+ * catch up through the overlapping delta window.
+ */
+export const SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS = 7;
 
 export const m365SyncActionSchema = z.discriminatedUnion('type', SYNC_BRANCHES);
 export type M365SyncAction = z.infer<typeof m365SyncActionSchema>;

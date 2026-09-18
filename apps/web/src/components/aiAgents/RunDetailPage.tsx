@@ -7,12 +7,25 @@ import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, getBrowserTimezone } from '../reports/reportExport';
 import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
+// Execution plane W05 (spec §5.8). Both render null when empty, so every
+// pre-existing run's page is unchanged.
+import RunArtifactsSection from './RunArtifactsSection';
+import RunWorkspaceSection from './RunWorkspaceSection';
 import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
 import { EmptyState } from '../shared/EmptyState';
-import { AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES } from '@breeze/shared';
+import {
+  AI_SWEEP_KINDS,
+  AI_SWEEP_SEVERITIES,
+  PATCH_FAILURE_CLASSES,
+  PATCH_INELIGIBLE_REASONS,
+  PATCH_PLAN_ITEM_CLASSES,
+  PATCH_PLAN_REFUSAL_REASONS,
+} from '@breeze/shared';
 import type {
   AiAgentRunDetailDto,
   AiAgentRunLedgerEntryDto,
+  AiAgentRunNarrativeDeliveryDto,
+  AiAgentRunPatchItemDto,
   AiAgentRunStatus,
   AiAgentRunSweepFindingDto,
   AiAgentRunTraceEntryDto,
@@ -22,6 +35,7 @@ import type {
   FleetDesignReportSummary,
   NarrativeSection,
   OrgNarrativeReportSummary,
+  PatchIneligibleReason,
   SweepProposalReason,
 } from '@breeze/shared';
 import { TicketProposalCard } from './TicketProposalCard';
@@ -243,6 +257,44 @@ function LedgerTable({ ledger, t }: { ledger: AiAgentRunLedgerEntryDto[]; t: (ke
         </table>
       </div>
     </>
+  );
+}
+
+/**
+ * Execution plane W03 (spec §5.8) — the live progress step list fed by the
+ * SAME `AiAgentRunDetailDto.progress` field the run detail poll already
+ * carries. `null`/empty renders nothing: a finished run whose one-hour
+ * window has expired, or any run from before this field existed, must not
+ * show an empty "Progress" card.
+ */
+function RunProgressList({
+  progress,
+  t,
+}: {
+  progress: AiAgentRunDetailDto['progress'];
+  t: (key: string) => string;
+}) {
+  if (!progress || progress.length === 0) return null;
+  return (
+    <section className="mt-4" data-testid="run-detail-progress">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {t('aiAgentsPage.runs.detail.progress.title')}
+      </h2>
+      <ol className="mt-2 space-y-1 text-sm">
+        {progress.map((entry) => (
+          <li
+            key={entry.ordinal}
+            className="flex flex-wrap items-baseline gap-2"
+            data-testid={`run-detail-progress-${entry.ordinal}`}
+          >
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {new Date(entry.at).toLocaleTimeString()}
+            </span>
+            <span>{entry.label}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -516,6 +568,11 @@ const SWEEP_PROPOSAL_REASON_TOKENS = {
   no_eligible_approvers: true,
   intent_error: true,
   max_actions_per_run: true,
+  intent_invalid_provenance: true,
+  // #4442 W04 — the anti-substitution refusal: the device was in the sweep
+  // evidence but the SUBJECT (service name, mount point, vulnerability ids)
+  // the proposal named was not.
+  subject_not_in_evidence: true,
 } satisfies Record<SweepProposalReason, true>;
 
 /**
@@ -548,6 +605,239 @@ function sweepReasonLabel(t: (key: string) => string, reason: SweepProposalReaso
   if (!reason) return '—';
   if (!SWEEP_PROPOSAL_REASONS.includes(reason)) return reason;
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.reasons.${reason}`);
+}
+
+// ---------------------------------------------------------------------------
+// AI patch agent W01 (#5747) — the patch-plan surfaces.
+//
+// Same membership-checked dynamic `t()` contract as the sweep labels above: an
+// item class or refusal reason this build's registry does not know renders as
+// its raw token, never as a visible `aiAgentsPage.runs.patch.*` key path.
+// ---------------------------------------------------------------------------
+const PATCH_ITEM_CLASS_TOKENS: readonly string[] = PATCH_PLAN_ITEM_CLASSES;
+const PATCH_REFUSAL_REASON_TOKENS: readonly string[] = PATCH_PLAN_REFUSAL_REASONS;
+const PATCH_INELIGIBLE_REASON_TOKENS: readonly string[] = PATCH_INELIGIBLE_REASONS;
+/** W03 (#5749): the six server-computed failure classes a chase/escalation quotes. */
+const PATCH_FAILURE_CLASS_TOKENS: readonly string[] = PATCH_FAILURE_CLASSES;
+
+function patchItemClassLabel(t: (key: string) => string, itemClass: string): string {
+  if (!PATCH_ITEM_CLASS_TOKENS.includes(itemClass)) return itemClass;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.classes.${itemClass}`);
+}
+
+function patchRefusalReasonLabel(t: (key: string) => string, reason: string): string {
+  if (!PATCH_REFUSAL_REASON_TOKENS.includes(reason)) return reason;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.reasons.${reason}`);
+}
+
+/**
+ * W02 (#5748) — why `resolvePatchInstallEligibility` dropped one patch id
+ * from a minted install card. Same membership-checked dynamic `t()` contract
+ * as the two labels above.
+ */
+function patchIneligibleReasonLabel(t: (key: string) => string, reason: PatchIneligibleReason): string {
+  if (!PATCH_INELIGIBLE_REASON_TOKENS.includes(reason)) return reason;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.ineligible.${reason}`);
+}
+
+/** W03 (#5749) — same membership-checked dynamic `t()` contract as above. */
+function patchFailureClassLabel(t: (key: string) => string, failureClass: string): string {
+  if (!PATCH_FAILURE_CLASS_TOKENS.includes(failureClass)) return failureClass;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.failureClasses.${failureClass}`);
+}
+
+/**
+ * One plan item. A stacked card rather than a table row on purpose: the
+ * detail is a full sentence (up to 1000 chars), which a six-column table
+ * degrades into a horizontal scrollbar at every viewport below `lg` — the
+ * exact UI-critique finding the sweep table had to grow a mobile list for.
+ *
+ * A REFUSED item is rendered, dimmed, with its reason. W01 mints no intents,
+ * so nothing here is an action — an item the persister would not record is
+ * still what the agent proposed, and hiding it would misreport the run.
+ *
+ * An item with NO disposition is a THIRD state, not a recorded one: the
+ * finalizer's re-validation never completed (`patch_plan_persist_failed`), so
+ * nothing about this item has been checked against the evidence or the
+ * device's current org. Rendering it like a recorded item told the technician
+ * the plan was confirmed when it was not — review finding on PR #5792.
+ *
+ * W02 (#5748) adds four more dispositions on top of the W01 three:
+ * `intent_created` — the item became a pending approval card, linked to it;
+ * `suppressed` — withheld because the same (device, patch) problem already
+ * has a live or recently-decided card, shown WITH its reason rather than as a
+ * silent gap; `cap_reached` — the run's action budget was already spent;
+ * `error` — an intent was attempted and did not end up pending. Any item, of
+ * any disposition, can also carry `droppedPatchIds` — patches the eligibility
+ * resolver dropped off the card, each with why (never the raw patch id as
+ * visible text).
+ *
+ * W03 (#5749): a `chase` or `escalation` item quotes the failure class and
+ * attempt count the EVIDENCE computed (the persister refused any quote that
+ * disagreed), rendered as a labelled line. An escalation carries an explicit
+ * "needs a human" line and never an approve control — it mints nothing.
+ */
+function PatchPlanItem({
+  item,
+  intentStatus,
+  t,
+}: {
+  item: AiAgentRunPatchItemDto;
+  intentStatus?: string;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const refused = item.disposition === 'refused';
+  const suppressed = item.disposition === 'suppressed';
+  const capReached = item.disposition === 'cap_reached';
+  const intentError = item.disposition === 'error';
+  const intentCreated = item.disposition === 'intent_created' && Boolean(item.intentId);
+  // No disposition at all, OR a "card created" record whose card id did not
+  // survive (projectPatch nulls a corrupt intentId): either way nothing here
+  // is confirmed, so it must not read as a plain success.
+  const unconfirmed = item.disposition === null || (item.disposition === 'intent_created' && !item.intentId);
+  const dimmed = refused || unconfirmed || suppressed || capReached || intentError;
+  return (
+    <li
+      className={`py-3 ${dimmed ? 'opacity-70' : ''}`}
+      data-testid={`ai-agent-run-patch-item-${item.index}`}
+    >
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={badgeClass(item.severity === 'critical' ? 'danger' : 'neutral', { size: 'sm' })}>
+          {sweepSeverityLabel(t, item.severity)}
+        </span>
+        <span className="text-xs text-muted-foreground">{patchItemClassLabel(t, item.class)}</span>
+        {item.deviceHostname && (
+          <span className="text-xs font-medium" data-testid={`ai-agent-run-patch-item-${item.index}-device`}>
+            {item.deviceHostname}
+          </span>
+        )}
+        {item.patchCount > 0 && (
+          <span className="text-xs text-muted-foreground">
+            {t('aiAgentsPage.runs.patch.patchCount', { count: item.patchCount })}
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-sm font-medium">{item.title}</p>
+      <p className="mt-0.5 max-w-prose text-sm text-muted-foreground">{item.detail}</p>
+      {(item.failureClass != null || item.attemptCount != null) && (
+        <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+          {item.failureClass != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-class`}>
+              {t('aiAgentsPage.runs.patch.failureClass', { label: patchFailureClassLabel(t, item.failureClass) })}
+            </span>
+          )}
+          {item.attemptCount != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-attempts`}>
+              {t('aiAgentsPage.runs.patch.attempts', { count: item.attemptCount })}
+            </span>
+          )}
+        </p>
+      )}
+      {(item.windowStartsAt != null || item.redundancyGroup != null) && (
+        <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+          {item.windowStartsAt != null && item.windowEndsAt != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-window`}>
+              {t('aiAgentsPage.runs.patch.rebootWindow', {
+                start: formatDateTime(item.windowStartsAt),
+                end: formatDateTime(item.windowEndsAt),
+              })}
+            </span>
+          )}
+          {item.redundancyGroup != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-redundancy`}>
+              {t('aiAgentsPage.runs.patch.redundancyGroup', { group: item.redundancyGroup })}
+            </span>
+          )}
+        </p>
+      )}
+      {item.class === 'escalation' && item.disposition === 'recorded' && (
+        <p
+          className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-escalation`}
+        >
+          {t('aiAgentsPage.runs.patch.escalation')}
+        </p>
+      )}
+      {refused && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-reason`}
+        >
+          {t('aiAgentsPage.runs.patch.refused', {
+            reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
+          })}
+        </p>
+      )}
+      {capReached && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-reason`}
+        >
+          {t('aiAgentsPage.runs.patch.capReached', {
+            reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
+          })}
+        </p>
+      )}
+      {intentError && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-reason`}
+        >
+          {t('aiAgentsPage.runs.patch.intentError', {
+            reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
+          })}
+        </p>
+      )}
+      {suppressed && (
+        <p
+          className="mt-1 text-xs text-muted-foreground"
+          data-testid={`ai-agent-run-patch-item-${item.index}-suppressed`}
+        >
+          {t('aiAgentsPage.runs.patch.suppressed', {
+            reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
+          })}
+        </p>
+      )}
+      {intentCreated && (intentStatus && intentStatus !== 'pending_approval' && intentStatus !== 'pending' ? (
+        <p
+          data-testid={`ai-agent-run-patch-item-${item.index}-intent`}
+          className="mt-1 text-xs text-muted-foreground"
+        >
+          {intentStatusLabel(t, intentStatus)}
+        </p>
+      ) : (
+        <a
+          href={`/approvals#intent-${item.intentId}`}
+          data-testid={`ai-agent-run-patch-item-${item.index}-intent`}
+          className="mt-1 inline-block text-xs font-medium text-primary hover:underline"
+        >
+          {t('aiAgentsPage.runs.patch.intentCreated')}
+        </a>
+      ))}
+      {unconfirmed && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-unconfirmed`}
+        >
+          {t('aiAgentsPage.runs.patch.unconfirmedItem')}
+        </p>
+      )}
+      {item.droppedPatchIds.length > 0 && (
+        <div className="mt-1" data-testid={`ai-agent-run-patch-item-${item.index}-dropped`}>
+          <p className="text-xs text-muted-foreground">
+            {t('aiAgentsPage.runs.patch.dropped', { count: item.droppedPatchIds.length })}
+          </p>
+          <ul className="ml-4 list-disc text-xs text-muted-foreground">
+            {item.droppedPatchIds.map((dropped) => (
+              <li key={dropped.patchId} title={dropped.patchId}>
+                {patchIneligibleReasonLabel(t, dropped.reason)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </li>
+  );
 }
 
 /**
@@ -706,6 +996,8 @@ interface SweepTestIds {
   evidence: (index: number) => string;
   proposal: (index: number) => string;
   proposalLink: (index: number) => string;
+  /** #4442 W05 — the act-mode outcome cell (no link: nothing to approve). */
+  proposalOutcome: (index: number) => string;
   permissionsLink: (index: number) => string;
 }
 
@@ -716,6 +1008,7 @@ const SWEEP_TEST_IDS: Record<SweepVariant, SweepTestIds> = {
     evidence: (i) => `ai-agent-run-sweep-finding-${i}-evidence`,
     proposal: (i) => `ai-agent-run-sweep-finding-${i}-proposal`,
     proposalLink: (i) => `ai-agent-run-sweep-proposal-link-${i}`,
+    proposalOutcome: (i) => `ai-agent-run-sweep-proposal-outcome-${i}`,
     permissionsLink: (i) => `ai-agent-run-sweep-permissions-link-${i}`,
   },
   card: {
@@ -724,6 +1017,7 @@ const SWEEP_TEST_IDS: Record<SweepVariant, SweepTestIds> = {
     evidence: (i) => `ai-agent-run-sweep-finding-card-${i}-evidence`,
     proposal: (i) => `ai-agent-run-sweep-finding-card-${i}-proposal`,
     proposalLink: (i) => `ai-agent-run-sweep-card-proposal-link-${i}`,
+    proposalOutcome: (i) => `ai-agent-run-sweep-card-proposal-outcome-${i}`,
     permissionsLink: (i) => `ai-agent-run-sweep-card-permissions-link-${i}`,
   },
 };
@@ -769,6 +1063,28 @@ function sweepProposalToneClass(proposal: AiAgentRunSweepFindingDto['proposal'])
   return 'text-amber-700 dark:text-amber-400';
 }
 
+/**
+ * #4442 W05 — the act-mode outcomes a minted sweep intent can be in. Only the
+ * terminal / unattended ones get their own label; a proposal still waiting on
+ * a human keeps the existing link to the approvals inbox, because that is
+ * still exactly where the operator needs to go.
+ */
+const SWEEP_OUTCOME_LABEL_KEYS: Record<string, string> = {
+  auto_executing: 'aiAgentsPage.runs.sweep.outcomes.auto_executing',
+  executed: 'aiAgentsPage.runs.sweep.outcomes.executed',
+  failed: 'aiAgentsPage.runs.sweep.outcomes.failed',
+  declined: 'aiAgentsPage.runs.sweep.outcomes.declined',
+  expired: 'aiAgentsPage.runs.sweep.outcomes.expired',
+};
+
+/** Which cap ended the cohort walk. An unknown token renders nothing rather
+ *  than a raw key path (same posture as `sweepReasonLabel`). */
+const SWEEP_STOPPED_BY_KEYS: Record<string, string> = {
+  fleet_cap: 'aiAgentsPage.runs.sweep.stoppedBy.fleet_cap',
+  day_cap: 'aiAgentsPage.runs.sweep.stoppedBy.day_cap',
+  occurrence_cap: 'aiAgentsPage.runs.sweep.stoppedBy.occurrence_cap',
+};
+
 function SweepProposalContent({
   finding,
   index,
@@ -785,10 +1101,49 @@ function SweepProposalContent({
   const { proposal } = finding;
   if (proposal === null) return <>—</>;
   if (proposal.disposition === 'intent_created') {
+    // #4442 W05 — a proposal that is no longer merely pending reports what
+    // actually happened. `run.intent_ids` could never tell us this: it is
+    // pending-only, and act mode makes the interesting outcomes non-pending.
+    const outcomeKey = proposal.outcome ? SWEEP_OUTCOME_LABEL_KEYS[proposal.outcome] : undefined;
+    if (outcomeKey) {
+      return (
+        <span data-testid={ids.proposalOutcome(index)}>
+          {t(/* i18n-dynamic */ outcomeKey)}
+        </span>
+      );
+    }
+    // An outcome this build does not recognise (API/web deploy skew, or a new
+    // intent status) must NOT fall through to the approvals link: that link is
+    // an instruction, and instructing an operator to approve something that
+    // may already have auto-executed or failed is worse than saying nothing.
+    // Same convention as the narrative-delivery `unknown` bucket above.
+    // `'pending'` is a RECOGNISED outcome that deliberately has no label of its
+    // own — it means exactly "waiting for approval", which the link below
+    // already says. Only a token this build has never heard of is unknown.
+    if (proposal.outcome && proposal.outcome !== 'pending') {
+      return (
+        <span data-testid={ids.proposalOutcome(index)} className="text-muted-foreground">
+          {t('aiAgentsPage.runs.sweep.outcomes.unknown')}
+        </span>
+      );
+    }
+    // Still waiting on a human. When the occurrence computed a cohort and this
+    // proposal fell outside it, name the cap — otherwise "waiting" reads as an
+    // unexplained delay.
+    const stoppedByKey = proposal.cohort === false && proposal.stoppedBy
+      ? SWEEP_STOPPED_BY_KEYS[proposal.stoppedBy]
+      : undefined;
     return (
-      <a href="/approvals" data-testid={ids.proposalLink(index)} className="text-primary hover:underline">
-        {t('aiAgentsPage.runs.sweep.proposalCreated')}
-      </a>
+      <>
+        <a href="/approvals" data-testid={ids.proposalLink(index)} className="text-primary hover:underline">
+          {t('aiAgentsPage.runs.sweep.proposalCreated')}
+        </a>
+        {stoppedByKey && (
+          <span className="ml-1.5 text-xs text-muted-foreground">
+            {t(/* i18n-dynamic */ stoppedByKey)}
+          </span>
+        )}
+      </>
     );
   }
   return (
@@ -930,6 +1285,63 @@ function NarrativeSectionBlock({
             <li key={bulletIndex}>{bullet}</li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * #4248 W03 (OD-7 B) — how the email delivery went. COUNTS and the reason
+ * CLASS only; the recipients are never named here (the refused count is
+ * already a small authority oracle, acceptable only because the reader
+ * holds ai_agents:read on this run).
+ *
+ * #5806 — this must NOT be gated on `run.narrative`: a run can have
+ * `narrativeDelivery.total > 0` (or a failed recipient lookup) while
+ * `narrative` itself is null (e.g. the outcome payload was lost or `{}`).
+ * The caller decides placement (inside the narrative section when one
+ * exists, or in its own standalone section otherwise) — this component only
+ * decides whether to render at all: whenever there are delivery rows OR the
+ * recipient lookup failed. A genuinely recipient-less org still renders
+ * nothing, which is correct: there was nobody to email, and that is not a
+ * failure.
+ */
+function NarrativeDeliverySummary({
+  delivery,
+  t,
+}: {
+  delivery: AiAgentRunNarrativeDeliveryDto;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  if (delivery.total === 0 && !delivery.recipientsUnresolved) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 space-y-1 text-xs text-muted-foreground" data-testid="narrative-delivery-summary">
+      {delivery.recipientsUnresolved ? (
+        <p className="text-destructive" data-testid="narrative-delivery-unresolved">
+          {t('aiAgentsPage.runs.narrative.delivery.recipientsUnresolved')}
+        </p>
+      ) : (
+        <p data-testid="narrative-delivery-sent">
+          {t('aiAgentsPage.runs.narrative.delivery.sent', { sent: delivery.sent, total: delivery.total })}
+        </p>
+      )}
+      {delivery.refused > 0 && (
+        <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-refused">
+          {t('aiAgentsPage.runs.narrative.delivery.refused', { count: delivery.refused })}
+        </p>
+      )}
+      {delivery.pending > 0 && (
+        <p data-testid="narrative-delivery-pending">
+          {t('aiAgentsPage.runs.narrative.delivery.pending', { count: delivery.pending })}
+        </p>
+      )}
+      {delivery.unknown > 0 && (
+        <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-unknown">
+          {t('aiAgentsPage.runs.narrative.delivery.unknown', { count: delivery.unknown })}
+        </p>
       )}
     </div>
   );
@@ -1441,6 +1853,28 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.cost')}</dt>
               <dd>{formatCurrency(run.costCents / 100)}</dd>
             </div>
+            {/* Execution plane W05 (spec §5.6, §10) — sandbox compute, shown
+                BESIDE the token cost rather than folded into it: they are
+                different bills with different levers. Hidden at 0, which is
+                every run that never built a sandbox. `computeUsageEstimated`
+                says the provider could not report usage and the run settled at
+                its reservation — a worst-case number must not be presented as
+                a measurement. */}
+            {run.computeCents > 0 && (
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t('aiAgentsPage.runs.detail.labels.computeCost')}
+                </dt>
+                <dd data-testid="run-detail-compute-cost">
+                  {formatCurrency(run.computeCents / 100)}
+                  {run.computeUsageEstimated && (
+                    <span className="ml-1 text-xs text-muted-foreground">
+                      {t('aiAgentsPage.runs.detail.labels.computeEstimated')}
+                    </span>
+                  )}
+                </dd>
+              </div>
+            )}
             {/* Duration lives in the status row above (UI critique finding
                 #4) — repeating it here would double-mark the same fact. */}
             <div>
@@ -1546,6 +1980,20 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             </p>
           )}
 
+          {/* #4442 W05 — the per-DEVICE act roll-up. Absent for a disarmed
+              occurrence and for every pre-act-mode run, where no cohort was
+              computed and there is nothing truthful to say. The copy never
+              implies the cohort executes atomically: a member can still
+              degrade to a human approval on its own. */}
+          {run.sweep.actSummary && (
+            <p className="mt-2 text-sm text-muted-foreground" data-testid="ai-agent-run-sweep-act-summary">
+              {t('aiAgentsPage.runs.sweep.actSummary', {
+                acted: run.sweep.actSummary.devicesActed,
+                proposed: run.sweep.actSummary.devicesProposed,
+              })}
+            </p>
+          )}
+
           {run.sweep.findings.length === 0 ? (
             <p className="mt-2 text-sm text-muted-foreground">{t('aiAgentsPage.runs.sweep.empty')}</p>
           ) : (
@@ -1584,6 +2032,83 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
                 </table>
               </div>
             </>
+          )}
+        </section>
+      )}
+
+      {/* AI patch agent W01 (#5747) — a `patch`-profile run's plan. Null for
+          every other profile and for a patch run that produced none, so the
+          whole section is absent rather than empty for them. */}
+      {run.patch && (
+        <section data-testid="ai-agent-run-patch" className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.patch.title')}</h2>
+
+          <p className="mt-2 max-w-prose text-sm" data-testid="ai-agent-run-patch-summary">
+            {run.patch.summary}
+          </p>
+
+          {run.patch.posture && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-patch-posture">
+              {t('aiAgentsPage.runs.patch.posture', {
+                compliance: formatNumber(run.patch.posture.compliancePct),
+                count: run.patch.posture.devicesAtRisk,
+              })}
+            </p>
+          )}
+
+          {/* W02 (#5748) — a one-line rollup so an operator doesn't have to
+              count dispositions in the item list below to know how many
+              install proposals turned into a real approval card. */}
+          {(run.patch.intentCreatedCount > 0 || run.patch.suppressedCount > 0 || run.patch.escalationCount > 0) && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-patch-counts">
+              {t('aiAgentsPage.runs.patch.counts', {
+                created: run.patch.intentCreatedCount,
+                suppressed: run.patch.suppressedCount,
+              })}
+              {/* W03 (#5749) — escalations are recorded, never minted, so they
+                  are counted separately from the approval-card rollup. */}
+              {run.patch.escalationCount > 0 && (
+                <> · {t('aiAgentsPage.runs.patch.escalations', { count: run.patch.escalationCount })}</>
+              )}
+            </p>
+          )}
+
+          {run.patch.evidenceTruncated && (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="ai-agent-run-patch-truncated">
+              {t('aiAgentsPage.runs.patch.evidenceTruncated')}
+            </p>
+          )}
+
+          {/* The finalizer's re-validation never completed, so NOTHING below
+              has been checked against the evidence or the devices' current
+              orgs. Driven off the items themselves rather than off
+              `errorCode`, so a plan that is unconfirmed for any future reason
+              still says so. Review finding on PR #5792: without this, a
+              failed persist rendered as a fully recorded plan. */}
+          {run.patch.items.length > 0 && run.patch.items.every((item) => item.disposition === null) && (
+            <p
+              className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-400"
+              data-testid="ai-agent-run-patch-unconfirmed"
+            >
+              {t('aiAgentsPage.runs.patch.unconfirmed')}
+            </p>
+          )}
+
+          {run.patch.items.length === 0 ? (
+            <p className="mt-2 text-sm text-muted-foreground" data-testid="ai-agent-run-patch-empty">
+              {t('aiAgentsPage.runs.patch.empty')}
+            </p>
+          ) : (
+            <ul className="mt-2 divide-y" data-testid="ai-agent-run-patch-items">
+              {run.patch.items.map((item) => (
+                <PatchPlanItem
+                  key={item.index}
+                  item={item}
+                  intentStatus={run.intents.find((intent) => intent.id === item.intentId)?.status}
+                  t={t}
+                />
+              ))}
+            </ul>
           )}
         </section>
       )}
@@ -1654,6 +2179,22 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               {narrativeDownloadError}
             </p>
           )}
+
+          {run.narrativeDelivery && <NarrativeDeliverySummary delivery={run.narrativeDelivery} t={t} />}
+        </section>
+      )}
+
+      {/* #5806 — the delivery summary must render even when `run.narrative`
+          itself is null (e.g. the outcome payload was lost or `{}`) as long
+          as there is delivery evidence to show. When a narrative section
+          exists it already renders the summary above; this is the fallback
+          standalone section for the narrative-less case. */}
+      {!run.narrative
+        && run.narrativeDelivery
+        && (run.narrativeDelivery.total > 0 || run.narrativeDelivery.recipientsUnresolved) && (
+        <section className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.narrative.title')}</h2>
+          <NarrativeDeliverySummary delivery={run.narrativeDelivery} t={t} />
         </section>
       )}
 
@@ -1719,6 +2260,9 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         </section>
       )}
 
+      <RunWorkspaceSection workspace={run.workspace} />
+      <RunArtifactsSection artifacts={run.artifacts} />
+
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.trace.title')}</h2>
         {/* UI critique finding #6: "Execution trace" and "Tool executions" can
@@ -1744,6 +2288,13 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           </ul>
         )}
       </div>
+
+      {/* Fed by the SAME 5s poll as everything else on this page
+          (DETAIL_POLL_INTERVAL_MS) — `progress` rides on the run detail DTO.
+          Deliberately not an SSE subscription: the page has no stream, and
+          adding one for telemetry would be a second liveness mechanism to keep
+          in sync with the first. */}
+      <RunProgressList progress={run.progress} t={t} />
 
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.ledger.title')}</h2>

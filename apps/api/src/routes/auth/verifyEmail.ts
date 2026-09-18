@@ -351,6 +351,7 @@ verifyEmailRoutes.post('/resend-verification', authMiddleware, async (c) => {
       to: user.email,
       name: user.name,
       verificationUrl,
+      purpose: 'auth.email_verification',
     });
   } catch (err) {
     console.error('[resend-verification] failed to send email', {

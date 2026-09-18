@@ -1201,7 +1201,6 @@
         "save": "Enregistrer",
         "cancel": "Annuler",
         "none": "Aucune justification enregistrée."
-
       }
     }
   },
@@ -1336,6 +1335,8 @@
       "readyToDeployStandalone": "Prêts à être déployés."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Installation automatique activée",
+      "complianceCheckQueued": "Vérification de conformité mise en file d’attente",
       "failedToLoadSoftwarePolicyData": "Impossible de charger les données de politique logicielle",
       "couldNotLoadLatestPolicyDetailsShowing": "Impossible de charger les derniers détails de la stratégie. Affichage des données mises en cache.",
       "couldNotLoadPolicyDetailsShowingCached": "Impossible de charger les détails de la stratégie. Affichage des données mises en cache.",
@@ -1375,7 +1376,19 @@
       "failedToUpdatePolicy": "Impossible de mettre à jour la politique",
       "failedToCreatePolicy": "Impossible de créer une politique",
       "policyUpdated": "Mise à jour de la politique avec succès",
-      "policyCreated": "Politique créée avec succès"
+      "policyCreated": "Politique créée avec succès",
+      "armInstallRequiresMfa": "L'activation de l'installation automatique nécessite l'authentification multifacteur. Complétez la MFA, puis réessayez.",
+      "armInstallRequiresPermission": "L'activation de l'installation automatique nécessite la permission devices.execute. Demandez à un administrateur de l'accorder, puis réessayez.",
+      "installStatusPending": "Installation en file d'attente",
+      "installStatusInProgress": "Installation en cours…",
+      "installStatusCompleted": "Installé",
+      "installStatusFailed": "Échec de l'installation",
+      "installStatusGaveUp": "Abandonné après des échecs répétés",
+      "installStatusSkipped": "Ignoré pour ce cycle",
+      "installSkippedNoCatalog": "Une règle obligatoire n'a pas d'élément de catalogue lié, donc il n'y a rien à installer. Ajoutez un lien de catalogue dans l'éditeur de politiques pour corriger cela.",
+      "installSkippedCapOrPlatform": "Ce n'est pas un échec — soit la limite d'installations par cycle a été atteinte, soit la plateforme de cet appareil n'a pas de méthode d'installation pour le logiciel. Une nouvelle tentative pourrait avoir lieu au prochain cycle.",
+      "installAttempts": "{{count}} tentative(s)",
+      "installLastAttempt": "Dernière tentative d'installation : "
     },
     "deploymentList": {
       "running": "En cours",
@@ -1413,7 +1426,9 @@
       "noDeploymentsYet": "Aucun déploiement n’a encore été créé.",
       "failedToCancelDeployment": "Échec de l’annulation du déploiement",
       "deploymentCancelled": "Déploiement annulé",
-      "pageOf": "Page {{page}} sur {{pages}}"
+      "pageOf": "Page {{page}} sur {{pages}}",
+      "policyOwned": "Géré par une politique",
+      "policyOwnedTooltip": "Créé automatiquement par la remédiation d'installation automatique d'une politique logicielle"
     },
     "deploymentProgress": {
       "queued": "En file d’attente",
@@ -1597,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 appareil — généralement parce que cette stratégie n’est encore affectée à aucun appareil, mais un parc entièrement conforme ou une liste de sites vide donne aussi 0",
+      "manageAssignments": "Gérer les affectations des stratégies de configuration",
+      "gracePeriodHelp": "Appliqué lors de la prochaine vérification de conformité",
       "scope": "Portée",
       "allOrganizations": "Toutes les organisations",
       "partnerWideTemplate": "(modèle à l’échelle du partenaire)",
@@ -1641,7 +1659,16 @@
       "autoUninstall2": "autoUninstall",
       "gracePeriod": "grace-period",
       "gracePeriod2": "Période de grâce",
-      "saving": "Enregistrement..."
+      "saving": "Enregistrement...",
+      "catalogLink": "Élément de catalogue lié",
+      "catalogLinkNone": "Aucun — non lié",
+      "autoInstall": "Installer automatiquement les logiciels manquants",
+      "autoInstallCatalogWarning": "{{count}} règle(s) sur {{total}} n'ont pas d'élément de catalogue lié et seront détectées comme manquantes, mais jamais installées.",
+      "dryRunLoading": "Vérification du nombre d'appareils touchés...",
+      "dryRunResult": "Ceci installera les logiciels manquants sur environ {{count}} appareil(s).",
+      "dryRunUnavailable": "L'aperçu du nombre d'appareils n'est pas encore disponible. L'activation prendra quand même effet lors de la prochaine vérification de conformité.",
+      "dryRunNewPolicy": "Il s'agit d'une nouvelle politique — l'impact sur les appareils ne sera connu qu'après la première vérification de conformité suivant l'enregistrement.",
+      "catalogUnavailable": "Le catalogue de logiciels n'a pas pu être chargé, donc les sélecteurs de lien de catalogue ci-dessous sont vides. Ce n'est pas la même chose que de n'avoir aucun élément de catalogue — rechargez la page avant de conclure qu'une règle ne peut pas être liée."
     },
     "softwareCatalog": {
       "ready": "Prêt",

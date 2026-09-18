@@ -20,7 +20,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { getTestDb } from './setup';
 import { withDbAccessContext } from '../../db';
 import { devices, patches, devicePatches, patchApprovals } from '../../db/schema';
-import { resolveApprovedPatchesForDevice, type RingConfig } from '../../services/patchApprovalEvaluator';
+import { resolveApprovedPatchesForDevice } from '../../services/patchEligibility';
+import type { RingConfig } from '../../services/patchApprovalEvaluator';
 import { setupTestEnvironment } from './db-utils';
 
 let agentSeq = 0;

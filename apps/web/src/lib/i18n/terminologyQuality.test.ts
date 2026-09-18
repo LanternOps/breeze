@@ -60,6 +60,31 @@ describe('product terminology quality', () => {
     }
   });
 
+  it('uses agreement vocabulary consistently in the signed-agreement download panel (#5834 miss)', () => {
+    // PR #5834 renamed quotes.document.contract.download / previewTitle from
+    // "contract" to "agreement" vocabulary in every catalog but left the
+    // sibling unavailable string on the old "contract" wording; the portal
+    // twin (apps/portal quoteBlocks.tsx) already says "Agreement file
+    // unavailable". Each locale's value must use the same "agreement" term
+    // the PR itself chose for that locale's download/previewTitle strings.
+    const expected = {
+      en: 'Agreement file unavailable',
+      'de-DE': 'Vereinbarungsdatei nicht verfügbar',
+      'es-419': 'Archivo del acuerdo no disponible',
+      'fr-CA': "Fichier de l'entente indisponible",
+      'fr-FR': 'Fichier de la convention indisponible',
+      'it-IT': 'File accordo non disponibile',
+      'pt-BR': 'Arquivo do acordo indisponível',
+      'tr-TR': 'Anlaşma dosyası mevcut değil',
+    } as const;
+
+    for (const locale of Object.keys(expected) as (keyof typeof expected)[]) {
+      expect(valueAt(catalog(locale, 'billing'), 'quotes.document.contract.unavailable')).toBe(
+        expected[locale]
+      );
+    }
+  });
+
   it('keeps alert-verdict badge feedback copy in the formal register the rest of alerts.json uses (#4449)', () => {
     // de-DE and es-419 alerts.json otherwise address the user formally
     // (Sie / su); the machine-translated feedbackThanks string was the lone

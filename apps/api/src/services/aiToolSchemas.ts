@@ -25,6 +25,7 @@ import { CONTACT_ROLES } from './contacts/types';
 
 // Reusable validators
 const uuid = z.string().guid();
+
 const deviceId = z.object({ deviceId: uuid });
 const ipAddress = z.string().trim().max(45).refine(
   (value) => {
@@ -153,6 +154,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
     flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
     limit: z.number().int().min(1).optional(),
+  }),
+
+  get_network_asset_reachability: z.object({
+    asset_id: uuid,
   }),
 
   get_ip_history: z.object({
@@ -1266,6 +1271,35 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
     sortOrder: z.enum(['asc', 'desc']).optional(),
   }),
+
+  export_dataset: z.object({
+    dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+    format: z.enum(['jsonl', 'csv']).optional(),
+    filters: z.record(z.string(), z.unknown()).optional(),
+    deviceIds: z.array(uuid).max(200).optional(),
+    siteId: uuid.optional(),
+    maxRows: z.number().int().min(1).max(1_000_000).optional(),
+  }),
+
+  // Execution plane W04 — sandbox workspace tools. Bounds mirror
+  // WORKSPACE_MCP_SHAPES (services/workspace/workspaceTools.ts); this map is
+  // the gate the non-SDK callers (chat dispatch, MCP server) pass through. A
+  // tool with no entry here is REJECTED by validateToolInput, not defaulted.
+  workspace_stage: z.object({
+    handles: z.array(uuid).min(1).max(200),
+    into: z.string().max(200).optional(),
+  }).strict(),
+  workspace_run: z.object({
+    script: z.string().min(1).max(100_000),
+    language: z.enum(['bash', 'python', 'node']),
+    timeoutSeconds: z.number().int().min(1).max(600).optional(),
+    stdinHandle: uuid.optional(),
+  }).strict(),
+  workspace_collect: z.object({
+    paths: z.array(z.string().min(1).max(400)).min(1).max(50),
+    labels: z.record(z.string().max(400), z.string().max(200)).optional(),
+  }).strict(),
+  workspace_cancel: z.object({}).strict(),
 
   get_log_trends: z.object({
     timeRange: z.object({

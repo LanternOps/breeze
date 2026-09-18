@@ -17,6 +17,7 @@
     "adminThirdPartyCatalog": "Catálogo de terceros",
     "adminTrustAct": "Acción de confianza del socio",
     "adminTrustQueue": "Cola de confianza del socio",
+    "adminSendingDomains": "Dominios de envío del socio",
     "adminUsersDetailDevices": "Dispositivos del usuario",
     "aiAgentsImpact": "Impacto de IA",
     "aiAgentsRunsDetail": "Detalle de ejecución",
@@ -126,8 +127,9 @@
     "sensitiveData": "Datos confidenciales",
     "settingsAccessReviews": "Revisiones de acceso",
     "settingsAiAgents": "Agentes de IA",
-    "settingsAiUsage": "Uso y presupuesto de IA",
+    "settingsAiUsage": "Uso de IA",
     "settingsAiScriptAuthoring": "Creación de scripts",
+    "settingsToolSources": "Fuentes de herramientas",
     "settingsAlertTemplatesDetail": "Plantilla de alerta",
     "settingsAlertTemplates": "Plantillas de alerta",
     "settingsApiKeys": "Claves de API",
@@ -161,7 +163,12 @@
     "timesheet": "Hoja de tiempo",
     "vulnerabilities": "Vulnerabilidades",
     "workspace": "Asistente de IA",
-    "aiAgentsFleetDesign": "Diseño de flota"
+    "aiAgentsFleetDesign": "Diseño de flota",
+    "agreementTemplates": "Plantillas de acuerdo",
+    "agreementTemplateDetail": "Plantilla de acuerdo",
+    "agreementTemplateNew": "Nueva plantilla de acuerdo",
+    "signedAgreements": "Acuerdos firmados",
+    "settingsTicketing": "Configuración de tickets"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",
@@ -224,6 +231,10 @@
       "deliverableTemplates": {
         "title": "Plantillas de entregables",
         "description": "Define un nivel de servicio una vez y aplica sus entregables a cualquier cliente."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Plantillas de lista de verificación de tickets",
+        "description": "Listas de pasos reutilizables que tus técnicos pueden aplicar a cualquier ticket."
       }
     }
   },
