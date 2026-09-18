@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { emailTemplateFieldDefaults } from '@breeze/shared';
 import { buildQuoteTemplate } from './quoteEmail';
 
 describe('buildQuoteTemplate', () => {
@@ -60,6 +61,24 @@ describe('buildQuoteTemplate', () => {
     expect(t.html).toContain('This proposal is valid until');
     expect(t.html).toContain(`href="${acceptUrl}"`);
     expect(t.text).toContain(acceptUrl);
+  });
+
+  it('does not duplicate catalog PDF and expiry lines on custom html', () => {
+    const t = buildQuoteTemplate({
+      quoteNumber: 'Q-1',
+      partnerName: 'Acme',
+      total: '$1',
+      acceptUrl: 'https://x.example/q/t',
+      expiryDate: '2026-07-01',
+      custom: {
+        subject: null,
+        heading: null,
+        buttonLabel: null,
+        html: emailTemplateFieldDefaults('quote_send').html.replace('Hi there', 'Hello'),
+      },
+    });
+    expect(t.html.match(/A PDF copy is attached\./g)).toHaveLength(1);
+    expect(t.html.match(/This proposal is valid until/g)).toHaveLength(1);
   });
 
   it('custom html substitutes quote_number and keeps the server accept URL', () => {

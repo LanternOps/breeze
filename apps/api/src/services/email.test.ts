@@ -346,6 +346,23 @@ describe('buildInvoiceTemplate', () => {
     expect(t.html).not.toContain('>View invoice<');
   });
 
+  it('does not duplicate catalog PDF and amount-due lines on custom html', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const { emailTemplateFieldDefaults } = await import('@breeze/shared');
+    const t = buildInvoiceTemplate({
+      ...base,
+      custom: {
+        subject: null,
+        heading: null,
+        buttonLabel: null,
+        html: emailTemplateFieldDefaults('invoice_send').html.replace('Hi there', 'Hello'),
+      },
+    });
+    expect(t.html.match(/A PDF copy is attached to this email\./g)).toHaveLength(1);
+    expect(t.html.match(/Amount due now:/g)).toHaveLength(1);
+    expect(t.html.match(/no sign-in needed/g)).toHaveLength(1);
+  });
+
   it('custom html substitutes invoice_number and keeps the server pay URL', async () => {
     const { buildInvoiceTemplate } = await import('./email');
     const t = buildInvoiceTemplate({

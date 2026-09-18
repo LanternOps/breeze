@@ -34,14 +34,8 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
   const pdfAttached = params.pdfAttached ?? true;
   const note = params.message?.trim();
   const signature = params.signature?.trim();
-  const pdfBlock = pdfAttached
-    ? `<p style="${BODY_PARA}">A PDF copy is attached.</p>`
-    : '';
   const messageBlock = note
     ? `<p style="${BODY_PARA}">${escapeHtml(note).replace(/\r?\n/g, '<br>')}</p>`
-    : '';
-  const expiryLine = params.expiryDate
-    ? `<p style="${MUTED_PARA}">This proposal is valid until <strong>${escapeHtml(params.expiryDate)}</strong>.</p>`
     : '';
   const signatureBlock = signature
     ? `<p style="${MUTED_PARA}">${escapeHtml(signature).replace(/\r?\n/g, '<br>')}</p>`
@@ -70,8 +64,8 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
     brandName: params.partnerName,
     footer: supportFooter(params.supportEmail, 'Questions about this proposal? Contact'),
     preheader: `Proposal ${number} — ${params.total}${params.expiryDate ? `, valid until ${params.expiryDate}` : ''}.`,
-    bodyBeforeCta: `${customHtml ? pdfBlock : ''}${messageBlock}`,
-    bodyAfterCta: `${customHtml ? expiryLine : ''}${signatureBlock}`,
+    bodyBeforeCta: messageBlock,
+    bodyAfterCta: signatureBlock,
   });
 
   const support = getSupportEmail(params.supportEmail);

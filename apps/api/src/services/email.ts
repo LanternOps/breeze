@@ -1070,9 +1070,7 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
   const messageBlock = customMessage
     ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>`
     : '';
-  const expiryLine = `<p style="${MUTED_PARA}">This invite link expires in 7 days. If you didn't expect this, you can ignore this email.</p>`;
   const custom = params.custom ?? null;
-  const customHtml = custom?.html?.trim() || null;
   const rendered = renderPartnerEmail({
     id: 'portal_invite',
     custom,
@@ -1086,7 +1084,7 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     footer: supportFooter(params.supportEmail, 'Need help? Contact'),
     preheader: 'Set your password to access your support portal.',
     bodyBeforeCta: messageBlock,
-    bodyAfterCta: customHtml ? expiryLine : '',
+    bodyAfterCta: '',
   });
   const support = getSupportEmail(params.supportEmail);
   const text = [
@@ -1213,9 +1211,6 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
   const number = params.invoiceNumber.trim();
   const dueNow = params.amountDueNow ?? params.total;
   const pdfAttached = params.pdfAttached ?? true;
-  const dueLine = params.dueDate
-    ? `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong> by <strong>${escapeHtml(params.dueDate)}</strong>.</p>`
-    : `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong>.</p>`;
   const paidLine = params.amountPaid
     ? `<p style="${MUTED_PARA}">Paid to date: ${escapeHtml(params.amountPaid)} of ${escapeHtml(params.total)}.</p>`
     : '';
@@ -1223,14 +1218,10 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
   const messageBlock = note
     ? `<p style="${BODY_PARA}">${escapeHtml(note).replace(/\r?\n/g, '<br>')}</p>`
     : '';
-  const pdfBlock = pdfAttached
-    ? `<p style="${BODY_PARA}">A PDF copy is attached to this email.</p>`
-    : '';
   const signature = params.signature?.trim();
   const signatureBlock = signature
     ? `<p style="${MUTED_PARA}">${escapeHtml(signature).replace(/\r?\n/g, '<br>')}</p>`
     : '';
-  const noSignIn = `<p style="${MUTED_PARA}">You can view this invoice and download a copy any time using this link — no sign-in needed.</p>`;
 
   const custom = params.custom ?? null;
   const perSendSubject = params.subject?.trim() || null;
@@ -1256,8 +1247,8 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
     brandName: params.partnerName,
     footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
     preheader: `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`,
-    bodyBeforeCta: `${customHtml ? pdfBlock : ''}${messageBlock}${customHtml ? dueLine : ''}${paidLine}`,
-    bodyAfterCta: `${customHtml ? noSignIn : ''}${signatureBlock}`,
+    bodyBeforeCta: `${messageBlock}${paidLine}`,
+    bodyAfterCta: signatureBlock,
   });
 
   const support = getSupportEmail(params.supportEmail);
