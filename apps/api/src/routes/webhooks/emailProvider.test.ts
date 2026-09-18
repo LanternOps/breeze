@@ -327,3 +327,52 @@ describe('the replay reservation is released when the handler fails', () => {
     expect(res.status).toBe(500);
   });
 });
+
+describe('a failure AFTER the counter committed is not retried', () => {
+  // Releasing unconditionally would trade a dropped event for a double-counted
+  // one. Once the upsert has committed, the event IS counted, and a retry would
+  // count a second complaint — three of which suspend every domain a partner
+  // owns. Everything after the upsert (the enqueues) is already best-effort:
+  // the sweep and the next event re-evaluate.
+  it('keeps the reservation and answers 202 when the enqueue fails post-commit', async () => {
+    enqueueAutoSuspendMock.mockRejectedValueOnce(new Error('redis gone'));
+    const res = await post(emailEvent('email.bounced'), { id: 'msg_post_commit' });
+    expect(res.status).toBe(202);
+    expect(incrementMock).toHaveBeenCalledTimes(1);
+    expect(redisDel).not.toHaveBeenCalled();
+  });
+
+  it("a retry after a post-commit failure is deduped, so the count stays 1", async () => {
+    const held = new Set<string>();
+    redisSet.mockImplementation(async (...args: unknown[]) => {
+      const key = args[0] as string;
+      if (held.has(key)) return null;
+      held.add(key);
+      return 'OK';
+    });
+    redisDel.mockImplementation(async (key: string) => { held.delete(key); return 1; });
+
+    enqueueAutoSuspendMock.mockRejectedValueOnce(new Error('redis gone'));
+    expect((await post(emailEvent('email.bounced'), { id: 'msg_pc_retry' })).status).toBe(202);
+
+    const retry = await post(emailEvent('email.bounced'), { id: 'msg_pc_retry' });
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ duplicate: true });
+    // The whole point: the bounce was counted exactly once.
+    expect(incrementMock).toHaveBeenCalledTimes(1);
+  });
+
+  // domain.updated writes no counter at all, so a failure there is always safe
+  // to retry — "counted" must mean the stats upsert affected a row, not merely
+  // that the handler got far along.
+  it('releases the reservation when a domain.updated handler fails (nothing was counted)', async () => {
+    selectRows.push([{ id: DOMAIN_ID }]);
+    enqueueSyncMock.mockRejectedValueOnce(new Error('boom'));
+    const res = await post({
+      type: 'domain.updated', created_at: '2026-09-17T12:00:00.000Z',
+      data: { id: 'prov-abc', name: 'mail.acme.test', status: 'verified', created_at: '2026-09-01T00:00:00.000Z', region: 'us-east-1', records: [] },
+    }, { id: 'msg_domain_fail' });
+    expect(res.status).toBe(500);
+    expect(redisDel).toHaveBeenCalledWith('emaildomains:webhook:msg_domain_fail');
+  });
+});

@@ -34,8 +34,11 @@ import { captureException } from '../../services/sentry';
  *     redelivery of an already-counted event would inflate every counter the
  *     auto-suspension thresholds read. Redis unavailable -> 503, so the
  *     provider retries: silently processing without the guard trades a retry
- *     for permanently wrong numbers. The reservation is RELEASED again if the
- *     handler fails, so a 500 the provider retries is not permanently deduped.
+ *     for permanently wrong numbers. If the handler then fails BEFORE the
+ *     counter commits, the reservation is released and a 500 invites the retry;
+ *     if it fails AFTER, the reservation is kept and the answer is 202, because
+ *     the event is already counted and a replayed complaint would count twice
+ *     (three of them suspend every domain a partner owns).
  *  6. Handle, then 202. The handler never calls the provider — `domain.updated`
  *     only enqueues `sync-domain`, and a bounce/complaint only enqueues
  *     `evaluate-auto-suspend`. All provider calls live in the worker (spec §2).
@@ -168,11 +171,14 @@ resendWebhookRoutes.post('/email-provider/resend', async (c) => {
     return c.json({ error: 'Bad Request' }, 400);
   }
 
+  // Tracks whether the stats upsert has COMMITTED. It is what decides, in the
+  // catch below, between "retry me" and "do not retry me".
+  const progress = { counted: false };
   try {
     if (envelope.type === 'domain.updated') {
       await handleDomainUpdated(envelope);
     } else {
-      await handleEmailEvent(envelope);
+      await handleEmailEvent(envelope, progress);
     }
   } catch (err) {
     console.error('[emailProviderWebhook] handler error', envelope.type, err instanceof Error ? err.message : err);
@@ -180,30 +186,46 @@ resendWebhookRoutes.post('/email-provider/resend', async (c) => {
       err instanceof Error ? err : new Error(`[emailProviderWebhook] handler error for ${envelope.type}: ${String(err)}`),
       c,
     );
-    // RELEASE the reservation before answering 500. It was claimed before the
-    // handler ran, so leaving it held would burn this svix-id for the full
-    // dedupe TTL: the provider's retry would hit the duplicate branch, get a
-    // 202, and the event would be dropped permanently over what is usually a
-    // transient database blip. Releasing re-opens the narrow double-count
-    // window the reservation exists to close, which is the right trade — a
-    // retry that counts twice is a small error in an advisory counter, while a
-    // silently dropped bounce is a missing input to a kill switch.
-    // Best-effort: a failed release must not turn a 500 into a thrown request.
-    try {
-      await redis.del(reservationKey);
-    } catch (delErr) {
-      console.error(
-        '[emailProviderWebhook] failed to release the replay reservation:',
-        delErr instanceof Error ? delErr.message : delErr,
-      );
+    // Whether to invite a retry depends entirely on whether the counter already
+    // committed, because the reservation is claimed BEFORE the handler runs.
+    if (!progress.counted) {
+      // Nothing was counted, so a retry is free. Release the reservation —
+      // holding it would burn this svix-id for the full dedupe TTL, and the
+      // provider's retry would hit the duplicate branch, get a 202, and drop
+      // the event permanently over what is usually a transient database blip.
+      // Best-effort: a failed release must not turn a 500 into a thrown request.
+      try {
+        await redis.del(reservationKey);
+      } catch (delErr) {
+        console.error(
+          '[emailProviderWebhook] failed to release the replay reservation:',
+          delErr instanceof Error ? delErr.message : delErr,
+        );
+      }
+      return c.json({ error: 'Handler error' }, 500);
     }
-    return c.json({ error: 'Handler error' }, 500);
+
+    // The counter DID commit, so the event is counted and must never be
+    // replayed: a retried complaint would count twice, and three complaints
+    // suspend every domain a partner owns. Everything after the upsert is only
+    // the enqueues, which are already best-effort — the daily sweep and the
+    // next delivery event both re-evaluate. So: keep the reservation, log the
+    // post-commit failure loudly enough to find it, and tell the provider we
+    // accepted the event.
+    console.error('[emailProviderWebhook] post-commit failure; NOT retrying a counted event', {
+      svixId,
+      eventType: envelope.type,
+    });
+    return c.json({ received: true, countedWithErrors: true }, 202);
   }
 
   return c.json({ received: true }, 202);
 });
 
-async function handleEmailEvent(envelope: WebhookEnvelope): Promise<void> {
+async function handleEmailEvent(
+  envelope: WebhookEnvelope,
+  progress: { counted: boolean },
+): Promise<void> {
   const column = EVENT_COLUMN[envelope.type];
   // email.opened / email.clicked / email.scheduled / email.delivery_delayed and
   // the contact.* and domain.created/deleted families are simply not counted.
@@ -221,9 +243,13 @@ async function handleEmailEvent(envelope: WebhookEnvelope): Promise<void> {
 
   const counted = await incrementPartnerSendingStat(rawTag, column, new Date());
   if (!counted) {
+    // The tag named no partner, so NOTHING was written — deliberately leaving
+    // `progress.counted` false, which keeps a later failure safely retryable.
     logUnknownTagOnce('unknown_partner', rawTag);
     return;
   }
+  // The upsert has committed. From here on a retry would double-count.
+  progress.counted = true;
 
   if (EVALUATES_AUTO_SUSPENSION.has(envelope.type)) {
     // jobId = autosuspend:<partnerId>, so a bounce storm collapses into one
