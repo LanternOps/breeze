@@ -166,10 +166,14 @@ import {
 const SIG = { kind: 'remote_session', id: UUID };
 
 describe('time entry sources (W06)', () => {
-  it('is exactly the five-value vocabulary of the source migration', () => {
-    expect([...TIME_ENTRY_SOURCES]).toEqual(['manual', 'timer', 'location', 'remote_session', 'support_session']);
+  it('is exactly the six-value vocabulary of the source migrations', () => {
+    expect([...TIME_ENTRY_SOURCES]).toEqual(['manual', 'timer', 'location', 'remote_session', 'support_session', 'ai_suggested']);
     expect(timeEntrySourceSchema.safeParse('support_session').success).toBe(true);
     expect(timeEntrySourceSchema.safeParse('suggestion').success).toBe(false);
+  });
+
+  it('accepts ai_suggested as a source (#4177)', () => {
+    expect(timeEntrySourceSchema.parse('ai_suggested')).toBe('ai_suggested');
   });
 
   it('createTimeEntrySchema / startTimerSchema never accept source (D5)', () => {

@@ -32,7 +32,7 @@ type ActivityEvent = {
   initiatedBy?: string | null;
   timestamp?: string;
   actor?: { type?: string; name?: string; email?: string | null };
-  details?: { proposalId?: string | null } | null;
+  details?: { proposalId?: string | null; triggerKind?: string | null; triggerKey?: string | null } | null;
 };
 
 type DeviceActivityFeedProps = {
@@ -60,6 +60,7 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: "device.command", icon: Power }, // reboot / shutdown / wake / lock / refresh
   { prefix: "script.", icon: Terminal }, // run / cancel
   { prefix: "ai.script.", icon: Sparkles }, // #5022 W05 — AI-authored script runs
+  { prefix: "ai.command.", icon: Sparkles }, // #5022 W01/W02 — AI-dispatched device commands
   { prefix: "device.remote_access", icon: Monitor }, // remote session launched
   { prefix: "device.patch", icon: Download }, // patch install / rollback
   { prefix: "device.software", icon: Package }, // software install / uninstall / update
@@ -462,6 +463,14 @@ export default function DeviceActivityFeed({
                       {initiator && who !== initiator && (
                         <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                           {initiator}
+                        </span>
+                      )}
+                      {e.details?.triggerKind && (
+                        <span
+                          className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                          title={e.details.triggerKey ?? undefined}
+                        >
+                          {t(/* i18n-dynamic */ `deviceActivityFeed.trigger.${e.details.triggerKind}`, { defaultValue: e.details.triggerKind })}
                         </span>
                       )}
                       {automated && (

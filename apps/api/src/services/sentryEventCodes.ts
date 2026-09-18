@@ -44,12 +44,27 @@ export const SENTRY_EVENT_CODES = [
    * incident #5283 fixed — invisible until Postgres was inspected by hand.
    */
   'metric_anomaly_stage_stalled',
+  /**
+   * offlineDetector's detect-offline sweep skipped a device row whose id/orgId
+   * failed the v4 UUID check (or whose lastSeenAt was unparseable) instead of
+   * failing the whole sweep. Unreachable through the API (routes only mint v4
+   * UUIDs), but the row is skipped again every ~30s until fixed by hand — a
+   * silent, indefinite gap in offline detection for that one device (#5867).
+   */
+  'offline_detector_invalid_device_row',
 
   // --- database / pool --------------------------------------------------
   /** Pool-health watchdog published a non-healthy verdict. */
   'db_pool_health_degraded',
   /** Pool-health watchdog itself threw while evaluating. */
   'db_pool_health_check_failed',
+  // #6048 — a pooled connection wedged in active/ClientRead mid-prologue. Its own
+  // code, not folded into db_pool_health_degraded: the two have different causes,
+  // different evidence and different operator actions.
+  'db_wedged_client_read_backends',
+  // The REPAIR path failing is its own alert: the detector's count staying high
+  // says something is wedged, this says we cannot clear it.
+  'db_wedged_backend_reclaim_failed',
   /** A `withDbAccessContext` transaction was held past the warn threshold. */
   'db_context_held_too_long',
   /** A write reached Postgres with no DB access context set (#1380 guard). */
@@ -143,6 +158,13 @@ export const SENTRY_EVENT_CODES = [
   'inbound_email_sender_auth_unverified',
   /** Inbound mail lost the message-id claim race and duplicated a ticket. */
   'inbound_email_claim_race_lost',
+  /**
+   * The email-domain provider reported a domain state this build does not know.
+   * It is treated as `pending` (which cannot send), so mail is safe — but an
+   * unmapped state means a real provider status is invisible to partners until
+   * the mapping is added.
+   */
+  'sending_domain_provider_state_unknown',
   /** No usable platform LLM key is configured on this deployment. */
   'llm_platform_key_missing',
   /** The LLM egress audit queue shed rows — the audit trail has gaps (#3922). */
@@ -155,6 +177,12 @@ export const SENTRY_EVENT_CODES = [
   'ai_billing_credits_deduct_failed',
   /** An org reached the AI billing path with no partner row to bill. */
   'ai_billing_org_partner_missing',
+  /**
+   * Execution plane W04 (#5715): the sandbox backend's create circuit opened
+   * after 5 consecutive failures — no analysis run can start in this region
+   * until it closes.
+   */
+  'ai_workspace_breaker_open',
   /** A rejected partner AI key could not be stamped (config moved under us). */
   'ai_partner_key_error_stamp_stale',
   /**

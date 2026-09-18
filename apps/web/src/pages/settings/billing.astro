@@ -1,6 +1,6 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import PartnerBillingSettings from '../../components/billing/PartnerBillingSettings';
+import PartnerBillingSettingsPage from '../../components/billing/PartnerBillingSettingsPage';
 import { tServer } from '../../lib/i18n/server';
 
 const locale = Astro.locals.locale;
@@ -14,6 +14,6 @@ const locale = Astro.locals.locale;
         {tServer(locale, 'settingsBillingPage.description')}
       </p>
     </div>
-    <PartnerBillingSettings client:load />
+    <PartnerBillingSettingsPage client:load />
   </div>
 </DashboardLayout>

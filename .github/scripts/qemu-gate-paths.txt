@@ -1,0 +1,43 @@
+# Paths that gate the "Recovery media E2E (QEMU)" job (classifier output `agent`).
+#
+# The job builds exactly two Go commands — cmd/breeze-backup and
+# cmd/breeze-recovery-fakeserver — and the recovery-media/ scripts, then boots
+# the ISO in QEMU. Only the packages those commands import can change its
+# outcome, so a change anywhere else under agent/ (SNMP, heartbeat, remote
+# desktop, PAM, ...) does not run it.
+#
+# DO NOT EDIT BY HAND to add a package. This file is the classifier's view of
+# `go list -deps ./cmd/breeze-backup ./cmd/breeze-recovery-fakeserver`;
+# agent/cmd/breeze-backup/ci_gate_test.go recomputes that set and fails when
+# this file drifts. When a new import lands, the Go test tells you the exact
+# line to add. Paths are repo-relative; a trailing slash means "and everything
+# under it"; a bare file matches only itself.
+#
+# Non-package inputs of the job:
+agent/go.mod
+agent/go.sum
+agent/recovery-media/
+# Go packages (module-internal transitive deps of the two commands):
+agent/cmd/breeze-backup/
+agent/cmd/breeze-recovery-fakeserver/
+agent/internal/authstate/
+agent/internal/backup/
+agent/internal/backup/bmr/
+agent/internal/backup/bmr/fakeserver/
+agent/internal/backup/hyperv/
+agent/internal/backup/layout/
+agent/internal/backup/mssql/
+agent/internal/backup/providers/
+agent/internal/backup/rebuild/
+agent/internal/backup/systemstate/
+agent/internal/backup/vss/
+agent/internal/backupipc/
+agent/internal/config/
+agent/internal/hostpolicy/
+agent/internal/httputil/
+agent/internal/ipc/
+agent/internal/logging/
+agent/internal/recoveryconsole/
+agent/internal/secmem/
+agent/internal/securefs/
+agent/internal/wire/

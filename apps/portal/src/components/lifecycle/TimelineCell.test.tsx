@@ -157,4 +157,16 @@ describe('TimelineCell', () => {
     expect(screen.getByTestId('lifecycle-timeline-quarter-12').className).not.toContain('bg-warning/');
     expect(screen.queryByTestId('lifecycle-timeline-label')).toBeNull();
   });
+
+  it('gives every quarter cell a hover title with its quarter label', () => {
+    render(<TimelineCell row={LAW_SRV} />);
+    for (let q = 0; q < 20; q += 1) {
+      const title = screen.getByTestId(`lifecycle-timeline-quarter-${q}`).getAttribute('title');
+      expect(title).toMatch(/^Q[1-4] \d{4}$/);
+    }
+    // System time is fixed at 2026-06-10 (Q2 2026); todayQ = 8.
+    expect(screen.getByTestId('lifecycle-timeline-quarter-0').getAttribute('title')).toBe('Q2 2024');
+    expect(screen.getByTestId('lifecycle-timeline-quarter-8').getAttribute('title')).toBe('Q2 2026');
+    expect(screen.getByTestId('lifecycle-timeline-quarter-19').getAttribute('title')).toBe('Q1 2029');
+  });
 });

@@ -226,4 +226,11 @@ describe('SNMP metrics retention worker', () => {
     expect(ageDays).toBeGreaterThan(7 - 0.1);
   });
 
+
+  it('defaults to 30 days so the 30-day chart range has data (spec §6.3, §7.5)', () => {
+    // Was 7. A 7-day default made /monitoring/assets/:id/metrics?from=-30d
+    // return a week of points and the UI render a third of a chart with no
+    // indication anything was missing.
+    expect(__testOnly.DEFAULT_RETENTION_DAYS).toBe(30);
+  });
 });

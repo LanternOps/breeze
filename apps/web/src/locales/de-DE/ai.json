@@ -30,6 +30,7 @@
     "contentChanged": "Die Details dieser Anfrage haben sich nach ihrer Erstellung geändert, daher kann sie nicht mehr genehmigt werden.",
     "expired": "Diese Anfrage ist abgelaufen, bevor entschieden werden konnte.",
     "notSoleApprover": "Diese Anfrage muss jetzt von einer anderen Person genehmigt werden – Sie können Ihre eigene Anfrage nicht mehr genehmigen.",
+    "siteCeiling": "Diese Genehmigung gewährt organisationsweite Berechtigungen. Ihr Zugriff ist auf bestimmte Standorte beschränkt, daher muss eine andere Person darüber entscheiden.",
     "noApproverDevice": "Zum Genehmigen der eigenen Anfrage ist Touch ID / Windows Hello erforderlich.",
     "registerDevice": "Dieses Gerät registrieren",
     "decideFailed": "Entscheidung konnte nicht übermittelt werden",
@@ -128,6 +129,8 @@
   "aiToolCallCard": {
     "running": "Wird ausgeführt…",
     "approvedRunning": "Genehmigt · läuft",
+    "approvedFailed": "Genehmigt · fehlgeschlagen",
+    "approvedCompleted": "Genehmigt · abgeschlossen",
     "input": "Eingabe:",
     "error": "Fehler:",
     "output": "Ausgabe:"
@@ -138,7 +141,7 @@
     "tabs": {
       "orgs": "Organisationen",
       "sessions": "Sitzungen",
-      "usage": "Nutzung",
+      "usage": "Nutzung des Office-Add-Ins",
       "templates": "Vorlagen"
     }
   },
@@ -487,5 +490,19 @@
     "ownerScopeOrganization": "Nur diese Organisation",
     "ownerScopePartner": "Alle Organisationen dieses Partners",
     "nameRequired": "Ein Name ist erforderlich."
+  },
+  "aiRunCard": {
+    "title": "Analyselauf",
+    "openRun": "Vollständigen Lauf öffnen",
+    "resultOnRunPage": "Dieser Vorgang wurde abgeschlossen, nachdem sich die Unterhaltung weiterentwickelt hat – das vollständige Ergebnis finden Sie auf der Lauf-Seite.",
+    "status": {
+      "queued": "wartet",
+      "running": "läuft",
+      "completed": "abgeschlossen",
+      "failed": "fehlgeschlagen",
+      "cancelled": "abgebrochen",
+      "expired": "abgelaufen",
+      "skipped": "übersprungen"
+    }
   }
 }

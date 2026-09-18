@@ -98,6 +98,14 @@ vi.mock('../../db/schema', () => ({
     description: 'description', isBillable: 'isBillable', billingStatus: 'billingStatus',
     hourlyRate: 'hourlyRate', isApproved: 'isApproved', addedBy: 'addedBy'
   },
+  // #5783 W01: ticketChecklistService is reachable from routes/tickets/index.ts,
+  // and its module-scope CHECKLIST_ORDER reads these columns at import time.
+  ticketChecklistItems: {
+    id: 'id', orgId: 'orgId', ticketId: 'ticketId', label: 'label', detail: 'detail',
+    position: 'position', doneAt: 'doneAt', doneByUserId: 'doneByUserId', source: 'source',
+    sourceTemplateItemId: 'sourceTemplateItemId', createdBy: 'createdBy',
+    createdAt: 'createdAt', updatedAt: 'updatedAt',
+  },
   ticketParts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', addedBy: 'addedBy',
     description: 'description', quantity: 'quantity', unitPrice: 'unitPrice',

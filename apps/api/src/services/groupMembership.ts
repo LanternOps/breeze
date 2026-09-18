@@ -752,12 +752,12 @@ export async function validateManualMembershipDevices(params: {
   deviceIds: readonly string[];
   orgId: string;
   siteId: string | null;
-}): Promise<ManualMembershipValidation> {
+}, database: GroupMembershipDatabase = db): Promise<ManualMembershipValidation> {
   const { orgId, siteId } = params;
   const requested = [...new Set(params.deviceIds)];
   if (requested.length === 0) return { ok: true };
 
-  const deviceRows = await db
+  const deviceRows = await database
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
     .from(devices)
     .where(inArray(devices.id, requested));
@@ -803,12 +803,12 @@ export async function addManualGroupMemberships(params: {
   groupId: string;
   orgId: string;
   deviceIds: readonly string[];
-}): Promise<ManualMembershipWrite> {
+}, database: GroupMembershipDatabase = db): Promise<ManualMembershipWrite> {
   const { groupId, orgId } = params;
   const requested = [...new Set(params.deviceIds)];
   if (requested.length === 0) return { added: [], skipped: 0 };
 
-  const existing = await db
+  const existing = await database
     .select({ deviceId: deviceGroupMemberships.deviceId })
     .from(deviceGroupMemberships)
     .where(
@@ -822,7 +822,7 @@ export async function addManualGroupMemberships(params: {
   const added = requested.filter((deviceId) => !existingSet.has(deviceId));
 
   if (added.length > 0) {
-    await db.insert(deviceGroupMemberships).values(
+    await database.insert(deviceGroupMemberships).values(
       added.map((deviceId) => ({
         deviceId,
         groupId,

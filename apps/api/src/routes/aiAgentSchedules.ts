@@ -16,6 +16,7 @@ import {
   updateAiAgentScheduleSchema,
   type AiAgentScheduleDto,
 } from '@breeze/shared';
+import { sweepActEnabled } from '../config/env';
 import { zValidator } from '../lib/validation';
 import type { AiAgentScheduleRow } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -65,6 +66,7 @@ function mapScheduleRow(row: AiAgentScheduleRow): AiAgentScheduleDto {
     timezone: row.timezone,
     sweepKinds: row.sweepKinds,
     enabled: row.enabled,
+    actMode: row.actMode,
     lastEnqueuedAt: row.lastEnqueuedAt?.toISOString() ?? null,
     lastOccurrenceKey: row.lastOccurrenceKey,
     // Safe on a write response: the caller just wrote this exact row on its own
@@ -140,6 +142,9 @@ aiAgentSchedulesRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+    if (body.actMode === true && !sweepActEnabled()) {
+      return c.json({ error: 'sweep_act_mode_disabled', code: 'sweep_act_mode_disabled' }, 409);
+    }
     try {
       const row = await createSchedule(auth, body);
       writeRouteAudit(c, {
@@ -157,6 +162,7 @@ aiAgentSchedulesRoutes.post(
           // — there is no later event that could record it.
           kind: row.kind,
           sweepKinds: row.sweepKinds,
+          actMode: row.actMode,
         },
       });
       return c.json({ data: mapScheduleRow(row) }, 201);
@@ -177,6 +183,9 @@ aiAgentSchedulesRoutes.patch(
     const body = c.req.valid('json');
     const id = uuidParam(c, 'id');
     if (!id) return c.json({ error: 'Schedule not found' }, 404);
+    if (body.actMode === true && !sweepActEnabled()) {
+      return c.json({ error: 'sweep_act_mode_disabled', code: 'sweep_act_mode_disabled' }, 409);
+    }
     try {
       const row = await updateSchedule(auth, id, body);
       writeRouteAudit(c, {
@@ -185,7 +194,10 @@ aiAgentSchedulesRoutes.patch(
         resourceType: 'ai_agent_schedule',
         resourceId: row.id,
         result: 'success',
-        details: { changed: Object.keys(body), sweepKinds: row.sweepKinds, enabled: row.enabled },
+        // #4442 W04: `actMode` is audited explicitly — arming unattended
+        // Tier-3 execution for a whole partner is the single most consequential
+        // field on this router, and `changed` alone would not record the value.
+        details: { changed: Object.keys(body), sweepKinds: row.sweepKinds, enabled: row.enabled, actMode: row.actMode },
       });
       return c.json({ data: mapScheduleRow(row) });
     } catch (err) {

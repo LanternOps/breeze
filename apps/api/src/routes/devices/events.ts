@@ -403,7 +403,12 @@ eventsRoutes.get(
         name: row.resourceName,
       },
       initiatedBy: row.initiatedBy,
-      details: row.details as Record<string, unknown> | null,
+      // Already selected as JSONB by both feed arms; provenance stays top-level.
+      // #5788 strips the raw AI session/run ids (OD-9 A); #5751's trigger
+      // fields are plain scalars and survive the redaction.
+      details: redactAiProvenance(row.details) as (Record<string, unknown> & {
+        proposalId?: string | null; triggerKind?: string | null; triggerKey?: string | null;
+      }) | null,
       errorMessage: row.errorMessage,
       ipAddress: row.ipAddress,
     }));
@@ -417,6 +422,29 @@ eventsRoutes.get(
     });
   }
 );
+
+// #5022 W02 (code-review finding, OD-9 A): `ai.script.executed` /
+// `ai.command.executed` audit rows carry the RAW `aiSessionId`/`aiAgentRunId`
+// in `details` (written by `aiOriginColumns()` in commandQueue.ts /
+// scriptDispatch.ts, for correlation with the source row — never intended as
+// a disclosure surface). This feed requires only `devices:read`, with no
+// owner/site-scope check — unlike `resolveAiOriginSummary`, which is the ONE
+// sanctioned place an id may be disclosed, and only to a viewer who can open
+// it. Returning `details` verbatim here would hand every technician the exact
+// provenance pointer that endpoint exists to withhold. The kind
+// (`aiInitiatorKind`) is not sensitive and stays; the ids are stripped
+// unconditionally, independent of viewer identity — this feed never
+// discloses them, full stop.
+const REDACTED_DETAILS_KEYS = ['aiSessionId', 'aiAgentRunId'] as const;
+
+function redactAiProvenance(details: unknown): Record<string, unknown> | null {
+  if (!details || typeof details !== 'object') return details as null;
+  const redacted = { ...(details as Record<string, unknown>) };
+  for (const key of REDACTED_DETAILS_KEYS) {
+    delete redacted[key];
+  }
+  return redacted;
+}
 
 export function resolveActorLabel(actorType: string, actorId: string): string {
   if (actorType === 'agent') return 'Agent';

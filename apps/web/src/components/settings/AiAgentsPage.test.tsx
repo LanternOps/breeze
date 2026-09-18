@@ -1,7 +1,14 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // #4442 W04: AiAgentSchedulesSection now reads the partner-wide capability
+  // off the auth store to gate the act-mode arm switch, so this mock has to
+  // carry it too. `undefined` user = the absent-means-capable default the
+  // component (and CustomFieldsPage) already assume; the server gates for real.
+  useAuthStore: (selector: (s: { user: undefined }) => unknown) => selector({ user: undefined }),
+}));
 
 // Partner scope comes from the JWT claims and the org context from the org
 // store — the same pair `useDefaultOwnerScope` reads (#1724 / #2126).
@@ -26,6 +33,11 @@ vi.mock('@/lib/authScope', async () => {
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: typeof orgState.current) => unknown) => (sel ? sel(orgState.current) : orgState.current),
 }));
+// Resolved relative to THIS file, the same module runAction.ts reaches via
+// '../components/shared/Toast', so this intercepts runAction's own import too
+// (established pattern: AiAgentSchedulesSection.test.tsx).
+const showToast = vi.hoisted(() => vi.fn());
+vi.mock('../shared/Toast', () => ({ showToast: (...args: unknown[]) => showToast(...args) }));
 
 import AiAgentsPage from './AiAgentsPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -136,6 +148,7 @@ async function openCreateForm(): Promise<void> {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  showToast.mockReset();
   getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
   orgState.current = {
     currentOrgId: null,
@@ -144,6 +157,105 @@ beforeEach(() => {
     organizationsLoaded: true,
     organizations: [{ id: 'org-1', name: 'Acme' }],
   };
+});
+
+// ---------------------------------------------------------------------------
+// AI patch agent W01 (#5747), Task 12 — the next-occurrence cell and "Run now".
+//
+// "Enabled, shadow, last run yesterday" says nothing about whether the agent
+// is going to run again; the occurrence the list route computes is what does.
+// Run now posts through `runAction`, so a declined admission (HTTP 200
+// `{success:false}`) surfaces as a failure toast rather than as silence.
+// ---------------------------------------------------------------------------
+describe('AiAgentsPage — patch agent next occurrence and Run now', () => {
+  const PATCH_AGENT = {
+    ...PARTNER_AGENT,
+    id: 'p-agent',
+    kind: 'patch' as const,
+    name: 'Patcher',
+    nextOccurrenceAt: '2026-09-15T02:00:00.000Z',
+  };
+
+  function selectOrg(orgId: string | null) {
+    orgState.current = { ...orgState.current, currentOrgId: orgId, allOrgs: orgId === null };
+  }
+
+  it('shows the next occurrence beside the last run', async () => {
+    mockEndpoints([PATCH_AGENT]);
+    render(<AiAgentsPage />);
+
+    const cell = await screen.findByTestId('ai-agent-next-occurrence-p-agent');
+    expect(cell).toHaveTextContent('2026');
+  });
+
+  it('renders an em dash when the agent has no next occurrence', async () => {
+    mockEndpoints([{ ...PATCH_AGENT, nextOccurrenceAt: null }]);
+    render(<AiAgentsPage />);
+
+    expect(await screen.findByTestId('ai-agent-next-occurrence-p-agent')).toHaveTextContent('—');
+  });
+
+  it('offers Run now only for a patch agent', async () => {
+    mockEndpoints([PATCH_AGENT, PARTNER_AGENT]);
+    selectOrg('org-1');
+    render(<AiAgentsPage />);
+
+    expect(await screen.findByTestId('ai-agent-run-now-p-agent')).toBeInTheDocument();
+    expect(screen.queryByTestId(`ai-agent-run-now-${PARTNER_AGENT.id}`)).toBeNull();
+  });
+
+  it('posts the selected org through runAction and toasts success', async () => {
+    mockEndpoints([PATCH_AGENT]);
+    selectOrg('org-1');
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/ai/patch-plan/runs') return Promise.resolve(json({ runId: 'r-1' }, true, 202));
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [PATCH_AGENT] }));
+      void init;
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-run-now-p-agent'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/ai/patch-plan/runs',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ orgId: 'org-1' }) }),
+    ));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    ));
+  });
+
+  it('surfaces a declined admission as a failure toast, not silence', async () => {
+    selectOrg('org-1');
+    fetchMock.mockImplementation((url: string) => {
+      // The route's own "nothing was queued, here is why" shape.
+      if (url === '/ai/patch-plan/runs') return Promise.resolve(json({ success: false, skipped: 'mode_off' }, true, 200));
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [PATCH_AGENT] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-run-now-p-agent'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error' }),
+    ));
+  });
+
+  it('disables Run now — rather than guessing an org — when the page is on All organizations', async () => {
+    mockEndpoints([PATCH_AGENT]);
+    selectOrg(null);
+    render(<AiAgentsPage />);
+
+    const button = await screen.findByTestId('ai-agent-run-now-p-agent');
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title');
+  });
 });
 
 describe('AiAgentsPage', () => {

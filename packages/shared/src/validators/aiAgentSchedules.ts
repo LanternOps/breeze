@@ -92,6 +92,32 @@ export function isMonthlyOrRarerLiteralCron(pattern: string): boolean {
   return monthOk && dow === '*';
 }
 
+/**
+ * AI patch agent (W01): a patch schedule fires at most once a day. Every
+ * occurrence fans out one LLM-spending `patch`-profile run per LIVE org, and
+ * patch posture moves on the order of a day (vendor catalogs sync nightly,
+ * devices report on heartbeat), so a sub-daily plan is cost with no new
+ * information. Strictly narrower than `isHourlyFloorCron`:
+ *   minute        a single literal integer 0-59 (no list)
+ *   hour          a single literal integer 0-23 (no list, `*`, step or range)
+ *   day-of-month / month / day-of-week   anything — a coarser field can only
+ *                 ever REDUCE the firing rate (`0 2 * * 1` is weekly).
+ * Default `0 2 * * *` (02:00 daily in the partner's timezone).
+ *
+ * Exported for the same reason as its siblings: the schedule service
+ * validates independently of this schema (reachable from non-HTTP callers)
+ * and must enforce the identical rule.
+ */
+export const PATCH_DEFAULT_CRON = '0 2 * * *';
+export function isDailyOrRarerLiteralCron(pattern: string): boolean {
+  if (!isStructurallyValidCron(pattern)) return false;
+  const fields = pattern.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+  const [minute, hour] = fields as [string, string, string, string, string];
+  if (!LITERAL_INT.test(minute) || Number(minute) > 59) return false;
+  return LITERAL_INT.test(hour) && Number(hour) <= 23;
+}
+
 // The sweeper evaluates crons with a strictly 5-field evaluator, so a
 // 6-field cron (the optional leading-seconds field `isStructurallyValidCron`
 // otherwise tolerates for BullMQ's benefit — see cron.ts) is rejected HERE,
@@ -158,17 +184,41 @@ const createPartnerScheduleSchema = z.object({
   agentId: z.string().uuid(),
   cron: scheduleCronSchema,
   timezone: scheduleTimezoneSchema,
-  // .max(6): AI_SWEEP_KINDS has exactly 6 members, so a list longer than
-  // that can only be a duplicate — the sweeper still no-ops on dupes, but
-  // there is no legitimate 7th value to accept.
+  // The cap is AI_SWEEP_KINDS.length, not a literal (#5754): a list longer
+  // than the catalog can only be a duplicate — the sweeper still no-ops on
+  // dupes — but a hand-bumped number silently rejects a valid "select all"
+  // the first time a kind is added and nobody remembers this line.
   //
   // The `.min(1)` that used to live here moved into the superRefine below,
   // because it is a SWEEP-only rule: a narrative baseline legitimately
   // sweeps nothing. Defaulting to `[]` keeps "omitted" and "explicitly
   // empty" the same thing for a narrative create.
-  sweepKinds: z.array(sweepKindEnum).max(6).default([]),
+  sweepKinds: z.array(sweepKindEnum).max(AI_SWEEP_KINDS.length).default([]),
   enabled: z.boolean(),
+  // #4442 W04. Nullish, never defaulted to `false`: on a baseline `true` is
+  // the only armed value, so "absent" and "false" already mean the same
+  // thing here, and keeping the column NULL lets the org-override arm look
+  // identical on the wire. Arming is additionally gated on
+  // `canManagePartnerWidePolicies` in the service.
+  actMode: z.boolean().nullish(),
 }).strict().superRefine((value, ctx) => {
+  if (value.kind === 'patch') {
+    if (value.sweepKinds.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['sweepKinds'],
+        message: 'a patch schedule evaluates no sweep kinds — sweepKinds must be omitted or empty',
+      });
+    }
+    if (!isDailyOrRarerLiteralCron(value.cron)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['cron'],
+        message: 'a patch schedule fires at most once a day — a single literal minute and a single literal hour',
+      });
+    }
+    return;
+  }
   if (value.kind === 'design') {
     if (value.sweepKinds.length > 0) {
       ctx.addIssue({
@@ -221,7 +271,12 @@ const createOrgScheduleSchema = z.object({
   orgId: z.string().uuid(),
   baselineScheduleId: z.string().uuid(),
   enabled: z.boolean(),
-  sweepKinds: z.array(sweepKindEnum).max(6),
+  sweepKinds: z.array(sweepKindEnum).max(AI_SWEEP_KINDS.length),
+  // #4442 W04 — an org override may only DISARM (`false`) or inherit
+  // (`null`/absent). `true` is rejected by the service with
+  // `act_mode_org_cannot_arm` rather than silently coerced: a caller that
+  // thinks it armed something and did not is worse than a 422.
+  actMode: z.boolean().nullish(),
 }).strict();
 
 export const createAiAgentScheduleSchema = z.discriminatedUnion('ownerScope', [
@@ -237,6 +292,10 @@ export const createAiAgentScheduleSchema = z.discriminatedUnion('ownerScope', [
 export const updateAiAgentScheduleSchema = z.object({
   cron: scheduleCronSchema.optional(),
   timezone: scheduleTimezoneSchema.optional(),
-  sweepKinds: z.array(sweepKindEnum).max(6).optional(),
+  sweepKinds: z.array(sweepKindEnum).max(AI_SWEEP_KINDS.length).optional(),
   enabled: z.boolean().optional(),
+  // #4442 W04. `.nullish()` because NULL is a meaningful value on this column
+  // (an org override clearing its disarm back to "inherit"), so it must be
+  // distinguishable from "field omitted".
+  actMode: z.boolean().nullish(),
 }).strict();

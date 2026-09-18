@@ -17,7 +17,7 @@ const locale = Astro.locals.locale;
       <PartnerSettingsCard client:load />
 
       <a
-        href="/settings/partner#ticketing"
+        href="/settings/ticketing"
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
@@ -71,6 +71,19 @@ const locale = Astro.locals.locale;
           <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.deliverableTemplates.title')}</h2>
           <p class="text-sm text-muted-foreground">
             {tServer(locale, 'settingsIndex.cards.deliverableTemplates.description')}
+          </p>
+        </div>
+      </a>
+
+      <a
+        href="/settings/ticket-checklist-templates"
+        class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
+        data-ticket-checklist-templates-settings-card
+      >
+        <div class="space-y-2">
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.ticketChecklistTemplates.title')}</h2>
+          <p class="text-sm text-muted-foreground">
+            {tServer(locale, 'settingsIndex.cards.ticketChecklistTemplates.description')}
           </p>
         </div>
       </a>

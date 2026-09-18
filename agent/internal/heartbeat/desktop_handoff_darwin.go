@@ -54,7 +54,13 @@ func (h *Heartbeat) startDarwinDesktopWatcher() {
 }
 
 func (h *Heartbeat) handleHelperSessionClosed(session *sessionbroker.Session) {
-	if session == nil || !session.HasScope("desktop") {
+	if session == nil {
+		return
+	}
+	// A helper session that ends takes its SEC-038 fence seed with it: the
+	// successor must be seeded again rather than inheriting the claim.
+	h.forgetHelperFenceSync(session.SessionID)
+	if !session.HasScope("desktop") {
 		return
 	}
 	h.reconcileDarwinDesktopOwners("helper_closed")

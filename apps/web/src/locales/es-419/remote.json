@@ -30,8 +30,12 @@
     "desktopUnavailable": "Escritorio no disponible",
     "dismiss": "Descartar",
     "downloadFor": "Descargar para {{platform}}",
+    "ending": {
+      "description": "La sesión anterior todavía se está cerrando en el dispositivo. Espera un momento y vuelve a intentarlo.",
+      "title": "La sesión aún se está cerrando"
+    },
     "errors": {
-      "agentUpgradeRequired": "El escritorio remoto necesita una actualización del agente en este dispositivo (compatibilidad con la concesión de revocación de sesión). El agente se actualiza automáticamente; normalmente se resuelve en un minuto. La terminal y la transferencia de archivos no se ven afectadas.",
+      "agentUpgradeRequired": "El escritorio remoto necesita una actualización del agente en este dispositivo (compatibilidad con la concesión de revocación de sesión y la barrera de inicio). El agente se actualiza automáticamente; normalmente se resuelve en un minuto. La terminal y la transferencia de archivos no se ven afectadas.",
       "connectionFailed": "La conexión falló",
       "createDesktopCode": "No se pudo crear el código de conexión al escritorio",
       "createDesktopSession": "No se pudo crear la sesión de escritorio",
@@ -664,7 +668,8 @@
       "connecting": "Conectando...",
       "disconnected": "Desconectado",
       "failed": "Fallido",
-      "pending": "Pendiente"
+      "pending": "Pendiente",
+      "teardownPending": "Finalizando (esperando al dispositivo)"
     },
     "subtitle": "Registro de auditoría de acceso remoto",
     "title": "Historial de sesiones",
@@ -700,6 +705,7 @@
       "timeline": "Línea de tiempo"
     },
     "subtitle": "Ver y auditar sesiones de acceso remoto",
+    "teardownPending": "Esperando confirmación del dispositivo",
     "title": "Historial de sesiones",
     "viewDevice": "Ver dispositivo",
     "viewRecording": "Ver grabación"

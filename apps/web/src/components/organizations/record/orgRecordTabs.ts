@@ -57,6 +57,10 @@ export const TAB_PERMISSION: Record<OrgRecordTab, ReadonlyArray<Grant>> = {
     { resource: 'contracts', action: 'read' },
     { resource: 'invoices', action: 'read' },
     { resource: 'quotes', action: 'read' },
+    // W02: signed agreements are filed against the org and surface on this tab
+    // in W3. ANY-of, so a user holding only agreements:read can reach them
+    // without also being granted billing authority.
+    { resource: 'agreements', action: 'read' },
   ],
   // Service deliverables (#5573 W01) live under the contracts read: they are
   // what a contract promises, so anyone who can read contracts can see them.

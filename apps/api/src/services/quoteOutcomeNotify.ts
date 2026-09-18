@@ -91,11 +91,14 @@ export async function notifyQuoteOutcome(input: {
       invoiceNumber: prepared.invoiceNumber,
       quoteUrl,
     });
+    // The INTERNAL notification to the MSP tech who sent the quote, not the
+    // customer-facing quote itself (spec §8.2) — platform sender.
     await emailService.sendEmail({
       to: prepared.recipient,
       subject: template.subject,
       html: template.html,
       text: template.text,
+      purpose: 'staff.quote_outcome',
     });
   } catch (err) {
     console.error('[quoteOutcomeNotify] failed', { quoteId: input.quoteId, outcome: input.outcome }, err instanceof Error ? err.message : err);

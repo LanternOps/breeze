@@ -209,7 +209,7 @@ describe('aiToolsPam handlers', () => {
       mockSelectSequence([[deviceRow()], []]);
       mockInsertSequence([[{ id: REQUEST_ID, status: 'pending', expiresAt: null }], []]);
     } else if (toolName === 'revoke_elevation') {
-      mockSelectSequence([[{ id: REQUEST_ID, orgId: ORG_ID, deviceId: DEVICE_ID, flowType: 'tech_jit_admin', status: 'approved' }]]);
+      mockSelectSequence([[{ id: REQUEST_ID, orgId: ORG_ID, siteId: SITE_ID, deviceId: DEVICE_ID, flowType: 'tech_jit_admin', status: 'approved' }]]);
       vi.mocked(db.update).mockImplementation(() => createUpdateChain([{ id: REQUEST_ID }]) as any);
     } else {
       mockSelectSequence([[{ id: REQUEST_ID, deviceId: DEVICE_ID, status: 'pending', flowType: 'tech_jit_admin', subjectUsername: 'localadmin', reason: 'Install driver', requestedAt: new Date(), expiresAt: null }]]);
@@ -342,7 +342,7 @@ describe('aiToolsPam handlers', () => {
   });
 
   it('revokes an active elevation request with CAS, audit, and event', async () => {
-    mockSelectSequence([[{ id: REQUEST_ID, orgId: ORG_ID, deviceId: DEVICE_ID, flowType: 'tech_jit_admin', status: 'approved' }]]);
+    mockSelectSequence([[{ id: REQUEST_ID, orgId: ORG_ID, siteId: SITE_ID, deviceId: DEVICE_ID, flowType: 'tech_jit_admin', status: 'approved' }]]);
     vi.mocked(db.update).mockImplementation(() => createUpdateChain([{ id: REQUEST_ID }]) as any);
     mockInsertSequence([[]]);
 
@@ -385,7 +385,7 @@ describe('aiToolsPam handlers', () => {
   });
 
   it.each(['pending', 'denied', 'expired'])('refuses to revoke a %s elevation request', async (status) => {
-    mockSelectSequence([[{ id: REQUEST_ID, orgId: ORG_ID, deviceId: DEVICE_ID, flowType: 'tech_jit_admin', status }]]);
+    mockSelectSequence([[{ id: REQUEST_ID, orgId: ORG_ID, siteId: SITE_ID, deviceId: DEVICE_ID, flowType: 'tech_jit_admin', status }]]);
     vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
 
     const result = await toolMap.get('revoke_elevation')!.handler(
@@ -414,7 +414,7 @@ describe('aiToolsPam handlers', () => {
   });
 
   it('honors orgCondition while revoking elevation requests', async () => {
-    mockSelectSequence([[{ id: REQUEST_ID, orgId: ORG_ID, deviceId: DEVICE_ID, flowType: 'tech_jit_admin', status: 'approved' }]]);
+    mockSelectSequence([[{ id: REQUEST_ID, orgId: ORG_ID, siteId: SITE_ID, deviceId: DEVICE_ID, flowType: 'tech_jit_admin', status: 'approved' }]]);
     vi.mocked(db.update).mockImplementation(() => createUpdateChain([{ id: REQUEST_ID }]) as any);
     const auth = makeAuth();
 

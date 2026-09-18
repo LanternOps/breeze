@@ -67,10 +67,19 @@
       "on_ticket_resolve": "Entregue quando o chamado vinculado for resolvido"
     },
     "autoEvidenceReport": "Anexar execuções de relatório como evidência",
+    "autoEvidenceNone": "Nenhum",
+    "autoEvidenceHelp": "A evidência é gerada no dia de vencimento e se torna visível para o cliente quando a ocorrência é entregue.",
+    "autoEvidenceEmpty": "Ainda não há tipos de relatório de evidência gerenciados disponíveis.",
     "owner": "Responsável",
     "ticketCategory": "Categoria do chamado",
     "portalVisible": "Exibir no portal do cliente",
-    "sortOrder": "Ordem de exibição"
+    "sortOrder": "Ordem de exibição",
+    "instructions": "Instruções internas",
+    "instructionsHint": "Interno — nunca exibido ao cliente.",
+    "checklistTemplate": "Modelo de checklist",
+    "checklistTemplateNone": "Nenhum",
+    "checklistTemplateAllOrgs": "Todas as orgs",
+    "checklistTemplateManage": "Gerenciar modelos de checklist"
   },
   "drawer": {
     "title": "Ocorrências",
@@ -84,7 +93,10 @@
     "uploadEvidence": "Enviar um arquivo como evidência",
     "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, até 10 MB. O arquivo é arquivado na biblioteca de documentos desta organização.",
     "evidenceDocument": "Documento",
-    "upload": "Enviar"
+    "upload": "Enviar",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Mostrar checklist",
+    "hideChecklist": "Ocultar checklist"
   },
   "evidence": {
     "reportRun": "Execução de relatório",
@@ -177,7 +189,8 @@
       "leadDays": "Abrir este número de dias antes do vencimento",
       "graceDays": "Marcar como não cumprida este número de dias após o vencimento",
       "artifactRequired": "Evidência obrigatória",
-      "completionMode": "Conclusão"
+      "completionMode": "Conclusão",
+      "autoEvidenceReportType": "Tipo de relatório de evidência"
     },
     "ownerScope": {
       "legend": "Para quem é este conjunto?",

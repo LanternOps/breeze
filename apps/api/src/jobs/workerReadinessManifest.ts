@@ -7,7 +7,8 @@ export type ConsumerRequirementRule =
   | 'abuse_or_partner_trust_enabled' // shared abuse/partner-trust consumer
   | 'audit_chain_verify_enabled' // audit verification kill switch
   | 'event_dispatch_enabled'  // D3a: eventDispatch (EVENT_DISPATCH_MODE !== 'off')
-  | 'ai_agents_enabled';      // D3a: aiAgentRunner (AI_AGENTS_ENABLED)
+  | 'ai_agents_enabled'       // D3a: aiAgentRunner (AI_AGENTS_ENABLED)
+  | 'sending_domains_configured'; // W03: sendingDomainsWorker (EMAIL_DOMAINS_PROVIDER set)
 
 export type WorkerInitializerClassification =
   | {
@@ -229,6 +230,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Worker, no flag gate, constructs and attaches unconditionally under its
   // own registry-key name.
   consumers('monitorEpisodeRetention'),
+  // #4248 W03 — one Worker, unconditional, attached under its registry name.
+  consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),
   // Merge-forward (origin/main 2026-09-06): three more `socket-owner` registry
   // entries, each read rather than inferred. None is feature-flag gated and
@@ -255,6 +258,17 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
     optionalConsumers: ['eventDispatchMaintenance'],
   },
   consumers('agentCommandRelay'),
+  // Tool Catalog W1 (#5215 / #5216), Task A6 — one Worker, unconditional,
+  // attached under its registry name. Not flag-gated at the readiness layer:
+  // TOOL_SOURCES_ENABLED gates the job PROCESSOR body (discoverSource is
+  // skipped), not whether the Worker itself constructs and attaches.
+  consumers('toolSourceDiscoveryWorker'),
+  // Partner sending domains W03. initializeSendingDomainsWorker returns before
+  // constructing a Worker when EMAIL_DOMAINS_PROVIDER is unset — the default on
+  // every self-hosted install and on hosted until W05 — so a plain-required row
+  // would leave every api/all process permanently not-ready. Same shape and
+  // same reason as aiAgentRunner above.
+  consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {
@@ -272,6 +286,7 @@ function ruleEnabled(
     abuseSignalsEnabled: boolean;
     eventDispatchEnabled: boolean;
     aiAgentsEnabled: boolean;
+    sendingDomainsConfigured: boolean;
   },
 ): boolean {
   switch (rule) {
@@ -285,6 +300,8 @@ function ruleEnabled(
       return input.eventDispatchEnabled;
     case 'ai_agents_enabled':
       return input.aiAgentsEnabled;
+    case 'sending_domains_configured':
+      return input.sendingDomainsConfigured;
   }
 }
 
@@ -296,6 +313,7 @@ export function declareExpectedConsumers(input: {
   auditChainVerifyEnabled: boolean;
   eventDispatchEnabled: boolean;
   aiAgentsEnabled: boolean;
+  sendingDomainsConfigured: boolean;
   registry: WorkerReadinessRegistry;
 }): void {
   if (!input.redisAvailable) return;

@@ -874,7 +874,12 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
   // only through configuration-policy attachment, never by org/site/group
   // targeting, so the resolver is the authority on which ones apply. A monitor
   // the resolution says is DISABLED for this device contributes no rule at all.
-  const effectiveMonitors = await resolveMonitorsForDevice(deviceId);
+  // `device_missing` (the device raced a delete between the check above and
+  // here) contributes no monitor-target rules either — same as a genuine zero,
+  // since this function already returned [] earlier if the device never
+  // existed for the `device` lookup above (#5677).
+  const monitorResolution = await resolveMonitorsForDevice(deviceId);
+  const effectiveMonitors = monitorResolution.kind === 'resolved' ? monitorResolution.monitors : [];
   const enabledMonitorIds = effectiveMonitors.filter((m) => m.enabled).map((m) => m.monitorId);
   if (enabledMonitorIds.length > 0) {
     targetConditions.push(
