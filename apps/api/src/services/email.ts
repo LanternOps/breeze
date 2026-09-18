@@ -8,7 +8,7 @@ import {
   renderLayout,
 } from './emailLayout';
 import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
-import { resolveSender } from './emailDomains/senderResolution';
+import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
 
 export interface EmailAttachment {
   filename: string;
@@ -322,6 +322,55 @@ export class EmailService {
       partnerName: params.partnerName ?? null,
       defaultFrom: this.defaultFrom,
     });
+
+    if (resolved.lane === 'partner') {
+      // Dynamic so a platform-lane send never loads the provider registry, the
+      // Resend SDK or BullMQ — and so `email.ts -> partnerLaneSend.ts ->
+      // providerRegistry.ts -> adapters/static.ts -> email.ts` is not a static
+      // import cycle (plan amendment 1).
+      const { sendOnPartnerLane } = await import('./emailDomains/partnerLaneSend');
+      const outcome = await sendOnPartnerLane({
+        message: {
+          to,
+          cc,
+          subject,
+          html,
+          text,
+          // Reply-To precedence (spec §8.3): the call site's replyTo, then the
+          // identity's default, then none. Tickets therefore keep
+          // {slug}@TICKETS_INBOUND_DOMAIN and quotes/invoices keep
+          // partner.billingEmail, because those call sites set replyTo.
+          replyTo: replyTo ?? resolved.replyTo ?? undefined,
+          headers,
+          attachments,
+          from: resolved.from,
+        },
+        purpose: params.purpose,
+        partnerId: resolved.partnerId,
+        domainId: resolved.domainId,
+        stream: resolved.stream,
+      });
+      if (outcome.delivered) return;
+
+      // Definitively not sent (spec §8.4). Put it on the platform lane with the
+      // purpose's fallback From — the exact envelope this send site produced
+      // before the feature existed. Deliberately rebuilt from the ORIGINAL
+      // params: no X-Breeze-Outbound, no partner tags, and the call site's own
+      // Reply-To rather than the identity's, whose domain is the one that just
+      // refused us.
+      await this.deliverRaw({
+        to,
+        cc,
+        subject,
+        html,
+        text,
+        replyTo,
+        headers,
+        attachments,
+        from: platformFallbackFrom(params.purpose, this.defaultFrom, params.partnerName ?? null),
+      });
+      return;
+    }
 
     await this.deliverRaw({
       to,
