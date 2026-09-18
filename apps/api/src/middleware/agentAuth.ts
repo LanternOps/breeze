@@ -322,8 +322,23 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  * device/settings read, one for the insert + forwarding-config read), with
  * the rate-limit check and the forwarding enqueue running genuinely outside
  * any open transaction in between.
+ *
+ * `elevation-requests` (#6130) is here for the same reason one step earlier in
+ * the handler: its per-device `rateLimiter` Redis round-trip ran inside the
+ * request-long wrap, pinning a pooled connection idle-in-transaction on every
+ * UAC observation an agent reports — and a UAC-prompt storm on one machine is
+ * exactly the moment Redis is slowest. `runOutsideDbContext` cannot release
+ * that outer transaction, so the route opts out and the handler opens ONE
+ * org-scoped context of its own around all of its DB work, after the limiter
+ * has decided (see routes/agents/elevationRequests.ts).
  */
-const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands', 'eventlogs']);
+const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
+  'heartbeat',
+  'reliability',
+  'commands',
+  'eventlogs',
+  'elevation-requests',
+]);
 
 /**
  * Single-segment actions allowed during a TENANT (`offboarding`) drain:
