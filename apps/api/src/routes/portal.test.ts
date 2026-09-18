@@ -155,6 +155,7 @@ const mockSelectResult = (result: any) => {
     where: vi.fn().mockReturnValue(makeWhereChain(result)),
   };
   fromChain.leftJoin = vi.fn().mockReturnValue(fromChain);
+  fromChain.innerJoin = vi.fn().mockReturnValue(fromChain);
   return { from: vi.fn().mockReturnValue(fromChain) };
 };
 
@@ -339,7 +340,8 @@ describe('portal routes', () => {
             id: 'portal-user-1',
             email: 'portal@example.com',
             orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
-            authMethod: 'password'
+            authMethod: 'password',
+            partnerId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620777'
           }
         ]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any); // password reset defaults enabled
@@ -355,13 +357,15 @@ describe('portal routes', () => {
 
       expect(res.status).toBe(200);
       expect(sendPasswordResetMock).toHaveBeenCalledTimes(1);
+      // Spec §8.2: a portal password reset is the partner's `support` stream.
+      // The partner comes from the org the portal_users row already points at —
+      // one join, inside the system context the lookup already holds, never
+      // from request input (§8.1).
       expect(sendPasswordResetMock).toHaveBeenCalledWith({
         to: 'portal@example.com',
         resetUrl: 'http://localhost:4321/portal/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
-        // The portal_users row read has no partner and W01 adds no database
-        // read; a null partnerId resolves to the platform sender (§8.1).
         purpose: 'portal.password_reset',
-        partnerId: null
+        partnerId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620777'
       });
     });
 

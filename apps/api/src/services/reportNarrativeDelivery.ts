@@ -41,6 +41,7 @@
 
 import { eq } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { organizations } from '../db/schema';
 import { reportRuns, reports } from '../db/schema/reports';
 import { users } from '../db/schema/users';
 import { getEmailService } from './email';
@@ -209,8 +210,21 @@ export async function deliverNarrativeEmails(
     return { name: null, logoDataUrl: null, logoAspect: null };
   });
 
+  // The partner that owns this run's org — the `general` stream's sender
+  // (spec §8.2). Once per pass, like the timezone and branding above, and in
+  // its OWN system context: deliverNarrativeEmails refuses to run inside a db
+  // context, so every read here opens and closes one.
+  const [orgRow] = await inOwnSystemContext(() =>
+    db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, ctx.orgId))
+      .limit(1),
+  );
+  const partnerId = orgRow?.partnerId ?? null;
+
   for (const delivery of pending) {
-    const outcome = await deliverOne(delivery, artifact, ctx.orgId, timezone, branding);
+    const outcome = await deliverOne(delivery, artifact, ctx.orgId, timezone, branding, partnerId);
     if (outcome === 'refused') refused += 1;
     if (outcome === 'transient') transient += 1;
     if (outcome === 'sent') sentNow += 1;
@@ -233,6 +247,7 @@ async function deliverOne(
   orgId: string,
   timezone: string,
   branding: Awaited<ReturnType<typeof loadReportBrandingForOrg>>,
+  partnerId: string | null,
 ): Promise<OneOutcome> {
   const userId = delivery.recipientUserId;
 
@@ -281,6 +296,7 @@ async function deliverOne(
       summary: artifact.result?.summary,
       timezone,
       branding,
+      partnerId,
     });
   } catch (error) {
     const state = classifySendError(error);
