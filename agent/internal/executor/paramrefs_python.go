@@ -18,6 +18,12 @@ import (
 // backslashes and triple-quote edge cases. A raw literal has no escape for a
 // backslash or its own quote, and a bytes literal cannot hold non-ASCII, so
 // those combinations are rejected instead of mangled.
+//
+// An f-string is two languages in one literal: the text between `{` and `}` is
+// an EXPRESSION, not string data, so escaping a value for the literal would
+// still hand it to the evaluator (`f"{ {{i}} }"` with the value
+// `__import__("os").system("id")` executes it). Replacement-field regions are
+// tracked and a placeholder inside one is rejected.
 
 type pyLiteral struct {
 	raw    bool
@@ -133,6 +139,10 @@ func scanPythonString(r *scanner) error {
 	}
 	r.copyN(len(quoteRun))
 
+	// field is the f-string replacement-field nesting depth. At depth 0 the
+	// cursor is in string data; above 0 it is inside an expression or a nested
+	// format spec, where a value cannot be carried as escaped text.
+	field := 0
 	for !r.done() {
 		if key, width, ok := r.placeholder(); ok {
 			value, known := r.value(key)
@@ -140,12 +150,32 @@ func scanPythonString(r *scanner) error {
 				r.skipLiteral(width)
 				continue
 			}
+			if field > 0 {
+				return renderErr(key, "an f-string replacement field, which Python evaluates as an expression",
+					pythonHint(key))
+			}
 			escaped, err := pythonEscapeValue(key, value, lit)
 			if err != nil {
 				return err
 			}
 			r.emit(escaped, width)
 			continue
+		}
+		if lit.fmt {
+			switch {
+			case field == 0 && (r.hasPrefix("{{") || r.hasPrefix("}}")):
+				// `{{` / `}}` are escaped braces, not a field.
+				r.copyN(2)
+				continue
+			case r.cur() == '{':
+				field++
+				r.copyByte()
+				continue
+			case r.cur() == '}' && field > 0:
+				field--
+				r.copyByte()
+				continue
+			}
 		}
 		if r.cur() == '\\' {
 			// A backslash escapes the next character even in a raw literal, as

@@ -26,6 +26,11 @@ const (
 	bfDouble
 	bfArith
 	bfBracket
+	// bfHeredoc is a heredoc body. It is a frame (rather than an inner loop)
+	// so that the constructs an UNQUOTED heredoc still expands — `$(( ))`,
+	// `$[ ]`, `${name[…]}`, `$( )` — go through the same rules as anywhere
+	// else in the script.
+	bfHeredoc
 )
 
 type bashFrame struct {
@@ -40,12 +45,27 @@ type bashFrame struct {
 	backtick bool
 	// subst marks a bfCode frame opened by `$(`.
 	subst bool
+	// arrayInit marks a bfCode frame opened by an array-assignment
+	// initializer (`name=(` / `name+=(`), where a `[` at the start of a word
+	// is a subscript — an arithmetic context — and not a glob.
+	arrayInit bool
+
+	// heredoc describes a bfHeredoc frame's body.
+	heredoc bashHeredoc
+
+	// wordSink is the bfCode frame whose current word a quoting frame feeds.
+	// `de"c"lare` and `\declare` are the `declare` builtin, so the literal
+	// bytes of a quoted or escaped span belong to the command word.
+	wordSink *bashFrame
 
 	// Simple-command state (bfCode only).
 	cmdWord string
 	args    []string
 	curWord strings.Builder
 	sawIn   bool
+	// wrapped records that `command` or `builtin` opened the command, so the
+	// next non-flag word is the command that actually runs.
+	wrapped bool
 }
 
 type bashHeredoc struct {
@@ -80,6 +100,8 @@ func renderBashParameters(content string, params map[string]string) (string, boo
 			err = r.stepArith(f)
 		case bfBracket:
 			err = r.stepBracket(f)
+		case bfHeredoc:
+			err = r.stepHeredoc(f)
 		}
 		if err != nil {
 			return "", false, err
@@ -147,65 +169,6 @@ func bashHint(key string) string {
 		" (the agent exports every parameter into the environment) instead of using a placeholder here"
 }
 
-// commandRule describes how the current simple command re-interprets its
-// arguments.
-type commandRule int
-
-const (
-	ruleNormal commandRule = iota
-	// ruleForbidden: the command evaluates its arguments as shell code.
-	ruleForbidden
-	// ruleArith: the argument is evaluated as an arithmetic expression, which
-	// dereferences variables recursively — only an integer literal is safe.
-	ruleArith
-	// ruleName: the argument names a variable to write into.
-	ruleName
-)
-
-func (r *bashRenderer) commandRule(f *bashFrame) (commandRule, string) {
-	if f == nil || f.cmdWord == "" {
-		return ruleNormal, ""
-	}
-	word := f.cmdWord
-	switch word {
-	case "eval", "trap", "alias":
-		return ruleForbidden, word
-	case "let":
-		return ruleArith, word
-	case "read", "unset", "mapfile", "readarray", "getopts":
-		return ruleName, word
-	case "declare", "typeset", "local", "readonly", "export":
-		if f.hasFlag("-i") {
-			return ruleArith, word
-		}
-		if f.hasFlag("-n") {
-			return ruleName, word
-		}
-	case "printf":
-		if f.hasFlag("-v") {
-			return ruleName, word
-		}
-	case "for", "select":
-		if !f.sawIn {
-			return ruleName, word
-		}
-	}
-	return ruleNormal, ""
-}
-
-func (f *bashFrame) hasFlag(flag string) bool {
-	for _, a := range f.args {
-		if a == flag {
-			return true
-		}
-		// Bundled short flags: `declare -ig` still declares an integer.
-		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsRune(a[1:], rune(flag[1])) {
-			return true
-		}
-	}
-	return false
-}
-
 // emitPlaceholder renders one placeholder whose key IS a parameter, applying
 // the command-level rules first and the quoting form second.
 func (r *bashRenderer) emitPlaceholder(key, value string, width int, form bashForm) error {
@@ -255,6 +218,11 @@ func (r *bashRenderer) stepCode(f *bashFrame) error {
 
 	switch c := r.cur(); {
 	case c == '\\':
+		// A backslash quotes the next byte, which is still part of the word:
+		// `\declare` and `ev\al` are the `declare` and `eval` builtins.
+		if r.i+1 < len(r.src) && r.src[r.i+1] != '\n' {
+			f.curWord.WriteByte(r.src[r.i+1])
+		}
 		r.copyN(2)
 		return nil
 	case c == '\n':
@@ -266,19 +234,19 @@ func (r *bashRenderer) stepCode(f *bashFrame) error {
 		return r.scanComment()
 	case c == '\'':
 		r.copyByte()
-		r.push(&bashFrame{kind: bfSingle})
+		r.push(&bashFrame{kind: bfSingle, wordSink: f})
 		return nil
 	case r.hasPrefix("$'"):
 		r.copyN(2)
-		r.push(&bashFrame{kind: bfAnsi})
+		r.push(&bashFrame{kind: bfAnsi, wordSink: f})
 		return nil
 	case r.hasPrefix("$\""):
 		r.copyN(2)
-		r.push(&bashFrame{kind: bfDouble})
+		r.push(&bashFrame{kind: bfDouble, wordSink: f})
 		return nil
 	case c == '"':
 		r.copyByte()
-		r.push(&bashFrame{kind: bfDouble})
+		r.push(&bashFrame{kind: bfDouble, wordSink: f})
 		return nil
 	case r.hasPrefix("$(("):
 		r.copyN(3)
@@ -312,16 +280,23 @@ func (r *bashRenderer) stepCode(f *bashFrame) error {
 		return nil
 	case r.hasPrefix("<<"):
 		return r.scanHeredocHeader()
-	case c == '[' && isBashName(f.curWord.String()):
-		// `name[subscript]=` — the subscript is an arithmetic context.
+	case c == '[' && r.subscriptStartsHere(f):
+		// `name[subscript]=` / `name=( [subscript]=v )` — an arithmetic
+		// context. A `[` anywhere else in a word is a glob bracket.
 		r.copyByte()
 		r.push(&bashFrame{kind: bfArith, closer: "]"})
+		return nil
+	case c == '(' && isArrayInitPrefix(f.curWord.String()):
+		f.endWord()
+		f.reset()
+		r.copyByte()
+		r.push(&bashFrame{kind: bfCode, arrayInit: true})
 		return nil
 	case c == ')':
 		f.endWord()
 		f.reset()
 		r.copyByte()
-		if f.subst {
+		if f.subst || f.arrayInit {
 			r.pop()
 		}
 		return nil
@@ -354,6 +329,7 @@ func (r *bashRenderer) stepSingle(f *bashFrame) error {
 		r.pop()
 		return nil
 	}
+	f.sink(r.cur())
 	r.copyByte()
 	return nil
 }
@@ -368,11 +344,15 @@ func (r *bashRenderer) stepAnsi(f *bashFrame) error {
 	}
 	switch r.cur() {
 	case '\\':
+		if r.i+1 < len(r.src) {
+			f.sink(r.src[r.i+1])
+		}
 		r.copyN(2)
 	case '\'':
 		r.copyByte()
 		r.pop()
 	default:
+		f.sink(r.cur())
 		r.copyByte()
 	}
 	return nil
@@ -388,6 +368,9 @@ func (r *bashRenderer) stepDouble(f *bashFrame) error {
 	}
 	switch {
 	case r.cur() == '\\':
+		if r.i+1 < len(r.src) {
+			f.sink(r.src[r.i+1])
+		}
 		r.copyN(2)
 	case r.cur() == '"':
 		r.copyByte()
@@ -404,6 +387,7 @@ func (r *bashRenderer) stepDouble(f *bashFrame) error {
 		r.copyByte()
 		r.push(&bashFrame{kind: bfCode, backtick: true})
 	default:
+		f.sink(r.cur())
 		r.copyByte()
 	}
 	return nil
@@ -570,166 +554,4 @@ func (r *bashRenderer) scanParamExpansion() error {
 		}
 	}
 	return nil
-}
-
-// ---------------------------------------------------------------- heredocs
-
-func (r *bashRenderer) scanHeredocHeader() error {
-	if r.hasPrefix("<<<") {
-		r.copyN(3)
-		return nil
-	}
-	r.copyN(2)
-	h := bashHeredoc{}
-	if !r.done() && r.cur() == '-' {
-		h.strip = true
-		r.copyByte()
-	}
-	for !r.done() && (r.cur() == ' ' || r.cur() == '\t') {
-		r.copyByte()
-	}
-	var delim strings.Builder
-	if !r.done() && (r.cur() == '\'' || r.cur() == '"') {
-		quote := r.cur()
-		h.quoted = true
-		r.copyByte()
-		for !r.done() && r.cur() != quote {
-			delim.WriteByte(r.cur())
-			r.copyByte()
-		}
-		if !r.done() {
-			r.copyByte()
-		}
-	} else {
-		for !r.done() {
-			c := r.cur()
-			if isSpaceByte(c) || c == ';' || c == '&' || c == '|' || c == ')' || c == '<' || c == '>' {
-				break
-			}
-			if c == '\\' {
-				h.quoted = true
-				r.copyByte()
-				if !r.done() {
-					delim.WriteByte(r.cur())
-					r.copyByte()
-				}
-				continue
-			}
-			delim.WriteByte(c)
-			r.copyByte()
-		}
-	}
-	h.delim = delim.String()
-	if h.delim != "" {
-		r.pending = append(r.pending, h)
-	}
-	return nil
-}
-
-func (r *bashRenderer) drainHeredocs() error {
-	for len(r.pending) > 0 {
-		h := r.pending[0]
-		r.pending = r.pending[1:]
-		if err := r.consumeHeredocBody(h); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *bashRenderer) consumeHeredocBody(h bashHeredoc) error {
-	for !r.done() {
-		line := r.src[r.i:]
-		if idx := strings.IndexByte(line, '\n'); idx >= 0 {
-			line = line[:idx]
-		}
-		candidate := line
-		if h.strip {
-			candidate = strings.TrimLeft(candidate, "\t")
-		}
-		if strings.TrimRight(candidate, "\r") == h.delim {
-			r.copyN(len(line))
-			if !r.done() {
-				r.copyByte() // newline
-			}
-			return nil
-		}
-		end := r.i + len(line)
-		for r.i < end {
-			key, width, ok := r.placeholder()
-			if !ok {
-				r.copyByte()
-				continue
-			}
-			if _, known := r.value(key); !known {
-				r.skipLiteral(width)
-				continue
-			}
-			if h.quoted {
-				return renderErr(key, "a quoted heredoc (<<'"+h.delim+"'), where nothing is expanded",
-					"drop the quotes on the heredoc delimiter and write $"+parameterEnvName(key)+
-						" in the body, or use an unquoted heredoc")
-			}
-			r.emit(bashRef(key, formInterp), width)
-		}
-		if !r.done() {
-			r.copyByte() // newline
-		}
-	}
-	return nil
-}
-
-// ---------------------------------------------------- simple-command state
-
-// bashKeywords are words that precede the actual command word.
-var bashKeywords = map[string]bool{
-	"if": true, "then": true, "else": true, "elif": true, "fi": true,
-	"while": true, "until": true, "do": true, "done": true, "case": true,
-	"esac": true, "function": true, "time": true, "!": true, "{": true,
-	"[[": true, "coproc": true,
-}
-
-func (f *bashFrame) endWord() {
-	word := f.curWord.String()
-	f.curWord.Reset()
-	if word == "" {
-		return
-	}
-	if f.cmdWord == "" {
-		if bashKeywords[word] {
-			return
-		}
-		// A leading assignment (`FOO=bar cmd`) is not the command word.
-		if eq := strings.IndexByte(word, '='); eq > 0 && isBashName(word[:eq]) {
-			return
-		}
-		f.cmdWord = word
-		return
-	}
-	if (f.cmdWord == "for" || f.cmdWord == "select") && word == "in" {
-		f.sawIn = true
-	}
-	f.args = append(f.args, word)
-}
-
-func (f *bashFrame) reset() {
-	f.cmdWord = ""
-	f.args = nil
-	f.sawIn = false
-	f.curWord.Reset()
-}
-
-func isBashName(s string) bool {
-	if s == "" {
-		return false
-	}
-	if s[0] >= '0' && s[0] <= '9' {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if !isIdentByte(s[i]) {
-			return false
-		}
-	}
-	return true
 }

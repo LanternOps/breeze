@@ -21,6 +21,14 @@ import (
 // differently there), and a `for /f … in ( )` clause parses its contents as a
 // command, so a delayed-expansion value is not data in either: both are
 // rejected.
+//
+// The `call` test applies to the STATEMENT the placeholder is in, not to the
+// whole line: cmd splits a line on unquoted `&`, `&&`, `||`, `|` and on
+// parenthesised blocks, so `call foo & echo {{p}}` re-parses only `call foo`.
+// Matching the whole line rejected the `echo` statement too. The statement is
+// still matched loosely (anywhere inside it) rather than by first word, so a
+// `call` behind an `if`/`for`/`else` prefix — `if exist x call y {{p}}` — is
+// still rejected.
 
 var (
 	cmdCallLine   = regexp.MustCompile(`(?i)(^|[\s&(|@])call\s`)
@@ -50,7 +58,7 @@ func renderCMDParameters(content string, params map[string]string) (string, bool
 				"the value contains a line break, which cannot be represented on a cmd line; "+cmdHint(key))
 		}
 		prefix := r.src[lineStart(r.src, r.i):r.i]
-		if cmdCallLine.MatchString(prefix) {
+		if cmdCallLine.MatchString(cmdStatementPrefix(prefix)) {
 			return "", false, renderErr(key, "a cmd.exe `call` statement, which re-parses its command line",
 				cmdHint(key))
 		}
@@ -61,4 +69,23 @@ func renderCMDParameters(content string, params map[string]string) (string, bool
 		r.emit("!"+parameterEnvName(key)+"!", width)
 	}
 	return r.out.String(), r.used, nil
+}
+
+// cmdStatementPrefix trims a line prefix back to the start of the cmd statement
+// the cursor is in, by dropping everything up to the last unquoted command
+// separator (`&`, `&&`, `||`, `|`) or block bracket.
+func cmdStatementPrefix(prefix string) string {
+	inQuote := false
+	start := 0
+	for i := 0; i < len(prefix); i++ {
+		switch prefix[i] {
+		case '"':
+			inQuote = !inQuote
+		case '&', '|', '(', ')':
+			if !inQuote {
+				start = i + 1
+			}
+		}
+	}
+	return prefix[start:]
 }

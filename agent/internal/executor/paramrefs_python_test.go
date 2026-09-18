@@ -87,6 +87,41 @@ func TestRenderPythonStringLiterals(t *testing.T) {
 			wantErr:     true,
 			errContains: "bytes literal",
 		},
+		{
+			// A placeholder inside an f-string REPLACEMENT FIELD lands in an
+			// expression slot, not in string data, so escaping it is not enough.
+			name:        "f-string replacement field is rejected",
+			script:      `print(f"{ {{p}} }")`,
+			params:      map[string]string{"p": `__import__("os").system("id")`},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			name:        "f-string nested format spec is rejected",
+			script:      `print(f"{x:{{p}}}")`,
+			params:      map[string]string{"p": "5"},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			name:        "f-string replacement field in a triple-quoted literal is rejected",
+			script:      "print(f\"\"\"{ {{p}} }\"\"\")",
+			params:      map[string]string{"p": "x"},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			name:   "escaped braces keep the field depth at zero",
+			script: `print(f"{{x}} {{p}}")`,
+			params: map[string]string{"p": "v"},
+			want:   `print(f"{{x}} v")`,
+		},
+		{
+			name:   "text after a closed replacement field is string data",
+			script: `print(f"{a[0]} {{p}}")`,
+			params: map[string]string{"p": "v"},
+			want:   `print(f"{a[0]} v")`,
+		},
 	})
 }
 

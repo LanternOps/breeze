@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -380,4 +381,73 @@ func TestConfigureRunAsPreservesBreezeEnvNames(t *testing.T) {
 			t.Fatalf("argv\n got: %v\nwant: %v", cmd.Args, want)
 		}
 	})
+}
+
+// TestExecuteRendererBypassCanaries walks the three contexts an adversarial
+// review executed a payload through: a bash array-initializer subscript, an
+// arithmetic expansion inside an unquoted heredoc, and an f-string replacement
+// field. Each must fail the run before the interpreter starts, so the canary
+// the payload would create stays absent.
+func TestExecuteRendererBypassCanaries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash and python3 not available on Windows")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	tests := []struct {
+		name       string
+		scriptType string
+		// script takes the canary path so the payload can name it.
+		script func(canary string) string
+		value  func(canary string) string
+	}{
+		{
+			name:       "bash array initializer subscript",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "arr=([{{i}}]=1)\n" },
+			value:      func(c string) string { return "a[$(touch " + c + ")]" },
+		},
+		{
+			name:       "bash arithmetic inside an unquoted heredoc",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "cat <<EOF\n$(( {{i}} ))\nEOF\n" },
+			value:      func(c string) string { return "a[$(touch " + c + ")]" },
+		},
+		{
+			name:       "bash subscript inside an unquoted heredoc",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "arr=(0)\ncat <<EOF\n${arr[{{i}}]}\nEOF\n" },
+			value:      func(c string) string { return "a[$(touch " + c + ")]" },
+		},
+		{
+			name:       "python f-string replacement field",
+			scriptType: ScriptTypePython,
+			script:     func(string) string { return "print(f\"{ {{i}} }\")\n" },
+			value: func(c string) string {
+				return `__import__(chr(111)+chr(115)).system("touch ` + c + `")`
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			canary := filepath.Join(t.TempDir(), "canary")
+			e := newTestExecutor()
+			result, err := e.Execute(ScriptExecution{
+				ID:         "bypass-" + t.Name(),
+				ScriptType: tt.scriptType,
+				Script:     tt.script(canary),
+				Parameters: map[string]string{"i": tt.value(canary)},
+				Timeout:    20,
+			})
+			if err == nil {
+				t.Fatalf("expected the render to fail closed; stdout %q", result.Stdout)
+			}
+			var pre *ParameterRenderError
+			if !errors.As(err, &pre) {
+				t.Fatalf("expected a *ParameterRenderError, got %T: %v", err, err)
+			}
+			canaryAbsent(t, canary)
+		})
+	}
 }

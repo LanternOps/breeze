@@ -57,6 +57,40 @@ func TestRenderCMDContexts(t *testing.T) {
 			params: p,
 			want:   "for /f \"tokens=*\" %%i in ('dir /b') do echo %%i !BREEZE_PARAM_P!",
 		},
+		{
+			// `call` only re-parses ITS OWN statement, so an earlier call on the
+			// same line must not condemn a later statement.
+			name:   "a statement after a call is not a call",
+			script: `call foo & echo {{p}}`,
+			params: p,
+			want:   `call foo & echo !BREEZE_PARAM_P!`,
+		},
+		{
+			name:   "a piped statement after a call is not a call",
+			script: `call foo | findstr {{p}}`,
+			params: p,
+			want:   `call foo | findstr !BREEZE_PARAM_P!`,
+		},
+		{
+			name:   "a parenthesised block after a call is not a call",
+			script: `call foo & if exist x ( echo {{p}} )`,
+			params: p,
+			want:   `call foo & if exist x ( echo !BREEZE_PARAM_P! )`,
+		},
+		{
+			name:        "an if-prefixed call is still rejected",
+			script:      `if exist x call y {{p}}`,
+			params:      p,
+			wantErr:     true,
+			errContains: "call",
+		},
+		{
+			name:        "a call after an earlier statement is still rejected",
+			script:      `echo start & call y {{p}}`,
+			params:      p,
+			wantErr:     true,
+			errContains: "call",
+		},
 	})
 }
 
