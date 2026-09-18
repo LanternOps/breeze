@@ -244,13 +244,33 @@ Open the policy's **Vulnerability** tab, switch **Enable vulnerability scanning*
 
 ## Assigning a policy
 
+Open the policy detail editor → **Assignments** tab. What you see depends on who owns the policy.
+
+### Partner library policy
+
+The tab is an organization checklist, not a level picker.
+
 <Steps>
 
-1. Open the policy detail editor → **Assignments** tab.
+1. Optionally set **Role Filter** and **OS Filter**. Leave them empty to apply to every device in the chosen organizations.
 
-2. Choose a **Level**: Partner-Wide (All Orgs), Organization, Site, Device Group, or Device.
+2. Turn on **All organizations (partner-wide)** to apply the policy across every organization you manage, or check individual organizations.
 
-3. For Organization, Site, Device Group, or Device, select the specific target from the dropdown. For **Partner-Wide (All Orgs)** there is no target to pick — the assignment automatically covers every organization in your partner account.
+3. Assigned rows show the role and OS filters that were saved with that assignment. To change filters, turn the assignment off and on again with the new chips selected.
+
+</Steps>
+
+A partner-wide "servers only" assignment reaches server-role devices in every assigned organization. Workstations skip it. You cannot put two different role sets on the same policy at the same target; make a second policy if servers and workstations need different settings.
+
+### Organization policy
+
+<Steps>
+
+1. Choose a **Level**: Organization, Site, Device Group, or Device.
+
+2. For Site, Device Group, or Device, select the specific target. An organization-level assignment always targets the policy's own organization.
+
+3. Optionally set the same **Role Filter** and **OS Filter**. Empty means every device in that target.
 
 4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`).
 
@@ -259,7 +279,7 @@ Open the policy's **Vulnerability** tab, switch **Enable vulnerability scanning*
 </Steps>
 
 <Aside>
-  A device-level assignment always takes precedence over all group, site, organization, and partner assignments — regardless of priority number. A **Partner-Wide (All Orgs)** assignment is the broadest scope and is overridden by any more-specific assignment.
+  A device-level assignment always takes precedence over all group, site, organization, and partner assignments, regardless of priority number. A partner-wide assignment is the broadest scope and is overridden by any more-specific assignment.
 </Aside>
 
 ## Per-device compliance status
