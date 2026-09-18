@@ -180,6 +180,22 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(item.name).toBe('Network Monitor');
     expect(item.labelKey).toBe('nav.networkMonitor');
   });
+
+  it('lists a Ticketing item under Settings, linking to /settings/ticketing (M0, #6224)', () => {
+    const item = section('settings').items.find((i) => i.href === '/settings/ticketing');
+    expect(item, 'Settings section should link to /settings/ticketing').toBeDefined();
+    expect(item?.name).toBe('Ticketing');
+    expect(item?.labelKey).toBe('nav.ticketing');
+    expect(item?.partnerScopeOnly).toBe(true);
+  });
+
+  it('lists Deliverable Templates under the Billing section (M3, #6224)', () => {
+    const item = section('billing').items.find((i) => i.href === '/settings/deliverable-templates');
+    expect(item, 'Billing section should link to /settings/deliverable-templates').toBeDefined();
+    expect(item?.name).toBe('Deliverable Templates');
+    expect(item?.labelKey).toBe('nav.deliverableTemplates');
+    expect(item?.partnerScopeOnly).toBe(true);
+  });
 });
 
 describe('go-to keyboard chords (g then key)', () => {

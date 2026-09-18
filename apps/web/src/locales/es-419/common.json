@@ -95,7 +95,8 @@
     "aiRisk": "Riesgo de IA",
     "deviceBackup": "Respaldo de dispositivos",
     "sectionServiceDesk": "Mesa de servicio",
-    "serviceManagement": "Gestión de servicios"
+    "serviceManagement": "Gestión de servicios",
+    "ticketing": "Tickets"
   },
   "documentTitles": {
     "dashboard": "Panel",

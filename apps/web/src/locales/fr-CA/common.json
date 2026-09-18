@@ -95,7 +95,8 @@
     "aiRisk": "Risque IA",
     "deviceBackup": "Sauvegarde des appareils",
     "sectionServiceDesk": "Centre de services",
-    "serviceManagement": "Gestion des services"
+    "serviceManagement": "Gestion des services",
+    "ticketing": "Billetterie"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
