@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { getEmailDomainsConfig, isPartnerLaneConfigured, findStaticAllowedEntry } from './config';
 
 const KEYS = [
@@ -78,9 +78,17 @@ describe('EMAIL_DOMAINS_STATIC_ALLOWED parsing', () => {
       { domain: 'other.com', partnerSlug: 'other-slug' }
     ]);
   });
-  it('drops an entry with an empty domain or an empty slug after the colon', () => {
+  it('drops an entry with an empty domain or an empty slug after the colon, and WARNS on each', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.EMAIL_DOMAINS_STATIC_ALLOWED = ':slug, acme.com:, ok.com';
     expect(getEmailDomainsConfig().staticAllowed).toEqual([{ domain: 'ok.com', partnerSlug: null }]);
+    // A dropped entry is a domain the operator believes is allowed; silence
+    // here is indistinguishable from "configured correctly".
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('":slug"');
+    expect(lines[1]).toContain('"acme.com:"');
+    warn.mockRestore();
   });
 });
 

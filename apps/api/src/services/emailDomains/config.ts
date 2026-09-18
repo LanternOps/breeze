@@ -71,10 +71,18 @@ export function parseStaticAllowed(raw: string | undefined): StaticAllowedEntry[
     const colon = trimmed.indexOf(':');
     const domain = (colon >= 0 ? trimmed.slice(0, colon) : trimmed).trim().toLowerCase().replace(/\.+$/, '');
     const slug = colon >= 0 ? trimmed.slice(colon + 1).trim().toLowerCase() : '';
-    if (domain.length === 0) continue;
+    // A dropped entry is a domain the operator believes is allowed and that
+    // silently is not, so say so — same reasoning as nonNegativeInt above.
+    if (domain.length === 0) {
+      console.warn(`[emailDomains] Ignoring EMAIL_DOMAINS_STATIC_ALLOWED entry ${JSON.stringify(trimmed)}: no domain before the colon.`);
+      continue;
+    }
     // `acme.com:` is an operator typo, not "bound to nobody" — drop it rather
     // than silently widening the entry to every partner on the instance.
-    if (colon >= 0 && slug.length === 0) continue;
+    if (colon >= 0 && slug.length === 0) {
+      console.warn(`[emailDomains] Ignoring EMAIL_DOMAINS_STATIC_ALLOWED entry ${JSON.stringify(trimmed)}: empty partner slug after the colon. Drop the colon to allow any partner.`);
+      continue;
+    }
     entries.push({ domain, partnerSlug: colon >= 0 ? slug : null });
   }
   return entries;
