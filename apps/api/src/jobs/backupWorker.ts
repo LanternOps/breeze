@@ -457,6 +457,40 @@ export interface BackupTarget {
 }
 
 /**
+ * A file-mode backup resolved to zero usable paths (#6001).
+ *
+ * Typed rather than a bare Error so the dispatch catch — and any future caller
+ * — can tell "this configuration can never back anything up" apart from a
+ * transient resolution failure. The message is what a tech reads in the job's
+ * error log, so it names the remedy, not the internal invariant.
+ */
+export class EmptyBackupPathsError extends Error {
+  readonly code = 'BACKUP_NO_PATHS' as const;
+  constructor() {
+    super(
+      'File backup selected but no paths are configured for this device — ' +
+      'add at least one folder to the Backup tab of the configuration policy that governs it, ' +
+      'or attach a backup profile.'
+    );
+    this.name = 'EmptyBackupPathsError';
+  }
+}
+
+/**
+ * Whitespace-only and empty strings are not paths. Trimming here (rather than
+ * at the dozen call sites that can write them) keeps the emptiness test and the
+ * dispatched payload in agreement: a run must never be admitted on the strength
+ * of a path the agent would then discard.
+ */
+function normalizeBackupPaths(paths: unknown): string[] {
+  if (!Array.isArray(paths)) return [];
+  return paths
+    .filter((p): p is string => typeof p === 'string')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+}
+
+/**
  * Resolves backup mode + targets into one or more typed commands.
  *
  * For file/system_image, returns a single backup_run command.
@@ -471,10 +505,22 @@ export async function resolveBackupTargets(
   switch (backupMode) {
     case 'file': {
       const t = targets as { paths?: string[]; excludes?: string[] };
+      // #6001: REFUSE rather than emit `{ paths: [] }`. A file-mode run with no
+      // paths is already invalid everywhere else — the validator rejects it
+      // (packages/shared/src/validators/backupTargets.ts) and the profile
+      // resolver drops an empty-path selection — so the only thing an empty
+      // list could ever produce is a command the agent bounces at 0s with
+      // "backup_run payload has no paths". Failing here instead turns a late,
+      // opaque agent error into a server-side job failure naming the remedy,
+      // for all three entry points (manual, run-all, scheduled sweep) at once.
+      const paths = normalizeBackupPaths(t.paths);
+      if (paths.length === 0) {
+        throw new EmptyBackupPathsError();
+      }
       // Preserve the omitted-vs-empty distinction the agent relies on: a
       // missing excludes field means "fall back to locally-configured
       // excludes", an explicit [] means "no exclusions for this run".
-      const payload: Record<string, unknown> = { paths: t.paths ?? [] };
+      const payload: Record<string, unknown> = { paths };
       if (t.excludes !== undefined) {
         payload.excludes = t.excludes;
       }
@@ -885,6 +931,12 @@ async function prepareBackupDispatchTargets(
       .select({
         backupMode: configPolicyBackupSettings.backupMode,
         targets: configPolicyBackupSettings.targets,
+        // #6001: the legacy top-level column. The Backup tab writes the custom
+        // selection's folder list to BOTH `paths` and `targets.paths`, but only
+        // `targets` was ever read at dispatch — so a settings row written by an
+        // older UI/API build, or by an API caller that sends only the
+        // documented top-level `paths` field, dispatched an empty list.
+        legacyPaths: configPolicyBackupSettings.paths,
       })
       .from(configPolicyBackupSettings)
       .where(eq(configPolicyBackupSettings.featureLinkId, job.featureLinkId))
@@ -893,6 +945,15 @@ async function prepareBackupDispatchTargets(
     if (settings) {
       backupMode = settings.backupMode;
       modeTargets = (settings.targets as Record<string, unknown>) ?? {};
+      // Fall back ONLY when `targets` carries no usable file paths, and only
+      // for file mode — `targets` stays authoritative wherever it is populated,
+      // so this can never override a deliberate narrowing of the selection.
+      if (backupMode === 'file' && normalizeBackupPaths(modeTargets.paths).length === 0) {
+        const legacyPaths = normalizeBackupPaths(settings.legacyPaths);
+        if (legacyPaths.length > 0) {
+          modeTargets = { ...modeTargets, paths: legacyPaths };
+        }
+      }
     }
   }
 
@@ -1473,4 +1534,9 @@ export const __testOnly = {
   // D18 W01 (#5429): exposed so integration tests can race this real
   // function against cleanupExpiredSnapshots without hand-rolling its SQL.
   stampDispatchPinAndIdentity,
+  // #6001: exposed so the backup-parity integration suite can assert on the
+  // ACTUAL backup_run payload a scheduled job produces (and on the job row a
+  // pathless link leaves behind) without standing up a queue + agent socket.
+  // This is the only place the settings row is turned into a command.
+  prepareBackupDispatchTargets,
 };
