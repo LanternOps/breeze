@@ -14,9 +14,8 @@ import '@/lib/i18n';
 // after mount, which is the only way to pin the bug. The gate used to be
 // `useMemo(() => getJwtClaims().scope === 'partner', [])`, whose empty dep array
 // froze the empty-store answer for the life of the mount — so Intake Forms,
-// Inbound Email and Canned Responses stayed hidden from partner users forever,
-// on precisely the surface the permanent `/settings/ticketing` 301 and the M365
-// consent return both land on.
+// Email and Templates stayed hidden from partner users forever, on precisely
+// the surface the permanent `/settings/ticketing` 301 lands on.
 
 const { grantedActions } = vi.hoisted(() => ({ grantedActions: new Set<string>() }));
 vi.mock('../../lib/permissions', () => ({
@@ -27,13 +26,14 @@ vi.mock('../../lib/permissions', () => ({
 
 // Stub child components — this suite is about the scope gate, not the cards.
 vi.mock('./TicketCategoriesPage', () => ({ default: () => <div data-testid="stub-ticket-categories-page" /> }));
-vi.mock('./BillablesExportCard', () => ({ default: () => <div data-testid="stub-billables-export-card" /> }));
 vi.mock('./TicketStatusesTab', () => ({ default: () => <div data-testid="stub-ticket-statuses-tab" /> }));
 vi.mock('./TicketPrioritiesTab', () => ({ default: () => <div data-testid="stub-ticket-priorities-tab" /> }));
 vi.mock('./InboundEmailCard', () => ({ default: () => <div data-testid="stub-inbound-email-card" /> }));
 vi.mock('./M365MailboxCard', () => ({ default: () => <div data-testid="m365-mailbox-card" /> }));
 vi.mock('./CannedResponsesCard', () => ({ default: () => <div data-testid="stub-canned-responses-card" /> }));
+vi.mock('./TicketChecklistTemplatesPage', () => ({ default: () => <div data-testid="stub-ticket-checklist-templates-page" /> }));
 vi.mock('./TicketFormsCard', () => ({ default: () => <div data-testid="stub-ticket-forms-card" /> }));
+vi.mock('./TimeTrackingSettingsCard', () => ({ default: () => <div data-testid="stub-time-tracking-card" /> }));
 
 import TicketingSettingsTabs from './TicketingSettingsTabs';
 import { useAuthStore } from '../../stores/auth';
@@ -54,8 +54,9 @@ function tokenArrives(payload: Record<string, unknown>) {
 
 const PARTNER_ONLY = [
   { tab: 'forms', panel: 'ticketing-tab-panel-forms', card: 'stub-ticket-forms-card' },
-  { tab: 'inbound', panel: 'ticketing-tab-panel-inbound', card: 'stub-inbound-email-card' },
-  { tab: 'canned', panel: 'ticketing-tab-panel-canned', card: 'stub-canned-responses-card' },
+  { tab: 'email', panel: 'ticketing-tab-panel-email', card: 'stub-inbound-email-card' },
+  { tab: 'templates', panel: 'ticketing-tab-panel-templates', card: 'stub-canned-responses-card' },
+  { tab: 'timeTracking', panel: 'ticketing-tab-panel-timeTracking', card: 'stub-time-tracking-card' },
 ] as const;
 
 describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
@@ -72,7 +73,7 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     await i18n.changeLanguage('en');
   });
 
-  it('partner scope arriving after first paint reveals all three partner-only tabs', async () => {
+  it('partner scope arriving after first paint reveals all four partner-only tabs', async () => {
     render(<TicketingSettingsTabs />);
 
     // First paint: no token, so the scope is unknown. The tabs fail closed —
@@ -90,25 +91,25 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     for (const { tab } of PARTNER_ONLY) {
       await waitFor(() => expect(screen.getByTestId(`ticketing-tab-${tab}`)).toBeInTheDocument());
     }
-    // The four base tabs are still there — the gate only ever adds.
-    expect(screen.getByTestId('ticketing-tab-export')).toBeInTheDocument();
+    // The base tabs are still there — the gate only ever adds.
+    expect(screen.getByTestId('ticketing-tab-categories')).toBeInTheDocument();
   });
 
   it.each(PARTNER_ONLY)(
-    '#tab=$tab deep link on a cold load: shows a pending placeholder, then the real panel once the token lands',
+    '#$tab deep link on a cold load: shows a pending placeholder, then the real panel once the token lands',
     async ({ tab, panel, card }) => {
-      window.location.hash = `#tab=${tab}`;
+      window.location.hash = `#${tab}`;
 
       render(<TicketingSettingsTabs />);
 
-      // The deep-linked sub-tab survives the unresolved window (nothing here
+      // The deep-linked tab survives the unresolved window (nothing here
       // rewrites the hash), but its body cannot render yet. Rather than an
       // indefinite blank area, say the answer is still pending — that is the
       // ONLY thing distinguishing 'unresolved' from a settled 'denied'.
       expect(await screen.findByTestId('ticketing-tab-panel-pending')).toBeInTheDocument();
       expect(screen.queryByTestId(panel)).toBeNull();
       expect(screen.queryByTestId(card)).toBeNull();
-      expect(window.location.hash).toBe(`#tab=${tab}`);
+      expect(window.location.hash).toBe(`#${tab}`);
 
       tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
 
@@ -118,26 +119,8 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     },
   );
 
-  it('M365 consent return (initialTab=inbound, embedded): pending, then the inbound card', async () => {
-    // PartnerSettingsPage passes initialTab='inbound' when it sees the
-    // ?ticketMailbox= deep link. That is a full-page navigation back from
-    // Microsoft, so it is always a cold load — the worst case for the old memo,
-    // which left the user staring at an empty Ticketing tab.
-    render(<TicketingSettingsTabs syncHash={false} initialTab="inbound" />);
-
-    expect(await screen.findByTestId('ticketing-tab-panel-pending')).toBeInTheDocument();
-    expect(screen.queryByTestId('stub-inbound-email-card')).toBeNull();
-
-    tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
-
-    await waitFor(() => expect(screen.getByTestId('stub-inbound-email-card')).toBeInTheDocument());
-    expect(screen.queryByTestId('ticketing-tab-panel-pending')).toBeNull();
-    // The separate ticket_mailbox:read gate is unaffected by the scope fix.
-    expect(screen.queryByTestId('m365-mailbox-card')).toBeNull();
-  });
-
   it('org scope arriving after first paint keeps the partner-only tabs hidden, and stops saying "pending"', async () => {
-    window.location.hash = '#tab=inbound';
+    window.location.hash = '#email';
 
     render(<TicketingSettingsTabs />);
     expect(await screen.findByTestId('ticketing-tab-panel-pending')).toBeInTheDocument();
@@ -155,26 +138,26 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     expect(screen.getByTestId('ticketing-tab-statuses')).toBeInTheDocument();
   });
 
-  it('a hashchange onto a partner-only sub-tab during the unresolved window defers rather than denies', async () => {
-    // Browser back/forward can land on a partner-only sub-tab before the refresh
-    // round trip has finished. The hashchange listener runs the same parseHash
-    // as mount, so the gate must reach the same pending state that way too.
+  it('a hashchange onto a partner-only tab during the unresolved window defers rather than denies', async () => {
+    // Browser back/forward can land on a partner-only tab before the refresh
+    // round trip has finished. The hashchange listener must reach the same
+    // pending state that mount does.
     render(<TicketingSettingsTabs />);
     expect(await screen.findByTestId('ticketing-tab-panel-statuses')).toBeInTheDocument();
 
     act(() => {
-      window.location.hash = '#tab=canned';
+      window.location.hash = '#templates';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
 
     expect(screen.getByTestId('ticketing-tab-panel-pending')).toBeInTheDocument();
-    expect(screen.queryByTestId('ticketing-tab-canned')).toBeNull();
-    expect(window.location.hash).toBe('#tab=canned');
+    expect(screen.queryByTestId('ticketing-tab-templates')).toBeNull();
+    expect(window.location.hash).toBe('#templates');
 
     tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
 
     await waitFor(() => expect(screen.getByTestId('stub-canned-responses-card')).toBeInTheDocument());
-    expect(window.location.hash).toBe('#tab=canned');
+    expect(window.location.hash).toBe('#templates');
   });
 
   it('a token going away again re-hides the partner-only tabs instead of keeping the stale grant', async () => {
@@ -183,7 +166,7 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     // is logout (stores/auth.ts — a failed or throttled refresh never calls
     // setTokens(null)), and every logout path navigates away; this is a guard
     // against a future regression, not a live sequence.
-    window.location.hash = '#tab=inbound';
+    window.location.hash = '#email';
     render(<TicketingSettingsTabs />);
 
     tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
@@ -194,18 +177,18 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     });
 
     // Back to pending, NOT to a denial we were never told about — and the
-    // deep-linked sub-tab is still in the URL, so the grant restores in place.
+    // deep-linked tab is still in the URL, so the grant restores in place.
     await waitFor(() => expect(screen.getByTestId('ticketing-tab-panel-pending')).toBeInTheDocument());
     expect(screen.queryByTestId('stub-inbound-email-card')).toBeNull();
-    expect(screen.queryByTestId('ticketing-tab-inbound')).toBeNull();
-    expect(window.location.hash).toBe('#tab=inbound');
+    expect(screen.queryByTestId('ticketing-tab-email')).toBeNull();
+    expect(window.location.hash).toBe('#email');
 
     tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
     await waitFor(() => expect(screen.getByTestId('stub-inbound-email-card')).toBeInTheDocument());
   });
 
   it('a present-but-undecodable token is a settled denial, not a permanent "pending"', async () => {
-    window.location.hash = '#tab=canned';
+    window.location.hash = '#templates';
     render(<TicketingSettingsTabs />);
     expect(await screen.findByTestId('ticketing-tab-panel-pending')).toBeInTheDocument();
 
@@ -217,7 +200,7 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     // server rejects such a token with a 401 rather than degrading the page, so
     // the user is on their way out anyway; what matters is that we do not spin.
     await waitFor(() => expect(screen.queryByTestId('ticketing-tab-panel-pending')).toBeNull());
-    expect(screen.queryByTestId('ticketing-tab-canned')).toBeNull();
-    expect(screen.queryByTestId('ticketing-tab-panel-canned')).toBeNull();
+    expect(screen.queryByTestId('ticketing-tab-templates')).toBeNull();
+    expect(screen.queryByTestId('ticketing-tab-panel-templates')).toBeNull();
   });
 });

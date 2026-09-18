@@ -4151,7 +4151,10 @@
     "inboundEmail": "Email entrant",
     "cannedResponses": "Réponses préfabriquées",
     "checkingAccess": "Vérification de votre accès...",
-    "timeTracking": "Suivi du temps"
+    "timeTracking": "Suivi du temps",
+    "email": "E-mail",
+    "templates": "Modèles",
+    "timeCapture": "Saisie du temps"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",

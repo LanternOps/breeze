@@ -4199,7 +4199,10 @@
     "inboundEmail": "Email in ingresso",
     "cannedResponses": "Risposte predefinite",
     "checkingAccess": "Verifica dell’accesso in corso...",
-    "timeTracking": "Tracciamento tempo"
+    "timeTracking": "Tracciamento tempo",
+    "email": "Email",
+    "templates": "Modelli",
+    "timeCapture": "Rilevazione tempo"
   },
   "ticketFormsCard": {
     "heading": "Moduli di raccolta",

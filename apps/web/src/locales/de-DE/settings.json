@@ -4151,7 +4151,10 @@
     "inboundEmail": "Eingehende E-Mail",
     "cannedResponses": "Vorgefertigte Antworten",
     "checkingAccess": "Zugriff wird geprüft...",
-    "timeTracking": "Zeiterfassung"
+    "timeTracking": "Zeiterfassung",
+    "email": "E-Mail",
+    "templates": "Vorlagen",
+    "timeCapture": "Zeiterfassung"
   },
   "ticketFormsCard": {
     "heading": "Aufnahmeformulare",

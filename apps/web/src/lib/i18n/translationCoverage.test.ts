@@ -819,7 +819,10 @@ const namespaceDuplicateBaselines = {
     // +3 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
     // ("Sandbox"), .script ("Script") and .stdout ("Output") — all three are
     // the standard loanwords in it-IT.
-    'settings.json': 168,
+    // +1 W01 settings consolidation (#6224): ticketingSettingsTabs.email —
+    // "Email" is the standard loanword in it-IT technical UI (same word is
+    // already used for inboundEmail elsewhere in this file).
+    'settings.json': 169,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

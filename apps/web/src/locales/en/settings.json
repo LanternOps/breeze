@@ -4204,7 +4204,10 @@
     "inboundEmail": "Inbound Email",
     "cannedResponses": "Canned responses",
     "checkingAccess": "Checking your access...",
-    "timeTracking": "Time Tracking"
+    "timeTracking": "Time Tracking",
+    "email": "Email",
+    "templates": "Templates",
+    "timeCapture": "Time capture"
   },
   "ticketFormsCard": {
     "heading": "Intake forms",

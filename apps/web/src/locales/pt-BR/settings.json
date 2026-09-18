@@ -4204,7 +4204,10 @@
     "inboundEmail": "E-mail de entrada",
     "cannedResponses": "Respostas prontas",
     "checkingAccess": "Verificando seu acesso...",
-    "timeTracking": "Controle de tempo"
+    "timeTracking": "Controle de tempo",
+    "email": "E-mail",
+    "templates": "Modelos",
+    "timeCapture": "Registro de tempo"
   },
   "ticketFormsCard": {
     "heading": "Formulários de abertura",
