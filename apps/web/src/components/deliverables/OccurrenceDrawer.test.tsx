@@ -169,6 +169,46 @@ describe('OccurrenceDrawer', () => {
     expect(screen.getByTestId('evidence-remove-ev-1')).toBeInTheDocument();
   });
 
+  it('shows an empty state with the lead days and next due date when no occurrence exists yet (#6219)', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    const empty = await screen.findByTestId('occurrence-empty');
+    expect(empty).toHaveTextContent(/No occurrences yet/);
+    expect(empty).toHaveTextContent('7 days');
+    expect(empty).toHaveTextContent('(');
+    expect(screen.queryByTestId('occurrence-list')).toBeNull();
+  });
+
+  it('uses the singular plural form when leadDays is 1 (#6219)', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [] }));
+    render(
+      <OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={{ ...deliverable, leadDays: 1 }} onClose={vi.fn()} />,
+    );
+    const empty = await screen.findByTestId('occurrence-empty');
+    expect(empty).toHaveTextContent('1 day');
+    expect(empty).not.toHaveTextContent('1 days');
+  });
+
+  it('omits the date clause when the next due date is unknown (#6219)', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [] }));
+    render(
+      <OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={{ ...deliverable, nextDue: null, anchorDueDate: '2000-01-01' }} onClose={vi.fn()} />,
+    );
+    const empty = await screen.findByTestId('occurrence-empty');
+    expect(empty).toHaveTextContent(/No occurrences yet/);
+    expect(empty).not.toHaveTextContent(/\(/);
+  });
+
+  it('falls back to the anchor due date when nextDue is unknown but the anchor is still upcoming (#6219)', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [] }));
+    render(
+      <OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={{ ...deliverable, nextDue: null, anchorDueDate: '2099-01-05' }} onClose={vi.fn()} />,
+    );
+    const empty = await screen.findByTestId('occurrence-empty');
+    expect(empty).toHaveTextContent(/No occurrences yet/);
+    expect(empty).toHaveTextContent('(');
+  });
+
   it('surfaces the EVIDENCE_REQUIRED message inline when Deliver is rejected with a 400', async () => {
     const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
       if ((init?.method ?? 'GET') === 'GET') return jsonResp(200, { data: [{ ...occurrence, evidence: [] }] });
