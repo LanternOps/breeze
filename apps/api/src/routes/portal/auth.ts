@@ -573,8 +573,9 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
         // unauthenticated request carries no DB access context, and
         // organizations is org-axis: outside a context the query matches zero
         // rows SILENTLY under forced RLS rather than raising, so a mocked-DB
-        // test cannot see the breakage. The live proof is in
-        // partnerSendingDomainsRls.integration.test.ts.
+        // test cannot see the breakage. The live proof drives THIS route with
+        // no auth context and asserts the envelope that reaches the transport:
+        // __tests__/integration/portalPasswordResetPartnerLane.integration.test.ts.
         partnerId: organizations.partnerId,
       })
       .from(portalUsers)
