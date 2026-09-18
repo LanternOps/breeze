@@ -30,7 +30,6 @@ async function seedItem(partnerId: string, costCurrency = 'USD') {
       partnerId,
       itemType: 'service',
       name: 'currency-columns item',
-      unitPrice: '10.00',
       costCurrency,
     })
     .returning({ id: catalogItems.id });
@@ -65,7 +64,6 @@ describe('catalog currency columns (migration 2026-08-29-b)', () => {
           partnerId: partner.id,
           itemType: 'service',
           name: 'no cost currency',
-          unitPrice: '1.00',
         } as typeof catalogItems.$inferInsert),
       ),
     ).rejects.toMatchObject({ cause: { code: '23502' } });

@@ -2624,6 +2624,7 @@
       }
     },
     "header": {
+      "lastError": "Son hata: {{error}}",
       "settings": "Ayarlar"
     },
     "editInSettings": "Ayarlarda düzenle",

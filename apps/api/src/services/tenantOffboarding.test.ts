@@ -11,6 +11,7 @@ const {
   getMergeJobMock,
   getEmailServiceMock,
   sendEmailMock,
+  releaseSendingDomainsForPartnerMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
@@ -28,6 +29,8 @@ const {
   getMergeJobMock: vi.fn(),
   getEmailServiceMock: vi.fn(),
   sendEmailMock: vi.fn(),
+  // Partner sending domains W02 (spec §3.5) — see the vi.mock below.
+  releaseSendingDomainsForPartnerMock: vi.fn(async () => 0),
 }));
 
 vi.mock('../db', () => {
@@ -93,6 +96,19 @@ vi.mock('../db/schema', () => ({
     deletedAt: 'partners.deletedAt',
     offboardingStartedAt: 'partners.offboardingStartedAt',
   },
+}));
+
+// releaseSendingDomainsForPartner (spec 2026-09-17 §3.5) runs right after the
+// status CAS in finalizePartnerOffboarding. It is mocked here rather than left
+// to run against the db doubles because this suite sequences `selectMock` with
+// mockReturnValueOnce and asserts on positional `selectMock.mock.results[n]` —
+// one extra real query would silently shift every one of those indices. The
+// hook is still PROVEN: the partner-finalize test below asserts this mock was
+// called with the partner id. Its own behaviour is covered by
+// emailDomains/domainRelease.test.ts and, against real Postgres, by
+// partnerSendingDomainsRls.integration.test.ts.
+vi.mock('./emailDomains/domainRelease', () => ({
+  releaseSendingDomainsForPartner: releaseSendingDomainsForPartnerMock,
 }));
 
 vi.mock('./auditEvents', () => ({
@@ -932,6 +948,9 @@ describe('finalizePartnerOffboarding', () => {
 
     expect(report).toMatchObject({ scopeType: 'partner', scopeId: 'partner-1', orgIds: ['org-1', 'org-2'] });
     expect(severAgentCredentialsForOrgIds).toHaveBeenCalledWith(['org-1', 'org-2']);
+    // Spec §3.5: provider sending domains are released for this partner. Runs
+    // AFTER the status CAS, so a lost race cannot release another sweep's work.
+    expect(releaseSendingDomainsForPartnerMock).toHaveBeenCalledWith('partner-1');
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'partner.offboarding_completed' })

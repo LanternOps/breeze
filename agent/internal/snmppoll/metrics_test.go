@@ -226,7 +226,7 @@ func TestSNMPDevice_ClientConfig(t *testing.T) {
 	dev := SNMPDevice{
 		IP:             "10.0.0.1",
 		Port:           161,
-		Version:        gosnmp.Version2c,
+		Version:        Version2c,
 		Auth:           SNMPAuth{Community: "public"},
 		OIDs:           []string{".1.3.6.1.2.1.1.5.0"},
 		Timeout:        3000000000, // 3s in ns
@@ -241,7 +241,7 @@ func TestSNMPDevice_ClientConfig(t *testing.T) {
 	if cfg.Port != 161 {
 		t.Errorf("Port = %d, want 161", cfg.Port)
 	}
-	if cfg.Version != gosnmp.Version2c {
+	if cfg.Version != Version2c {
 		t.Errorf("Version = %v, want Version2c", cfg.Version)
 	}
 	if cfg.Auth.Community != "public" {
@@ -258,7 +258,7 @@ func TestSNMPDevice_ClientConfig(t *testing.T) {
 func TestSNMPDevice_ClientConfig_V3Fields(t *testing.T) {
 	dev := SNMPDevice{
 		IP:      "10.0.0.2",
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth: SNMPAuth{
 			Username:       "admin",
 			AuthProtocol:   gosnmp.SHA256,

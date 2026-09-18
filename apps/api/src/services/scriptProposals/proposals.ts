@@ -128,7 +128,27 @@ export async function getScriptProposalForPrincipal(
     .from(scriptProposals)
     .where(orgCond ? and(eq(scriptProposals.id, proposalId), orgCond) : eq(scriptProposals.id, proposalId))
     .limit(1);
-  return row ?? null;
+  if (!row) return null;
+  // Exact-device axis (#6096 #12). A proposal is device-attributable through
+  // `target_device_ids` — its goal, script body and static-scan hits are ABOUT
+  // those machines — and this read takes no deviceId, so nothing else narrows
+  // it. A proposal naming none of the caller's devices fails closed.
+  const scoped = scopedTargetDeviceIds(auth, row.targetDeviceIds);
+  if (scoped !== null && scoped.length === 0) return null;
+  return row;
+}
+
+/**
+ * The proposal's target device ids this caller may see: `null` for an
+ * unrestricted caller (no narrowing), otherwise the intersection with
+ * `auth.allowedDeviceIds`. Used both to admit the read above and to filter the
+ * ids echoed back to the model.
+ */
+export function scopedTargetDeviceIds(auth: AuthContext, targetDeviceIds: unknown): string[] | null {
+  if (!auth.allowedDeviceIds) return null;
+  const allowed = new Set(auth.allowedDeviceIds);
+  const targets = Array.isArray(targetDeviceIds) ? targetDeviceIds : [];
+  return targets.filter((id): id is string => typeof id === 'string' && allowed.has(id));
 }
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db;

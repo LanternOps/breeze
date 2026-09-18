@@ -890,10 +890,13 @@ async function deliverInvoiceEmail(
     await emailService.sendEmail({
       to: recipients,
       cc: cc.length > 0 ? cc : undefined,
-      // MSP-branded envelope, mirroring the quote send path: display name
-      // "<Partner> via Breeze" on the platform address (SPF/DKIM stays
-      // aligned), replies routed to the MSP's billing inbox.
-      from: partner?.name ? emailService.fromWithDisplayName(`${partner.name} via Breeze`) : undefined,
+      // MSP-branded envelope, mirroring the quote send path: the registry's
+      // `partner_display_name` fallback renders "<Partner> via Breeze" on the
+      // platform address (SPF/DKIM stays aligned), replies routed to the MSP's
+      // billing inbox. Both values come from rows read above (spec §8.1).
+      purpose: 'invoice.sent',
+      partnerId: invoice.partnerId,
+      partnerName: partner?.name ?? null,
       replyTo: partner?.billingEmail?.trim() || undefined,
       subject: template.subject,
       html: template.html,

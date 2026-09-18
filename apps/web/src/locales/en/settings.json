@@ -1134,6 +1134,10 @@
       "description": "Choose which service insights this customer can see in the portal.",
       "enableAll": "Enable all visibility",
       "toggles": {
+        "enableDevices": {
+          "label": "Devices",
+          "description": "Show the Devices page. Self-service also grants access to this page."
+        },
         "enableDashboard": {
           "label": "Dashboard",
           "description": "Show a service-health summary when customers sign in."
@@ -2115,11 +2119,13 @@
           "title": "Files this run produced",
           "download": "Download",
           "preview": "Preview",
-          "attachToTicket": "Attach to a ticket",
-          "attach": "Attach {{name}}",
+          "attachToTicket": "Attach as internal note",
+          "attach": "Attach {{name}} as internal note",
           "ticketIdPlaceholder": "Ticket ID",
-          "attachedToTicket": "Attached to the ticket",
-          "attachFailed": "Could not attach the file to that ticket"
+          "attachedToTicket": "Attached to the ticket as an internal note",
+          "attachFailed": "Could not attach the file to that ticket",
+          "attachedButCommentFailed": "The file was attached, but the ticket note could not be added",
+          "downloadExpired": "This file has expired and is no longer available to download."
         },
         "workspace": {
           "title": "What ran in the workspace",
@@ -4094,6 +4100,7 @@
     "languageLoadFailed": "Preference saved, but the language failed to load — showing English. Check your connection and try again."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Default time entry (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes and hourly rate must be numbers.",
     "categoryUpdated": "Category updated",
     "ticketing": "Ticketing",
@@ -5231,6 +5238,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organization-owned variables are listed under each organization.",
     "title": "Variables",
     "description": "Define a value once — a vendor site token, an internal repo URL — and reference it from scripts instead of hardcoding it per customer.",
     "loading": "Loading variables…",

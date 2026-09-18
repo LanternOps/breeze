@@ -2092,7 +2092,15 @@ describe('auth routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
-    it('400s a grant that no longer validates (replayed, wrong session, bumped epoch)', async () => {
+    // #4050: the BODY is distinguishable on purpose (see
+    // ENROLLMENT_GRANT_EXPIRED_CODE in ./auth/helpers) — a caller who reaches
+    // this branch has already proved the account is passwordless by getting
+    // `enrollment_proof_required` from the branch above, so naming the failure
+    // discloses nothing new and stops "Invalid credentials" from reading as
+    // "you mistyped the code" when the grant simply aged out mid-QR-scan.
+    // The STATUS must stay 400, uniform with every sibling rejection: that is
+    // the half of the opacity rule this change does not touch.
+    it('400s a grant that no longer validates with the distinct expired-grant body, not the opaque invalid_credentials', async () => {
       mockPasswordlessPendingSetup();
       useGrantStore([]); // empty store: the grant is gone
 
@@ -2100,9 +2108,10 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
       });
       expect(db.update).not.toHaveBeenCalled();
     });
@@ -3684,7 +3693,9 @@ describe('auth routes', () => {
         expect(mockRedis.setex).toHaveBeenCalled();
       });
 
-      it('POST /auth/mfa/setup returns the opaque 400 for a passwordless account with an invalid/expired grant', async () => {
+      // #4050: 400 stays uniform with the opaque rejections; only the body is
+      // distinguishable. See the note on the /mfa/verify case above.
+      it('POST /auth/mfa/setup returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant', async () => {
         vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
         vi.mocked(db.select)
           .mockReturnValueOnce({
@@ -3713,9 +3724,10 @@ describe('auth routes', () => {
 
         expect(res.status).toBe(400);
         expect(await res.json()).toEqual({
-          error: 'Invalid credentials',
-          message: 'Invalid credentials',
-          code: 'invalid_credentials',
+          error: 'Your identity verification has expired. Please verify with your identity provider again.',
+          message: 'Your identity verification has expired. Please verify with your identity provider again.',
+          code: 'enrollment_grant_expired',
+          reauthUrl: '/sso/reauth/start',
         });
       });
 
@@ -3771,7 +3783,7 @@ describe('auth routes', () => {
         );
       });
 
-      it('POST /auth/mfa/enable returns the opaque 400 for a passwordless account with an invalid/expired grant (no factor written)', async () => {
+      it('POST /auth/mfa/enable returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant (no factor written)', async () => {
         const mockRedis = {
           get: vi.fn().mockResolvedValue(JSON.stringify({
             secret: 'MFASECRET123', authEpoch: 1, mfaEpoch: 1,
@@ -3806,9 +3818,10 @@ describe('auth routes', () => {
 
         expect(res.status).toBe(400);
         expect(await res.json()).toEqual({
-          error: 'Invalid credentials',
-          message: 'Invalid credentials',
-          code: 'invalid_credentials',
+          error: 'Your identity verification has expired. Please verify with your identity provider again.',
+          message: 'Your identity verification has expired. Please verify with your identity provider again.',
+          code: 'enrollment_grant_expired',
+          reauthUrl: '/sso/reauth/start',
         });
         expect(consumeMFAToken).not.toHaveBeenCalled();
       });

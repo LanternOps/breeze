@@ -84,7 +84,7 @@ vi.mock('./quotePdf', async (importOriginal) => {
 
 vi.mock('./email', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./email')>();
-  return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock, fromWithDisplayName: (name: string) => `"${name}" <no-reply@test.example>` })) };
+  return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock })) };
 });
 
 vi.mock('./quoteDeviceSet', async (importOriginal) => {
@@ -633,12 +633,17 @@ describe('sendQuote email delivery status', () => {
     // #3905 — delivery is deferred out of the send transaction.
     await (await sendQuote('q1', actor)).deliverEmail();
 
+    // The From itself is now decided inside EmailService and pinned by
+    // email.golden.test.ts ('"Acme MSP via Breeze" <EMAIL_FROM address>' for
+    // quote.sent). What THIS site is responsible for is naming the purpose and
+    // handing over the partner it already read.
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
-      // Display name is the MSP ("via Breeze" keeps the platform address honest);
-      // the envelope address itself stays the platform's for SPF/DKIM alignment.
-      from: '"Acme MSP via Breeze" <no-reply@test.example>',
+      purpose: 'quote.sent',
+      partnerId: 'p1',
+      partnerName: 'Acme MSP',
       replyTo: 'accounts@acmemsp.example',
     }));
+    expect(sendEmailMock.mock.calls[0]![0]).not.toHaveProperty('from');
   });
 
   it('uses composer recipients + cc over the billing-contact fallback', async () => {

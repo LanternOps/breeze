@@ -54,7 +54,6 @@ async function seedOrder(options: {
       name: 'Pax8 submit product',
       billingType: 'recurring',
       billingFrequency: 'monthly',
-      unitPrice: '10.00',
       costCurrency: 'USD',
       taxable: false,
     }).returning();

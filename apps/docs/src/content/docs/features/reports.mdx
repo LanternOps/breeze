@@ -27,6 +27,14 @@ Every report has a `type` that determines which data is queried and how the outp
 | `performance` | Aggregated CPU, RAM, and disk metrics per device | avg/max CPU %, avg/max RAM %, avg/max disk % |
 | `executive_summary` | High-level fleet overview with device counts, alert stats, OS distribution, and site breakdown (see [Executive Summary Report](#executive-summary-report)) | online/offline totals, health %, critical/high alert counts, resolution rate |
 | `security_compliance_posture` | Per-control security and compliance evidence for one organization, built for cyber-insurance applications and vendor security questionnaires | EDR/AV coverage, disk encryption %, firewall %, patch currency %, password policy, local-admin exposure, MFA/PAM posture, backup, DNS filtering, optional CIS pass-rate (see [Security & Compliance Posture Report](#security--compliance-posture-report)) |
+| `identity_access_review` | A month of Microsoft 365 sign-in and identity activity: identity inventory, conditional-access policy posture, dormant accounts, admin sign-ins, MFA registration status, and which remote-access client (if any) was running on each device | interactive sign-in counts, conditional-access coverage, dormant-account list, admin sign-in detail, MFA registration rate |
+| `vulnerability_management` | Findings-level vulnerability detail: open vulnerabilities, accepted/mitigated exceptions, remediation ranking, and vulnerabilities that are actively exploited in the wild or have a high exploit probability | open/accepted/mitigated counts, remediation ranking, known-exploited and high-probability findings |
+| `endpoint_management_review` | Device enrollment and compliance inventory pulled from Microsoft Intune, plus license-seat usage and a compliance-trend chart | enrollment/compliance counts, license seat usage, daily compliance trend |
+| `threat_detection_review` | A record of threat detections for the period, with resolution status and the vendor's recommendation text | detection count, resolution status, recommendation text |
+
+<Aside type="note">
+The four evidence-review report types above are built from previously synced data only — they never make a live call to the source integration while generating, so a scheduled run never depends on a third party being up. If a required source (Microsoft 365 sync, a vulnerability feed, or the Huntress integration) has never completed a sync, the affected figures render as **not measured** rather than zero, and the report states the sync gap explicitly. `identity_access_review` and `endpoint_management_review` require an M365 tenant sync connected (`endpoint_management_review` additionally needs Intune enrolled); `vulnerability_management` requires a connected vulnerability scan/feed source; `threat_detection_review` requires a connected and synced Huntress integration. These four report types are not available for customer self-service in the portal.
+</Aside>
 
 ---
 
@@ -199,6 +207,10 @@ Add addresses to the **Email distribution list** (or `config.emailRecipients`) t
 - The email leads with a one-line trend summary when a prior run exists to compare against, for example "Posture score 79 -- up from 74 last run."
 
 The reports list also shows the next scheduled run time (e.g. "Next: Mon, Jul 6, 9:00 AM") and a recipient count badge on recurring reports.
+
+### Scheduled Auto-Evidence
+
+You can also attach one of the report types above to a [service deliverable](/features/contracts/#service-deliverables) as its evidence source. Set this up once, partner-wide, on a deliverable template item, and every organization the template applies to gets a period-correct evidence artifact generated automatically -- no technician has to remember to run and attach a report each period. Each generated artifact is reviewed before it's shown to the customer, and only becomes visible in the portal once its deliverable occurrence is marked **Delivered**.
 
 ---
 

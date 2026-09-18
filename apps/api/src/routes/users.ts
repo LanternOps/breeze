@@ -753,7 +753,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     const emailService = getEmailService();
     if (emailService) {
       // To the NEW address: prove you control it.
-      await emailService.sendVerificationEmail({ to: pendingNewEmail, name: updated.name ?? undefined, verificationUrl })
+      await emailService.sendVerificationEmail({ to: pendingNewEmail, name: updated.name ?? undefined, verificationUrl, purpose: 'auth.email_change_verify' })
         .catch((err: unknown) => { console.error('[users] pending-email verification send failed', err); captureException(err); });
       // To the OLD (still-authoritative) address: a change was REQUESTED. Fires
       // at INITIATION, not only on completion — the owner of the address being

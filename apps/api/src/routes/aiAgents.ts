@@ -1652,6 +1652,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
         region: aiRunWorkspaces.region,
         status: aiRunWorkspaces.status,
         bootstrapHash: aiRunWorkspaces.bootstrapHash,
+        runtimeImage: aiRunWorkspaces.runtimeImage,
         createdAt: aiRunWorkspaces.createdAt,
         readyAt: aiRunWorkspaces.readyAt,
         destroyedAt: aiRunWorkspaces.destroyedAt,

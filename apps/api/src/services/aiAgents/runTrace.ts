@@ -465,6 +465,8 @@ export interface RunWorkspaceRowInput {
   region: 'eu' | 'us';
   status: string;
   bootstrapHash: string | null;
+  /** Exact selected image reference; null for legacy/unknown runtimes. */
+  runtimeImage: string | null;
   createdAt: Date;
   readyAt: Date | null;
   destroyedAt: Date | null;
@@ -484,6 +486,7 @@ function mapWorkspace(row: RunWorkspaceRowInput | null): AiAgentRunWorkspaceDto 
     region: row.region,
     status: row.status,
     bootstrapHash: row.bootstrapHash,
+    runtimeImage: row.runtimeImage ?? null,
     createdAt: row.createdAt.toISOString(),
     readyAt: row.readyAt?.toISOString() ?? null,
     destroyedAt: row.destroyedAt?.toISOString() ?? null,

@@ -345,6 +345,43 @@ describe('unattended_release (#5612 W04)', () => {
 });
 
 describe('execution-plane run events (spec §5.5)', () => {
+  it('preserves the launch tool name and run output for the live run card without an approval', () => {
+    const state = makeState();
+    const events: AiStreamEvent[] = [
+      { type: 'tool_use_start', toolUseId: 'launch-1', toolName: 'workspace_launch_analysis', input: { goal: 'Analyze inventory' } },
+      // Parallel tools can finish out of order: the nearest tool_use is not
+      // necessarily the one that produced this result.
+      { type: 'tool_use_start', toolUseId: 'query-1', toolName: 'query_devices', input: {} },
+      { type: 'tool_result', toolUseId: 'launch-1', output: { runId: 'r1', status: 'queued' }, isError: false },
+      { type: 'tool_result', toolUseId: 'query-1', output: { devices: [] }, isError: false },
+    ];
+    for (const event of events) {
+      processStreamEvent(event, (fn) => { Object.assign(state, fn(state)); }, () => state, null);
+    }
+    expect(state.pendingApproval).toBeNull();
+    expect(state.messages.find((m) => m.id === 'result-launch-1')).toMatchObject({
+      role: 'tool_result', toolName: 'workspace_launch_analysis', toolUseId: 'launch-1',
+      toolOutput: { runId: 'r1', status: 'queued' },
+    });
+    expect(state.messages.find((m) => m.id === 'result-query-1')).toMatchObject({
+      toolName: 'query_devices', toolOutput: { devices: [] },
+    });
+  });
+
+  it('keeps an unmatched result generic instead of borrowing another tool name', () => {
+    const state = makeState();
+    const events: AiStreamEvent[] = [
+      { type: 'tool_use_start', toolUseId: 'launch-1', toolName: 'workspace_launch_analysis', input: {} },
+      { type: 'tool_result', toolUseId: 'unknown', output: { runId: 'r2', status: 'queued' }, isError: false },
+    ];
+    for (const event of events) {
+      processStreamEvent(event, (fn) => { Object.assign(state, fn(state)); }, () => state, null);
+    }
+    const result = state.messages.find((m) => m.id === 'result-unknown');
+    expect(result?.toolName).toBeUndefined();
+    expect(result?.toolOutput).toEqual({ runId: 'r2', status: 'queued' });
+  });
+
   it('opens a run entry on the first progress event', () => {
     const state = makeState();
     let patch: Partial<StreamableState> = {};

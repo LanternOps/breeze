@@ -2699,6 +2699,7 @@
       "sysObjectId": "Object ID (OID)"
     },
     "header": {
+      "lastError": "Last error: {{error}}",
       "settings": "Settings"
     },
     "editInSettings": "Edit in settings",

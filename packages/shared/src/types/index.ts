@@ -815,6 +815,7 @@ export * from './fleetDesign';
 export * from './fleetDesignApply';
 export * from './aiPatchPlan';
 export * from './deviceFunction';
+export * from './sendingDomains';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 export * from './aiAgentImpactMeasured';

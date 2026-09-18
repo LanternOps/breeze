@@ -49,6 +49,7 @@ export default function TenantVariablesPage() {
   const { t } = useTranslation('settings');
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const orgScope = useOrgScope();
+  const partnerOnly = isPartnerScope && orgScope.scope === 'all';
 
   const [variables, setVariables] = useState<TenantVariable[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,9 +64,9 @@ export default function TenantVariablesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(false);
-    // fetchWithAuth injects the selected orgId, so this is already scoped to
-    // the current org context (plus the partner-wide rows it inherits).
-    const response = await fetchWithAuth('/tenant-variables').catch(() => null);
+    // A selected org includes its inherited partner rows. All Organizations
+    // instead lists only partner-wide definitions (#5353).
+    const response = await fetchWithAuth(partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables').catch(() => null);
     if (!response || !response.ok) {
       setError(true);
       setLoading(false);
@@ -74,7 +75,7 @@ export default function TenantVariablesPage() {
     const body = (await response.json()) as { data?: TenantVariable[] };
     setVariables(body.data ?? []);
     setLoading(false);
-  }, []);
+  }, [partnerOnly]);
 
   // Re-run on an org switch (not just mount): `load()` reads whatever org
   // fetchWithAuth currently injects, so a stale list otherwise lingers on
@@ -204,7 +205,7 @@ export default function TenantVariablesPage() {
   // is no page/query-param round trip to add for this.
   const normalizedSearch = search.trim().toLowerCase();
   const filteredVariables = variables.filter((variable) => {
-    if (scopeFilter !== 'all' && variable.ownerScope !== scopeFilter) return false;
+    if (!partnerOnly && scopeFilter !== 'all' && variable.ownerScope !== scopeFilter) return false;
     if (!normalizedSearch) return true;
     const matchesKey = variable.key.toLowerCase().includes(normalizedSearch);
     const matchesDescription = (variable.description ?? '').toLowerCase().includes(normalizedSearch);
@@ -237,6 +238,12 @@ export default function TenantVariablesPage() {
           {t('tenantVariablesPage.actions.add')}
         </button>
       </div>
+
+      {partnerOnly && (
+        <p className="text-sm text-muted-foreground" data-testid="tenant-variables-org-note">
+          {t('tenantVariablesPage.orgOwnedNote')}
+        </p>
+      )}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -381,26 +388,28 @@ export default function TenantVariablesPage() {
             className="h-9 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             data-testid="tenant-variable-search"
           />
-          <div
-            className="flex items-center gap-1 rounded-md border bg-muted/40 p-1"
-            role="group"
-            aria-label={t('tenantVariablesPage.filters.scopeGroupLabel')}
-          >
-            {scopeFilters.map((filter) => (
-              <button
-                key={filter.value}
-                type="button"
-                onClick={() => setScopeFilter(filter.value)}
-                aria-pressed={scopeFilter === filter.value}
-                className={`rounded px-2.5 py-1 text-xs font-medium transition ${
-                  scopeFilter === filter.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
-                }`}
-                data-testid={filter.testId}
-              >
-                {filter.label}
-              </button>
-            ))}
-          </div>
+          {!partnerOnly && (
+            <div
+              className="flex items-center gap-1 rounded-md border bg-muted/40 p-1"
+              role="group"
+              aria-label={t('tenantVariablesPage.filters.scopeGroupLabel')}
+            >
+              {scopeFilters.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  onClick={() => setScopeFilter(filter.value)}
+                  aria-pressed={scopeFilter === filter.value}
+                  className={`rounded px-2.5 py-1 text-xs font-medium transition ${
+                    scopeFilter === filter.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  data-testid={filter.testId}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -453,7 +462,9 @@ export default function TenantVariablesPage() {
                         {t('tenantVariablesPage.editor.allOrgs')}
                       </span>
                     ) : (
-                      <span className="text-xs text-muted-foreground">{t('tenantVariablesPage.editor.thisOrg')}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {variable.orgName ?? t('tenantVariablesPage.editor.thisOrg')}
+                      </span>
                     )}
                   </td>
                   <td className="px-4 py-2 text-muted-foreground">{variable.description}</td>

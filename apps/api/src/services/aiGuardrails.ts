@@ -449,11 +449,14 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
  */
 export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_ai_agents',
-  // Execution plane (spec §5.5). An agent that could launch analysis runs could
-  // launch runs that launch runs; the compute reservation is the only thing
-  // bounding that, and a reservation is not an authority model. A HUMAN asks
-  // for analysis. Denied unconditionally in `checkAgentGuardrails`, above the
-  // allowlist, so it cannot be re-granted by a policy snapshot.
+  // Execution plane (spec §5.5). FULLY DEREGISTERED as of #6086 — chat-to-agent
+  // delegation is withdrawn until caller authorization can be preserved for the
+  // length of a run, so no tier, schema, handler or MCP declaration remains.
+  // Kept here anyway, and pinned by workspaceLaunchTool.registration.test.ts:
+  // an agent that could launch analysis runs could launch runs that launch
+  // runs, so if the name is ever re-wired this deny (unconditional, above the
+  // allowlist in `checkAgentGuardrails`) must already be in place rather than
+  // being something the re-wiring has to remember. A HUMAN asks for analysis.
   'workspace_launch_analysis',
 ]);
 
@@ -1005,9 +1008,6 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   detect_log_correlations: { resource: 'devices', action: 'read' },
   // Execution plane
   export_dataset: { resource: 'devices', action: 'read' },
-  // Starting an autonomous run is an ai_agents WRITE even though the tool is
-  // Tier 1: it spends the org's compute budget and its credits.
-  workspace_launch_analysis: { resource: 'ai_agents', action: 'write' },
   // Configuration policy tools
   list_configuration_policies: { resource: 'policies', action: 'read' },
   get_configuration_policy: { resource: 'policies', action: 'read' },

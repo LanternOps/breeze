@@ -34,12 +34,12 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 const CAT_PARENT = {
   id: 'p1', name: 'Hardware', color: '#ff0000', parentId: null,
   defaultPriority: null, responseSlaMinutes: null, resolutionSlaMinutes: null,
-  defaultBillable: false, defaultHourlyRate: null, rateCurrency: null, sortOrder: 0, isActive: true
+  defaultTimeEntryMinutes: null, defaultBillable: false, defaultHourlyRate: null, rateCurrency: null, sortOrder: 0, isActive: true
 };
 const CAT_CHILD = {
   id: 'c1', name: 'Printers', color: '#00ff00', parentId: 'p1',
   defaultPriority: 'high', responseSlaMinutes: 60, resolutionSlaMinutes: 480,
-  defaultBillable: true, defaultHourlyRate: '150.00', rateCurrency: 'USD', sortOrder: 0, isActive: true
+  defaultTimeEntryMinutes: null, defaultBillable: true, defaultHourlyRate: '150.00', rateCurrency: 'USD', sortOrder: 0, isActive: true
 };
 // Legacy rated row: no stamped rateCurrency (pre-wave-4), so its label falls
 // back to the partner currency — the path #3777 F8 guards against USD-guessing.
@@ -47,7 +47,7 @@ const CAT_LEGACY_RATE = { ...CAT_CHILD, id: 'c2', name: 'Legacy', rateCurrency: 
 const CAT_ROOT2 = {
   id: 'r2', name: 'Software', color: '#0000ff', parentId: null,
   defaultPriority: null, responseSlaMinutes: null, resolutionSlaMinutes: null,
-  defaultBillable: false, defaultHourlyRate: null, rateCurrency: null, sortOrder: 1, isActive: true
+  defaultTimeEntryMinutes: null, defaultBillable: false, defaultHourlyRate: null, rateCurrency: null, sortOrder: 1, isActive: true
 };
 
 function mockGetCategories(cats: unknown[], partnersMe: Response = makeJsonResponse({ currencyCode: 'USD' })) {
@@ -275,6 +275,44 @@ describe('TicketCategoriesPage', () => {
         expect(fetchMock).toHaveBeenCalledWith('/ticket-categories', expect.objectContaining({ method: 'POST' }));
       });
       expect(postBody).not.toHaveProperty('parentId');
+    });
+  });
+
+  describe('default time entry minutes', () => {
+    it.each([
+      { initial: 30, input: '45', expected: 45 },
+      { initial: 30, input: '', expected: null },
+      { initial: null, input: '1', expected: 1 },
+      { initial: null, input: '1440', expected: 1440 },
+    ])('edits $initial to $expected minutes', async ({ initial, input, expected }) => {
+      mockGetCategories([{ ...CAT_PARENT, defaultTimeEntryMinutes: initial }]);
+      render(<TicketCategoriesPage />);
+      fireEvent.click(await screen.findByTestId(`ticket-category-edit-${CAT_PARENT.id}`));
+      const field = screen.getByTestId('category-default-time-entry-minutes');
+      expect(field).toHaveValue(initial);
+      expect(field).toHaveAccessibleName('Default time entry (minutes)');
+      expect(field).toHaveAttribute('min', '1');
+      expect(field).toHaveAttribute('max', '1440');
+      expect(field).toHaveAttribute('step', '1');
+      fireEvent.change(field, { target: { value: input } });
+      fireEvent.click(screen.getByTestId(`ticket-category-save-${CAT_PARENT.id}`));
+      await waitFor(() => {
+        const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+        expect(patch).toBeDefined();
+        expect(JSON.parse(String(patch![1]!.body)).defaultTimeEntryMinutes).toBe(expected);
+      });
+      await waitFor(() => expect(screen.queryByTestId('category-default-time-entry-minutes')).not.toBeInTheDocument());
+    });
+
+    it.each(['0', '-1', '1.5', '1441'])('prevents saving invalid minutes %s', async (value) => {
+      mockGetCategories([{ ...CAT_PARENT, defaultTimeEntryMinutes: null }]);
+      render(<TicketCategoriesPage />);
+      fireEvent.click(await screen.findByTestId(`ticket-category-edit-${CAT_PARENT.id}`));
+      fireEvent.change(screen.getByTestId('category-default-time-entry-minutes'), { target: { value } });
+      const save = screen.getByTestId(`ticket-category-save-${CAT_PARENT.id}`);
+      expect(save).toBeDisabled();
+      fireEvent.click(save);
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
     });
   });
 

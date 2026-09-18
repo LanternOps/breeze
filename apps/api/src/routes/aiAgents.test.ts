@@ -1326,6 +1326,7 @@ const runDetailResponseSchema = z.object({
       region: z.enum(['eu', 'us']),
       status: z.string(),
       bootstrapHash: z.string().nullable(),
+      runtimeImage: z.string().nullable(),
       createdAt: z.string(),
       readyAt: z.string().nullable(),
       destroyedAt: z.string().nullable(),
@@ -2275,7 +2276,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     }));
     selectMock.mockReturnValueOnce(selectChain([
       {
-        backend: 'vercel', region: 'eu', status: 'destroyed', bootstrapHash: 'sha256:abc',
+        backend: 'vercel', region: 'eu', status: 'destroyed', bootstrapHash: 'sha256:abc', runtimeImage: 'analysis@sha256:abc',
         createdAt: new Date('2026-09-13T10:00:00Z'), readyAt: new Date('2026-09-13T10:00:04Z'),
         destroyedAt: new Date('2026-09-13T10:03:00Z'),
         cpuMs: 41_000, wallMs: 176_000, memAllocatedMb: 2048,
@@ -2297,6 +2298,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.artifacts[0]!.downloadPath)
       .toBe('/api/v1/ai/artifacts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     expect(parsed.data.workspace?.steps[0]!.language).toBe('python');
+    expect(parsed.data.workspace?.runtimeImage).toBe('analysis@sha256:abc');
     expect(parsed.data.computeCents).toBe(0);
     // The blob key never leaves the API — asserted on the RAW body, because the
     // strict schema above would have thrown on an extra key but says nothing

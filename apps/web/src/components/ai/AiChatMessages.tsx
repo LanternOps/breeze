@@ -309,6 +309,13 @@ export default function AiChatMessages({
           // id, not content, so it renders as a run card rather than a
           // tool-output panel. `toolName` is present on a replayed history row
           // and on the live event alike.
+          //
+          // `workspace_launch_analysis` is fully deregistered (#6086) — no
+          // tool declaration, no handler — so this branch is DEAD for any
+          // session started after that change: nothing can produce a
+          // `tool_result` with this name going forward. It is retained
+          // specifically to replay chat history from sessions recorded before
+          // #6086 shipped, which still contain rows with this toolName.
           if (msg.toolName === "workspace_launch_analysis") {
             const output = msg.toolOutput as { runId?: string; status?: string } | undefined;
             if (output?.runId) {

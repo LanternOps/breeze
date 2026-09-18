@@ -60,19 +60,6 @@ const ROOT_ALLOWLIST: Record<string, string> = {
   BREEZE_EXTERNAL_PROXY_CIDRS: 'guided-setup copies this into TRUSTED_PROXY_CIDRS (which IS mapped)',
   COMPOSE_PROFILES: 'read by the `docker compose` CLI itself to select profiles — host-level, never a container env',
 
-  // AI execution plane (spec §8): hosted-only. `aiWorkspaceEnabled()` is
-  // isHosted() && BREEZE_AI_AGENTS_ENABLED && BREEZE_AI_WORKSPACE_ENABLED, and
-  // production boot REFUSES BREEZE_AI_WORKSPACE_ENABLED=true without
-  // IS_HOSTED=true, so none of these can ever do anything in the self-host
-  // stack. Documented in .env.example so hosted operators can find them.
-  AI_WORKSPACE_BACKEND: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
-  VERCEL_SANDBOX_TOKEN: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
-  VERCEL_TEAM_ID: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
-  VERCEL_PROJECT_ID: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
-  VERCEL_SANDBOX_REGION_EU: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
-  VERCEL_SANDBOX_REGION_US: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
-  AI_COMPUTE_PRICE_MULTIPLIER: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
-
   // REDIS_URL is not consumed by the API container (it derives its connection
   // from REDIS_HOST/REDIS_PORT + the file-backed redis_password secret).
   // REDIS_PASSWORD is NOT here: it sources the redis_password secret via
@@ -294,6 +281,49 @@ describe('QuickBooks QBO_* env plumbing (finding I)', () => {
   });
 
   it.each(QBO_VARS)('%s reaches the api container in deploy/docker-compose.prod.yml', (name) => {
+    expect(isReferencedInCompose(name, PROD_COMPOSE)).toBe(true);
+  });
+});
+
+/**
+ * Partner sending domains (spec 2026-09-17 §11). Pinned on all four axes for
+ * the same reason QBO_* is: a variable that validate.ts accepts but that no
+ * compose file maps is a silent no-op — setting it in .env does nothing and the
+ * feature just stays dark, which is indistinguishable from "not configured yet".
+ */
+describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02)', () => {
+  const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+  const PROD_COMPOSE = readFileSync(path.join(REPO_ROOT, 'deploy/docker-compose.prod.yml'), 'utf8');
+  const EMAIL_DOMAINS_VARS = [
+    'EMAIL_DOMAINS_PROVIDER',
+    'EMAIL_DOMAINS_STATIC_ALLOWED',
+    'EMAIL_DOMAINS_RESEND_API_KEY',
+    'EMAIL_DOMAINS_RESEND_SENDING_KEY',
+    'EMAIL_DOMAINS_REGION',
+    'EMAIL_DOMAINS_MAX_PER_PARTNER',
+    'EMAIL_DOMAINS_DAILY_SEND_CAP',
+    'EMAIL_DOMAINS_PARTNER_ALLOWLIST',
+    'EMAIL_DOMAINS_DENYLIST',
+    'EMAIL_DOMAINS_WEBHOOK_SECRET',
+  ] as const;
+
+  it.each(EMAIL_DOMAINS_VARS)('%s is declared in the validate.ts schema', (name) => {
+    expect(ENV_SCHEMA_KEYS).toContain(name);
+  });
+
+  it.each(EMAIL_DOMAINS_VARS)('%s is documented in the root .env.example', (name) => {
+    expect(documentedEnvExampleVars('.env.example')).toContain(name);
+  });
+
+  it.each(EMAIL_DOMAINS_VARS)('%s is documented in deploy/.env.example', (name) => {
+    expect(documentedEnvExampleVars('deploy/.env.example')).toContain(name);
+  });
+
+  it.each(EMAIL_DOMAINS_VARS)('%s reaches the api container in docker-compose.yml', (name) => {
+    expect(isReferencedInCompose(name, ROOT_COMPOSE)).toBe(true);
+  });
+
+  it.each(EMAIL_DOMAINS_VARS)('%s reaches the api container in deploy/docker-compose.prod.yml', (name) => {
     expect(isReferencedInCompose(name, PROD_COMPOSE)).toBe(true);
   });
 });

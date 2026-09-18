@@ -32,7 +32,16 @@ import {
   getDbPoolHealthProbeCloseFailures,
   getDbPoolHealthWindowMs,
   getLastDbPoolHealthAssessment,
+  getLastWedgedBackendObservation,
+  getLastWedgedBackendScanSuccessAt,
+  getWedgedBackendScanFailures,
 } from '../db/dbPoolHealthMonitor';
+import {
+  getWedgedBackendReclaimFailures,
+  getWedgedBackendReclaimSkipCount,
+  getWedgedBackendReclaimTerminatedTotal,
+  getWedgedBackendSideClientCloseFailures,
+} from '../db/wedgedBackends';
 
 const register = metricsRegistry;
 
@@ -178,6 +187,62 @@ const dbPoolHealthProbeCloseFailuresGauge = new Gauge({
   registers: [register]
 });
 
+// #6048 — wedged-backend detector series. `-1` is the "not observed" sentinel
+// for the count, NOT 0: the failure being watched for is a slot silently
+// disappearing, so an alert rule must be able to tell "zero wedged backends"
+// from "the detector has never successfully looked". Alert on `>= 1`.
+const dbWedgedBackendCountGauge = new Gauge({
+  name: 'breeze_db_wedged_client_read_backends',
+  help: 'Backends stuck active/ClientRead inside an open transaction past the threshold; -1 when not observed (#6048)',
+  registers: [register]
+});
+
+const dbWedgedBackendOldestAgeGauge = new Gauge({
+  name: 'breeze_db_wedged_client_read_backend_oldest_seconds',
+  help: 'Transaction age of the oldest wedged active/ClientRead backend, in seconds (0 when none or not observed)',
+  registers: [register]
+});
+
+const dbWedgedBackendLastSuccessGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_scan_last_success_seconds',
+  help: 'Unix time of the last SUCCESSFUL wedged-backend scan; 0 when the detector has never succeeded',
+  registers: [register]
+});
+
+const dbWedgedBackendScanFailuresGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_scan_failures',
+  help: 'Wedged-backend scans that failed before producing a count, since process start',
+  registers: [register]
+});
+
+// The REPAIR path's own series. Without these, a reclaimer that has been broken
+// for days looks identical to one that has had nothing to do — which is the
+// same three-day-invisible failure #6048 was filed for, one layer up. Alert on
+// `_failures` rising while `breeze_db_wedged_client_read_backends` stays high.
+const dbWedgedBackendReclaimTerminatedGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_reclaim_terminated_total',
+  help: 'Backends this process has signalled with pg_terminate_backend to reclaim a wedged pool slot (#6048)',
+  registers: [register]
+});
+
+const dbWedgedBackendReclaimFailuresGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_reclaim_failures',
+  help: 'Reclamation passes that failed before terminating anything, since process start',
+  registers: [register]
+});
+
+const dbWedgedBackendReclaimSkippedGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_reclaim_skipped_total',
+  help: 'Reclamation requests declined by the single-flight guard or the retry floor',
+  registers: [register]
+});
+
+const dbWedgedBackendSideCloseFailuresGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_side_client_close_failures',
+  help: 'Wedged-backend side connections whose end() failed, each a possible leaked connection',
+  registers: [register]
+});
+
 /**
  * Seeds every series above so a dashboard or alert rule referencing them is
  * never querying a metric that does not exist yet. Idempotent — safe to call
@@ -205,6 +270,17 @@ export function initializeRuntimeMetricDefaults(): void {
   dbPoolHealthLastCheckGauge.set(0);
   dbPoolHealthCheckFailuresGauge.set(0);
   dbPoolHealthProbeCloseFailuresGauge.set(0);
+  // -1, not 0 — see the gauge declaration. Seeding this at 0 would publish
+  // "no wedged backends" from process start on an instance that has never run
+  // a scan, which is exactly the false all-clear this module refuses to emit.
+  dbWedgedBackendCountGauge.set(-1);
+  dbWedgedBackendOldestAgeGauge.set(0);
+  dbWedgedBackendLastSuccessGauge.set(0);
+  dbWedgedBackendScanFailuresGauge.set(0);
+  dbWedgedBackendReclaimTerminatedGauge.set(0);
+  dbWedgedBackendReclaimFailuresGauge.set(0);
+  dbWedgedBackendReclaimSkippedGauge.set(0);
+  dbWedgedBackendSideCloseFailuresGauge.set(0);
 }
 
 /**
@@ -250,6 +326,34 @@ function updateDbPoolHealthMetrics(): void {
   dbPoolHealthLastCheckGauge.set(assessment ? Math.floor(assessment.at / 1000) : 0);
   dbPoolHealthCheckFailuresGauge.set(getDbPoolHealthCheckFailures());
   dbPoolHealthProbeCloseFailuresGauge.set(getDbPoolHealthProbeCloseFailures());
+  updateWedgedBackendMetrics();
+}
+
+/**
+ * Republishes the #6048 wedged-backend detector. Three series, not one, because
+ * a single count cannot distinguish the three states that matter:
+ *
+ *   - `…_count` is the number of backends stuck active/ClientRead. It is set to
+ *     -1 — NOT 0 — whenever the detector has not produced a successful reading,
+ *     so "we have not looked" can never be alerted on (or ignored) as "there is
+ *     nothing there". Alert on `>= 1`, never on `!= 0`.
+ *   - `…_last_success_seconds` says when the count was last actually measured,
+ *     so a stale reading is visible as staleness rather than as health.
+ *   - `…_scan_failures` counts scans that never produced a count at all.
+ *
+ * Pids deliberately never become labels — unbounded cardinality, and they are
+ * already on the console line where an operator can act on them.
+ */
+function updateWedgedBackendMetrics(): void {
+  const observation = getLastWedgedBackendObservation();
+  dbWedgedBackendCountGauge.set(observation?.count ?? -1);
+  dbWedgedBackendOldestAgeGauge.set(observation?.oldestAgeSeconds ?? 0);
+  dbWedgedBackendLastSuccessGauge.set(Math.floor(getLastWedgedBackendScanSuccessAt() / 1000));
+  dbWedgedBackendScanFailuresGauge.set(getWedgedBackendScanFailures());
+  dbWedgedBackendReclaimTerminatedGauge.set(getWedgedBackendReclaimTerminatedTotal());
+  dbWedgedBackendReclaimFailuresGauge.set(getWedgedBackendReclaimFailures());
+  dbWedgedBackendReclaimSkippedGauge.set(getWedgedBackendReclaimSkipCount());
+  dbWedgedBackendSideCloseFailuresGauge.set(getWedgedBackendSideClientCloseFailures());
 }
 
 function updateEventLoopMetrics(): void {

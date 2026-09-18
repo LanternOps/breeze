@@ -18,13 +18,14 @@
  *
  * The two gates are orthogonal and BOTH apply where both exist:
  * `canManagePartnerWidePolicies` answers "may this caller act at partner
- * breadth"; `canMutateOrgWideGovernance` answers "does this caller's site
- * ceiling block them from org-wide objects at all" (partner/system scope
- * never carries a site ceiling).
+ * breadth"; `canMutateOrgWideGovernance` answers "does this caller's site or
+ * exact-device ceiling block them from org-wide objects at all" (partner/system
+ * scope never carries a site ceiling).
  */
 import type { AuthContext } from '../middleware/auth';
 
-export type SiteCeilingAuth = Pick<AuthContext, 'scope' | 'allowedSiteIds'>;
+export type SiteCeilingAuth = Pick<AuthContext, 'scope' | 'allowedSiteIds'> &
+  Partial<Pick<AuthContext, 'allowedDeviceIds'>>;
 
 /**
  * True when the caller is an organization-scope principal carrying ANY site
@@ -39,11 +40,32 @@ export function hasSiteCeiling(auth: SiteCeilingAuth): boolean {
 }
 
 /**
+ * True when the caller carries an EXACT-DEVICE ceiling (`allowedDeviceIds`
+ * set — including `[]`). Only `aiAgents/agentAuthContext.ts` ever sets this
+ * field, so it is always false for human, API-key and MCP principals.
+ *
+ * Unlike the site ceiling this is NOT gated on `scope`: `allowedDeviceIds` is
+ * never populated incidentally, so its presence always means "this run may
+ * touch exactly these devices".
+ */
+export function hasExactDeviceCeiling(auth: SiteCeilingAuth): boolean {
+  return auth.allowedDeviceIds !== undefined;
+}
+
+/**
  * True when the caller may create/update/delete/enable/test an org-wide
- * governance object. Exactly the negation of `hasSiteCeiling`.
+ * governance object: the negation of BOTH ceilings.
+ *
+ * The exact-device axis is part of this gate, not just the site axis (#6096).
+ * A device-LESS AI analysis run carries `allowedDeviceIds` with NO
+ * `allowedSiteIds`, which a site-only check reads as "unrestricted" — it then
+ * sailed through every gate in this family and could rewrite org policy that
+ * fans out to the entire fleet. These objects are org-wide by construction, so
+ * there is nothing to narrow for such a caller: it fails closed exactly as a
+ * site-restricted one does.
  */
 export function canMutateOrgWideGovernance(auth: SiteCeilingAuth): boolean {
-  return !hasSiteCeiling(auth);
+  return !hasSiteCeiling(auth) && !hasExactDeviceCeiling(auth);
 }
 
 export const SITE_CEILING_WRITE_DENIED_MESSAGE =

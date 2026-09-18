@@ -55,10 +55,13 @@ export async function emailReportFailure(opts: {
     ].join(''),
   });
 
+  // Platform sender (spec §8.2): this tells the MSP's own people that their
+  // scheduled report did not arrive — not a customer-facing deliverable.
   await email.sendEmail({
     to: opts.recipients,
     subject: `Scheduled report failed: ${opts.reportName}`,
     html,
+    purpose: 'staff.report_failure',
   });
 }
 
@@ -140,6 +143,15 @@ export async function emailReportRun(opts: {
 
   await email.sendEmail({
     to: opts.recipients,
+    // The scheduled report itself IS a customer deliverable — partner lane,
+    // `general` stream (spec §8.2). partnerId is null in W01: emailReportRun
+    // takes only address strings, a branding bag and a timezone ("touch no db
+    // handle" — module docstring), and neither caller
+    // (jobs/reportScheduleWorker.ts:605, services/reportNarrativeDelivery.ts:275)
+    // holds a partner id either. W01 adds no reads; null resolves to the
+    // platform sender, i.e. exactly today's From (§8.1).
+    purpose: 'report.delivery',
+    partnerId: null,
     subject: `Scheduled report ready: ${opts.reportName}`,
     html: renderLayout({
       title: 'Scheduled report',
