@@ -77,13 +77,23 @@ function extractRows<T>(result: unknown): T[] {
  * `jobId = domainId` so a burst of route calls and sweep claims for the same
  * row collapses into one in-flight job rather than N concurrent provider calls
  * against the same domain.
+ *
+ * `removeOnComplete`/`removeOnFail` are `true` (drop the record immediately),
+ * NOT a retained count: BullMQ SILENTLY drops an `add()` whose jobId still
+ * exists in the completed or failed set, so retaining records under a
+ * DETERMINISTIC id turns the partner's next "Check now" — and every later sweep
+ * claim for that domain — into a no-op the route still reports as queued
+ * (`jobs/accountingSyncWorker.ts:314-330`, same trap, same fix). Dedup of a job
+ * that is genuinely IN FLIGHT is unaffected: that lives in wait/active, not in
+ * the retained sets. Nothing is lost by not keeping the records — the durable
+ * state is the row's own status/`last_*` columns plus Sentry.
  */
 export async function enqueueSyncDomain(domainId: string, opts: { lastSendError?: string } = {}): Promise<void> {
   if (!isPartnerLaneConfigured()) return;
   await getQueue().add(
     SYNC_JOB,
     opts.lastSendError ? { domainId, lastSendError: opts.lastSendError } : { domainId },
-    { jobId: domainId, attempts: 5, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: { count: 50 }, removeOnFail: { count: 200 } },
+    { jobId: domainId, attempts: 5, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true, removeOnFail: true },
   );
 }
 
@@ -92,7 +102,9 @@ export async function enqueueTestSend(domainId: string, userId: string): Promise
   await getQueue().add(
     TEST_SEND_JOB,
     { domainId, userId },
-    { attempts: 2, backoff: { type: 'fixed', delay: 15_000 }, removeOnComplete: { count: 50 }, removeOnFail: { count: 100 } },
+    // No deterministic jobId here today, but the same rule is applied so a
+    // later change that adds one cannot reintroduce the silent-drop trap.
+    { attempts: 2, backoff: { type: 'fixed', delay: 15_000 }, removeOnComplete: true, removeOnFail: true },
   );
 }
 
@@ -436,19 +448,19 @@ async function scheduleRepeatables(): Promise<void> {
   await q.add(SWEEP_JOB, {}, {
     jobId: SWEEP_REPEAT_ID,
     repeat: { every: SWEEP_INTERVAL_MS },
-    removeOnComplete: { count: 20 },
-    removeOnFail: { count: 100 },
+    removeOnComplete: true,
+    removeOnFail: true,
   });
   await q.add(DAILY_JOB, {}, {
     jobId: DAILY_REPEAT_ID,
     repeat: { pattern: DAILY_CRON },
-    removeOnComplete: { count: 5 },
-    removeOnFail: { count: 20 },
+    removeOnComplete: true,
+    removeOnFail: true,
   });
   // One un-repeated run at boot: the `static` re-check has to happen on start,
   // not only at 21:03 (spec §6.1). Harmless on hosted — the drift report is
   // read-only.
-  await q.add(DAILY_JOB, {}, { removeOnComplete: true, removeOnFail: { count: 10 } });
+  await q.add(DAILY_JOB, {}, { removeOnComplete: true, removeOnFail: true });
 }
 
 /**

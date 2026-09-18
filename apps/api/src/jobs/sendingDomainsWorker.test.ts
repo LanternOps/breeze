@@ -217,6 +217,36 @@ describe('enqueue helpers', () => {
     expect(data).toEqual({ domainId: DOMAIN_ID, userId: USER_ID });
   });
 
+  // A deterministic jobId plus a RETAINED completed/failed set is the
+  // accountingSyncWorker.ts:314-330 trap: BullMQ silently drops an `add()`
+  // whose jobId still sits in those sets, so the second "Check now" for a
+  // domain would be a no-op the route still reports as queued.
+  it.each([
+    ['sync-domain', () => enqueueSyncDomain(DOMAIN_ID)],
+    ['test-send', () => enqueueTestSend(DOMAIN_ID, USER_ID)],
+  ])('drops %s job records immediately, so a later enqueue for the same id is never swallowed', async (_name, enqueue) => {
+    await enqueue();
+    const [, , opts] = queueAdd.mock.calls.at(-1) as [string, any, any];
+    expect(opts.removeOnComplete).toBe(true);
+    expect(opts.removeOnFail).toBe(true);
+  });
+
+  it('accepts a second sync for a domain whose previous job already completed', async () => {
+    // The fake queue cannot model BullMQ's dedup, so this pins the property
+    // that makes dedup harmless: nothing is retained under the id.
+    const completedIds = new Set<string>();
+    queueAdd.mockImplementation(async (_name: string, _data: unknown, opts?: any) => {
+      const id = opts?.jobId as string | undefined;
+      if (id && completedIds.has(id)) throw new Error(`BullMQ would drop the duplicate jobId ${id}`);
+      if (id && opts?.removeOnComplete !== true) completedIds.add(id);
+      return { id: 'j1' };
+    });
+
+    await enqueueSyncDomain(DOMAIN_ID);
+    await expect(enqueueSyncDomain(DOMAIN_ID)).resolves.toBeUndefined();
+    expect(queueAdd).toHaveBeenCalledTimes(2);
+  });
+
   it('is inert when the lane is unconfigured, so a stale route can never queue work', async () => {
     laneConfigured.value = false;
     await enqueueSyncDomain(DOMAIN_ID);
