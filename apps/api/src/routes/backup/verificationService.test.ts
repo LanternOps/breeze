@@ -696,9 +696,20 @@ describe('toVerificationListItem', () => {
     expect(out.details).toEqual({ reason: 'Verification timed out after 30 minutes' });
   });
 
-  it('caps reason length', () => {
-    const out = toVerificationListItem({ ...base, details: { reason: 'x'.repeat(1000) } });
-    expect((out.details?.reason as string).length).toBeLessThanOrEqual(200);
+  it('caps reason length at exactly 200 characters, unmodified up to the boundary', () => {
+    expect(toVerificationListItem({ ...base, details: { reason: 'x'.repeat(200) } }).details)
+      .toEqual({ reason: 'x'.repeat(200) });
+    expect(toVerificationListItem({ ...base, details: { reason: 'x'.repeat(1000) } }).details)
+      .toEqual({ reason: 'x'.repeat(200) });
+  });
+
+  it('normalizes internal whitespace and drops a whitespace-only reason', () => {
+    expect(toVerificationListItem({ ...base, details: { reason: 'Error:\n  disk full\t' } }).details)
+      .toEqual({ reason: 'Error: disk full' });
+    expect(toVerificationListItem({ ...base, details: { reason: '   \n\t  ' } }).details).toBeNull();
+    expect(
+      toVerificationListItem({ ...base, details: { simulated: true, reason: '   ' } }).details,
+    ).toEqual({ simulated: true });
   });
 
   it('drops reason for non-failed rows and non-string reasons', () => {
