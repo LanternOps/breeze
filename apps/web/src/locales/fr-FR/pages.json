@@ -166,7 +166,8 @@
     "agreementTemplates": "Modèles de convention",
     "agreementTemplateDetail": "Modèle de convention",
     "agreementTemplateNew": "Nouveau modèle de convention",
-    "signedAgreements": "Conventions signées"
+    "signedAgreements": "Conventions signées",
+    "settingsTicketing": "Paramètres de tickets"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

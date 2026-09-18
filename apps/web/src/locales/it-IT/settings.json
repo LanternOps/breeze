@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Ticketing",
-        "description": "Stati, SLA, esportazioni"
+        "description": "Stati, SLA, categorie, moduli",
+        "linkCta": "Gestisci impostazioni ticket →"
       },
       "aiBudgets": {
         "label": "Budget AI",
@@ -5592,5 +5593,9 @@
     "saveFailed": "Non è stato possibile salvare queste impostazioni.",
     "loading": "Caricamento…",
     "loadFailed": "Non è stato possibile caricare le impostazioni di creazione script."
+  },
+  "ticketingHubPage": {
+    "heading": "Impostazioni ticket",
+    "description": "Stati, SLA, categorie, moduli di apertura, email, modelli e rilevazione del tempo, applicati a tutte le tue organizzazioni."
   }
 }

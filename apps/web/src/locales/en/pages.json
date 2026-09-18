@@ -166,7 +166,8 @@
     "agreementTemplates": "Agreement templates",
     "agreementTemplateDetail": "Agreement template",
     "agreementTemplateNew": "New agreement template",
-    "signedAgreements": "Signed agreements"
+    "signedAgreements": "Signed agreements",
+    "settingsTicketing": "Ticketing Settings"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",

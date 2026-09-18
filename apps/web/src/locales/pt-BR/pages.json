@@ -166,7 +166,8 @@
     "agreementTemplates": "Modelos de acordo",
     "agreementTemplateDetail": "Modelo de acordo",
     "agreementTemplateNew": "Novo modelo de acordo",
-    "signedAgreements": "Acordos assinados"
+    "signedAgreements": "Acordos assinados",
+    "settingsTicketing": "Configurações de tickets"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

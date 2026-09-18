@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Billetterie",
-        "description": "Statuts, SLA, exportations"
+        "description": "Statuts, ERS, catégories, formulaires",
+        "linkCta": "Gérer les paramètres de billetterie →"
       },
       "aiBudgets": {
         "label": "Budgets IA",
@@ -5592,5 +5593,9 @@
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
     "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+  },
+  "ticketingHubPage": {
+    "heading": "Paramètres de billetterie",
+    "description": "Statuts, ERS, catégories, formulaires d'admission, courriel, modèles et saisie du temps, appliqués à toutes vos organisations."
   }
 }

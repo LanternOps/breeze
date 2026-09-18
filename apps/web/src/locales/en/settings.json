@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Ticketing",
-        "description": "Statuses, SLAs, exports"
+        "description": "Statuses, SLAs, categories, forms",
+        "linkCta": "Manage ticketing settings →"
       },
       "aiBudgets": {
         "label": "AI Budgets",
@@ -5592,5 +5593,9 @@
     "title": "AI budget",
     "description": "Spending caps, rate limits and approval mode for the AI assistant in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
     "selectOrganization": "Select an organization to configure its AI budget."
+  },
+  "ticketingHubPage": {
+    "heading": "Ticketing Settings",
+    "description": "Statuses, SLAs, categories, intake forms, email, templates and time capture — applied across all of your organizations."
   }
 }

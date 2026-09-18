@@ -166,7 +166,8 @@
     "agreementTemplates": "Modèles d'entente",
     "agreementTemplateDetail": "Modèle d'entente",
     "agreementTemplateNew": "Nouveau modèle d'entente",
-    "signedAgreements": "Ententes signées"
+    "signedAgreements": "Ententes signées",
+    "settingsTicketing": "Paramètres de billetterie"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

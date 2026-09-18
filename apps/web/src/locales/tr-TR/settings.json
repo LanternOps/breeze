@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Biletleme",
-        "description": "Durumlar, SLA'lar, dışa aktarmalar"
+        "description": "Durumlar, SLA'lar, kategoriler, formlar",
+        "linkCta": "Bilet ayarlarını yönet →"
       },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
@@ -5592,5 +5593,9 @@
     "saveFailed": "Bu ayarlar kaydedilemedi.",
     "loading": "Yükleniyor…",
     "loadFailed": "Betik yazımı ayarları yüklenemedi."
+  },
+  "ticketingHubPage": {
+    "heading": "Bilet Ayarları",
+    "description": "Tüm organizasyonlarınıza uygulanan durumlar, SLA'lar, kategoriler, giriş formları, e-posta, şablonlar ve zaman kaydı."
   }
 }

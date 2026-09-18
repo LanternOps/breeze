@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Chamados",
-        "description": "Status, SLAs, exportações"
+        "description": "Status, SLAs, categorias, formulários",
+        "linkCta": "Gerenciar configurações de tickets →"
       },
       "aiBudgets": {
         "label": "Orçamentos de IA",
@@ -5592,5 +5593,9 @@
     "saveFailed": "Não foi possível salvar essas configurações.",
     "loading": "Carregando…",
     "loadFailed": "Não foi possível carregar as configurações de criação de scripts."
+  },
+  "ticketingHubPage": {
+    "heading": "Configurações de tickets",
+    "description": "Status, SLAs, categorias, formulários de abertura, e-mail, modelos e registro de tempo, aplicados a todas as suas organizações."
   }
 }

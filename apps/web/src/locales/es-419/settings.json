@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Gestión de tickets",
-        "description": "Estados, SLA, exportaciones"
+        "description": "Estados, SLA, categorías, formularios",
+        "linkCta": "Administrar configuración de tickets →"
       },
       "aiBudgets": {
         "label": "AI Presupuestos",
@@ -5592,5 +5593,9 @@
     "saveFailed": "No se pudieron guardar esos ajustes.",
     "loading": "Cargando…",
     "loadFailed": "No se pudo cargar la configuración de creación de scripts."
+  },
+  "ticketingHubPage": {
+    "heading": "Configuración de tickets",
+    "description": "Estados, SLA, categorías, formularios de admisión, correo electrónico, plantillas y registro de tiempo, aplicados a todas tus organizaciones."
   }
 }

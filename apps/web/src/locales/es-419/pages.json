@@ -166,7 +166,8 @@
     "agreementTemplates": "Plantillas de acuerdo",
     "agreementTemplateDetail": "Plantilla de acuerdo",
     "agreementTemplateNew": "Nueva plantilla de acuerdo",
-    "signedAgreements": "Acuerdos firmados"
+    "signedAgreements": "Acuerdos firmados",
+    "settingsTicketing": "Configuración de tickets"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",

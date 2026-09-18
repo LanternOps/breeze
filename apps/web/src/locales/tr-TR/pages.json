@@ -166,7 +166,8 @@
     "agreementTemplates": "Anlaşma şablonları",
     "agreementTemplateDetail": "Anlaşma şablonu",
     "agreementTemplateNew": "Yeni anlaşma şablonu",
-    "signedAgreements": "İmzalı anlaşmalar"
+    "signedAgreements": "İmzalı anlaşmalar",
+    "settingsTicketing": "Bilet Ayarları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

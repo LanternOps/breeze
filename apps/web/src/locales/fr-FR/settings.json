@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Ticketterie",
-        "description": "Statuts, SLA, exportations"
+        "description": "Statuts, SLA, catégories, formulaires",
+        "linkCta": "Gérer les paramètres de tickets →"
       },
       "aiBudgets": {
         "label": "Budgets IA",
@@ -5592,5 +5593,9 @@
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
     "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+  },
+  "ticketingHubPage": {
+    "heading": "Paramètres de tickets",
+    "description": "Statuts, SLA, catégories, formulaires d'admission, e-mail, modèles et saisie du temps, appliqués à toutes vos organisations."
   }
 }

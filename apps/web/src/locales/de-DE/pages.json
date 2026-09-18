@@ -166,7 +166,8 @@
     "agreementTemplates": "Vereinbarungsvorlagen",
     "agreementTemplateDetail": "Vereinbarungsvorlage",
     "agreementTemplateNew": "Neue Vereinbarungsvorlage",
-    "signedAgreements": "Unterzeichnete Vereinbarungen"
+    "signedAgreements": "Unterzeichnete Vereinbarungen",
+    "settingsTicketing": "Ticketing-Einstellungen"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",

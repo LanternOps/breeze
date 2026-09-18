@@ -16,7 +16,6 @@ import {
   Wallet,
   type LucideIcon,
 } from 'lucide-react';
-import TicketingSettingsTabs from './TicketingSettingsTabs';
 import SettingsSectionNav from './SettingsSectionNav';
 import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
@@ -179,14 +178,6 @@ export default function PartnerSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [activeTab, setActiveTab] = useState<TabKey>('company');
-
-  // The M365 consent callback returns to `/settings/partner?ticketMailbox=…#ticketing`.
-  // Capture that signal ONCE at mount (this page mounts a single time), before the
-  // mailbox card strips the param, so we can deep-link the embedded Ticketing group's
-  // Inbound sub-tab deterministically — see TicketingSettingsTabs `initialTab`.
-  const [deepLinkTicketMailbox] = useState(
-    () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ticketMailbox')
-  );
 
   // Regional form state
   const [timezone, setTimezone] = useState('UTC');
@@ -579,6 +570,7 @@ export default function PartnerSettingsPage() {
           activeKey={activeTab}
           onNavigate={key => navigateToTab(key as TabKey)}
           selectId="partner-settings-section"
+          testIdPrefix="partner-settings"
         />
 
         <div className="min-w-0 space-y-6">
@@ -688,16 +680,20 @@ export default function PartnerSettingsPage() {
             </section>
           )}
 
-          {/* Ticketing: partner-wide statuses, priority SLAs, categories, and billing
-              export. Each sub-tab persists independently, so the top-level "Save
-              Settings" button does not apply here. */}
+          {/* Ticketing now has its own standalone page (M0) — this tab links out
+              to it rather than embedding the tab group. */}
           {activeTab === 'ticketing' && (
-            <section className="space-y-2" data-testid="partner-ticketing-tab">
-              <p className="text-sm text-muted-foreground">
-                {t('partnerSettingsPage.ticketingDescription')}
-              </p>
-              <TicketingSettingsTabs syncHash={false} initialTab={deepLinkTicketMailbox ? 'inbound' : undefined} />
-            </section>
+            <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="partner-settings-ticketing-panel">
+              <h2 className="text-lg font-semibold">{t('partnerSettingsPage.tabs.ticketing.label')}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{t('partnerSettingsPage.tabs.ticketing.description')}</p>
+              <a
+                href="/settings/ticketing"
+                data-testid="partner-settings-ticketing-link"
+                className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                {t('partnerSettingsPage.tabs.ticketing.linkCta')}
+              </a>
+            </div>
           )}
         </div>
       </div>

@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Ticketverkauf",
-        "description": "Status, SLAs, Exporte"
+        "description": "Status, SLAs, Kategorien, Formulare",
+        "linkCta": "Ticketing-Einstellungen verwalten →"
       },
       "aiBudgets": {
         "label": "KI-Budgets",
@@ -5592,5 +5593,9 @@
     "saveFailed": "Diese Einstellungen konnten nicht gespeichert werden.",
     "loading": "Wird geladen…",
     "loadFailed": "Die Einstellungen zur Skripterstellung konnten nicht geladen werden."
+  },
+  "ticketingHubPage": {
+    "heading": "Ticketing-Einstellungen",
+    "description": "Status, SLAs, Kategorien, Erfassungsformulare, E-Mail, Vorlagen und Zeiterfassung — für alle Organisationen."
   }
 }
