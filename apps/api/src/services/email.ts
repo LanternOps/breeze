@@ -16,6 +16,50 @@ export interface EmailAttachment {
   contentType?: string;
 }
 
+/** Which transport produced a failure, and whatever structure it reported. */
+export interface EmailTransportErrorFields {
+  transport: 'resend' | 'smtp' | 'mailgun';
+  /** HTTP status, for the two API transports. */
+  statusCode?: number;
+  /** Resend's own error name, e.g. `validation_error`. */
+  providerErrorName?: string;
+  /** nodemailer's parsed SMTP reply code. Absent when it reported `false`. */
+  smtpResponseCode?: number;
+  /** nodemailer's raw SMTP reply line. */
+  smtpResponse?: string;
+}
+
+/**
+ * A transport failure with its structure intact.
+ *
+ * WHY: the partner lane has to tell "the relay refused this SENDER" (fall back
+ * to EMAIL_FROM, spec §8.4) from "the relay refused this MESSAGE" (throw), and
+ * before this class the only evidence was a flattened string — see the `static`
+ * adapter's classifier and W02 plan amendment 7.
+ *
+ * `message` is IDENTICAL to what this service threw before. Three live matchers
+ * key on that text (services/reportNarrativeDelivery.ts:138, :145, :146), so a
+ * reworded message would silently reclassify narrative-delivery failures. This
+ * class adds fields; it never edits prose.
+ */
+export class EmailTransportError extends Error implements EmailTransportErrorFields {
+  readonly transport: 'resend' | 'smtp' | 'mailgun';
+  readonly statusCode?: number;
+  readonly providerErrorName?: string;
+  readonly smtpResponseCode?: number;
+  readonly smtpResponse?: string;
+
+  constructor(message: string, fields: EmailTransportErrorFields, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'EmailTransportError';
+    this.transport = fields.transport;
+    this.statusCode = fields.statusCode;
+    this.providerErrorName = fields.providerErrorName;
+    this.smtpResponseCode = fields.smtpResponseCode;
+    this.smtpResponse = fields.smtpResponse;
+  }
+}
+
 export interface SendEmailBase {
   to: string | string[];
   cc?: string | string[];
@@ -323,7 +367,14 @@ export class EmailService {
         }))
       });
       if (error) {
-        throw new Error(`Resend error: ${error.message}`);
+        // Text unchanged; the SDK's own name/statusCode now ride along so the
+        // partner lane can classify without regex-matching prose.
+        const detail = error as { name?: unknown; statusCode?: unknown };
+        throw new EmailTransportError(`Resend error: ${error.message}`, {
+          transport: 'resend',
+          providerErrorName: typeof detail.name === 'string' ? detail.name : undefined,
+          statusCode: typeof detail.statusCode === 'number' ? detail.statusCode : undefined,
+        }, { cause: error });
       }
       return;
     }
@@ -361,24 +412,41 @@ export class EmailService {
     // headers (e.g. Auto-Submitted) stay in the generic map.
     const { messageId, inReplyTo, references, rest } = liftThreadingHeaders(headers);
 
-    await this.smtpTransport.sendMail({
-      from: sender,
-      to,
-      cc,
-      subject,
-      html,
-      text,
-      replyTo,
-      messageId,
-      inReplyTo,
-      references,
-      headers: rest,
-      attachments: attachments?.map((a) => ({
-        filename: a.filename,
-        content: a.content,
-        contentType: a.contentType
-      }))
-    });
+    try {
+      await this.smtpTransport.sendMail({
+        from: sender,
+        to,
+        cc,
+        subject,
+        html,
+        text,
+        replyTo,
+        messageId,
+        inReplyTo,
+        references,
+        headers: rest,
+        attachments: attachments?.map((a) => ({
+          filename: a.filename,
+          content: a.content,
+          contentType: a.contentType
+        }))
+      });
+    } catch (err) {
+      // nodemailer's error is the only one that already carried structure, so
+      // the message is simply forwarded. `responseCode` is `false` — not
+      // missing — when the reply had no leading digits, which is why this is a
+      // typeof check and not a truthiness check.
+      const detail = err as { responseCode?: unknown; response?: unknown } | null;
+      throw new EmailTransportError(
+        err instanceof Error ? err.message : String(err),
+        {
+          transport: 'smtp',
+          smtpResponseCode: typeof detail?.responseCode === 'number' ? detail.responseCode : undefined,
+          smtpResponse: typeof detail?.response === 'string' ? detail.response : undefined,
+        },
+        { cause: err },
+      );
+    }
   }
 
   async sendPasswordReset(params: PasswordResetEmailParams): Promise<void> {
@@ -888,7 +956,12 @@ async function sendViaMailgun(
   if (!response.ok) {
     const message = await response.text().catch(() => '');
     const details = message ? `: ${message}` : '';
-    throw new Error(`Mailgun API error (${response.status})${details}`);
+    // `Mailgun API error (<status>)<details>` is matched verbatim by
+    // services/reportNarrativeDelivery.ts:145-146. Only the shape changes.
+    throw new EmailTransportError(`Mailgun API error (${response.status})${details}`, {
+      transport: 'mailgun',
+      statusCode: response.status,
+    });
   }
 }
 

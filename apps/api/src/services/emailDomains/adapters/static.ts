@@ -1,4 +1,4 @@
-import { getEmailService } from '../../email';
+import { getEmailService, type EmailTransportErrorFields } from '../../email';
 import { findStaticAllowedEntry, getEmailDomainsConfig } from '../config';
 import {
   PartnerLaneSendFailure,
@@ -95,16 +95,45 @@ export function classifyPlatformTransportError(err: unknown): PartnerLaneSendErr
   const response = typeof error?.response === 'string' ? error.response : '';
   const haystack = `${message} ${response}`.toLowerCase();
 
+  // ORDER IS LOAD-BEARING, and TEXT STILL WINS. A body that says "domain is not
+  // verified" is a sender refusal whatever status code carried it, and a sender
+  // refusal is the one case that MUST fall back to EMAIL_FROM instead of
+  // throwing (spec §8.4, §13 "`static`: the relay refuses the custom sender").
   if (includesAny(haystack, SENDER_REFUSAL_MARKERS)) return { kind: 'domain_unusable' };
   if (includesAny(haystack, RECIPIENT_REFUSAL_MARKERS)) return { kind: 'message_rejected', detail: message };
   if (includesAny(haystack, MESSAGE_REFUSAL_MARKERS)) return { kind: 'message_rejected', detail: message };
 
+  // Structured fields next (W04: services/email.ts EmailTransportError). Before
+  // these existed, an opaque provider body fell through to `ambiguous` — and an
+  // `ambiguous` sender refusal is a LOST email, because §8.4 forbids retrying
+  // it on the other lane. A status code is weaker evidence than the body text,
+  // but far stronger than nothing.
+  const structured = err as Partial<EmailTransportErrorFields> | null;
+
   // nodemailer sets responseCode to `false` when the reply had no leading
   // digits, so a truthiness check would be wrong here.
-  const code = typeof error?.responseCode === 'number' ? error.responseCode : null;
-  if (code !== null) {
-    if (code === 550 || code === 551 || code === 553) return { kind: 'domain_unusable' };
-    if (code === 552 || code === 554) return { kind: 'message_rejected', detail: message };
+  const smtpCode = typeof structured?.smtpResponseCode === 'number'
+    ? structured.smtpResponseCode
+    : (typeof error?.responseCode === 'number' ? error.responseCode : null);
+  if (smtpCode !== null) {
+    if (smtpCode === 550 || smtpCode === 551 || smtpCode === 553) return { kind: 'domain_unusable' };
+    if (smtpCode === 552 || smtpCode === 554) return { kind: 'message_rejected', detail: message };
+    // 4xx is a transient SMTP deferral: the relay may accept the same message
+    // minutes later, so we must NOT declare it definitively unsent.
+    return { kind: 'ambiguous', detail: message };
+  }
+
+  const status = typeof structured?.statusCode === 'number' ? structured.statusCode : null;
+  if (status !== null) {
+    // 429 and 402 are the lane, not the domain: back off, fall back for THIS
+    // message, and let the ops alert fire (spec §13 "Partner lane paused or
+    // rate-limited").
+    if (status === 429 || status === 402) return { kind: 'lane_unavailable' };
+    // 401/403 on a send is the relay refusing this sender: a send-only key that
+    // does not own the domain, or SendAs rights revoked. Fall back.
+    if (status === 401 || status === 403) return { kind: 'domain_unusable' };
+    if (status >= 400 && status < 500) return { kind: 'message_rejected', detail: message };
+    // 5xx: the provider may or may not have queued it. Never cross lanes.
     return { kind: 'ambiguous', detail: message };
   }
 

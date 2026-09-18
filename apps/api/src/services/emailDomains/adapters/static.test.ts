@@ -185,3 +185,46 @@ describe('classifyPlatformTransportError', () => {
     expect(classifyPlatformTransportError(Object.assign(new Error('x'), { responseCode: false })).kind).toBe('ambiguous');
   });
 });
+
+describe('classifyPlatformTransportError prefers structured fields (W04)', () => {
+  function transportError(message: string, fields: Record<string, unknown>) {
+    return Object.assign(new Error(message), { name: 'EmailTransportError' }, fields);
+  }
+
+  // Structured beats text: these messages contain NO marker at all, so before
+  // the structure existed every one of them fell through to `ambiguous` — and
+  // an `ambiguous` sender refusal is a lost email, because §8.4 forbids
+  // retrying it on the other lane.
+  const TABLE: Array<[string, Record<string, unknown>, string]> = [
+    ['opaque smtp 550', { transport: 'smtp', smtpResponseCode: 550 }, 'domain_unusable'],
+    ['opaque smtp 553', { transport: 'smtp', smtpResponseCode: 553 }, 'domain_unusable'],
+    ['opaque smtp 552', { transport: 'smtp', smtpResponseCode: 552 }, 'message_rejected'],
+    ['opaque smtp 421', { transport: 'smtp', smtpResponseCode: 421 }, 'ambiguous'],
+    ['opaque resend 403', { transport: 'resend', statusCode: 403 }, 'domain_unusable'],
+    ['opaque mailgun 403', { transport: 'mailgun', statusCode: 403 }, 'domain_unusable'],
+    ['opaque mailgun 401', { transport: 'mailgun', statusCode: 401 }, 'domain_unusable'],
+    ['opaque mailgun 429', { transport: 'mailgun', statusCode: 429 }, 'lane_unavailable'],
+    ['opaque resend 429', { transport: 'resend', statusCode: 429 }, 'lane_unavailable'],
+    ['opaque mailgun 400', { transport: 'mailgun', statusCode: 400 }, 'message_rejected'],
+    ['opaque mailgun 500', { transport: 'mailgun', statusCode: 500 }, 'ambiguous'],
+  ];
+
+  for (const [message, fields, kind] of TABLE) {
+    it(`classifies ${message} as ${kind}`, () => {
+      expect(classifyPlatformTransportError(transportError(message, fields)).kind).toBe(kind);
+    });
+  }
+
+  it('lets sender-refusal TEXT win over a status code that says otherwise', () => {
+    // A 400 from Resend whose body says the domain is unverified must still
+    // fall back rather than be treated as a bad message.
+    const err = transportError('Resend error: The acme.test domain is not verified.', { transport: 'resend', statusCode: 400 });
+    expect(classifyPlatformTransportError(err).kind).toBe('domain_unusable');
+  });
+
+  it('still classifies a plain Error with no structure, by text', () => {
+    expect(classifyPlatformTransportError(new Error('550 sender address rejected')).kind).toBe('domain_unusable');
+    expect(classifyPlatformTransportError(new Error('user unknown')).kind).toBe('message_rejected');
+    expect(classifyPlatformTransportError(new Error('socket hang up')).kind).toBe('ambiguous');
+  });
+});
