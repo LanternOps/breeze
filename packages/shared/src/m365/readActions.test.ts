@@ -88,10 +88,11 @@ describe('m365 read action contracts', () => {
 });
 
 describe('m365 sync action contracts', () => {
-  it('appends exactly the six sync ids to the read catalog', () => {
+  it('appends exactly the seven sync ids to the read catalog', () => {
     expect(M365_SYNC_ACTION_IDS).toEqual([
       'm365.sync.users', 'm365.sync.signin_activity', 'm365.sync.intune_devices',
       'm365.sync.ca_policies', 'm365.sync.skus', 'm365.sync.secure_score',
+      'm365.sync.signin_events',
     ]);
     expect(M365_READ_ACTION_IDS).toEqual([
       ...M365_INTERACTIVE_READ_ACTION_IDS, ...M365_SYNC_ACTION_IDS,
@@ -123,13 +124,24 @@ describe('m365 sync action contracts', () => {
       'id', 'createdDateTime', 'currentScore', 'maxScore', 'activeUserCount',
       'licensedUserCount', 'controlScores',
     ]);
+    // #5784 W05. No raw payload leaves the executor: the persister flattens
+    // `location` and `status`, and nothing else is projected. deviceDetail and
+    // appliedConditionalAccessPolicies are deliberately absent.
+    expect(M365_READ_ACTION_FIELDS['m365.sync.signin_events']).toEqual([
+      'id', 'createdDateTime', 'userId', 'userPrincipalName', 'appId', 'appDisplayName',
+      'clientAppUsed', 'ipAddress', 'location', 'conditionalAccessStatus', 'status',
+      'riskLevelAggregated', 'riskState', 'isInteractive',
+    ]);
+    expect(M365_READ_ACTION_FIELDS['m365.sync.signin_events']).not.toContain('deviceDetail');
+    expect(M365_READ_ACTION_FIELDS['m365.sync.signin_events'])
+      .not.toContain('appliedConditionalAccessPolicies');
     // lastSignInDateTime counts FAILED interactive attempts (spec §4.1) and must
     // never reach the API.
     expect(M365_READ_ACTION_FIELDS['m365.sync.signin_activity']).not.toContain('lastSignInDateTime');
     expect(M365_READ_ACTION_FIELDS['m365.sync.signin_activity']).not.toContain('signInActivity');
   });
 
-  it('accepts the six sync branches and their only optional inputs', () => {
+  it('accepts the seven sync branches and their only optional inputs', () => {
     for (const type of M365_SYNC_ACTION_IDS) {
       expect(m365SyncActionSchema.safeParse({ type }).success, type).toBe(true);
       expect(m365ReadActionSchema.safeParse({ type }).success, type).toBe(true);
@@ -141,6 +153,21 @@ describe('m365 sync action contracts', () => {
       type: 'm365.sync.signin_activity', continuation: 'x'.repeat(M365_SYNC_CONTINUATION_MAX_CHARS + 1),
     }).success).toBe(false);
     expect(m365SyncActionSchema.safeParse({ type: 'm365.sync.secure_score', backfill: true }).success).toBe(true);
+    // #5784 W05. The window is a pair of ISO instants; a non-datetime is rejected
+    // rather than silently widened into a full-tenant scan.
+    expect(m365SyncActionSchema.safeParse({
+      type: 'm365.sync.signin_events',
+      since: '2026-09-01T00:00:00.000Z',
+      until: '2026-09-08T00:00:00.000Z',
+    }).success).toBe(true);
+    expect(m365SyncActionSchema.safeParse({
+      type: 'm365.sync.signin_events', since: 'last week',
+    }).success).toBe(false);
+    expect(m365SyncActionSchema.safeParse({
+      type: 'm365.sync.signin_events', continuation: 'x'.repeat(M365_SYNC_CONTINUATION_MAX_CHARS + 1),
+    }).success).toBe(false);
+    expect(m365SyncActionSchema.safeParse({ type: 'm365.sync.users', since: '2026-09-01T00:00:00.000Z' }).success)
+      .toBe(false);
     // Options belong to exactly one branch.
     expect(m365SyncActionSchema.safeParse({ type: 'm365.sync.users', backfill: true }).success).toBe(false);
     expect(m365SyncActionSchema.safeParse({ type: 'm365.sync.skus', continuation: 'x' }).success).toBe(false);
@@ -165,7 +192,7 @@ describe('m365 sync action contracts', () => {
       shape: { type: { value: string } };
     }[]).map((branch) => branch.shape.type.value);
 
-    expect(branchIds).toHaveLength(18);
+    expect(branchIds).toHaveLength(19);
     expect(branchIds.filter((id) => !isM365SyncActionId(id)))
       .toEqual([...M365_INTERACTIVE_READ_ACTION_IDS]);   // all twelve, in order
     expect(branchIds.filter((id) => isM365SyncActionId(id)))

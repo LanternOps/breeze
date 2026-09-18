@@ -435,8 +435,23 @@ networkBaselineRoutes.patch(
     const currentSchedule = normalizeBaselineScanSchedule(baseline.scanSchedule);
     const currentAlertSettings = normalizeBaselineAlertSettings(baseline.alertSettings);
 
+    // `nextScanAt` must NOT be carried forward from `currentSchedule` when the
+    // interval itself changes: normalizeBaselineScanSchedule only recomputes it
+    // when the field is absent, so naively spreading currentSchedule first froze
+    // "Next run" on every interval edit — it kept re-echoing the pre-edit value
+    // (#6103). Recompute unless the caller supplied an explicit nextScanAt.
+    const intervalChanged = typeof body.scanSchedule?.intervalHours === 'number'
+      && body.scanSchedule.intervalHours !== currentSchedule.intervalHours;
     const nextSchedule = body.scanSchedule
-      ? normalizeBaselineScanSchedule({ ...currentSchedule, ...body.scanSchedule }, currentSchedule.intervalHours)
+      ? normalizeBaselineScanSchedule(
+          {
+            ...currentSchedule,
+            ...body.scanSchedule,
+            nextScanAt: body.scanSchedule.nextScanAt
+              ?? (intervalChanged ? undefined : currentSchedule.nextScanAt)
+          },
+          currentSchedule.intervalHours
+        )
       : currentSchedule;
     const nextAlertSettings = body.alertSettings
       ? normalizeBaselineAlertSettings({ ...currentAlertSettings, ...body.alertSettings })

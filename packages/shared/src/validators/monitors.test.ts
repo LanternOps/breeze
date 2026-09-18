@@ -108,7 +108,7 @@ describe('monitor definition validators (#5289)', () => {
       ],
     });
     expect(r.success).toBe(true);
-    expect(r.success && r.data.items[0].enabled).toBe(false);
+    expect(r.success && r.data.items[0]!.enabled).toBe(false);
   });
 
   it('event trigger accepts filter', () => {

@@ -132,6 +132,14 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // bindings have a NULL expected_resource_org_id and remain unchanged.
   automation_resource_bindings: { kind: 'custom', note: 'repoint org_id and an org-owned expected_resource_org_id together so the durable authorization binding remains valid after the parent automation moves' },
 
+  // Tool catalog W01 (#5215 / #5216). Two orgs may each register a source with
+  // the same slug (`tool_sources_org_slug_uq` is per-org), so a plain repoint
+  // aborts on 23505 and a dedupe-DELETE would silently destroy a working
+  // integration. The executor renames the loser's colliding slug in-grammar and
+  // rewrites every child's qualified_name, which embeds it.
+  tool_sources: { kind: 'custom', note: 'rename a loser source whose slug collides with a survivor source (suffix stays inside tool_sources_slug_chk), rewrite the affected tool_source_tools.qualified_name values, then repoint org_id — so no registration is silently dropped' },
+  tool_source_tools: { kind: 'custom', note: 'repoint org_id alongside the parent source; the owner-guard constraint trigger is deferred for the merge transaction, so parent and child may move in separate statements' },
+
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
   // execution must not keep pointing at an `ai_agent_runs` row: runs are
   // `leave-for-erasure` (org_id is trigger-immutable,
@@ -439,6 +447,15 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // (org_id, score_date), m365_posture_rollups_org_date_uniq (org_id, rollup_date).
   m365_secure_score_snapshots: { kind: 'repoint-dedupe', key: ['score_date'] },
   m365_posture_rollups: { kind: 'repoint-dedupe', key: ['rollup_date'] },
+  // #5784 W05. History, NOT a re-derivable snapshot: Graph retains sign-in logs
+  // ~30 days, so a merge that deleted these would destroy evidence nothing can
+  // reproduce. Same disposition as the two tables above, and for the same stated
+  // reason. Dedupe key is the Graph event id, which the unique index
+  // m365_signin_events_org_graph_uniq (org_id, graph_id) already enforces:
+  // a loser row whose graph_id already exists under the survivor is dropped,
+  // the rest repoint. There is no composite FK to violate at COMMIT — the table
+  // deliberately carries no connection_id.
+  m365_signin_events: { kind: 'repoint-dedupe', key: ['graph_id'] },
   tenant_variables: { kind: 'repoint-dedupe', key: ['key'] }, // verified: tenant_variables_org_key_uniq (org_id, key) WHERE org_id IS NOT NULL — trivially true for org-scoped rows
   catalog_item_org_pricing: { kind: 'repoint-dedupe', key: ['catalog_item_id'] }, // verified: catalog_item_org_pricing_item_org_uq (catalog_item_id, org_id)
   ticket_form_org_links: { kind: 'repoint-dedupe', key: ['form_id'] }, // verified: ticket_form_org_links_form_org_uq (form_id, org_id)
@@ -463,6 +480,26 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // branch FKs are DEFERRABLE INITIALLY IMMEDIATE so parent and child may
   // repoint in separate statements under SET CONSTRAINTS ALL DEFERRED.
   deliverable_template_items: { kind: 'repoint' },
+  // ticket_checklist_templates_org_name_uq (org_id, name) WHERE org_id IS NOT
+  // NULL (2026-10-16-191300) — a plain repoint raises 23505 when both orgs own
+  // a template with the same name. NOT repoint-dedupe: unlike
+  // deliverable_template_sets, a checklist template IS live-referenced —
+  // service_deliverables.checklist_template_id and
+  // deliverable_template_items.checklist_template_id (#5783 W03) both point at
+  // it with ON DELETE SET NULL, so deleting a colliding loser would silently
+  // NULL those pointers and empty every future occurrence's checklist, with no
+  // error and no signal. That is the exact failure the W03 delete guard exists
+  // to prevent; the merge path must not open a second door to it. Rename on
+  // collision instead, exactly as service_deliverables does, then repoint.
+  // Partner-wide templates (org_id NULL) are never merge participants, and the
+  // collision predicate carries `org_id IS NOT NULL` on both sides.
+  ticket_checklist_templates: { kind: 'custom', note: "rename colliding loser templates (same name under the survivor org) with a ' (merged <org8>)' suffix, then repoint all rows; NEVER delete — service_deliverables.checklist_template_id and deliverable_template_items.checklist_template_id reference it with ON DELETE SET NULL (#5783 W03), so a delete silently empties future checklists" },
+  // Items ride the parent: their only unique is (template_id, label), which no
+  // repoint can collide on, and both (template_id, org_id)/(template_id,
+  // partner_id) branch FKs are DEFERRABLE INITIALLY IMMEDIATE so parent and
+  // child may repoint in separate statements under SET CONSTRAINTS ALL
+  // DEFERRED.
+  ticket_checklist_template_items: { kind: 'repoint' },
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
   // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
@@ -885,6 +922,14 @@ const REPOINT_TABLES: readonly string[] = [
   // so no dedupe key is needed. Pending rows (comment_id NULL) repoint too:
   // the claim predicate in addTicketComment matches on the ticket's org_id.
   "ticket_attachments",
+  // #5783 W01. Own org_id (shape 1), so plain repoint like its siblings — the
+  // only unique index is the pkey on `id`, which cannot collide across orgs, so
+  // no dedupe key is needed, and there is no history to preserve by renaming.
+  // Its composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so
+  // orgMerge's `SET CONSTRAINTS ALL DEFERRED` lets tickets and this child
+  // repoint in separate statements without a 23503 — unlike ticket_drafts,
+  // whose non-deferrable legs forced a custom executor.
+  "ticket_checklist_items",
   "ticket_email_links",
   "ticket_forms",
   "ticket_outbox",

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 
 	openh264 "github.com/y9o/go-openh264"
@@ -15,7 +16,8 @@ import (
 // via purego (no cgo required). Provides deterministic 1-in-1-out encoding
 // with no internal frame buffering, unlike the Windows MFT software encoder.
 type openH264Encoder struct {
-	mu          sync.Mutex
+	mu sync.Mutex
+	convertTimer
 	cfg         EncoderConfig
 	width       int
 	height      int
@@ -224,11 +226,13 @@ func (e *openH264Encoder) Encode(frame []byte) ([]byte, error) {
 	// Convert RGBA/BGRA to I420
 	stride := e.width * 4
 	var i420 []byte
+	convertStart := time.Now()
 	if e.pixelFormat == PixelFormatBGRA {
 		i420 = bgraToI420(frame, e.width, e.height, stride)
 	} else {
 		i420 = rgbaToI420(frame, e.width, e.height, stride)
 	}
+	e.record(time.Since(convertStart))
 	defer putI420Buffer(i420)
 
 	// Force IDR if requested

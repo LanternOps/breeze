@@ -96,7 +96,12 @@ describe('navSections structure (#1321, #1324)', () => {
       '/billing/quotes',
       '/billing/invoices',
       '/contracts',
+      // W03 — the agreement library left /contracts for its own area.
+      '/agreements/templates',
       '/settings/catalog',
+      // W01 settings consolidation (#6224, M3) — deliverable templates get a
+      // nav entry under Billing.
+      '/settings/deliverable-templates',
     ]);
     expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
     expect(hrefsOf('fleet-management')).toEqual([
@@ -111,7 +116,7 @@ describe('navSections structure (#1321, #1324)', () => {
 
   it('keeps every AI surface together and every platform-admin surface in Administration', () => {
     expect(hrefsOf('ai')).toEqual([
-      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/ai-for-office',
+      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/settings/tool-sources', '/ai-for-office',
     ]);
     const admin = section('administration');
     expect(admin.items.length).toBeGreaterThan(0);
@@ -123,7 +128,13 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(topLevelNav.map((i) => i.href)).not.toContain('/onedrive');
   });
 
-  it('adds a Script authoring entry to the AI section, after AI Usage & Budget (#5612 W05)', () => {
+  it('labels the AI usage entry "AI Usage" — the budget editor moved to org settings (#6004)', () => {
+    const item = section('ai').items.find((i) => i.href === '/settings/ai-usage');
+    expect(item?.name).toBe('AI Usage');
+    expect(item?.labelKey).toBe('nav.aiUsage');
+  });
+
+  it('adds a Script authoring entry to the AI section, after AI Usage (#5612 W05)', () => {
     const item = section('ai').items.find((i) => i.href === '/settings/ai-script-authoring');
     expect(item).toBeDefined();
     expect(item?.labelKey).toBe('nav.scriptAuthoring');
@@ -171,6 +182,22 @@ describe('navSections structure (#1321, #1324)', () => {
       .items.find((i) => i.href === '/monitoring')!;
     expect(item.name).toBe('Network Monitor');
     expect(item.labelKey).toBe('nav.networkMonitor');
+  });
+
+  it('lists a Ticketing item under Settings, linking to /settings/ticketing (M0, #6224)', () => {
+    const item = section('settings').items.find((i) => i.href === '/settings/ticketing');
+    expect(item, 'Settings section should link to /settings/ticketing').toBeDefined();
+    expect(item?.name).toBe('Ticketing');
+    expect(item?.labelKey).toBe('nav.ticketing');
+    expect(item?.partnerScopeOnly).toBe(true);
+  });
+
+  it('lists Deliverable Templates under the Billing section (M3, #6224)', () => {
+    const item = section('billing').items.find((i) => i.href === '/settings/deliverable-templates');
+    expect(item, 'Billing section should link to /settings/deliverable-templates').toBeDefined();
+    expect(item?.name).toBe('Deliverable Templates');
+    expect(item?.labelKey).toBe('nav.deliverableTemplates');
+    expect(item?.partnerScopeOnly).toBe(true);
   });
 });
 
@@ -327,5 +354,18 @@ describe('sidebar i18n seed', () => {
 
     await i18n.changeLanguage('pt-BR');
     await waitFor(() => expect(screen.getByText('Painel')).toBeInTheDocument());
+  });
+  // The Agreements nav item points at /agreements/templates, and /agreements/signed
+  // is a SIBLING route, not a child — prefix matching alone leaves the item dark
+  // there. pathAliases is what fixes it, and it is otherwise untested.
+  it('keeps the Agreements item active on the sibling /agreements/signed route', async () => {
+    const activeHrefIn = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('a.bg-primary')).map((a) => a.getAttribute('href'));
+
+    for (const path of ['/agreements/templates', '/agreements/templates/abc-123', '/agreements/signed']) {
+      const { container, unmount } = render(<Sidebar currentPath={path} />);
+      await waitFor(() => expect(activeHrefIn(container)).toContain('/agreements/templates'));
+      unmount();
+    }
   });
 });

@@ -1201,7 +1201,6 @@
         "save": "Guardar",
         "cancel": "Cancelar",
         "none": "No hay justificación registrada."
-
       }
     }
   },
@@ -1336,6 +1335,8 @@
       "readyToDeployStandalone": "Listo para implementar."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Instalación automática activada",
+      "complianceCheckQueued": "Verificación de cumplimiento en cola",
       "failedToLoadSoftwarePolicyData": "No se pudieron cargar los datos de la política de software",
       "couldNotLoadLatestPolicyDetailsShowing": "No se pudieron cargar los detalles de la política más recientes. Mostrando datos almacenados en caché.",
       "couldNotLoadPolicyDetailsShowingCached": "No se pudieron cargar los detalles de la política. Mostrando datos almacenados en caché.",
@@ -1375,7 +1376,19 @@
       "failedToUpdatePolicy": "No se pudo actualizar la política",
       "failedToCreatePolicy": "No se pudo crear la política",
       "policyUpdated": "Política actualizada exitosamente",
-      "policyCreated": "Política creada exitosamente"
+      "policyCreated": "Política creada exitosamente",
+      "armInstallRequiresMfa": "Activar la instalación automática requiere autenticación multifactor. Complete la MFA y vuelva a intentarlo.",
+      "armInstallRequiresPermission": "Activar la instalación automática requiere el permiso devices.execute. Pida a un administrador que lo conceda y vuelva a intentarlo.",
+      "installStatusPending": "Instalación en cola",
+      "installStatusInProgress": "Instalando…",
+      "installStatusCompleted": "Instalado",
+      "installStatusFailed": "Falló la instalación",
+      "installStatusGaveUp": "Se desistió tras fallos repetidos",
+      "installStatusSkipped": "Omitido en este ciclo",
+      "installSkippedNoCatalog": "Una regla obligatoria no tiene un elemento de catálogo vinculado, así que no hay nada que instalar. Agregue un vínculo de catálogo en el editor de políticas para solucionarlo.",
+      "installSkippedCapOrPlatform": "No es un error: se alcanzó el límite de instalaciones por ciclo o la plataforma de este dispositivo no tiene un método de instalación para el software. Es posible que se intente de nuevo en el próximo ciclo.",
+      "installAttempts": "{{count}} intento(s)",
+      "installLastAttempt": "Último intento de instalación: "
     },
     "deploymentList": {
       "running": "En ejecución",
@@ -1413,7 +1426,9 @@
       "noDeploymentsYet": "Aún no se han creado implementaciones.",
       "failedToCancelDeployment": "No se pudo cancelar la implementación",
       "deploymentCancelled": "Implementación cancelada",
-      "pageOf": "Página {{page}} de {{pages}}"
+      "pageOf": "Página {{page}} de {{pages}}",
+      "policyOwned": "Gestionado por política",
+      "policyOwnedTooltip": "Creado automáticamente por la remediación de instalación automática de una política de software"
     },
     "deploymentProgress": {
       "queued": "En cola",
@@ -1597,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 dispositivos — normalmente porque esta política aún no está asignada a ningún dispositivo, aunque una flota totalmente conforme o una lista de sitios vacía también da 0",
+      "manageAssignments": "Administrar asignaciones de políticas de configuración",
+      "gracePeriodHelp": "Se aplica en la próxima verificación de cumplimiento",
       "scope": "Alcance",
       "allOrganizations": "Todas las organizaciones",
       "partnerWideTemplate": "(plantilla en todo el socio)",
@@ -1641,7 +1659,16 @@
       "autoUninstall2": "autoUninstall",
       "gracePeriod": "grace-period",
       "gracePeriod2": "gracePeriod",
-      "saving": "Guardando..."
+      "saving": "Guardando...",
+      "catalogLink": "Elemento de catálogo vinculado",
+      "catalogLinkNone": "Ninguno — no vinculado",
+      "autoInstall": "Instalar automáticamente el software faltante",
+      "autoInstallCatalogWarning": "{{count}} de {{total}} regla(s) no tienen un elemento de catálogo vinculado y se detectarán como faltantes, pero nunca se instalarán.",
+      "dryRunLoading": "Comprobando cuántos dispositivos se verán afectados...",
+      "dryRunResult": "Esto instalará el software faltante en aproximadamente {{count}} dispositivo(s).",
+      "dryRunUnavailable": "La vista previa del número de dispositivos aún no está disponible. La activación tendrá efecto de todos modos en el próximo análisis de cumplimiento.",
+      "dryRunNewPolicy": "Esta es una política nueva — el impacto en los dispositivos no se conocerá hasta el primer análisis de cumplimiento después de guardar.",
+      "catalogUnavailable": "No se pudo cargar el catálogo de software, por lo que los selectores de vínculo de catálogo de abajo están vacíos. Esto no es lo mismo que no tener elementos de catálogo: recargue la página antes de suponer que una regla no se puede vincular."
     },
     "softwareCatalog": {
       "ready": "Listo",

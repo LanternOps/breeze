@@ -22,16 +22,17 @@ import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import {
-  resolveApprovedPatchesForDevice,
   type CategoryRule,
   type PolicyAppRule,
   type PolicyAutoApproveConfig,
   type RingConfig,
 } from '../services/patchApprovalEvaluator';
+// W02 (#5748): the DB-facing resolver moved to patchEligibility.ts; the call
+// below and its behaviour are unchanged (golden-fixture parity test there).
+import { resolveApprovedPatchesForDevice } from '../services/patchEligibility';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import {
   deliveryTtlMs,
-  isOfflineQueueEnabled,
   type OfflinePolicy,
 } from '../services/commandOfflinePolicy';
 import {
@@ -840,19 +841,13 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
  * return `device_offline` and the device is recorded skipped. `queue` bounds the
  * deadline by the NEXT scheduled occurrence so a device that reconnects after
  * it installs once, from the fresh approved set, rather than twice.
- *
- * Returning `undefined` (rather than an explicit `queue`) while the flag is off
- * is deliberate: `resolveOfflinePolicy` lets an EXPLICIT policy win over the
- * `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` gate, so passing one here would ship
- * the behaviour change ahead of the flag.
  */
 function resolvePatchOfflinePolicy(
   offlineBehavior: string | undefined,
   nextOccurrenceAt: Date | null,
   now: Date,
-): { policy: OfflinePolicy | undefined; staleDeadline: boolean } {
+): { policy: OfflinePolicy; staleDeadline: boolean } {
   if (offlineBehavior === 'skip') return { policy: { kind: 'reject' }, staleDeadline: false };
-  if (!isOfflineQueueEnabled()) return { policy: undefined, staleDeadline: false };
 
   const ttlMs = deliveryTtlMs('standard');
   const untilNextOccurrence = nextOccurrenceAt
@@ -1167,13 +1162,7 @@ async function prepareDeviceExecution(
     .from(patches)
     .where(inArray(patches.id, patchIds));
 
-  // #5128 W3: through the single enqueue seam so an offline device can be
-  // QUEUED instead of skipped. `previouslyRejected: true` keeps the flag gate
-  // in charge for the case where `resolvePatchOfflinePolicy` returns undefined
-  // (an explicit policy would win over the gate outright). W4 flipped that
-  // gate's default ON, so an UNSET DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED now
-  // queues rather than hard-rejecting; `=false` restores the old behaviour.
-  //
+  // Enqueue through the single dispatch seam so offline devices can wait for delivery.
   // `patchJobId` is now in the payload: it is what lets a result arriving days
   // later (or the reaper, or a cancel) find the job this command belongs to.
   const now = new Date();
@@ -1192,16 +1181,14 @@ async function prepareDeviceExecution(
     deviceId,
     type: 'install_patches',
     payload: { patchJobId, patchIds, patches: patchRecords },
-    previouslyRejected: true,
     expectedOrgId: patchJob.orgId,
     offlinePolicy: offline.policy,
   });
 
   if (!res.ok) {
-    // Unchanged shape: an offline device with `offlineBehavior: 'skip'` (or the
-    // flag off) is still recorded skipped, now with the seam's own code as the
-    // reason instead of a blanket 'device_offline'. A stale-deadline fallback
-    // gets its OWN reason so it is not mistaken for a configured skip.
+    // An offline device with `offlineBehavior: 'skip'` is still recorded
+    // skipped, with the seam's own code as the reason. A stale-deadline
+    // fallback gets its own reason so it is not mistaken for a configured skip.
     await markDeviceSkipped(
       patchJobId,
       deviceId,

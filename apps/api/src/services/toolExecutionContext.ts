@@ -91,6 +91,23 @@ export type ToolExecutionContext = {
    */
   actionIntentId?: string;
   /**
+   * Device ids frozen at admission for this run (spec §8 data minimisation).
+   * A device-scoped tool that can span MANY devices — `export_dataset` today —
+   * must refuse any id outside this set. The central `enforceDeviceArgs` gate
+   * answers "may this CALLER reach this device"; this answers the different
+   * question "is this device in the set a human admitted THIS run for", and
+   * one does not imply the other: an agent principal can reach the whole org.
+   *
+   * ABSENT means "no run frame", not "no restriction" — a direct chat/MCP call
+   * has no frozen set, and is bounded by the caller gate alone.
+   *
+   * Only the CONSTRAINT lives here. The run id and org are read from the auth
+   * principal (`auth.principal.runId`, `auth.orgId`) — see reconciliation R4.
+   */
+  runTargets?: readonly string[];
+  /** Bytes this run may still stage into artifacts. */
+  stagedBytesRemaining?: number;
+  /**
    * The released intent's decision record — set by the SAME two release
    * paths that set `actionIntentId`, from the intent row they already hold,
    * and by nothing else (#5645). `run_script`'s proposal branch derives the
@@ -103,4 +120,20 @@ export type ToolExecutionContext = {
    * it, and a tool-name gate would have to be edited by the next consumer.
    */
   releaseDecision?: ReleaseDecision;
+  /**
+   * #4177 (W04): set ONLY by jobs/intentReleaseWorker.ts, and only when it
+   * releases an agent-originated intent whose action creates a row OWNED by
+   * a real user (`USER_OWNED_RELEASE_ACTIONS` — `manage_tickets:
+   * log_time_entry`, whose `time_entries.user_id` is a users FK, plus the
+   * three `services/aiToolsFleet.ts` writers added by #6200:
+   * `manage_deployments:create`, `manage_patches:install` and
+   * `manage_patches:rollback`). The worker
+   * swaps the rebuilt agent auth for the APPROVER's own AuthContext
+   * (`action_intents.decided_by_user_id`) and names them here, so the
+   * handler can (a) assert the auth it received really is that approver
+   * before writing and (b) stamp the row's provenance as `ai_suggested`.
+   * Absent for every other release and for every direct call, which is what
+   * lets the handler keep `source: 'manual'` for a human's own tool call.
+   */
+  approverRelease?: { approverUserId: string };
 };

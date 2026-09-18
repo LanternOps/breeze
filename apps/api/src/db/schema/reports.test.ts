@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { getTableColumns } from 'drizzle-orm';
 import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
 import {
+  REPORT_RUN_DELIVERY_STATES,
+  reportRunDeliveries,
   reportRuns,
   reports,
   reportScheduleRecipients,
@@ -149,5 +151,31 @@ describe('reportTypeEnum', () => {
     ]) {
       expect(reportTypeEnum.enumValues).toContain(type);
     }
+  });
+});
+
+describe('report_run_deliveries (#4248 W03)', () => {
+  it('carries no org_id, no partner_id and no email address', () => {
+    const cols = Object.keys(getTableColumns(reportRunDeliveries));
+    expect(cols).not.toContain('orgId');
+    expect(cols).not.toContain('partnerId');
+    expect(cols.some((c) => /email/i.test(c))).toBe(false); // PII stays in `users`
+    expect(cols).toEqual(
+      expect.arrayContaining([
+        'reportRunId', 'recipientUserId', 'channel', 'state', 'attempts', 'lastError', 'claimedAt', 'sentAt',
+      ]),
+    );
+  });
+
+  it('cascades from report_runs (the reason it needs no ASSOCIATED_SYSTEM_SCOPED_TABLES entry)', () => {
+    const { foreignKeys } = getTableConfig(reportRunDeliveries);
+    const fk = foreignKeys.find((f) => f.reference().columns.map((c) => c.name).includes('report_run_id'));
+    expect(fk).toBeDefined();
+    expect(fk?.onDelete).toBe('cascade');
+    expect(fk?.reference().foreignTable).toBe(reportRuns);
+  });
+
+  it('exposes the five states, and only those', () => {
+    expect([...REPORT_RUN_DELIVERY_STATES]).toEqual(['pending', 'claimed', 'sent', 'failed', 'unknown']);
   });
 });

@@ -156,6 +156,64 @@ describe('network_monitors RLS — dual-axis (#5291 W04)', () => {
     });
   });
 
+  // #5751 W03 (#5754). The app layer is designed never to violate these, so
+  // without a live-DB case a typo in either CHECK expression would ship
+  // silently — the unit test only proves the text is in the migration file,
+  // not that Postgres accepts the good shapes and rejects the bad ones.
+  describe('TLS observation CHECKs', () => {
+    const OBSERVED = {
+      tlsState: 'observed',
+      tlsNotAfter: new Date('2027-01-02T03:04:05Z'),
+      tlsObservedAt: new Date('2026-09-14T00:00:00Z'),
+      tlsObservedHost: 'a.example:443',
+      tlsIssuer: 'CN=Example CA',
+    };
+
+    const insertMonitor = (over: Partial<typeof networkMonitors.$inferInsert>) =>
+      withDbAccessContext(SYSTEM_CTX, () =>
+        db
+          .insert(networkMonitors)
+          .values(monitorValues({ orgId: f.orgA1, partnerId: null, ...over }))
+          .returning({ id: networkMonitors.id }),
+      );
+
+    it('accepts a complete observed row (positive control)', async () => {
+      // Without this, a CHECK that rejected EVERY row would still leave the
+      // rejection cases below passing — for the wrong reason.
+      expect(await insertMonitor(OBSERVED)).toHaveLength(1);
+    });
+
+    it('accepts all-NULL — "never observed under the current agent"', async () => {
+      expect(await insertMonitor({})).toHaveLength(1);
+    });
+
+    it('accepts handshake_failed with no certificate values', async () => {
+      expect(await insertMonitor({
+        tlsState: 'handshake_failed',
+        tlsObservedAt: new Date(),
+        tlsObservedHost: 'broken.example',
+      })).toHaveLength(1);
+    });
+
+    it('rejects an unknown tls_state (23514 — network_monitors_tls_state_chk)', async () => {
+      await expectSqlState(() => insertMonitor({ ...OBSERVED, tlsState: 'totally_bogus' }), '23514');
+    });
+
+    it.each([
+      ['tlsNotAfter', { tlsNotAfter: null }],
+      ['tlsObservedAt', { tlsObservedAt: null }],
+      ['tlsObservedHost', { tlsObservedHost: null }],
+    ] as const)(
+      'rejects an observed row missing %s (23514 — network_monitors_tls_observed_shape_chk)',
+      async (_field, over) => {
+        // All three legs matter: an "observed" row without one of them would
+        // let loadExpiringCerts emit a finding that names no endpoint, or
+        // order by a NULL expiry.
+        await expectSqlState(() => insertMonitor({ ...OBSERVED, ...over }), '23514');
+      },
+    );
+  });
+
   describe('write policy — forges', () => {
     it('partner A can insert its own partner-wide check (positive control)', async () => {
       // Without this, a policy that denied EVERY partner insert would still

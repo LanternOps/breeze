@@ -239,7 +239,7 @@ describe('partnerTrust.repo writeTrust (real implementation)', () => {
 });
 
 describe('evaluateCapability', () => {
-  it.each(['remote_control', 'device_execute', 'installer_distribute'] as const)(
+  it.each(['remote_control', 'device_execute', 'installer_distribute', 'custom_sending_domain'] as const)(
     'denies %s in probation',
     async (cap) => {
       const d = await evaluateCapability(cap, { partnerId: 'p1' });
@@ -249,6 +249,25 @@ describe('evaluateCapability', () => {
       }));
     },
   );
+
+  it('denies custom_sending_domain for a restricted partner with reason "restricted"', async () => {
+    state.trustState = 'restricted';
+    const d = await evaluateCapability('custom_sending_domain', { partnerId: 'p1' });
+    expect(d).toMatchObject({ allow: false, code: 'TRUST_RESTRICTED', reason: 'restricted' });
+  });
+
+  it('allows custom_sending_domain for a trusted partner and writes no audit row', async () => {
+    state.trustState = 'trusted';
+    expect(await evaluateCapability('custom_sending_domain', { partnerId: 'p1' })).toEqual({ allow: true });
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it('allows custom_sending_domain in off mode without reading the partner row — the self-hosted path', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+    state.trustState = 'probation';
+    expect(await evaluateCapability('custom_sending_domain', { partnerId: 'p1' })).toEqual({ allow: true });
+    expect(audit).not.toHaveBeenCalled();
+  });
 
   it('starts a lazy promotion attempt after auditing a probation denial', async () => {
     await evaluateCapability('remote_control', { partnerId: 'p1' });

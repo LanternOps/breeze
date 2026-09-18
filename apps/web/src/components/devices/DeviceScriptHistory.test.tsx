@@ -305,3 +305,51 @@ describe('DeviceScriptHistory run context (#4888)', () => {
     expect(chip).not.toHaveTextContent('System');
   });
 });
+
+describe('DeviceScriptHistory AI initiator chip (#5022 W02)', () => {
+  function mockHistory(execution: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === `/devices/${DEVICE_ID}/scripts`) {
+        return jsonResponse({ data: [execution] });
+      }
+      if (url.startsWith(`/devices/${DEVICE_ID}/ai-origin`)) {
+        return jsonResponse({ data: null });
+      }
+      return jsonResponse({}, 404);
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders the AI chip in the row for an AI-dispatched execution', async () => {
+    mockHistory({ ...executionRow, aiInitiatorKind: 'ai_agent', hasAiOrigin: true });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+    expect(await screen.findByTestId('ai-initiator-chip')).toHaveTextContent('AI agent');
+  });
+
+  it('renders no AI chip for an unmarked execution', async () => {
+    mockHistory({ ...executionRow, aiInitiatorKind: null, hasAiOrigin: false });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+    await screen.findByText('Collect Inventory');
+    expect(screen.queryByTestId('ai-initiator-chip')).toBeNull();
+  });
+
+  it('keeps the run-context chip visible alongside the AI chip in the detail drawer', async () => {
+    mockHistory({
+      ...executionRow,
+      runAs: 'elevated',
+      aiInitiatorKind: 'ai_agent',
+      hasAiOrigin: true,
+    });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+
+    expect(await screen.findByText('Execution Details')).toBeInTheDocument();
+    expect(screen.getByTestId('run-context-chip')).toBeInTheDocument();
+    // Two chips render: the row's and the detail drawer's.
+    expect(screen.getAllByTestId('ai-initiator-chip').length).toBeGreaterThanOrEqual(1);
+  });
+});

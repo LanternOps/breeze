@@ -7,6 +7,7 @@ import { ticketPartsRoutes } from './parts';
 import { ticketMoveOrgRoutes } from './moveOrg';
 import { ticketAttachmentRoutes } from './attachments';
 import { ticketAiDraftsRoutes } from './aiDrafts';
+import { ticketChecklistRoutes } from './checklist';
 
 export const ticketsRoutes = new Hono();
 
@@ -30,4 +31,8 @@ ticketsRoutes.route('/', ticketAttachmentRoutes);
 // segment count doesn't collide with bare /:id, but registration order stays
 // consistent with the rest of this file's mount ordering rule.
 ticketsRoutes.route('/', ticketAiDraftsRoutes);
+// checklist BEFORE core /:id routes so /checklist/:itemId is not captured by
+// the generic /:id param matcher, and /:id/checklist/reorder is not captured by
+// a shorter /:id route (#5783 W01).
+ticketsRoutes.route('/', ticketChecklistRoutes);
 ticketsRoutes.route('/', ticketsApiRoutes);

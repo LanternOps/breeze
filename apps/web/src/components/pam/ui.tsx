@@ -206,11 +206,17 @@ export function Switch({
   onToggle,
   testId,
   ariaLabel,
+  disabled,
 }: {
   checked: boolean;
   onToggle: () => void;
   testId?: string;
   ariaLabel?: string;
+  /** Additive (#5216 W01 PR C): a toggle that cannot take effect must not be
+   *  clickable — e.g. a tool source tool removed upstream, where flipping it
+   *  would be a switch that silently does nothing. Defaults to enabled, so
+   *  every pre-existing caller is unchanged. */
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -219,10 +225,12 @@ export function Switch({
       aria-checked={checked}
       {...(ariaLabel ? { 'aria-label': ariaLabel } : {})}
       onClick={onToggle}
+      disabled={disabled}
       {...(testId ? { 'data-testid': testId } : {})}
       className={cn(
         'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition',
         checked ? 'bg-emerald-500/80' : 'bg-muted',
+        disabled && 'cursor-not-allowed opacity-50',
       )}
     >
       <span

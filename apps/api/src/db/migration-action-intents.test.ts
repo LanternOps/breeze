@@ -139,6 +139,15 @@ describe('Action intents migration', () => {
     // status/decided_via; a release that could rewrite it could relax the
     // very invariants it records.
     'script_reviewer_evidence',
+    'trigger_kind',
+    'trigger_ref_id',
+    'trigger_key',
+    // 2026-10-16-193700 (tool catalog W01 PR B, #5216): the external
+    // tool-source binding an approver approved. Unconditional — a release
+    // that could re-point the intent at a different tool/revision after
+    // approval would defeat the drift check in revalidateRelease.ts.
+    'tool_source_tool_id',
+    'tool_revision',
   ] as const;
 
   // Deliberately MUTABLE. release_by is written by the approve fan-in

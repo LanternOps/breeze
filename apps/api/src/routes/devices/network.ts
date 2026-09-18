@@ -11,6 +11,9 @@ import {
 import { authMiddleware, requireScope, requirePermission, requireMfa } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { listNetworkDevicesSchema, createNetworkAssetSchema } from './schemas';
+import { maskOidShapedModel, nicVendorFromMac } from '../../services/assetIdentity';
+import { reachabilityToListStatus, type Reachability } from '../../services/assetReachability';
+import { loadReachability } from '../../services/assetReachabilityLoader';
 
 export const networkRoutes = new Hono();
 
@@ -38,6 +41,8 @@ interface UnifiedListSourceRow {
   url: string | null;
   snmpMonitoringEnabled?: boolean;
   networkMonitoringEnabled?: boolean;
+  /** W01 (spec §4.4) — supplied by the caller from loadReachability(). */
+  reachability?: Reachability;
 }
 
 /**
@@ -62,16 +67,31 @@ function toUnifiedListShape(r: UnifiedListSourceRow) {
     // url-only row would render an empty name.
     hostname: r.label || r.hostname || r.url || (r.ipAddress ?? ''),
     displayName: r.label ?? null,
-    // A manual asset that no probe has ever reached is not "offline" — that
-    // is a reachability claim we have not made. Matches the 'unknown' status
-    // the #4622 manual-asset spec uses for the same situation.
-    status: r.lastSeenAt === null && r.source === 'manual'
-      ? ('unknown' as const)
-      : r.isOnline ? ('online' as const) : ('offline' as const),
+    // W01 (spec §4.4): status IS reachability now. The old expression read
+    // `is_online` — the last subnet sweep's verdict, which on a daily-scan
+    // profile is up to 24 h stale and which the disappeared sweep could flip to
+    // false without dating it. `unverified` maps to 'unknown', never 'offline':
+    // that conflation is both F1 and the #4622 manual-asset bug.
+    //
+    // No reachability (the POST arm's `.returning()` echo, which has no
+    // monitors and no scan yet) keeps the #5213 manual-asset rule.
+    status: r.reachability
+      ? reachabilityToListStatus(r.reachability)
+      : r.lastSeenAt === null && r.source === 'manual'
+        ? ('unknown' as const)
+        : r.isOnline ? ('online' as const) : ('offline' as const),
+    // Retained for one release and documented as the last scan/controller
+    // verdict (spec §4.4). The web reads `reachability`; nothing new may read
+    // this.
+    isOnline: r.isOnline,
+    reachability: r.reachability ?? null,
     ipAddress: r.ipAddress ?? null,
     macAddress: r.macAddress ?? null,
     manufacturer: r.manufacturer ?? null,
-    model: r.model ?? null,
+    // Spec §9 read-time guard — a raw sysObjectID is not a model. The raw
+    // value stays reachable through snmpData.sysObjectId.
+    model: maskOidShapedModel(r.model ?? null),
+    nicVendor: nicVendorFromMac(r.macAddress ?? null),
     responseTimeMs: r.responseTimeMs ?? null,
     openPorts: r.openPorts ?? null,
     lastSeenAt: r.lastSeenAt,
@@ -308,7 +328,12 @@ networkRoutes.get(
     // Normalize into the shared unified-list projection (#5213 — shared with
     // the POST arm below via toUnifiedListShape, so a freshly-created row
     // and the same row's next GET can never render as different shapes).
-    const data = rows.map((r) => toUnifiedListShape(r as UnifiedListSourceRow));
+    // One batched load for the page (three queries), never per row.
+    const reachabilityByAsset = await loadReachability(rows.map((r) => r.id));
+    const data = rows.map((r) => toUnifiedListShape({
+      ...(r as UnifiedListSourceRow),
+      reachability: reachabilityByAsset.get(r.id),
+    }));
 
     const pagination: { page: number; limit: number; total?: number } = { page, limit };
     if (total !== undefined) pagination.total = total;

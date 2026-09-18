@@ -14,6 +14,7 @@ import { userRateLimit } from '../../middleware/userRateLimit';
 import { createAuditLogAsync } from '../../services/auditService';
 import { sniffAttachmentMime } from '../../services/attachmentSniff';
 import {
+  AttachmentExpiredError,
   AttachmentStorageError,
   deleteBytes,
   openBytes,
@@ -44,7 +45,7 @@ const idParam = z.object({ id: z.string().guid() });
 /** JSON error body shape shared by every attachment route. */
 function fail(
   c: { json: (b: unknown, s: number) => Response },
-  status: 400 | 403 | 404 | 409 | 413 | 415 | 429 | 503,
+  status: 400 | 403 | 404 | 409 | 410 | 413 | 415 | 429 | 503,
   code: string,
   message: string,
 ): Response {
@@ -197,6 +198,103 @@ ticketAttachmentRoutes.post(
   },
 );
 
+const fromArtifactSchema = z.object({ handle: z.string().guid() });
+
+/**
+ * POST /tickets/:id/attachments/from-artifact — attach an AI run artifact to a
+ * ticket BY REFERENCE (execution-plane spec §6.3).
+ *
+ * No bytes move. The row records the artifact's own metadata (name, type, size,
+ * digest) so the comments feed renders identically to an upload, and points at
+ * the artifact for content. That is the whole point: a 128 MiB analysis output
+ * must not be duplicated into the ticket store, and a technician must not have
+ * to download-then-reupload to put a finding in front of a customer.
+ *
+ * ORG: resolved against the TICKET's org, never the caller's. A partner-scope
+ * technician can reach many orgs; resolving against theirs would let a sibling
+ * org's file land on this customer's ticket. `resolveArtifact` returns null for
+ * not-found AND forbidden alike, so this answers one 404 for both.
+ *
+ * The attachment lands PENDING (comment_id null, attached_at null), exactly
+ * like an upload: the technician posts it with a comment, which is what the
+ * `ticket_attachments_attached_chk` shape encodes.
+ */
+ticketAttachmentRoutes.post(
+  '/:id/attachments/from-artifact',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('param', idParam),
+  zValidator('json', fromArtifactSchema),
+  userRateLimit('ticket-attachment-from-artifact', 30, 60),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const { handle } = c.req.valid('json');
+
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return fail(c, 403, 'ORG_CONTEXT_REQUIRED', 'Organization context required');
+    }
+
+    const ticket = await getScopedTicketOr404(auth, id, { includeDeleted: true });
+    if (!ticket) return fail(c, 404, 'TICKET_NOT_FOUND', 'Ticket not found');
+    if (ticket.deletedAt) {
+      return fail(c, 409, 'TICKET_DELETED', 'Cannot attach files to a deleted ticket');
+    }
+
+    // Imported LAZILY: `artifactService` reads `aiRunArtifacts` off the
+    // `db/schema` barrel, and this module is in the static graph of the whole
+    // ticket route surface. A top-level import puts that table into every
+    // ticket suite's module graph and breaks the ones whose partial
+    // `vi.mock('../../db/schema')` factories do not declare it. Same reason
+    // `ticketAttachmentStorage.openBytes` defers it.
+    const { resolveArtifact } = await import('../../services/artifacts/artifactService');
+    const artifact = await resolveArtifact(handle, { orgId: ticket.orgId });
+    if (!artifact) {
+      return fail(c, 404, 'ARTIFACT_NOT_FOUND', 'No such artifact is available to this organization');
+    }
+
+    const [row] = await db
+      .insert(ticketAttachments)
+      .values({
+        id: randomUUID(),
+        orgId: ticket.orgId,
+        ticketId: ticket.id,
+        commentId: null,
+        uploadedByUserId: auth.user.id,
+        storageBackend: 'artifact',
+        storageKey: null,
+        data: null,
+        artifactId: artifact.id,
+        contentType: artifact.contentType,
+        byteSize: artifact.bytes,
+        // Already sanitised to <= 200 chars by W01's `sanitizeArtifactName`; the
+        // column allows 255, so this cannot truncate.
+        originalFilename: artifact.name,
+        sha256: artifact.sha256,
+      })
+      .returning(ATTACHMENT_META_COLUMNS);
+
+    // Filename deliberately omitted from the audit details, matching the upload
+    // path: an artifact name can carry customer identifiers.
+    await createAuditLogAsync({
+      orgId: ticket.orgId,
+      actorId: auth.user.id,
+      action: 'ticket.attachment.from_artifact',
+      resourceType: 'ticket',
+      resourceId: ticket.id,
+      details: {
+        attachmentId: row!.id,
+        artifactId: artifact.id,
+        runId: artifact.runId,
+        byteSize: artifact.bytes,
+      },
+      result: 'success',
+    });
+
+    return c.json({ data: row }, 201);
+  },
+);
+
 const contentParam = z.object({ id: z.string().guid(), attachmentId: z.string().guid() });
 
 function callerCanManageTickets(c: { get: (k: 'permissions') => unknown }): boolean {
@@ -207,21 +305,32 @@ function callerCanManageTickets(c: { get: (k: 'permissions') => unknown }): bool
 }
 
 /**
- * One attachment plus its parent comment's visibility fields. `data` and
- * `storage_key` are selected here BECAUSE this is the byte path — every other
- * read uses ATTACHMENT_META_COLUMNS (spec D10).
+ * One attachment plus its parent comment's visibility fields. `data`,
+ * `storage_key` and `artifact_id` are selected here BECAUSE this is the byte
+ * path — every other read uses ATTACHMENT_META_COLUMNS (spec D10).
  */
 async function loadAttachmentRow(ticketId: string, attachmentId: string) {
   const rows = await db
     .select({
       attachment: {
         id: ticketAttachments.id,
+        // The byte path resolves an artifact-backed row against the
+        // ATTACHMENT's own org, never the caller's — a partner-scope
+        // technician can reach many orgs and `resolveArtifact` must be asked
+        // about exactly one. This adds a column to the PROJECTION only; the
+        // WHERE below is still (id, ticketId), with tenancy from RLS and the
+        // route guard.
+        orgId: ticketAttachments.orgId,
         ticketId: ticketAttachments.ticketId,
         commentId: ticketAttachments.commentId,
         uploadedByUserId: ticketAttachments.uploadedByUserId,
         storageBackend: ticketAttachments.storageBackend,
         storageKey: ticketAttachments.storageKey,
         data: ticketAttachments.data,
+        // Null on an uploaded row, and ALSO null on an artifact-backed row
+        // whose artifact expired (ON DELETE SET NULL) — that second case is
+        // the 410, and it is unreachable if this column is not selected.
+        artifactId: ticketAttachments.artifactId,
         contentType: ticketAttachments.contentType,
         byteSize: ticketAttachments.byteSize,
         originalFilename: ticketAttachments.originalFilename,
@@ -291,8 +400,16 @@ ticketAttachmentRoutes.get(
 
     let opened: Awaited<ReturnType<typeof openBytes>>;
     try {
-      opened = await openBytes(att);
+      opened = await openBytes(att, { orgId: att.orgId });
     } catch (err) {
+      // An artifact-backed attachment whose artifact expired is a 410, not a
+      // 503 and not a 404: the ticket still records that a file was attached
+      // and by whom, and the technician deserves to be told it expired rather
+      // than left to think they misremembered. Checked BEFORE the storage-fault
+      // branch, which would otherwise swallow it as a transport error.
+      if (err instanceof AttachmentExpiredError) {
+        return fail(c, 410, 'ATTACHMENT_EXPIRED', err.message);
+      }
       captureException(err);
       return fail(c, 503, 'STORAGE_UNAVAILABLE', 'Attachment storage is unavailable — try again shortly');
     }

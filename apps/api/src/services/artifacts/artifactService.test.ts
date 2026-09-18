@@ -122,6 +122,12 @@ describe('buildPreviews (spec §5.2 — RAW bytes, never a rendered form)', () =
     expect(tailPreview).toBe('{"a":1}');
   });
 
+  it.each([Buffer.from([0xff, 0xfe, 0x61]), Buffer.from('binary\u0000data')])(
+    'does not decode binary bytes even when labelled as text', (body) => {
+      expect(buildPreviews(body)).toEqual({ headPreview: '', tailPreview: '' });
+    },
+  );
+
   it('caps each side at ARTIFACT_PREVIEW_BYTES and takes head from the start, tail from the end', () => {
     const raw = `HEAD${'x'.repeat(10_000)}TAIL`;
     const { headPreview, tailPreview } = buildPreviews(raw);
@@ -153,6 +159,71 @@ describe('createArtifact', () => {
     expect(written.bytes).toBe(20);
     expect(String(written.sha256)).toMatch(/^[0-9a-f]{64}$/);
     expect(String(written.blobKey)).toMatch(/^us\/\d{4}\/\d{2}\//);
+  });
+
+  it.each([
+    ['report.pdf', 'application/pdf'],
+    ['data.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['unknown.bin', 'application/octet-stream'],
+  ])('stores %s with an appropriate MIME type and no preview when the content is real binary', async (name, contentType) => {
+    mocks.insertRows.push([row()]);
+    // Real binary bytes (PDF magic + invalid UTF-8 tail), not text wearing a
+    // binary name — previews are gated on CONTENT now, not the type label.
+    const binary = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x01]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name, contentType: 'application/octet-stream',
+      body: Readable.from([binary]), maxBytes: 1024,
+      createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({ contentType, headPreview: '', tailPreview: '' });
+  });
+
+  it('promotes an application/octet-stream artifact to text/plain when its content is UTF-8 text with a preview', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'findings', contentType: 'application/octet-stream',
+      body: Buffer.from('alpha finding: high risk'), maxBytes: 1024,
+      createdByTool: 'workspace_collect', region: 'us',
+    });
+    // Promoted so isTextArtifactContentType (the render-time gate in toArtifactDto
+    // and the web preview toggle) doesn't blank a preview we already know is safe,
+    // printable text just because no known extension named it.
+    expect(mocks.insertValues[0]).toMatchObject({
+      contentType: 'text/plain', headPreview: 'alpha finding: high risk',
+    });
+  });
+
+  it('gives no preview to an application/octet-stream artifact containing NUL bytes, and does not promote it', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'blob1', contentType: 'application/octet-stream',
+      body: Buffer.from('lead-in\u0000trail'), maxBytes: 1024,
+      createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({
+      contentType: 'application/octet-stream', headPreview: '', tailPreview: '',
+    });
+  });
+
+  it('gives no preview to an application/octet-stream artifact with real binary (PDF magic) content', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'blob2', contentType: 'application/octet-stream',
+      body: Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x01]),
+      maxBytes: 1024, createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({ headPreview: '', tailPreview: '' });
+  });
+
+  it('preserves previews for generic workspace CSV outputs', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'results.CSV', contentType: 'application/octet-stream',
+      body: Buffer.from('name,total\nAlpha,60'), maxBytes: 1024,
+      createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({ contentType: 'text/csv', headPreview: 'name,total\nAlpha,60' });
   });
 
   it('compensates by deleting the blob when the row insert fails, and rethrows', async () => {
@@ -218,6 +289,29 @@ describe('deleteArtifact — blob first, then row (the row is the only key index
 });
 
 describe('listArtifactsForAuth / toArtifactDto', () => {
+  it('suppresses previews already stored for binary artifacts', () => {
+    const dto = toArtifactDto(row({ contentType: 'application/pdf', headPreview: '%PDF', tailPreview: 'binary' }) as ArtifactRecord);
+    expect(dto.headPreview).toBe('');
+    expect(dto.tailPreview).toBe('');
+  });
+
+  it('shows the preview for an octet-stream artifact that createArtifact promoted to text/plain', () => {
+    const dto = toArtifactDto(row({
+      contentType: 'text/plain', headPreview: 'alpha finding: high risk', tailPreview: 'high risk',
+    }) as ArtifactRecord);
+    expect(dto.headPreview).toBe('alpha finding: high risk');
+    expect(dto.tailPreview).toBe('high risk');
+  });
+
+  it('keeps octet-stream and no preview for a genuinely binary artifact (never promoted)', () => {
+    const dto = toArtifactDto(row({
+      contentType: 'application/octet-stream', headPreview: '', tailPreview: '',
+    }) as ArtifactRecord);
+    expect(dto.contentType).toBe('application/octet-stream');
+    expect(dto.headPreview).toBe('');
+    expect(dto.tailPreview).toBe('');
+  });
+
   it('never exposes blobKey and renders the download path', async () => {
     mocks.selectRows.push([row()]);
     const auth = { orgCondition: () => undefined } as never;

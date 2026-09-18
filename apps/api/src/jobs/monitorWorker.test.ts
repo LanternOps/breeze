@@ -203,15 +203,14 @@ describe('selectExecutionAgentForMonitor (SR5-08 site-bound fallback)', () => {
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
-  it('treats an asset with a null site as unbound (org-wide allowed)', async () => {
+  it('fails closed for a bound asset with a null site', async () => {
     vi.mocked(db.select)
       // asset → siteId null
-      .mockReturnValueOnce(selectLimitResolved([{ siteId: null }]) as any)
-      // org-wide online agent lookup
-      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-any' }]) as any);
+      .mockReturnValueOnce(selectLimitResolved([{ siteId: null }]) as any);
 
     const agentId = await selectExecutionAgentForMonitor({ orgId: 'org-1', assetId: 'asset-1' });
-    expect(agentId).toBe('agent-any');
+    expect(agentId).toBeNull();
+    expect(db.select).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -547,6 +546,182 @@ describe('recordMonitorCheckResult', () => {
     expect(stateSet.lastError).toContain('[PRIVATE_KEY_REDACTED]');
     expect(stateSet.lastError).not.toContain('BEGIN RSA PRIVATE KEY');
   });
+
+  // #5751 W03 (#5754): the TLS observation joins the SAME updateSet as
+  // lastStatus/lastResponseMs, inside the transaction that inserts the result
+  // row — never a second statement that could land without it.
+  describe('TLS observation writeback', () => {
+    /** Runs one result and returns the network_monitors updateSet it produced. */
+    async function recordAndCaptureUpdate(
+      details: Record<string, unknown> | undefined,
+      /** What the monitor's target/config resolve to RIGHT NOW. */
+      current: { target: string; config: unknown } = { target: 'https://a.example', config: {} },
+    ): Promise<Record<string, unknown>> {
+      const txUpdateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback({
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+        update: vi.fn().mockReturnValue({ set: txUpdateSet }),
+        // The provenance read is locked (FOR UPDATE) so a concurrent PATCH
+        // either commits first (and we see its new target) or blocks until we
+        // commit (and its own tls reset then clears what we wrote).
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              for: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([current]),
+              }),
+            }),
+          }),
+        }),
+      }));
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectLimitResolved([{
+          id: 'monitor-1', orgId: 'org-1', assetId: null, name: 'Web',
+          target: 'https://a.example', monitorType: 'http_check', consecutiveFailures: 0,
+        }]) as any)
+        .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+      await recordMonitorCheckResult('monitor-1', {
+        monitorId: 'monitor-1', status: 'online', responseMs: 12, details,
+      }, { orgId: 'org-1', deviceId: 'device-1' });
+
+      return txUpdateSet.mock.calls[0]![0] as Record<string, unknown>;
+    }
+
+    it('writes every tls_* column from an observed result', async () => {
+      const set = await recordAndCaptureUpdate({
+        monitorId: 'monitor-1',
+        sslState: 'observed',
+        sslExpiry: '2027-01-02T03:04:05Z',
+        sslIssuer: 'CN=Example CA',
+        sslObservedHost: 'final.example.com',
+        sslRequestedUrl: 'https://a.example',
+      });
+
+      expect(set.tlsState).toBe('observed');
+      expect(set.tlsNotAfter).toEqual(new Date('2027-01-02T03:04:05Z'));
+      expect(set.tlsIssuer).toBe('CN=Example CA');
+      // The OBSERVED host, not the monitor's target — redirects are followed.
+      expect(set.tlsObservedHost).toBe('final.example.com');
+      expect(set.tlsObservedAt).toBeInstanceOf(Date);
+    });
+
+    it('records handshake_failed with a NULL expiry, so a stale one never reads as fine', async () => {
+      const set = await recordAndCaptureUpdate({
+        monitorId: 'monitor-1',
+        sslState: 'handshake_failed',
+        sslObservedHost: 'broken.example.com',
+        sslRequestedUrl: 'https://a.example',
+      });
+
+      expect(set.tlsState).toBe('handshake_failed');
+      expect(set.tlsNotAfter).toBeNull();
+      expect(set.tlsIssuer).toBeNull();
+    });
+
+    it('leaves the stored observation untouched for a result with no ssl* keys (icmp/dns)', async () => {
+      const set = await recordAndCaptureUpdate({ monitorId: 'monitor-1', status: 'online' });
+
+      for (const key of ['tlsState', 'tlsNotAfter', 'tlsIssuer', 'tlsObservedHost', 'tlsObservedAt']) {
+        expect(set, `${key} must be absent, not null — null would clear a good reading`)
+          .not.toHaveProperty(key);
+      }
+    });
+
+    it('writes nothing for a result with no details at all', async () => {
+      const set = await recordAndCaptureUpdate(undefined);
+      expect(set).not.toHaveProperty('tlsState');
+    });
+
+    it('does not write an invalid date when sslExpiry is unparseable', async () => {
+      const set = await recordAndCaptureUpdate({
+        sslState: 'observed', sslExpiry: 'not-a-date', sslObservedHost: 'h.example',
+        sslRequestedUrl: 'https://a.example',
+      });
+
+      expect(set.tlsNotAfter).toBeNull();
+      // Degraded rather than 'observed', which the shape CHECK would reject.
+      expect(set.tlsState).not.toBe('observed');
+    });
+
+    // Review finding: clearing the columns at PATCH time does nothing about a
+    // result that was ALREADY in flight when the edit landed. The agent echoes
+    // the URL it actually requested, so a result produced under the old
+    // target/config is recognised and dropped instead of being attributed to
+    // the new one.
+    it('drops the observation when the monitor target changed after dispatch', async () => {
+      const set = await recordAndCaptureUpdate(
+        {
+          sslState: 'observed',
+          sslExpiry: '2027-01-02T03:04:05Z',
+          sslIssuer: 'CN=Example CA',
+          sslObservedHost: 'a.example',
+          sslRequestedUrl: 'https://a.example',
+        },
+        { target: 'https://b.example', config: {} },
+      );
+
+      for (const key of ['tlsState', 'tlsNotAfter', 'tlsIssuer', 'tlsObservedHost', 'tlsObservedAt']) {
+        expect(set, `${key} must be absent — the result predates the edit`).not.toHaveProperty(key);
+      }
+      // The rest of the writeback still lands; only the TLS part is dropped.
+      expect(set.lastStatus).toBe('online');
+    });
+
+    it('drops the observation when only the config url changed after dispatch', async () => {
+      const set = await recordAndCaptureUpdate(
+        {
+          sslState: 'observed',
+          sslExpiry: '2027-01-02T03:04:05Z',
+          sslIssuer: 'CN=Example CA',
+          sslObservedHost: 'a.example',
+          sslRequestedUrl: 'https://a.example/old',
+        },
+        { target: 'ignored', config: { url: 'https://a.example/new' } },
+      );
+      expect(set).not.toHaveProperty('tlsState');
+    });
+
+    it('accepts a result whose requested url still matches the config url', async () => {
+      const set = await recordAndCaptureUpdate(
+        {
+          sslState: 'observed',
+          sslExpiry: '2027-01-02T03:04:05Z',
+          sslIssuer: 'CN=Example CA',
+          sslObservedHost: 'a.example',
+          sslRequestedUrl: 'https://a.example/path',
+        },
+        { target: 'ignored', config: { url: 'https://a.example/path' } },
+      );
+      expect(set.tlsState).toBe('observed');
+    });
+
+    it('drops an observation carrying no requested url — its provenance is unverifiable', async () => {
+      const set = await recordAndCaptureUpdate({
+        sslState: 'observed',
+        sslExpiry: '2027-01-02T03:04:05Z',
+        sslIssuer: 'CN=Example CA',
+        sslObservedHost: 'a.example',
+      });
+      expect(set).not.toHaveProperty('tlsState');
+    });
+
+    it('survives redactSecretsDeep — a real issuer DN reaches the column intact', async () => {
+      // redactSecretsDeep runs on `details` BEFORE this writeback, so the
+      // assertion is on the value that actually lands, not on the input.
+      const issuer = 'CN=R10,O=Let’s Encrypt,C=US';
+      const set = await recordAndCaptureUpdate({
+        sslState: 'observed',
+        sslExpiry: '2027-01-02T03:04:05Z',
+        sslIssuer: issuer,
+        sslObservedHost: 'final.example.com',
+        sslRequestedUrl: 'https://a.example',
+      });
+
+      expect(set.tlsIssuer).toBe(issuer);
+      expect(set.tlsObservedHost).toBe('final.example.com');
+    });
+  });
 });
 
 describe('processCheckMonitor (wave 3.5b #4084 — dispatch via facade)', () => {
@@ -575,6 +750,9 @@ describe('processCheckMonitor (wave 3.5b #4084 — dispatch via facade)', () => 
       .mockReturnValueOnce(selectLimitResolved([MONITOR_ROW]) as any)
       // org-wide online agent lookup (assetless monitor)
       .mockReturnValueOnce(selectLimitResolved(agentId ? [{ agentId }] : []) as any);
+    if (agentId) vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([MONITOR_ROW]) as any)
+      .mockReturnValueOnce(selectLimitResolved([{ agentId }]) as any);
   }
 
   it('warns and returns not-dispatched when no agent is connected anywhere, without calling dispatch', async () => {
@@ -743,6 +921,10 @@ describe('partner-wide network monitors (#5291 W04)', () => {
           }),
         }),
       } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{ id: 'm-partner', orgId: null, partnerId: 'p1', assetId: null, isActive: true, monitorType: 'icmp_ping', target: 'example.com' }]) as any)
+      .mockReturnValueOnce(selectLimitResolved([{ id: 'org-a' }]) as any)
+      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-a' }]) as any);
     vi.mocked(isAgentConnectedAnywhere).mockResolvedValue(true);
     vi.mocked(dispatchCommandToAgent).mockResolvedValue({ status: 'sent', via: 'local' } as never);
 

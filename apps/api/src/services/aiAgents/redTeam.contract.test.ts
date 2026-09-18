@@ -639,6 +639,8 @@ describe('F. a device-less run never proposes', () => {
         executionIdPending: new Map(),
         actPinPending: new Map(),
         actReservation: { count: 0 },
+      runTargets: [],
+      stagedBytesRemaining: 256 * 1024 * 1024,
       deadlineMs: Date.now() + 60_000,
       });
 
@@ -805,6 +807,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       executionIdPending: new Map(),
       actPinPending: new Map(),
       actReservation: { count: 0 },
+      runTargets: [],
+      stagedBytesRemaining: 256 * 1024 * 1024,
       deadlineMs: Date.now() + 60_000,
     });
 
@@ -833,6 +837,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       executionIdPending: new Map(),
       actPinPending: new Map(),
       actReservation: { count: 0 },
+      runTargets: [],
+      stagedBytesRemaining: 256 * 1024 * 1024,
       deadlineMs: Date.now() + 60_000,
     });
     const hostileSystemPrompt = buildAgentRunSystemPrompt(hostilePromptContext());
@@ -866,6 +872,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       executionIdPending: new Map(),
       actPinPending: new Map(),
       actReservation: { count: 0 },
+      runTargets: [],
+      stagedBytesRemaining: 256 * 1024 * 1024,
       deadlineMs: Date.now() + 60_000,
     });
     const callsBeforeExplicitProposal = createActionIntentMock.mock.calls.length;
@@ -874,7 +882,7 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     expect(createActionIntentMock).toHaveBeenCalledTimes(callsBeforeExplicitProposal + 1);
 
     const allowed = await sweepHook('query_devices', {});
-    expect(allowed).toEqual({ allowed: true });
+    expect(allowed).toMatchObject({ allowed: true });
 
     expect(rbacSpies.checkToolPermission).toHaveBeenCalledTimes(0);
     expect(rbacSpies.checkPermissionRequirements).toHaveBeenCalledTimes(0);

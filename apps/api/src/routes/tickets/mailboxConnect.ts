@@ -391,7 +391,10 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       'ticket_mailbox.verification_failed',
       auditDetails(session, connection, outcome, verifiedTenantId),
     );
-    return c.redirect(`/settings/partner?ticketMailbox=${redirect}#ticketing`);
+    // W01 settings consolidation (#6224): Email is now a top-level hash tab on
+    // the standalone /settings/ticketing page, not an embedded sub-tab under
+    // the Partner hub's #ticketing.
+    return c.redirect(`/settings/ticketing?ticketMailbox=${redirect}#email`);
   };
 
   if (intent.kind === 'provider_error') return fail('invalid_identity');
@@ -484,7 +487,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       'ticket_mailbox.tenant_binding_verified',
       auditDetails(session, connection, 'verified', claims.tid),
     );
-    return c.redirect('/settings/partner?ticketMailbox=connected#ticketing');
+    return c.redirect('/settings/ticketing?ticketMailbox=connected#email');
   } catch (error) {
     captureException(error instanceof Error ? error : new Error('Mailbox identity verification failed'), c);
     return fail('invalid_identity');

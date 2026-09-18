@@ -66,6 +66,13 @@ function mockUpdateChain(rows: unknown[] = [{ id: 'updated' }]) {
   return { set, where, returning };
 }
 
+function mockUpdateChainRejecting(err: Error) {
+  const where = vi.fn(() => Promise.reject(err));
+  const set = vi.fn(() => ({ where }));
+  updateMock.mockReturnValue({ set } as unknown as ReturnType<typeof db.update>);
+  return { set, where };
+}
+
 function collectSqlStrings(value: unknown): string {
   if (!value || typeof value !== 'object') return '';
   const chunks = (value as { queryChunks?: unknown[] }).queryChunks;
@@ -227,6 +234,49 @@ describe('BreezeOidcAdapter', () => {
     expect(updateMock).toHaveBeenCalledWith(oauthClients);
     expect(update.set).toHaveBeenCalledWith({ lastUsedAt: expect.any(Date) });
     expect(collectAllStrings((update.where.mock.calls[0] as unknown[])[0])).toContain('client_abc');
+  });
+
+  // The last_used_at stamp is advisory bookkeeping for the DCR GC. A failure
+  // of that UPDATE must never abort token issuance — before #5610 the
+  // rejection propagated out of upsert() and the whole AuthorizationCode /
+  // RefreshToken grant failed.
+  it('still issues an AuthorizationCode when the last_used_at stamp UPDATE fails', async () => {
+    const chain = mockInsertChain();
+    mockUpdateChainRejecting(new Error('stamp update exploded'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const payload = {
+      accountId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      extra: { partner_id: '00000000-0000-4000-8000-000000000002' },
+    };
+
+    await expect(new BreezeOidcAdapter('AuthorizationCode').upsert('code_abc', payload, 60))
+      .resolves.toBeUndefined();
+
+    expect(insertMock).toHaveBeenCalledWith(oauthAuthorizationCodes);
+    expect(chain.onConflictDoUpdate).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0]?.[0])).toContain('OAUTH_CLIENT_LAST_USED_STAMP_FAILED');
+    warn.mockRestore();
+  });
+
+  it('still issues a RefreshToken when the last_used_at stamp UPDATE fails', async () => {
+    const chain = mockInsertChain();
+    mockUpdateChainRejecting(new Error('stamp update exploded'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const payload = {
+      accountId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      extra: { partner_id: '00000000-0000-4000-8000-000000000002' },
+    };
+
+    await expect(new BreezeOidcAdapter('RefreshToken').upsert('raw_rt', payload, 3600))
+      .resolves.toBeUndefined();
+
+    expect(insertMock).toHaveBeenCalledWith(oauthRefreshTokens);
+    expect(chain.onConflictDoUpdate).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('marks AuthorizationCode rows consumed and stamps payload.consumed for the library', async () => {

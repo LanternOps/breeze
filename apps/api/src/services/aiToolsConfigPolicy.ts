@@ -12,6 +12,7 @@ import {
 } from '@breeze/shared/validators';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import {
   resolveEffectiveConfig,
@@ -775,9 +776,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
         const featureLinkIds = links.map((l) => l.id);
 
-        // Get compliance stats per feature link
+        // Get compliance stats per feature link, narrowed to the devices this
+        // caller may see. Without the exact-device axis a device-bound (or
+        // device-LESS analysis) AI run read fleet-wide compliance counts here
+        // (#6096) — the `status` branch below already narrows, `summary` did not.
         const { byFeatureLink } = featureLinkIds.length > 0
-          ? await getConfigPolicyComplianceStats(featureLinkIds)
+          ? await getConfigPolicyComplianceStats(featureLinkIds, auth.allowedSiteIds, auth.allowedDeviceIds)
           : { byFeatureLink: new Map() };
 
         // Aggregate stats per config policy
@@ -841,7 +845,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
             and(
               isNull(automationPolicyCompliance.policyId),
               isNotNull(automationPolicyCompliance.configPolicyId),
-              inArray(automationPolicyCompliance.configPolicyId, featureLinkIds)
+              inArray(automationPolicyCompliance.configPolicyId, featureLinkIds),
+              // Exact-device axis (#6096 #11): these rows are device-attributable
+              // (status + `details`) and the tool takes no deviceId, so the
+              // declarative gate never runs. `undefined` for an unrestricted
+              // caller — no narrowing.
+              deviceScopeCondition(auth, automationPolicyCompliance.deviceId)
             )
           )
           .limit(limit);

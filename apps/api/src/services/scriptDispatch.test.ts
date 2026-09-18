@@ -1424,7 +1424,7 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
   });
 
   // The blocker the review caught: the immediate-send path claims the command
-  // itself and never reaches decryptClaimedCommandsForDelivery, so without
+  // itself and never reaches prepareClaimedCommandsForDelivery, so without
   // this gate a downgraded agent would receive the script with the credential
   // unset.
   //

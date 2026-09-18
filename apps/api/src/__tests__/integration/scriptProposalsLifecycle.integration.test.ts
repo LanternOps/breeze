@@ -184,9 +184,21 @@ runDb('a reviewer-decided (unattended) release stamps unattended_reviewer_gated 
   // reason — see the review fix for #5788 item 2).
   expect(rows[0]!.aiInitiatorKind).toBe('ai_assistant');
 
-  const aiAudits = await withSystemDbAccessContext(() =>
+  // The audit row is written by `void createAuditLogAsync(...)` (a lost audit
+  // row must never fail the dispatch), so it lands after the handler returns.
+  // Poll instead of reading once: read-once raced in CI three times on
+  // 2026-09-14, every time this file was the FIRST in its shard (cold pool,
+  // cold module graph) — the Postgres log then showed the audit insert
+  // arriving after the test's cleanup had already removed the org.
+  const readAiAudits = () => withSystemDbAccessContext(() =>
     db.select({ action: auditLogs.action })
       .from(auditLogs)
-      .where(eq(auditLogs.resourceId, device!.id)));
-  expect(aiAudits.filter((a) => a.action.startsWith('ai.')).map((a) => a.action)).toEqual(['ai.script.executed']);
+      .where(eq(auditLogs.resourceId, device!.id)))
+    .then((rows) => rows.filter((a) => a.action.startsWith('ai.')).map((a) => a.action));
+  let aiAudits = await readAiAudits();
+  for (let attempt = 0; attempt < 150 && aiAudits.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    aiAudits = await readAiAudits();
+  }
+  expect(aiAudits).toEqual(['ai.script.executed']);
 });

@@ -21,6 +21,7 @@ export * from './automationActions';
 
 export * from './reliability';
 export * from './businessEmail';
+export * from './sendingDomains';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
 export * from './currency';
@@ -1019,8 +1020,10 @@ export * from './aiOperator';
 export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
+export * from './aiPatchPlan';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
+export * from './aiAgentImpactMeasured';
 
 // ============================================
 // Tenant Variable Validators (#3409)
@@ -1041,6 +1044,7 @@ export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
+export * from './partnerTicketingSettings';
 export * from './auditRetention';
 export * from './ticketPushPreferences';
 export * from './clientAiDlp';
@@ -1097,6 +1101,33 @@ export {
   type EvidenceRef,
 } from './serviceDeliverables';
 export {
+  CHECKLIST_ITEM_SOURCES,
+  checklistItemSourceSchema,
+  checklistItemCreateSchema,
+  checklistItemPatchSchema,
+  checklistReorderSchema,
+  type ChecklistItemSource,
+  type ChecklistItemCreateInput,
+  type ChecklistItemPatchInput,
+  type ChecklistReorderInput,
+  checklistTemplateOwnerScopeSchema,
+  createChecklistTemplateSchema,
+  updateChecklistTemplateSchema,
+  createChecklistTemplateItemSchema,
+  updateChecklistTemplateItemSchema,
+  checklistTemplateItemReorderSchema,
+  listChecklistTemplatesQuerySchema,
+  applyChecklistTemplateSchema,
+  type ChecklistTemplateOwnerScope,
+  type CreateChecklistTemplateInput,
+  type UpdateChecklistTemplateInput,
+  type CreateChecklistTemplateItemInput,
+  type UpdateChecklistTemplateItemInput,
+  type ChecklistTemplateItemReorderInput,
+  type ListChecklistTemplatesQuery,
+  type ApplyChecklistTemplateInput,
+} from './ticketChecklists';
+export {
   templateOwnerScopeSchema,
   createTemplateItemSchema,
   updateTemplateItemSchema,
@@ -1104,6 +1135,8 @@ export {
   updateTemplateSetSchema,
   listTemplateSetsQuerySchema,
   applyTemplateSetSchema,
+  MANAGED_EVIDENCE_REPORT_TYPES,
+  type ManagedEvidenceReportType,
   type CreateTemplateItemInput,
   type UpdateTemplateItemInput,
   type CreateTemplateSetInput,
@@ -1135,3 +1168,6 @@ export {
 // the ./automationActions leaf (never from this barrel), so this re-export
 // carries no initialisation-order hazard.
 export * from './monitors';
+
+// Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
+export * from './toolSources';
