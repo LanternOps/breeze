@@ -46,6 +46,7 @@ export const ERROR_IDS = {
   OAUTH_SCOPE_POLICY_LOOKUP_FAILED: 'OAUTH_SCOPE_POLICY_LOOKUP_FAILED',
   OAUTH_RESOURCE_ALIAS_NORMALIZED: 'OAUTH_RESOURCE_ALIAS_NORMALIZED',
   OAUTH_GRANT_TENANCY_MISSING: 'OAUTH_GRANT_TENANCY_MISSING',
+  OAUTH_CLIENT_LAST_USED_STAMP_FAILED: 'OAUTH_CLIENT_LAST_USED_STAMP_FAILED',
 } as const;
 
 export type OAuthErrorId = typeof ERROR_IDS[keyof typeof ERROR_IDS];
@@ -82,5 +83,40 @@ export function logOauthDebug(args: {
   if (process.env.LOG_LEVEL === 'debug' || process.env.OAUTH_DEBUG === '1') {
     // eslint-disable-next-line no-console
     console.debug(`[oauth] ${args.errorId} ${args.message}`, args.context ?? {});
+  }
+}
+
+/**
+ * Warn-level counterpart to logOauthError for advisory failures — work that is
+ * bookkeeping only and must never fail the request it rides along with.
+ *
+ * Still Sentry-visible, at `warning` level rather than `error`: an advisory
+ * write that fails *once* is noise, but one that fails on every request is a
+ * real outage that nothing else would surface (same reasoning as the fail-
+ * closed catch in partnerScopePolicy.ts). Sentry groups by the `errorId` tag,
+ * so a sustained failure stays one issue rather than drowning the OAuth error
+ * signal, and the `warning` level keeps it out of error alerting.
+ */
+export function logOauthWarn(args: {
+  errorId: OAuthErrorId;
+  message: string;
+  err?: unknown;
+  context?: Record<string, unknown>;
+}): void {
+  const { errorId, message, err, context } = args;
+  // eslint-disable-next-line no-console
+  console.warn(`[oauth] ${errorId} ${message}`, {
+    ...(context ?? {}),
+    error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err,
+  });
+  if (isSentryEnabled()) {
+    const captured = err instanceof Error ? err : new Error(message);
+    Sentry.withScope((scope) => {
+      scope.setLevel('warning');
+      scope.setTag('errorId', errorId);
+      scope.setTag('component', 'oauth');
+      if (context) scope.setContext('oauth', context);
+      captureException(captured);
+    });
   }
 }

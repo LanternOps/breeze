@@ -10,6 +10,7 @@ import { anomaliesRoutes } from './anomalies';
 import { groupsRoutes } from './groups';
 import { patchesRoutes } from './patches';
 import { scriptsRoutes } from './scripts';
+import { deviceAiOriginRoutes } from './aiOrigin';
 import { eventsRoutes } from './events';
 import { eventLogsRoutes } from './eventlogs';
 import { filesystemRoutes } from './filesystem';
@@ -144,6 +145,11 @@ deviceRoutes.route('/', alertsRoutes);
 deviceRoutes.route('/', anomaliesRoutes);
 deviceRoutes.route('/', patchesRoutes);
 deviceRoutes.route('/', scriptsRoutes);
+// #5022 W02: GET /:id/ai-origin, GET /:id/ai-activity. :id-prefixed, so
+// mounting order relative to coreRoutes is immaterial (only STATIC paths
+// need to precede coreRoutes' /:id matcher) — placed beside scriptsRoutes
+// since both surfaces read AI-dispatched script/command history.
+deviceRoutes.route('/', deviceAiOriginRoutes);
 deviceRoutes.route('/', eventsRoutes);
 deviceRoutes.route('/', eventLogsRoutes);
 deviceRoutes.route('/', sessionsRoutes);

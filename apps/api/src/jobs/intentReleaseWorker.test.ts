@@ -10,7 +10,7 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
  *  THIS through to the evidence row rather than rebuilding a key itself. */
 const CANONICAL_OP_KEY = 'run_script:execute';
 
-const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock, dispatchClaimMock, operationServiceMock } = vi.hoisted(() => {
+const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, toolSourcesMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock, dispatchClaimMock, operationServiceMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -60,10 +60,19 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
       selectActionIntentsNextError: null as Error | null,
     },
     intentServiceMock: { transitionIntent: vi.fn() },
-    actorContextMock: { buildAuthContextForIntent: vi.fn() },
+    actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn() },
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
     aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn() },
-    aiGuardrailsMock: { checkToolPermission: vi.fn() },
+    aiGuardrailsMock: { checkToolPermission: vi.fn(), checkPermissionRequirements: vi.fn(async () => null) },
+    // Tool catalog W01 PR B (#5216): the external-tool release branch. The
+    // resolver/executor are mocked at the module boundary; the worker's own
+    // contract is "dispatch through executeTenantTool with the descriptor
+    // revalidation handed back, never through executeTool".
+    toolSourcesMock: {
+      loadTenantToolBindingState: vi.fn(async () => null as unknown),
+      loadTenantToolForExecution: vi.fn(async () => null as unknown),
+      executeTenantToolDetailed: vi.fn(async () => ({ isError: false, text: JSON.stringify({ ok: true }) })),
+    },
     // Wave-5A review fix (#3827): mocked at the module boundary so a
     // kill_switch_engaged veto can be driven WITHOUT constructing the agent
     // authority's own real DB chain (ai_agent_runs/ai_agents/organizations/
@@ -128,6 +137,11 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
     // verify the operation.
     fixWatchMock: {
       createIntentFixWatchRow: vi.fn(async () => 'watch-1' as string | null),
+      // #5751 W02 (#5753) — the alert-less sibling. Same boundary, same
+      // reason: its own insert/conflict contract is pinned in
+      // services/aiAgents/fixWatch.test.ts; what THIS file proves is WHICH
+      // arm of watchReleasedIntent a given intent takes.
+      createSweepFixWatchRow: vi.fn(async () => 'watch-1' as string | null),
       enqueueFixWatchPhase1: vi.fn(async () => undefined),
     },
     // P2-5 (#4192) Task 6 — auto-demote. Mocked at the module boundary for
@@ -340,6 +354,7 @@ vi.mock('../services/actionIntents/policyDecide', () => {
 });
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
+  buildApproverAuthContextForIntent: actorContextMock.buildApproverAuthContextForIntent,
 }));
 vi.mock('../services/actionIntents/effectDigest', () => ({
   computeEffectDigestForRelease: effectDigestMock.computeEffectDigestForRelease,
@@ -368,6 +383,17 @@ vi.mock('../services/aiTools', () => ({
 }));
 vi.mock('../services/aiGuardrails', () => ({
   checkToolPermission: aiGuardrailsMock.checkToolPermission,
+  checkPermissionRequirements: aiGuardrailsMock.checkPermissionRequirements,
+}));
+vi.mock('../services/toolSources/resolver', () => ({
+  loadTenantToolBindingState: toolSourcesMock.loadTenantToolBindingState,
+  loadTenantToolForExecution: toolSourcesMock.loadTenantToolForExecution,
+}));
+vi.mock('../services/toolSources/guardrails', () => ({
+  tenantToolPermissionRequirement: vi.fn(() => ({ resource: 'external_tools', action: 'write' })),
+}));
+vi.mock('../services/toolSources/execute', () => ({
+  executeTenantToolDetailed: toolSourcesMock.executeTenantToolDetailed,
 }));
 // See the hoisted `agentReleaseAuthorityMock` comment: real
 // `revalidateApprovedIntentForRelease` runs, only its `checkAgentReleaseAuthority`
@@ -452,6 +478,7 @@ vi.mock('../services/actionIntents/canonicalPolicyKey', () => ({
 }));
 vi.mock('../services/aiAgents/fixWatch', () => ({
   createIntentFixWatchRow: fixWatchMock.createIntentFixWatchRow,
+  createSweepFixWatchRow: fixWatchMock.createSweepFixWatchRow,
 }));
 vi.mock('./fixWatchWorker', () => ({
   enqueueFixWatchPhase1: fixWatchMock.enqueueFixWatchPhase1,
@@ -834,6 +861,172 @@ describe('releaseApprovedIntent', () => {
       expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
     );
     expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  describe('external (tool-source) tools — tool catalog W01 PR B (#5216)', () => {
+    const TOOL_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const EXT_ARGS = { name: 'Printer 3', companyId: 42 };
+    const EXT_DIGEST = computeArgumentDigest(canonicalizeArguments(EXT_ARGS));
+    const descriptor = { id: TOOL_ID, qualifiedName: 'hudu__create_asset', tier: 3, revision: 'rev-7', sourceName: 'Hudu' };
+    const externalIntent = () => baseIntent({
+      actionName: 'hudu__create_asset',
+      arguments: EXT_ARGS,
+      argumentDigest: EXT_DIGEST,
+      approvalScope: 'supervised',
+      toolSourceToolId: TOOL_ID,
+      toolRevision: 'rev-7',
+    } as Partial<ActionIntent>);
+
+    // Deliberately NOT primeThroughRevalidation(): the external branch never
+    // consumes its queued checkToolPermission Once-value (and a drift stop
+    // returns before the actor/org loads), and a leftover Once leaks into the
+    // next test in this file.
+    function primeExternal(intent: ActionIntent, opts: { throughActor?: boolean } = { throughActor: true }) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      if (opts.throughActor) {
+        actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+        tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      }
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+    }
+
+    beforeEach(() => {
+      toolSourcesMock.loadTenantToolBindingState.mockResolvedValue({
+        tool: { id: TOOL_ID, enabled: true, removedAt: null, revision: 'rev-7', tier: 3 },
+        source: { id: 'src-1', status: 'active' },
+      });
+      toolSourcesMock.loadTenantToolForExecution.mockResolvedValue({ descriptor, source: {} });
+      // Not a registered core tool: the registry answers undefined, which
+      // must NOT be consulted for an external release (it would read as
+      // tier_escalated).
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      aiToolsMock.requiresLiveSession.mockReturnValue(false);
+    });
+
+    it('dispatches through executeTenantTool with the revalidated descriptor — never executeTool', async () => {
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({ isError: false, text: JSON.stringify({ id: 'asset-9' }) });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(aiGuardrailsMock.checkToolPermission).not.toHaveBeenCalled();
+      expect(toolSourcesMock.executeTenantToolDetailed).toHaveBeenCalledWith(
+        descriptor,
+        EXT_ARGS,
+        fakeAuth,
+        { surface: 'chat', orgId: intent.orgId, actor: { kind: 'user', id: fakeAuth.user.id } },
+      );
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'completed',
+        expect.objectContaining({ result: { id: 'asset-9' }, executedAt: expect.any(Date) }),
+      );
+    });
+
+    it('a returned {error} from the external tool fails the release as tool_returned_error', async () => {
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({ isError: true, text: 'MCP call failed: 502' });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'tool_returned_error', result: { error: 'MCP call failed: 502' } }),
+      );
+    });
+
+    it('fails the release with execution_error when the external tool exceeds its timeout', async () => {
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(5);
+      toolSourcesMock.executeTenantToolDetailed.mockImplementationOnce(() => new Promise(() => {}));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'execution_error' }),
+      );
+    });
+
+    it("trusts the executor's isError over the body-shape heuristic: {error:null,...} is a SUCCESS", async () => {
+      // A third-party MCP body Breeze does not control. `isReturnedToolError`
+      // would call this a failure (an `error` key, none of
+      // success/data/configured); the executor said otherwise.
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({
+        isError: false,
+        text: JSON.stringify({ error: null, ticket: { id: 42 } }),
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'completed',
+        expect.objectContaining({ result: { error: null, ticket: { id: 42 } } }),
+      );
+    });
+
+    it('an OVERSIZE external error body is still a failed release, not a truncated completion', async () => {
+      // > MAX_RESULT_BYTES (64 KiB): the `!truncated` guard would have
+      // suppressed the heuristic and recorded this as a completion.
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({
+        isError: true,
+        text: 'x'.repeat(70 * 1024),
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'tool_returned_error', result: { truncated: true } }),
+      );
+    });
+
+    it('external_tool_drift: the tool revision changed since approval — failed, nothing dispatched', async () => {
+      const intent = externalIntent();
+      primeExternal(intent, { throughActor: false });
+      toolSourcesMock.loadTenantToolBindingState.mockResolvedValueOnce({
+        tool: { id: TOOL_ID, enabled: true, removedAt: null, revision: 'rev-8', tier: 3 },
+        source: { id: 'src-1', status: 'active' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(toolSourcesMock.executeTenantToolDetailed).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'external_tool_drift' }),
+      );
+    });
   });
 
   it('m365 reset: temporaryPassword is sealed before the completed transition', async () => {
@@ -1812,6 +2005,409 @@ describe('releaseApprovedIntent', () => {
   });
 
   // -------------------------------------------------------------------------
+  // #4177 (W04): a released `manage_tickets:log_time_entry` proposal is OWNED
+  // by the approving technician. `time_entries.user_id` is a users FK NOT
+  // NULL; an agent-originated intent's rebuilt auth carries
+  // `auth.user.id = aiAgents.id` — attribution only — so releasing under it
+  // is a guaranteed 23503 at approval time. The worker swaps in the approver's
+  // own AuthContext (decided_by_user_id) and names them in the context bag.
+  // -------------------------------------------------------------------------
+  describe('user-owned release actions (#4177, W04)', () => {
+    const TICKET_ID = '11111111-1111-4111-8111-111111111111';
+    const APPROVER_ID = 'approver-7';
+    const agentAuth = {
+      principal: { kind: 'ai_agent' as const, agentId: 'agent-1', runId: 'run-1' },
+      user: { id: 'agent-1', email: 'agent+agent-1@breeze.internal', name: 'Helpdesk agent', isPlatformAdmin: false },
+      token: null,
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization' as const,
+      accessibleOrgIds: ['org-1'],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    };
+    const approverAuth = {
+      principal: { kind: 'user_session' as const },
+      user: { id: APPROVER_ID, email: 'tech@example.com', name: 'Tess Tech', isPlatformAdmin: false },
+      token: {},
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization' as const,
+      accessibleOrgIds: ['org-1'],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    };
+    const args = {
+      action: 'log_time_entry', ticketId: TICKET_ID,
+      startedAt: '2026-06-11T09:00:00.000Z', endedAt: '2026-06-11T09:15:00.000Z',
+      durationMinutes: 15, isBillable: false, description: 'AI-assisted reply sent',
+    };
+
+    function timeEntryIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+      return baseIntent({
+        actionName: 'manage_tickets',
+        arguments: args,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(args)),
+        riskTier: 2,
+        approvalScope: 'supervised',
+        requestedByUserId: null,
+        requestingAgentRunId: 'run-1',
+        originPrincipalKind: 'ai_agent',
+        originPrincipalId: 'agent-1',
+        decidedByUserId: APPROVER_ID,
+        ...overrides,
+      } as Partial<ActionIntent>);
+    }
+
+    function primeAgentRelease(intent: ActionIntent) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(1);
+      aiToolsMock.requiresLiveSession.mockReturnValue(false);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(agentAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      killStateMock.readAiKillState.mockReset();
+      killStateMock.readAiKillState.mockResolvedValue({ killed: false, epoch: 0 });
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+    }
+
+    it('releases a log_time_entry intent as the approving technician, never the agent', async () => {
+      const intent = timeEntryIntent();
+      primeAgentRelease(intent);
+      actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+      aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ timeEntry: { id: 'te-1' } }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(actorContextMock.buildApproverAuthContextForIntent).toHaveBeenCalledWith(
+        expect.objectContaining({ id: intent.id }), APPROVER_ID,
+      );
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        'manage_tickets',
+        expect.objectContaining({ action: 'log_time_entry', ticketId: TICKET_ID }),
+        approverAuth,
+        {
+          context: {
+            actionIntentId: intent.id,
+            releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia },
+            approverRelease: { approverUserId: APPROVER_ID },
+          },
+        },
+      );
+      // The DB context the tool ran under is the approver's, not the agent's.
+      expect(authMock.dbAccessContextFromAuth).toHaveBeenCalledWith(approverAuth);
+      expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith('manage_tickets', args, approverAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+
+    it('refuses to release a log_time_entry intent with no decided_by_user_id (fails closed, never executes)', async () => {
+      const intent = timeEntryIntent({ decidedByUserId: null });
+      primeAgentRelease(intent);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed',
+        expect.objectContaining({ errorCode: 'approver_required' }),
+      );
+      expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'failure',
+          details: expect.objectContaining({ errorCode: 'approver_required', reason: expect.stringContaining('decided_by_user_id') }),
+        }),
+      );
+    });
+
+    it('fails closed with actor_invalid when the approver can no longer stand behind the release', async () => {
+      const intent = timeEntryIntent();
+      primeAgentRelease(intent);
+      actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(null);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'actor_invalid' }),
+      );
+    });
+
+    it('fails closed with rbac_denied when the approver lacks the tool\'s own permission', async () => {
+      const intent = timeEntryIntent();
+      primeAgentRelease(intent);
+      actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+      aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce('Missing permission: time_entries:write');
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith('manage_tickets', args, approverAuth);
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'rbac_denied' }),
+      );
+    });
+
+    it('leaves every other agent action on the rebuilt agent auth (no approver swap)', async () => {
+      const otherArgs = { action: 'comment', ticketId: TICKET_ID, content: 'hi' };
+      const intent = timeEntryIntent({ arguments: otherArgs, argumentDigest: computeArgumentDigest(canonicalizeArguments(otherArgs)) });
+      primeAgentRelease(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        'manage_tickets', expect.anything(), agentAuth,
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
+      );
+    });
+
+    // -----------------------------------------------------------------------
+    // #6200: `manage_patches:install` has the exact same shape as
+    // log_time_entry — `patch_jobs.created_by` is a `users` FK NOT NULL and
+    // `services/aiToolsFleet.ts`'s install branch writes `auth.user.id` into
+    // it. Released under the rebuilt AGENT auth that id is an `aiAgents.id`,
+    // so the insert is a guaranteed 23503 the technician sees as
+    // `execution_error` right after their WebAuthn approval (observed three
+    // times on US prod 2026-09-18). The approver owns the job they approved.
+    // -----------------------------------------------------------------------
+    describe('manage_patches:install (#6200)', () => {
+      const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+      const PATCH_ID = '33333333-3333-4333-8333-333333333333';
+      const installArgs = {
+        action: 'install',
+        patchIds: [PATCH_ID],
+        deviceIds: [DEVICE_ID],
+      };
+
+      function installIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+        return baseIntent({
+          actionName: 'manage_patches',
+          arguments: installArgs,
+          argumentDigest: computeArgumentDigest(canonicalizeArguments(installArgs)),
+          riskTier: 3,
+          approvalScope: 'supervised',
+          requestedByUserId: null,
+          requestingAgentRunId: 'run-1',
+          originPrincipalKind: 'ai_agent',
+          originPrincipalId: 'agent-1',
+          decidedByUserId: APPROVER_ID,
+          ...overrides,
+        } as Partial<ActionIntent>);
+      }
+
+      it('releases an install intent as the approving technician so patch_jobs.created_by is a real user', async () => {
+        const intent = installIntent();
+        primeAgentRelease(intent);
+        actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+        aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ success: true, jobId: 'job-1' }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(actorContextMock.buildApproverAuthContextForIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ id: intent.id }), APPROVER_ID,
+        );
+        expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+          'manage_patches',
+          expect.objectContaining({ action: 'install', deviceIds: [DEVICE_ID] }),
+          approverAuth,
+          {
+            context: {
+              actionIntentId: intent.id,
+              releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia },
+              approverRelease: { approverUserId: APPROVER_ID },
+            },
+          },
+        );
+        // The DB context the install ran under is the approver's, not the
+        // agent's — `patch_jobs.created_by` is only a valid users FK because
+        // of this swap.
+        expect(authMock.dbAccessContextFromAuth).toHaveBeenCalledWith(approverAuth);
+        expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith('manage_patches', installArgs, approverAuth);
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'completed', expect.anything(),
+        );
+      });
+
+      it('refuses to release an install intent with no decided_by_user_id (fails closed, never executes)', async () => {
+        const intent = installIntent({ decidedByUserId: null });
+        primeAgentRelease(intent);
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed',
+          expect.objectContaining({ errorCode: 'approver_required' }),
+        );
+      });
+
+      it('fails closed with rbac_denied when the approver lacks patches:write', async () => {
+        const intent = installIntent();
+        primeAgentRelease(intent);
+        actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+        aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce('Missing permission: patches:write');
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'rbac_denied' }),
+        );
+      });
+
+      it('leaves a non-user-owned manage_patches action (scan) on the rebuilt agent auth', async () => {
+        const scanArgs = { action: 'scan', deviceIds: [DEVICE_ID] };
+        const intent = installIntent({
+          arguments: scanArgs,
+          argumentDigest: computeArgumentDigest(canonicalizeArguments(scanArgs)),
+        });
+        primeAgentRelease(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
+        expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+          'manage_patches', expect.anything(), agentAuth,
+          { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
+        );
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // #6200 review round: `USER_OWNED_RELEASE_ACTIONS`'s own header requires
+    // "a pair only with its own release test". `manage_patches:install` got
+    // one above; these are the other two entries. `manage_deployments:create`
+    // matters most — it is a DIFFERENT tool with its own org/site plumbing, so
+    // nothing above proves the worker hands IT an approver auth; and
+    // `manage_patches:rollback` is the only four_eyes entry, where
+    // `decided_by_user_id` is the single deciding approver (four_eyes means
+    // the agent proposes and one human disposes, not two human approvers).
+    // -----------------------------------------------------------------------
+    describe.each([
+      {
+        label: 'manage_deployments:create (supervised, deployments.created_by)',
+        tool: 'manage_deployments',
+        scope: 'supervised' as const,
+        args: {
+          action: 'create',
+          name: 'Agent-proposed rollout',
+          type: 'script',
+          payload: { scriptId: '44444444-4444-4444-8444-444444444444' },
+          targetType: 'device_group',
+          targetConfig: { groupId: '55555555-5555-4555-8555-555555555555' },
+          rolloutConfig: { batchSize: 10 },
+        },
+      },
+      {
+        label: 'manage_patches:rollback (four_eyes, patch_rollbacks.initiated_by)',
+        tool: 'manage_patches',
+        scope: 'four_eyes' as const,
+        args: {
+          action: 'rollback',
+          patchId: '66666666-6666-4666-8666-666666666666',
+          deviceIds: ['77777777-7777-4777-8777-777777777777'],
+        },
+      },
+    ])('$label', ({ tool, scope, args: releaseArgs }) => {
+      function siblingIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+        return baseIntent({
+          actionName: tool,
+          arguments: releaseArgs,
+          argumentDigest: computeArgumentDigest(canonicalizeArguments(releaseArgs)),
+          riskTier: 3,
+          approvalScope: scope,
+          requestedByUserId: null,
+          requestingAgentRunId: 'run-1',
+          originPrincipalKind: 'ai_agent',
+          originPrincipalId: 'agent-1',
+          decidedByUserId: APPROVER_ID,
+          ...overrides,
+        } as Partial<ActionIntent>);
+      }
+
+      it('releases as the approving technician, never the agent', async () => {
+        const intent = siblingIntent();
+        primeAgentRelease(intent);
+        actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+        aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ success: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(actorContextMock.buildApproverAuthContextForIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ id: intent.id }), APPROVER_ID,
+        );
+        expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+          tool,
+          expect.objectContaining({ action: releaseArgs.action }),
+          approverAuth,
+          {
+            context: {
+              actionIntentId: intent.id,
+              releaseDecision: { approvalScope: scope, decidedVia: intent.decidedVia },
+              approverRelease: { approverUserId: APPROVER_ID },
+            },
+          },
+        );
+        expect(authMock.dbAccessContextFromAuth).toHaveBeenCalledWith(approverAuth);
+        expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith(tool, releaseArgs, approverAuth);
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'completed', expect.anything(),
+        );
+      });
+
+      it('refuses with no decided_by_user_id (fails closed, never executes)', async () => {
+        const intent = siblingIntent({ decidedByUserId: null });
+        primeAgentRelease(intent);
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'approver_required' }),
+        );
+      });
+
+      it("fails closed with rbac_denied when the approver lacks the tool's own permission", async () => {
+        const intent = siblingIntent();
+        primeAgentRelease(intent);
+        actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+        aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce('Missing permission');
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'rbac_denied' }),
+        );
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // P2-5 (#4192) Task 4 — graduation op evidence on terminal writes
   //
   // The rule under test reduces to ONE discriminator: evidence is written iff
@@ -1831,6 +2427,9 @@ describe('releaseApprovedIntent', () => {
      *  is anchored to (P2-5 Task 5). */
     const RUN_ALERT_ID = 'alert-1';
     const WATCH_ID = 'watch-1';
+    /** A sweep run is device-LESS, so a sweep-minted intent carries its target
+     *  in `scope_device_id` — the device a subject watch probes (#5753). */
+    const SCOPE_DEVICE_ID = 'device-scope-1';
 
     const agentAuth = {
       principal: { kind: 'ai_agent' as const, agentId: AGENT_ID, runId: AGENT_RUN_ID },
@@ -1893,6 +2492,8 @@ describe('releaseApprovedIntent', () => {
       canonicalKeyMock.canonicalPolicyKey.mockReturnValue(CANONICAL_OP_KEY);
       fixWatchMock.createIntentFixWatchRow.mockReset();
       fixWatchMock.createIntentFixWatchRow.mockResolvedValue(WATCH_ID);
+      fixWatchMock.createSweepFixWatchRow.mockReset();
+      fixWatchMock.createSweepFixWatchRow.mockResolvedValue(WATCH_ID);
       fixWatchMock.enqueueFixWatchPhase1.mockReset();
       fixWatchMock.enqueueFixWatchPhase1.mockResolvedValue(undefined);
       demoteMock.demoteSupervisedKey.mockReset();
@@ -2483,6 +3084,184 @@ describe('releaseApprovedIntent', () => {
         // able to roll back.
         expect(dbMock.transaction).toHaveBeenCalledTimes(2);
         expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      // ---------------------------------------------------------------------
+      // #5751 W02 (#5753) — the SWEEP arm, inserted between the alert arm and
+      // the unconditional credit. Before it existed, every sweep-minted
+      // intent fell straight through to `verified`, which made P2-5's
+      // graduation ladder a click-counter for the whole sweep lane.
+      // ---------------------------------------------------------------------
+      it('a sweep-minted intent opens a SUBJECT watch and writes NO verified row', async () => {
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        // A sweep RUN carries no alert — that is the premise of the whole wave.
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+        expect(fixWatchMock.createSweepFixWatchRow).toHaveBeenCalledTimes(1);
+        expect(fixWatchMock.createSweepFixWatchRow).toHaveBeenCalledWith(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: AGENT_RUN_ID,
+            agentId: AGENT_ID,
+            deviceId: SCOPE_DEVICE_ID,
+            subjectKind: 'service_down',
+            subjectKey: 'MSSQLSERVER',
+            opKey: CANONICAL_OP_KEY,
+          },
+          dbMock.executor,
+        );
+        // Only the `executed` row. THE assertion of this wave.
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).toHaveBeenCalledWith(WATCH_ID);
+      });
+
+      it('a sweep-minted intent whose sweep watch could NOT be created credits NOTHING — not verified', async () => {
+        // The failure mode that would otherwise reintroduce the bug through
+        // the back door: falling through to the credit below would write the
+        // very `verified` row this wave exists to prevent.
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        fixWatchMock.createSweepFixWatchRow.mockResolvedValueOnce(null);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('a sweep watch insert that THROWS credits nothing either — same as the alert sibling', async () => {
+        // Review finding, PR #5889: the resolved-null case was covered but the
+        // thrown case was only inferred from the shared outer try/catch. A
+        // constraint violation must not become a `verified` row any more than
+        // a null return does.
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        fixWatchMock.createSweepFixWatchRow.mockRejectedValueOnce(
+          Object.assign(new Error('insert or update violates foreign key constraint'), { code: '23503' }),
+        );
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('a sweep intent whose kind has no probe is NOT act-eligible, so C4 still credits it verified', async () => {
+        // `failed_backups` has no probe: nothing will ever grade it, which is
+        // exactly the situation C4's fallback is for. Opening a watch that can
+        // only ever return `unknown` would strand the operation instead.
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:failed_backups:nightly',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createSweepFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(2);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({ metric: 'verified' }),
+        ]);
+      });
+
+      it('a sweep intent whose scope device was tombstoned falls back to C4 rather than guessing a device', async () => {
+        // `scope_device_id` tombstones to NULL when the device is deleted or
+        // moved org. There is no subject device left to probe, and the run's
+        // own device_id is null for a sweep — inventing one would probe the
+        // wrong machine.
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: null,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createSweepFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({ metric: 'verified' }),
+        ]);
+      });
+
+      it('a sweep intent with a subject-less trigger key falls back to C4 — a half-record cannot be probed', async () => {
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createSweepFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({ metric: 'verified' }),
+        ]);
+      });
+
+      it('an ALERT-anchored intent that ALSO carries a sweep trigger still takes the alert arm — the alert is the better anchor', async () => {
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        // Run HAS an alert (the default runRow).
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).toHaveBeenCalledTimes(1);
+        expect(fixWatchMock.createSweepFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
       });
 
       it('an alert no longer readable in the org yields no watch — same `verified` credit', async () => {

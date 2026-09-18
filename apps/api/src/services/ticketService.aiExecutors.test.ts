@@ -36,10 +36,14 @@ const updateWhereMock = vi.fn();
 const insertValuesMock = vi.fn();
 const selectWhereMock = vi.fn();
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  db: {
+vi.mock('../db', () => {
+  const dbMock: Record<string, unknown> = {
+    // #4209 (W03): addAiTriageNote wraps its insert in db.transaction() (a
+    // SAVEPOINT) so the unique-violation recovery is not run on a transaction
+    // postgres.js has already marked aborted. The callback receives the same
+    // builder surface, so handing it `dbMock` keeps the insert queue shared
+    // and lets the queued 23505 propagate exactly as the real driver's would.
+    transaction: vi.fn((fn: (tx: unknown) => unknown) => fn(dbMock)),
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => ({
         where: vi.fn((w: unknown) => {
@@ -78,8 +82,13 @@ vi.mock('../db', () => ({
         };
       }),
     })),
-  },
-}));
+  };
+  return {
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    db: dbMock,
+  };
+});
 
 import { tickets, ticketComments, ticketCategories } from '../db/schema';
 import {
@@ -481,5 +490,65 @@ describe('updateTicketFields — field_provenance stamped in the same UPDATE (P2
 
     const setArg = setMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(sqlOf(setArg.fieldProvenance).params).toContain(JSON.stringify({ subject: 'user' }));
+  });
+});
+
+// #4209 (W03) — the autonomous private-note lane writes without a human in the
+// loop, so the audit row IS the compliance artefact. Asserted on the real
+// `createAuditLogAsync` argument (the module is mocked at the top of this file),
+// not on a spy that would pass for any shape.
+describe('addAiTriageNote audit trail (#4209, W03)', () => {
+  it('writes an ai_agent-actor audit row naming the run', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.insertReturningQueue.push([{ id: 'comment-1' }]);
+
+    await addAiTriageNote(TICKET_ID, RUN_ID, 'note', ORG_ID, 'Helpdesk Agent');
+
+    expect(auditMock).toHaveBeenCalledTimes(1);
+    expect(auditMock.mock.calls[0]![0]).toMatchObject({
+      orgId: ORG_ID,
+      actorType: 'ai_agent',
+      actorId: RUN_ID,
+      action: 'ticket.comment',
+      resourceType: 'ticket',
+      resourceId: TICKET_ID,
+      initiatedBy: 'ai',
+      result: 'success',
+      details: expect.objectContaining({
+        commentId: 'comment-1',
+        agentRunId: RUN_ID,
+        isInternal: true,
+        isPublic: false,
+      }),
+    });
+  });
+
+  it('audits BEFORE the non-transactional side effects, so an outbox failure cannot lose the audit row', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.insertReturningQueue.push([{ id: 'comment-1' }]);
+
+    const order: string[] = [];
+    auditMock.mockImplementation(async () => { order.push('audit'); });
+    emitMock.mockImplementation(async () => { order.push('emit'); });
+
+    await addAiTriageNote(TICKET_ID, RUN_ID, 'note', ORG_ID);
+
+    // The comment row is already durably committed by the time any of these
+    // run. writeTicketOutbox can throw for reasons that are NOT unique
+    // violations; if it ran first, that throw would skip the audit and leave a
+    // committed autonomous note with no compliance record — while a retry
+    // would return the existing row as a clean success.
+    expect(order[0]).toBe('audit');
+    expect(order).toContain('emit');
+  });
+
+  it('does not double-audit when the idempotent retry returns the existing row', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.insertReturningQueue.push(Object.assign(new Error('duplicate key'), { code: '23505' }));
+    queueSelect(ticketComments, [{ id: 'existing-comment' }]);
+
+    await addAiTriageNote(TICKET_ID, RUN_ID, 'note', ORG_ID);
+
+    expect(auditMock).not.toHaveBeenCalled();
   });
 });

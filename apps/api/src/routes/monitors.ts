@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, like, desc, sql, gte, lte, or, inArray } from 'drizzle-orm';
+import { and, eq, like, desc, sql, gte, lte, or, isNull } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, devices, discoveredAssets } from '../db/schema';
+import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, discoveredAssets } from '../db/schema';
 import { isRedisAvailable } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -12,6 +12,7 @@ import { enqueueMonitorCheck } from '../jobs/monitorWorker';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { buildMonitorCommand } from '../services/monitorCommands';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
+import { selectMonitorExecutor } from '../services/networkExecutorSelection';
 
 // --- Helpers ---
 
@@ -46,6 +47,7 @@ function resolveOrgId(
 type AuthContext = {
   scope: string;
   orgId: string | null;
+  partnerId: string | null;
   accessibleOrgIds: string[] | null;
   canAccessOrg: (orgId: string) => boolean;
 };
@@ -124,6 +126,63 @@ async function requireMonitorAccess(auth: AuthContext, monitorId: string, permis
   return { monitor } as const;
 }
 
+/**
+ * #5866 — the SELECT-only partner-wide read branch (CLAUDE.md "Partner-Wide
+ * First", step 3). A `network_check` monitor definition saved with owner scope
+ * "All orgs" compiles to a `network_monitors` row with `org_id NULL,
+ * partner_id = P`; without this branch that row is write-only from the
+ * operator's point of view — it runs, writes results, and no list, detail or
+ * status surface ever shows it.
+ *
+ * Gated on `auth.scope === 'partner'` on purpose: an org token carries a
+ * partnerId but never passes `breeze_has_partner_access`, so widening on it
+ * would claim a visibility the RLS policy does not grant. Read-only by
+ * construction — every caller below is a GET; the mutation paths keep going
+ * through `requireMonitorAccess`, which still narrows to `orgId: string`.
+ */
+function partnerWideMonitorCondition(auth: AuthContext) {
+  if (auth.scope !== 'partner' || !auth.partnerId) return undefined;
+  return and(isNull(networkMonitors.orgId), eq(networkMonitors.partnerId, auth.partnerId));
+}
+
+/** Org filter for a read surface, widened with the partner-wide branch when it applies. */
+function monitorReadOwnerCondition(auth: AuthContext, orgId: string | null | undefined) {
+  const partnerWide = partnerWideMonitorCondition(auth);
+  if (!orgId) return partnerWide;
+  if (!partnerWide) return eq(networkMonitors.orgId, orgId);
+  return or(eq(networkMonitors.orgId, orgId), partnerWide);
+}
+
+/**
+ * #5866 — read-path monitor lookup. Tries the org axis first (unchanged
+ * semantics, including the site gate), then falls back to the caller's own
+ * partner-wide rows. Returns the raw row, which may carry `orgId: null` — a
+ * partner-wide monitor is never editable through this surface, so callers must
+ * be GETs only.
+ */
+async function requireMonitorReadAccess(auth: AuthContext, monitorId: string, permissions?: UserPermissions) {
+  const orgResult = await requireMonitorAccess(auth, monitorId, permissions);
+  if (!('error' in orgResult)) {
+    return { monitor: orgResult.monitor as typeof networkMonitors.$inferSelect } as const;
+  }
+
+  const partnerWide = partnerWideMonitorCondition(auth);
+  if (!partnerWide) return orgResult;
+
+  const [row] = await db
+    .select()
+    .from(networkMonitors)
+    .where(and(eq(networkMonitors.id, monitorId), partnerWide))
+    .limit(1);
+  if (!row) return orgResult;
+  // A partner-wide row owns no org and therefore no site, so a site-restricted
+  // user gets the same vacuous "no site" answer the list path gives it.
+  if (!(await hasMonitorSiteAccess(row, permissions))) {
+    return { error: 'Access to this site denied', status: 403 } as const;
+  }
+  return { monitor: row } as const;
+}
+
 async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permissions?: UserPermissions) {
   const [row] = await db
     .select({
@@ -177,51 +236,25 @@ function validateMonitorConfigForType(
   }
 }
 
-async function selectExecutionAgentForMonitor(monitor: {
-  orgId: string;
-  assetId: string | null;
-}, permissions?: UserPermissions): Promise<string | null | 'SITE_ACCESS_DENIED'> {
-  const assetSiteId = await getMonitorSiteId(monitor);
-
-  if (permissions?.allowedSiteIds) {
-    if (assetSiteId && !canAccessSite(permissions, assetSiteId)) {
-      return 'SITE_ACCESS_DENIED';
-    }
-    if (!assetSiteId && permissions.allowedSiteIds.length === 0) {
-      return 'SITE_ACCESS_DENIED';
-    }
-  }
-
-  if (assetSiteId) {
-    const [siteAgent] = await db
-      .select({ agentId: devices.agentId })
-      .from(devices)
-      .where(and(
-        eq(devices.orgId, monitor.orgId),
-        eq(devices.siteId, assetSiteId),
-        eq(devices.status, 'online')
-      ))
-      .limit(1);
-
-    if (siteAgent?.agentId) {
-      return siteAgent.agentId;
-    }
-  }
-
-  const fallbackConditions = [
-    eq(devices.orgId, monitor.orgId),
-    eq(devices.status, 'online'),
-  ];
-  if (permissions?.allowedSiteIds) {
-    fallbackConditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
-  }
-  const [orgAgent] = await db
-    .select({ agentId: devices.agentId })
-    .from(devices)
-    .where(and(...fallbackConditions))
-    .limit(1);
-
-  return orgAgent?.agentId ?? null;
+/**
+ * Route-side wrapper maps the shared policy's site-access denial to the
+ * existing 403 response. RLS only defends the org axis. The org-wide
+ * fallback for an asset-BOUND monitor is gone on purpose — see spec §5 and the
+ * SR5-08 note in services/networkExecutorSelection.ts. A monitor whose site has
+ * no online agent now reports "No online agent available" rather than probing
+ * from a different site.
+ */
+async function selectExecutionAgentForMonitor(
+  monitor: { orgId: string; assetId: string | null },
+  permissions?: UserPermissions,
+  agentId?: string,
+): Promise<string | null | 'SITE_ACCESS_DENIED'> {
+  const pick = await selectMonitorExecutor(monitor, {
+    allowedSiteIds: permissions?.allowedSiteIds,
+    agentId,
+  });
+  if ('error' in pick && pick.error === 'site_access_denied') return 'SITE_ACCESS_DENIED';
+  return 'agentId' in pick ? pick.agentId : null;
 }
 
 // --- Zod Schemas ---
@@ -358,7 +391,8 @@ monitorRoutes.get(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [];
-    if (orgResult.orgId) conditions.push(eq(networkMonitors.orgId, orgResult.orgId));
+    const ownerCondition = monitorReadOwnerCondition(auth as AuthContext, orgResult.orgId);
+    if (ownerCondition) conditions.push(ownerCondition);
     if (query.assetId) conditions.push(eq(networkMonitors.assetId, query.assetId));
     if (query.monitorType) conditions.push(eq(networkMonitors.monitorType, query.monitorType));
     if (query.status) conditions.push(eq(networkMonitors.lastStatus, query.status));
@@ -396,6 +430,8 @@ monitorRoutes.get(
       data: visibleResults.map((m) => ({
         id: m.id,
         orgId: m.orgId,
+        // #5866 — `orgId: null` + a partnerId is the "All orgs" badge signal.
+        partnerId: m.partnerId,
         assetId: m.assetId,
         name: m.name,
         monitorType: m.monitorType,
@@ -409,6 +445,11 @@ monitorRoutes.get(
         lastResponseMs: m.lastResponseMs,
         lastError: m.lastError,
         consecutiveFailures: m.consecutiveFailures,
+        tlsState: m.tlsState,
+        tlsNotAfter: m.tlsNotAfter?.toISOString() ?? null,
+        tlsIssuer: m.tlsIssuer,
+        tlsObservedHost: m.tlsObservedHost,
+        tlsObservedAt: m.tlsObservedAt?.toISOString() ?? null,
         createdAt: m.createdAt.toISOString(),
         updatedAt: m.updatedAt.toISOString()
       })),
@@ -489,7 +530,7 @@ monitorRoutes.get(
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const orgFilter = orgResult.orgId ? eq(networkMonitors.orgId, orgResult.orgId) : undefined;
+    const orgFilter = monitorReadOwnerCondition(auth as AuthContext, orgResult.orgId);
     const permissions = c.get('permissions') as UserPermissions | undefined;
 
     if (permissions?.allowedSiteIds) {
@@ -567,7 +608,7 @@ monitorRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
+    const monitorResult = await requireMonitorReadAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
 
@@ -628,8 +669,24 @@ monitorRoutes.patch(
       }
     }
 
+    // #5754: a check result already in flight was produced under the OLD
+    // target/config, and recordMonitorCheckResult overwrites monitor state
+    // unconditionally — so without this the arriving certificate would be
+    // attributed to an endpoint it never came from. Only the identity of the
+    // thing being observed invalidates it; a rename or a polling-interval
+    // change does not. Deactivation deliberately does NOT clear either: the
+    // loader's `is_active = true` predicate already excludes those rows, and
+    // clearing would lose the last known expiry from the UI.
+    const existing = monitorResult.monitor;
+    const targetChanged = payload.target !== undefined && payload.target !== existing.target;
+    const configChanged = payload.config !== undefined
+      && JSON.stringify(payload.config) !== JSON.stringify(existing.config);
+    const tlsReset = (targetChanged || configChanged)
+      ? { tlsState: null, tlsNotAfter: null, tlsIssuer: null, tlsObservedHost: null, tlsObservedAt: null }
+      : {};
+
     const [updated] = await db.update(networkMonitors)
-      .set({ ...payload, updatedAt: new Date() })
+      .set({ ...payload, ...tlsReset, updatedAt: new Date() })
       .where(eq(networkMonitors.id, monitorId))
       .returning();
     if (!updated) {
@@ -740,7 +797,18 @@ monitorRoutes.post(
       });
     }
 
-    const command = buildMonitorCommand(monitor);
+    // Re-read access and pin the selected executor: a move, revocation or
+    // disconnect during selection must not send a probe using stale scope.
+    const current = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
+    if ('error' in current) return c.json({ error: current.error }, current.status);
+    const eligible = await selectExecutionAgentForMonitor(current.monitor, c.get('permissions') as UserPermissions | undefined, agentId);
+    if (eligible === 'SITE_ACCESS_DENIED') return c.json({ error: 'Access to this site denied' }, 403);
+    if (current.monitor.orgId !== monitor.orgId || eligible !== agentId || !isAgentConnected(agentId)) {
+      return c.json({
+        data: { monitorId, status: 'failed', error: 'No online agent available', testedAt: new Date().toISOString() }
+      });
+    }
+    const command = buildMonitorCommand(current.monitor);
     const sent = sendCommandToAgent(agentId, command);
 
     writeRouteAudit(c, {
@@ -776,7 +844,7 @@ monitorRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
     const query = c.req.valid('query');
-    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
+    const monitorResult = await requireMonitorReadAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const resultConditions: ReturnType<typeof eq>[] = [eq(networkMonitorResults.monitorId, monitorId)];
@@ -844,7 +912,7 @@ monitorRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
+    const monitorResult = await requireMonitorReadAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const rules = await db.select().from(networkMonitorAlertRules)

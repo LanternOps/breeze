@@ -14,6 +14,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget, normalizeAgentArchitecture } from '../routes/agents/helpers';
 import { getBinaryEdition } from './binaryEdition';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -23,6 +24,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -145,6 +149,31 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         const conditions: SQL[] = [ne(devices.agentVersion, effectiveTarget), eq(devices.isEphemeral, false)];
         const orgCond = auth.orgCondition(devices.orgId);
         if (orgCond) conditions.push(orgCond);
+        // Exact-device axis (#6086): the candidate set is otherwise org-wide, so
+        // a device-bound run would count every sibling device. Independent of the
+        // site axis — a device-less analysis run has no `allowedSiteIds` at all.
+        const deviceCond = deviceScopeCondition(auth, devices.id);
+        if (deviceCond) conditions.push(deviceCond);
+        // Site axis (audit §1.1). A site-restricted HUMAN never carries
+        // `allowedDeviceIds`, so the branch above is a no-op for them and this
+        // rollup stayed org-wide. `resolveSiteAllowedDeviceIds` intersects both
+        // axes; an unrestricted caller reaches neither branch and pays no scan.
+        if (auth.allowedSiteIds !== undefined) {
+          const siteDeviceIds = auth.orgId
+            ? await resolveSiteAllowedDeviceIds(auth.orgId, auth) ?? []
+            : [];
+          if (siteDeviceIds.length === 0) {
+            return JSON.stringify({
+              latestVersion: latest?.version ?? null,
+              effectiveTarget,
+              pinned,
+              totalOutdated: 0,
+              byVersion: [],
+              note: SITE_SCOPE_EMPTY_NOTE,
+            });
+          }
+          conditions.push(inArray(devices.id, siteDeviceIds));
+        }
 
         const outdated = await db
           .select({
@@ -167,6 +196,11 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           totalOutdated,
           byVersion: outdated,
           ...(note ? { note } : {}),
+          // The rollup is narrowed but reads as a fleet-wide rollout figure;
+          // say what it actually covers (review #6110).
+          ...(auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined
+            ? { scopeNote: 'These counts cover only the devices within your access scope, not every device in the organization.' }
+            : {}),
         });
       }
 

@@ -82,6 +82,20 @@ describe('BREEZE_AI_GUARDRAILS_CORE approval-gate wording (#5107)', () => {
     expect(BREEZE_AI_GUARDRAILS_CORE).toMatch(/not a failure/i);
     expect(BREEZE_AI_GUARDRAILS_CORE).toMatch(/never re-issue the call/i);
   });
+
+  it('tells the model an APPROVED action can still fail, and must be reported as a failure (#6022)', () => {
+    // Rule 3b alone said "never describe it as failed" and "its outcome is
+    // reported separately" — so once the read-back started reporting a real
+    // worker failure, the prompt was instructing the model to talk past it.
+    // That is how the operator was told a refused autoInstall arm had
+    // succeeded.
+    expect(BREEZE_AI_GUARDRAILS_CORE).toMatch(/approved action can still fail/i);
+    expect(BREEZE_AI_GUARDRAILS_CORE).toMatch(/did not succeed/i);
+    expect(BREEZE_AI_GUARDRAILS_CORE).toMatch(/repeat the reason/i);
+    // ...and 3b must no longer license claiming success while it is running.
+    expect(BREEZE_AI_GUARDRAILS_CORE).toMatch(/never claim it succeeded/i);
+    expect(BREEZE_AI_GUARDRAILS_CORE).not.toMatch(/outcome is reported separately/i);
+  });
 });
 
 describe('AI_SYSTEM_PROMPT_BASE in-product-only rules', () => {

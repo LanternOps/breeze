@@ -13,7 +13,9 @@ import {
   resolveSingleOrgId,
   searchFleetLogs,
 } from './logSearch';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  resolveSiteAllowedDeviceIds, runFrozenDeviceIds, SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -24,10 +26,17 @@ type AiToolTier = 1 | 2 | 3 | 4;
  * site-restricted caller with zero in-scope devices (caller/query short-circuits
  * to empty). The site axis is app-layer authz — Postgres RLS does NOT enforce it.
  */
-async function resolveSiteScopedDeviceIds(auth: AuthContext): Promise<string[] | null> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
-  const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-  if (!orgId) return null;
+async function resolveSiteScopedDeviceIds(
+  auth: AuthContext,
+  explicitOrgId?: string,
+): Promise<string[] | null> {
+  // W04 (#5715): a device-LESS analysis run has no site axis, only a frozen
+  // device set — narrow to it rather than falling through to "unrestricted".
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return runFrozenDeviceIds(auth);
+  const orgId = explicitOrgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+  // Site-restricted with no resolvable org: keep whatever the device axis says
+  // rather than returning `null` ("unrestricted"), which would widen the read.
+  if (!orgId) return runFrozenDeviceIds(auth) ?? [];
   return resolveSiteAllowedDeviceIds(orgId, auth);
 }
 
@@ -316,13 +325,13 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'orgId is required for this scope' });
         }
 
-        // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
-        // caller may only correlate across its in-scope devices. Resolve against
-        // the chosen org (not auth.orgId) so partner/system scope narrows too.
-        const allowedDeviceIds =
-          auth.allowedSiteIds && auth.canAccessSite
-            ? await resolveSiteAllowedDeviceIds(orgId, auth)
-            : null;
+        // Site AND exact-device axes (app-layer only; RLS enforces neither): a
+        // restricted caller may only correlate across its in-scope devices.
+        // Resolve against the chosen org (not auth.orgId) so partner/system scope
+        // narrows too. Routed through the same helper as its two siblings in this
+        // file so a device-LESS run (device axis, no site axis) narrows as well
+        // instead of correlating org-wide (#6096 RC3).
+        const allowedDeviceIds = await resolveSiteScopedDeviceIds(auth, orgId);
 
         const pattern = typeof input.pattern === 'string' ? input.pattern : '';
         const result = await detectPatternCorrelation({

@@ -24,6 +24,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { DispatchOutcome } from '../services/agentCommandRelay';
 
+vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
+
 const { mockDb, ctxState } = vi.hoisted(() => {
   const db = {
     select: vi.fn(),
@@ -143,6 +145,8 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
         rows = configFound ? [CONFIG_ROW] : []; label = 'configSelect'; // config load: db.select() with no arg
       } else if (keys.length === 1 && keys[0] === 'status') {
         rows = cancelled ? [{ status: 'cancelled' }] : []; label = 'cancelledSelect'; // isBackupJobCancelled
+      } else if (keys.length === 1 && keys[0] === 'orgId') {
+        rows = [{ orgId: 'org-1' }]; label = 'deviceOrgSelect';
       } else if (keys.length === 1 && keys[0] === 'agentId') {
         rows = [{ agentId: 'agent-1' }]; label = 'deviceSelect'; // device -> agent lookup
       } else if (keys.includes('featureLinkId')) {
@@ -239,6 +243,9 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       // Phase 4: the actual send, NO context held. This is the #1105 fix —
       // this call used to run at depth1, pinning a pooled connection across
       // dispatchCommandToAgent's ack-wait poll.
+      'ctx:enter',
+      'deviceOrgSelect@depth1',
+      'ctx:exit',
       'wsDispatch@depth0',
       // Phase 5 (settle): final cancellation guard + status flip — ONE short
       // context.
@@ -322,6 +329,9 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'baseCandidateSelect@depth1',
       'update@depth1',
       'recordExpectation@depth1',
+      'ctx:exit',
+      'ctx:enter',
+      'deviceOrgSelect@depth1',
       'ctx:exit',
       'wsDispatch@depth0',
       'ctx:enter',

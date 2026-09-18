@@ -50,6 +50,23 @@ export const approvalActionSchema = z.object({
   note: z.string().max(1000).optional()
 });
 
+// Decline needs one extra knob approve/defer don't: `allRings` clears every
+// ring-specific approval row for the patch (not just the blanket/current-ring
+// one), closing the loophole where a partner-wide decline left previously
+// approved ring rows live (issue #5585). Mutually exclusive with `ringId` —
+// "decline this one ring" and "decline every ring" are different requests.
+export const declineActionSchema = approvalActionSchema.extend({
+  allRings: z.boolean().optional()
+}).superRefine((value, ctx) => {
+  if (value.allRings && value.ringId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['ringId'],
+      message: 'ringId cannot be combined with allRings'
+    });
+  }
+});
+
 export const deferSchema = z.object({
   partnerId: z.string().guid().optional(),
   ringId: z.string().guid().optional(),

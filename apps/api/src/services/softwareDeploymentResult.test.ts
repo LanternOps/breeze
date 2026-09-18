@@ -28,7 +28,6 @@ import { and, eq } from 'drizzle-orm';
 import { deploymentResults } from '../db/schema';
 import {
   applySoftwareInstallResult,
-  SW_INSTALL_COMMAND_ID_REGEX,
 } from './softwareDeploymentResult';
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -58,35 +57,6 @@ function riggedUpdateWithReturning(returningRows: unknown[]) {
   updateMock.mockReturnValue({ set: setMock });
   return { setMock, whereMock, returningMock };
 }
-
-describe('SW_INSTALL_COMMAND_ID_REGEX', () => {
-  it('matches sw-install-<deploymentUuid>-<deviceUuid> with no attempt suffix and captures both ids', () => {
-    const match = `sw-install-${DEPLOYMENT_ID}-${DEVICE_ID}`.match(SW_INSTALL_COMMAND_ID_REGEX);
-    expect(match).not.toBeNull();
-    expect(match![1]).toBe(DEPLOYMENT_ID);
-    expect(match![2]).toBe(DEVICE_ID);
-    expect(match![3]).toBeUndefined();
-  });
-
-  it('matches sw-install-<deploymentUuid>-<deviceUuid>-<attempt> and captures the attempt number', () => {
-    const match = `sw-install-${DEPLOYMENT_ID}-${DEVICE_ID}-2`.match(SW_INSTALL_COMMAND_ID_REGEX);
-    expect(match).not.toBeNull();
-    expect(match![1]).toBe(DEPLOYMENT_ID);
-    expect(match![2]).toBe(DEVICE_ID);
-    expect(match![3]).toBe('2');
-  });
-
-  it('captures a zero attempt suffix explicitly rather than treating it as absent', () => {
-    const match = `sw-install-${DEPLOYMENT_ID}-${DEVICE_ID}-0`.match(SW_INSTALL_COMMAND_ID_REGEX);
-    expect(match![3]).toBe('0');
-  });
-
-  it('rejects other command id shapes', () => {
-    expect('dev-push-abc'.match(SW_INSTALL_COMMAND_ID_REGEX)).toBeNull();
-    expect(`sw-install-${DEPLOYMENT_ID}`.match(SW_INSTALL_COMMAND_ID_REGEX)).toBeNull();
-    expect('22222222-2222-4222-8222-222222222222'.match(SW_INSTALL_COMMAND_ID_REGEX)).toBeNull();
-  });
-});
 
 describe('applySoftwareInstallResult', () => {
   beforeEach(() => {
@@ -254,11 +224,9 @@ describe('applySoftwareInstallResult', () => {
       expect(stored.output).toBe('installed ok');
     });
 
-    it('(c) applies a legacy command id with no attempt suffix (defaults to 0) when retryCount is still 0', async () => {
+    it('(c) defaults an omitted attempt number to the first attempt', async () => {
       const { setMock, whereMock } = riggedUpdateWithReturning([{ id: 'dr-row-1' }]);
 
-      // No attemptNumber passed — mirrors a command id parsed with the
-      // optional suffix absent (pre-fix in-flight command).
       await applySoftwareInstallResult({
         deploymentId: DEPLOYMENT_ID,
         deviceId: DEVICE_ID,

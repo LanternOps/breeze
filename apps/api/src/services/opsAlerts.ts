@@ -70,6 +70,7 @@ async function sendOpsEmail(to: string, msg: OpsAlertMessage): Promise<boolean> 
       subject: `[Breeze ops] ${msg.title}`,
       text: msg.body,
       html: msg.html ?? `<pre>${msg.body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`,
+      purpose: 'ops.alert',
     });
     recordOpsAlertDelivery('email', 'success');
     return true;

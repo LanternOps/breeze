@@ -46,6 +46,14 @@ export type HardwareLifecycleDeviceRow = {
   purchaseDateSource: 'manual' | 'vendor' | null;
   /** YYYY-MM-DD or null. Active-coverage end only matters when > today. */
   warrantyEndDate: string | null;
+  /**
+   * True when the most recent warranty vendor lookup errored (network,
+   * expired API key, quota) rather than genuinely finding no coverage — the
+   * two collapse to the same `warrantyEndDate: null` otherwise, so a fleet
+   * whose sync has been failing for weeks would show "Replace now" with no
+   * caveat (#5764). Absent on legacy snapshots predating this field.
+   */
+  warrantyLookupFailed?: boolean;
   /** Years since purchase, one decimal; null when purchase date is unknown. */
   ageYears: number | null;
   /** YYYY-MM-DD or null when neither date gives a defensible answer. */

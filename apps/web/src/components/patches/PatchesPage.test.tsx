@@ -146,6 +146,130 @@ describe('PatchesPage', () => {
     expect(desktop().getAllByRole('button', { name: 'Review' })).toHaveLength(1);
   });
 
+  // #5585: the Unapprove row action on an approved patch must open the
+  // approval modal preselected on 'decline' and actually POST the decline —
+  // proving handleUnapprove + modalInitialAction wiring, not just the two
+  // leaf components in isolation (PatchList's button, PatchApprovalModal's
+  // initialAction prop) which are covered elsewhere.
+  it('Unapprove on an approved row opens the modal on decline and declines the patch', async () => {
+    orgState.currentOrgId = 'org-1';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+
+      if (url === '/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-1',
+              title: 'Already Approved Patch',
+              severity: 'critical',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'approved',
+            },
+          ],
+        });
+      }
+
+      if (url === '/patches/patch-1/decline') {
+        return makeJsonResponse({ id: 'patch-1', status: 'declined' });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findAllByText('Already Approved Patch');
+
+    fireEvent.click(desktop().getByTestId('patch-row-patch-1-unapprove'));
+
+    // Opens straight into the decline tab, not the default approve tab.
+    const declineTab = await screen.findByTestId('patch-approval-action-decline');
+    expect(declineTab).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('patch-approval-action-approve')).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Decline/i }).at(-1)!);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/patch-1/decline',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+    // Declining does not go through the approve scope-naming confirm dialog.
+    expect(screen.queryByTestId('confirm-fleet-action')).toBeNull();
+  });
+
+  // #5585 follow-up: bulk decline now includes already-approved rows
+  // (PatchList's selectedDeclinableIds), and an approved patch can carry
+  // BOTH a blanket approval and ring-specific ones — a plain scoped decline
+  // would silently leave the other rings' approvals live. handleBulkDecline
+  // must route an approved row through allRings, while a still-pending row
+  // (nothing to clear elsewhere) keeps the ordinary scoped decline.
+  it('bulk decline sends allRings for an already-approved row but a scoped decline for a pending one', async () => {
+    orgState.currentOrgId = 'org-1';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+
+      if (url === '/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-approved',
+              title: 'Approved Patch',
+              severity: 'critical',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'approved',
+            },
+            {
+              id: 'patch-pending',
+              title: 'Pending Patch',
+              severity: 'important',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-02T00:00:00.000Z',
+              approvalStatus: 'pending',
+            },
+          ],
+        });
+      }
+
+      if (url === '/patches/patch-approved/decline' || url === '/patches/patch-pending/decline') {
+        return makeJsonResponse({ id: 'ok', status: 'declined' });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findAllByText('Approved Patch');
+    await screen.findAllByText('Pending Patch');
+
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Approved Patch' }));
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Pending Patch' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Decline 2' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/patch-approved/decline',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ allRings: true }) })
+      );
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/patches/patch-pending/decline',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ ringId: undefined }) })
+    );
+  });
+
   it('fetches the ring-scoped patches with ?limit=200 when a ring is selected', async () => {
     // Regression: selecting a ring previously fetched `/update-rings/:id/patches`
     // with NO limit, so the endpoint defaulted to a 50-row page and the visible

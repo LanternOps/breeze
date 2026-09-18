@@ -50,3 +50,24 @@ describe('documents permission (service deliverables W03)', () => {
     expect(PERMISSION_GRANTS.DOCUMENTS_WRITE).toEqual({ resource: 'documents', action: 'write' });
   });
 });
+
+describe('agreements permission (agreements vocabulary + IA split, W02)', () => {
+  it('declares read and write on the agreements resource', () => {
+    expect(PERMISSION_GRANTS.AGREEMENTS_READ).toEqual({ resource: 'agreements', action: 'read' });
+    expect(PERMISSION_GRANTS.AGREEMENTS_WRITE).toEqual({ resource: 'agreements', action: 'write' });
+  });
+
+  // The whole point of the resource: the template library must be reachable
+  // without recurring-billing authority, and vice versa.
+  it('is a distinct resource from contracts', () => {
+    expect(PERMISSION_GRANTS.AGREEMENTS_READ).not.toEqual(PERMISSION_GRANTS.CONTRACTS_READ);
+    expect(PERMISSION_GRANTS.AGREEMENTS_WRITE).not.toEqual(PERMISSION_GRANTS.CONTRACTS_WRITE);
+  });
+
+  // No `manage`: publish and archive are write operations on a template
+  // (spec §4). A third action would be an ungated capability with no gate.
+  it('declares no third action', () => {
+    const agreementKeys = Object.keys(PERMISSION_GRANTS).filter((k) => k.startsWith('AGREEMENTS_'));
+    expect(agreementKeys.sort()).toEqual(['AGREEMENTS_READ', 'AGREEMENTS_WRITE']);
+  });
+});

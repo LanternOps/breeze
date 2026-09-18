@@ -128,7 +128,8 @@
       "sections": {
         "contracts": "Contrats",
         "invoices": "Factures",
-        "quotes": "Devis"
+        "quotes": "Devis",
+        "agreements": "Ententes"
       }
     },
     "documents": {
@@ -201,6 +202,9 @@
     }
   },
   "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} organisations)",
+    "partnerOption_one": "{{id}}… ({{count}} organisation)",
+    "partnerScopeHint": "Les comptes d’un seul partenaire sont affichés; les totaux ci-dessous concernent uniquement ce partenaire",
     "title": "Organisations",
     "description": "Chaque client, ce qu'il lui manque encore et ce qui est en cours.",
     "loading": "Chargement des organisations…",

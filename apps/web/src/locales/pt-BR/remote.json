@@ -30,8 +30,12 @@
     "desktopUnavailable": "Área de trabalho indisponível",
     "dismiss": "Dispensar",
     "downloadFor": "Baixar para {{platform}}",
+    "ending": {
+      "description": "A sessão anterior ainda está sendo encerrada no dispositivo. Aguarde um momento e tente novamente.",
+      "title": "A sessão ainda está sendo encerrada"
+    },
     "errors": {
-      "agentUpgradeRequired": "A área de trabalho remota precisa de uma atualização do agente neste dispositivo (suporte à concessão de revogação de sessão). O agente se atualiza automaticamente — normalmente isso se resolve em menos de um minuto. Terminal e transferência de arquivos não são afetados.",
+      "agentUpgradeRequired": "A área de trabalho remota precisa de uma atualização do agente neste dispositivo (suporte à concessão de revogação de sessão e à barreira de início). O agente se atualiza automaticamente — normalmente isso se resolve em menos de um minuto. Terminal e transferência de arquivos não são afetados.",
       "connectionFailed": "Falha na conexão",
       "createDesktopCode": "Não foi possível criar o código de conexão da área de trabalho",
       "createDesktopSession": "Falha ao criar a sessão da área de trabalho",
@@ -664,7 +668,8 @@
       "connecting": "Conectando...",
       "disconnected": "Desconectado",
       "failed": "Falhou",
-      "pending": "Pendente"
+      "pending": "Pendente",
+      "teardownPending": "Encerrando (aguardando o dispositivo)"
     },
     "subtitle": "Log de auditoria de acesso remoto",
     "title": "Histórico de Sessões",
@@ -700,6 +705,7 @@
       "timeline": "Linha do tempo"
     },
     "subtitle": "Visualize e audite sessões de acesso remoto",
+    "teardownPending": "Aguardando confirmação do dispositivo",
     "title": "Histórico de Sessões",
     "viewDevice": "Ver dispositivo",
     "viewRecording": "Ver gravação"

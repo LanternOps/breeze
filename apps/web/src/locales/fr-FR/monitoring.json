@@ -105,6 +105,9 @@
       "test": "Test échoué",
       "generic": "Quelque chose a mal tourné"
     },
+    "saved": "Moniteur enregistré",
+    "deleted": "Moniteur supprimé",
+    "detached": "Moniteur détaché",
     "loading": "Chargement du moniteur…",
     "noAttachments": "Pas encore déployé dans une politique.",
     "testResult": {
@@ -246,8 +249,10 @@
     },
     "selectPolicy": "Politique de configuration",
     "selectTarget": "Cible",
+    "noOrgSelected": "Sélectionnez une organisation pour le déploiement.",
     "policyName": "Nom de la politique",
     "attach": "Joindre",
+    "attached": "Moniteur joint",
     "cancel": "Annuler",
     "detachConfirm": "Détacher de {{policy}} ?",
     "errors": {

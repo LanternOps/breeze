@@ -30,7 +30,12 @@
     "toast": {
       "approved": "Patch freigegeben",
       "declined": "Patch abgelehnt",
+      "declinedAllRings": "Patch für alle Update-Ringe abgelehnt",
       "deferred": "Patch zurückgestellt"
+    },
+    "allRings": {
+      "label": "Alle Ring-Freigaben aufheben",
+      "description": "Hebt die Freigabe dieses Patches auch in jedem anderen Update-Ring dieses Partners auf, nicht nur im aktuellen Geltungsbereich."
     },
     "confirm": {
       "title": "Patch-Freigabe bestätigen",
@@ -264,6 +269,7 @@
     "actions": {
       "deploy": "Bereitstellen",
       "review": "Prüfen",
+      "unapprove": "Freigabe aufheben",
       "details": "Details",
       "approveCount": "{{count}} freigeben",
       "declineCount": "{{count}} ablehnen",

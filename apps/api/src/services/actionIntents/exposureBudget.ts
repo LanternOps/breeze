@@ -60,6 +60,15 @@ export interface ExposureBudgetResult {
    *  window, optionally including the projected candidate — see
    *  `ExposureBudgetParams.deviceId`. */
   distinctDevices: number;
+  /**
+   * #4442 W05 — the WINDOW's own device set, with no projected candidate
+   * added. The sweep readiness cohort (`sweepActCohort.ts`) needs the set
+   * rather than its size, because its fleet-cap check is `|existing ∪
+   * candidates|` and a candidate already inside the window costs nothing.
+   * Returning it here keeps ONE implementation of the window query instead
+   * of a second copy in the sweep path.
+   */
+  exposedDeviceIds: ReadonlySet<string>;
   /** floor(contractDeviceCount * maxFleetPercentPerDay / 100). No
    *  `max(1, ·)` — a fleet too small for a whole device's worth of allowance
    *  gets zero unattended authorizations (locked quorum decision, see
@@ -112,6 +121,7 @@ export async function computeExposureBudget(params: ExposureBudgetParams): Promi
 
   return {
     distinctDevices,
+    exposedDeviceIds: exposedDevices,
     allowance,
     contractDeviceCount,
     maxFleetPercentPerDay,

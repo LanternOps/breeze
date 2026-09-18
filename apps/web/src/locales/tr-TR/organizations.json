@@ -128,7 +128,8 @@
       "sections": {
         "contracts": "Sözleşmeler",
         "invoices": "Faturalar",
-        "quotes": "Alıntılar"
+        "quotes": "Alıntılar",
+        "agreements": "Anlaşmalar"
       }
     },
     "documents": {
@@ -201,6 +202,9 @@
     }
   },
   "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} kuruluş)",
+    "partnerOption_one": "{{id}}… ({{count}} kuruluş)",
+    "partnerScopeHint": "Tek bir iş ortağının hesapları gösteriliyor; aşağıdaki toplamlar yalnızca bu iş ortağına aittir",
     "title": "Kuruluşlar",
     "description": "Her müşteri, hâlâ neye ihtiyacı olduğu ve neyin açık olduğu.",
     "loading": "Kuruluşlar yükleniyor…",

@@ -73,10 +73,10 @@ describe('get_script_execution_history site projection', () => {
         }),
       } as any);
 
-    const result = JSON.parse(await tool().handler({ scriptId: SCRIPT_ID }, auth([SITE_ID])));
+    const result = JSON.parse(await tool().handler({ scriptId: SCRIPT_ID }, { ...auth([SITE_ID]), allowedDeviceIds: ['device-allowed'] }));
     const query = new PgDialect().sqlToQuery(executionWhere as any);
 
-    expect(query.params).toEqual(expect.arrayContaining([SCRIPT_ID, ORG_ID, SITE_ID]));
+    expect(query.params).toEqual(expect.arrayContaining([SCRIPT_ID, ORG_ID, SITE_ID, 'device-allowed']));
     expect(query.sql).toContain('script_executions');
     expect(query.sql).toContain('site_id');
     expect(result.executions[0].stdout).toHaveLength(16_384);

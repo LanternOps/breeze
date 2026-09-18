@@ -40,6 +40,16 @@ export const aiAgentSchedules = pgTable('ai_agent_schedules', {
   timezone: text('timezone').notNull().default('UTC'),
   sweepKinds: text('sweep_kinds').array().$type<AiSweepKind[]>().notNull().default(sql`'{}'::text[]`),
   enabled: boolean('enabled').notNull().default(true),
+  // #4442 W04 — sweep act mode. THREE-VALUED and nullable on purpose:
+  //   on a partner BASELINE: `true` = armed, anything else (false/NULL) = not armed;
+  //   on an org OVERRIDE:    `false` = explicitly disarmed, anything else = inherit.
+  // Effective value is `baseline.actMode === true && override?.actMode !== false`
+  // (services/aiAgents/scheduleService.ts, effectiveSchedule) — tighten-only, so
+  // an org can disarm what its partner armed but can never arm what it did not.
+  // NOT NULL DEFAULT false was rejected: it would materialise `false` on every
+  // existing override row and make a partner-wide arming invisible to exactly
+  // the orgs that have an override.
+  actMode: boolean('act_mode'),
   lastEnqueuedAt: timestamp('last_enqueued_at', { withTimezone: true }),
   lastOccurrenceKey: text('last_occurrence_key'),
   lastRunSummary: jsonb('last_run_summary').$type<AiAgentScheduleRunSummary>(),

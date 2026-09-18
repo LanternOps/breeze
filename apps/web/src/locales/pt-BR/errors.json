@@ -1,0 +1,12 @@
+{
+  "NOT_FOUND": "Não encontrado",
+  "ACCESS_DENIED": "Acesso negado",
+  "VALIDATION_FAILED": "Valide os campos destacados",
+  "RATE_LIMITED": "Muitas requisições! Tente novamente em instantes",
+  "CONFLICT": "Há um conflito com estado atual",
+  "LIMIT_REACHED": "Limite para essa ação atingido",
+  "MFA_REQUIRED": "Autenticação multifator é necessária",
+  "INVALID_CREDENTIALS": "Credenciais inválidas",
+  "EXPIRED": "Expirado",
+  "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento"
+}

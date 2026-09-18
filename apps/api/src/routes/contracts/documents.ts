@@ -19,13 +19,21 @@ import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 export const contractDocumentRoutes = new Hono();
 
 const scopes = requireScope('partner', 'organization', 'system');
-const readPerm = requirePermission(PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
-const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action);
+// Signed agreements gate on agreements:* (W02, spec §4) — see templates.ts.
+const readPerm = requirePermission(PERMISSIONS.AGREEMENTS_READ.resource, PERMISSIONS.AGREEMENTS_READ.action);
+const writePerm = requirePermission(PERMISSIONS.AGREEMENTS_WRITE.resource, PERMISSIONS.AGREEMENTS_WRITE.action);
 
 const idParam = z.object({ id: z.string().guid() });
+// `linked` is the Agreements-area filter (spec §6). It DEFAULTS to 'unlinked' so
+// the pre-Agreements caller (which sent `unattached=true`, or nothing) keeps its
+// exact behaviour; the Signed agreements page opts into the full inventory by
+// sending linked=all. `unattached` is the legacy spelling of linked=unlinked and
+// stays accepted until no client sends it.
 const listQuery = z.object({
   contractId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
   unattached: optionalQueryBoolean,
+  linked: z.enum(['all', 'linked', 'unlinked']).default('unlinked'),
 });
 const linkBody = z.object({ contractId: z.string().guid() });
 
@@ -50,8 +58,8 @@ function serializeDocument(doc: { pdfData: Buffer; [k: string]: unknown }) {
 
 contractDocumentRoutes.get('/', scopes, readPerm, zValidator('query', listQuery), async (c) => {
   try {
-    const { contractId, unattached } = c.req.valid('query');
-    const docs = await listContractDocuments(authFrom(c), { contractId, unattached });
+    const { contractId, orgId, unattached, linked } = c.req.valid('query');
+    const docs = await listContractDocuments(authFrom(c), { contractId, orgId, unattached, linked });
     return c.json({ data: docs });
   } catch (err) {
     return handleDocumentError(c, err);

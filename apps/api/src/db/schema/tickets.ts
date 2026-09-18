@@ -27,6 +27,10 @@ export const ticketCategories = pgTable('ticket_categories', {
   defaultHourlyRate: numeric('default_hourly_rate', { precision: 10, scale: 2 }),
   // Partner currency the default rate was entered under (null when no rate); CHECK ticket_categories_rate_currency_chk is SQL-only.
   rateCurrency: char('rate_currency', { length: 3 }),
+  // #4177: minutes an AI time-entry proposal pre-fills for this category.
+  // Nullable — no default means "use AI_TIME_ENTRY_DEFAULT_MINUTES". CHECK
+  // (0 < n <= 1440) is SQL-only (ticket_categories_default_time_entry_minutes_chk).
+  defaultTimeEntryMinutes: integer('default_time_entry_minutes'),
   sortOrder: integer('sort_order').notNull().default(0),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),

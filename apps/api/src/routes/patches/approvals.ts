@@ -11,9 +11,10 @@ import {
   bulkApproveSchema,
   patchIdParamSchema,
   approvalActionSchema,
+  declineActionSchema,
   deferSchema
 } from './schemas';
-import { getPagination, resolvePatchApprovalPartnerIdForRing, upsertPatchApproval } from './helpers';
+import { declineAllRingApprovals, getPagination, resolvePatchApprovalPartnerIdForRing, upsertPatchApproval } from './helpers';
 import type { AuthContext } from '../../middleware/auth';
 import {
   canManagePartnerWidePolicies,
@@ -217,7 +218,7 @@ approvalsRoutes.post(
   requireMfa(),
   requirePartnerWideApprovalAccess,
   zValidator('param', patchIdParamSchema),
-  zValidator('json', approvalActionSchema),
+  zValidator('json', declineActionSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
@@ -241,6 +242,39 @@ approvalsRoutes.post(
 
     if (!patch) {
       return c.json({ error: 'Patch not found' }, 404);
+    }
+
+    if (data.allRings) {
+      const { ringIds, failedRingIds } = await declineAllRingApprovals(targetPartnerId, id, data.note ?? null, auth);
+
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'patch.decline',
+        resourceType: 'patch',
+        resourceId: id,
+        details: {
+          partnerId: targetPartnerId,
+          note: data.note ?? null,
+          allRings: true,
+          declinedRingCount: ringIds.length,
+          failedRingCount: failedRingIds.length
+        }
+      });
+
+      // `success: false` on an otherwise-200 response is how the web client's
+      // runAction (apps/web/src/lib/runAction.ts) recognizes a partial
+      // failure and surfaces it instead of toasting a false "declined".
+      return c.json({
+        id,
+        status: 'declined',
+        allRings: true,
+        declinedRingIds: ringIds,
+        failedRingIds,
+        success: failedRingIds.length === 0,
+        ...(failedRingIds.length > 0
+          ? { error: `Declined ${ringIds.length} of ${ringIds.length + failedRingIds.length} ring scope(s); ${failedRingIds.length} failed — retry to finish clearing the rest.` }
+          : {})
+      });
     }
 
     await upsertPatchApproval({

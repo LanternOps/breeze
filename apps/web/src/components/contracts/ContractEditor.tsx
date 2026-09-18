@@ -385,8 +385,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
 
   // Gate the distributor-import entry on a connected EC Express integration.
+  // Depends on the precomputed `canWrite` boolean, not `can` itself: usePermissions()
+  // hands back a fresh `can` closure on every render (not memoized), so depending
+  // on `can` directly re-fires this effect on any unrelated re-render — that's #5878.
   useEffect(() => {
-    if (!can('contracts', 'write')) return;
+    if (!canWrite) return;
     void (async () => {
       try {
         const res = await ecExpressStatus();
@@ -395,13 +398,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         setEcActive(Boolean(body?.data?.configured && body?.data?.enabled));
       } catch { /* leave hidden */ }
     })();
-  }, [can]);
+  }, [canWrite]);
 
   // Pax8 link entry is offered only when the integration exists. The GET returns
   // the integration row (or null/404 when unconfigured); best-effort, stays hidden
   // on failure.
   useEffect(() => {
-    if (!can('contracts', 'write')) return;
+    if (!canWrite) return;
     void (async () => {
       try {
         const res = await fetchWithAuth('/pax8/integration');
@@ -410,11 +413,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         if (body?.data?.id) setPax8IntegrationId(body.data.id);
       } catch { /* leave hidden */ }
     })();
-  }, [can]);
+  }, [canWrite]);
 
   // Gate the Pax8 catalog-import entry on a connected + enabled Pax8 integration.
   useEffect(() => {
-    if (!can('contracts', 'write')) return;
+    if (!canWrite) return;
     void (async () => {
       try {
         const res = await pax8Status();
@@ -423,7 +426,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         setPax8Active(Boolean(body?.data?.configured && body?.data?.enabled));
       } catch { /* leave hidden */ }
     })();
-  }, [can]);
+  }, [canWrite]);
 
   // Importing a distributor item to the catalog then pre-fills a one-time manual
   // line linked to the freshly-created catalog item.
