@@ -103,8 +103,25 @@ describe('inertness', () => {
     expect(res.status).toBe(404);
     expect(incrementMock).not.toHaveBeenCalled();
     expect(redisSet).not.toHaveBeenCalled();
-    // The limiter is the ONLY thing allowed to run before the secret check.
     expect(enqueueSyncMock).not.toHaveBeenCalled();
+  });
+
+  // "Inert" means inert: an instance that never configured the feature must do
+  // ZERO Redis work for a misdirected caller, so the secret check comes before
+  // the limiter rather than after it.
+  it('does not touch the rate limiter at all when the secret is unset', async () => {
+    configMock.mockReturnValue({ webhookSecret: null });
+    await post(emailEvent('email.delivered'));
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+  });
+
+  // And it must answer 404, never 429 — a 429 would tell a misdirected caller
+  // to keep retrying against an endpoint that will never exist.
+  it('404s rather than 429 when the secret is unset and the limiter would refuse', async () => {
+    configMock.mockReturnValue({ webhookSecret: null });
+    rateLimiterMock.mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date() });
+    const res = await post(emailEvent('email.delivered'));
+    expect(res.status).toBe(404);
   });
 });
 

@@ -17,12 +17,14 @@ import { captureException } from '../../services/sentry';
  *
  * Order of operations, and why each step is where it is:
  *
- *  1. Per-IP limiter. Fails CLOSED (Redis down -> 429), which makes the
- *     provider retry rather than letting an outage open the endpoint up.
- *  2. Secret check -> 404 when unset. NOT 401 and NOT 503: on an instance that
+ *  1. Secret check -> 404 when unset. NOT 401 and NOT 503: on an instance that
  *     never configured the feature this endpoint does not exist, and a 5xx
  *     would make a misdirected caller retry forever. This is spec §9.3's
- *     "inert unless EMAIL_DOMAINS_WEBHOOK_SECRET is set".
+ *     "inert unless EMAIL_DOMAINS_WEBHOOK_SECRET is set", and it comes FIRST so
+ *     an unconfigured instance does no Redis work and never answers 429. It
+ *     reads process-local config only, so it is not a DoS vector itself.
+ *  2. Per-IP limiter. Fails CLOSED (Redis down -> 429), which makes the
+ *     provider retry rather than letting an outage open the endpoint up.
  *  3. Raw body via `await c.req.text()` — the signature covers the exact bytes,
  *     so nothing may consume the body first. This is why no body-consuming
  *     middleware may be mounted in front of this route (see index.ts).
@@ -100,6 +102,16 @@ function logUnknownTagOnce(reason: string, value: string): void {
 }
 
 resendWebhookRoutes.post('/email-provider/resend', async (c) => {
+  const secret = getEmailDomainsConfig().webhookSecret;
+  if (!secret) {
+    // Inert, and inert means inert: this returns before the limiter, so an
+    // instance that never configured the feature does NO Redis work for a
+    // misdirected caller — and answers 404 rather than a 429 that would tell it
+    // to keep retrying against an endpoint that will never exist. The check is
+    // a process-local env read, so it cannot itself be a DoS vector.
+    return c.json({ error: 'Not Found' }, 404);
+  }
+
   const ip = getTrustedClientIp(c, 'unknown');
   const rate = await rateLimiter(
     getRedis(),
@@ -108,12 +120,6 @@ resendWebhookRoutes.post('/email-provider/resend', async (c) => {
     RATE_WINDOW_SECONDS,
   );
   if (!rate.allowed) return c.json({ error: 'Too Many Requests' }, 429);
-
-  const secret = getEmailDomainsConfig().webhookSecret;
-  if (!secret) {
-    // Inert. No body read, no Redis, no database.
-    return c.json({ error: 'Not Found' }, 404);
-  }
 
   // The signature covers these exact bytes — read them before anything else.
   const raw = await c.req.text();
