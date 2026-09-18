@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import TicketCategoriesPage from './TicketCategoriesPage';
@@ -59,7 +60,14 @@ export default function TicketingSettingsTabs() {
     jwt.status === 'unresolved' ? 'unresolved' : jwt.claims.scope === 'partner' ? 'allowed' : 'denied';
   const canManagePartnerTicketing = inboundAccess === 'allowed';
 
-  const [activeTab, setActiveTab] = useHashTab<TicketingHubTab>(TICKETING_HUB_TABS, 'statuses');
+  // A `?ticketMailbox=` query param on mount (M365 OAuth consent return) seeds
+  // the Email tab even before scope resolves — the replacement for the old
+  // parent-owned `initialTab` prop mechanism (see mailboxConnect.ts, which now
+  // redirects straight here instead of to the Partner hub's embedded group).
+  const [deepLinkMailbox] = useState(
+    () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ticketMailbox')
+  );
+  const [activeTab, setActiveTab] = useHashTab<TicketingHubTab>(TICKETING_HUB_TABS, deepLinkMailbox ? 'email' : 'statuses');
 
   const TABS = [...BASE_TABS, ...(canManagePartnerTicketing ? PARTNER_ONLY_TABS : [])].map((tab) => ({
     ...tab,
