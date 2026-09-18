@@ -290,6 +290,27 @@ export async function isMailboxConnectionSnapshotCurrent(
   return rows.length === 1;
 }
 
+/** Request-context update for a retest that fails again while the connection
+ * is already `error`: no status transition, but the stored reason must track
+ * the latest probe result so `verificationError` doesn't go stale on refresh
+ * (#6192). Same snapshot+status guard as isMailboxConnectionSnapshotCurrent. */
+export async function refreshErrorReason(
+  snapshot: MailboxConnectionSnapshot,
+  lastError: string,
+): Promise<boolean> {
+  const rows = await db.update(ticketMailboxConnections)
+    .set({ lastError, updatedAt: new Date() })
+    .where(and(
+      eq(ticketMailboxConnections.id, snapshot.id),
+      eq(ticketMailboxConnections.partnerId, snapshot.partnerId),
+      eq(ticketMailboxConnections.tenantId, snapshot.tenantId),
+      eq(ticketMailboxConnections.consentAttemptId, snapshot.consentAttemptId),
+      eq(ticketMailboxConnections.status, 'error'),
+    ))
+    .returning({ id: ticketMailboxConnections.id });
+  return rows.length === 1;
+}
+
 export async function setConnectedMailboxStatus(
   snapshot: MailboxConnectionSnapshot,
   status: Exclude<MailboxConnectionStatus, 'connected' | 'pending_consent' | 'disabled'>,
@@ -378,7 +399,11 @@ export async function probeMailbox(tenantId: string, mailboxAddress: string): Pr
     const body = await res.json() as { error?: { code?: unknown } };
     if (typeof body?.error?.code === 'string' && GRAPH_ERROR_CODE.test(body.error.code)) code = body.error.code;
   } catch {
-    // Non-JSON / empty body: report the status alone.
+    // Non-JSON / empty body (Graph's normal shape for many errors) and a
+    // genuine body-stream failure both land here; either way we still report
+    // the status alone. Deliberately not logging the parse error's message,
+    // which can echo a fragment of the response body.
+    console.warn('[ticketMailbox] failed to parse Graph error body', { status: res.status });
   }
   return {
     ok: false,

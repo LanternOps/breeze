@@ -441,6 +441,15 @@ describe('ticket mailbox connection service', () => {
     ]);
   });
 
+  it('exposes the bare no-reason message too (exact-prefix match, no suffix)', async () => {
+    dbMocks.selectResults.push([{
+      id: 'c', status: 'error', mailboxAddress: 'a@a.com', displayName: null,
+      lastPolledAt: null, lastMessageAt: null, lastError: 'Mailbox verification failed',
+    }]);
+    const result = await listMailboxConnections(PARTNER_ID);
+    expect(result[0]!.verificationError).toBe('Mailbox verification failed');
+  });
+
   // #3598: the inbound-email card uses this count to tell "no native address"
   // apart from "no inbound path at all". A count that ignored `status` would
   // report a pending/errored mailbox as a working path.
@@ -534,5 +543,30 @@ describe('probeMailbox', () => {
     expect((await probeMailbox(TENANT_ID, 'a@a.com')).reason).toBe('Graph 404');
     fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ error: { code: 'has spaces & <script>' } }) });
     expect((await probeMailbox(TENANT_ID, 'a@a.com')).reason).toBe('Graph 404');
+  });
+
+  it('reason is status-only when error.code is not a string (malformed Graph body)', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ error: { code: 12345 } }) });
+    expect((await probeMailbox(TENANT_ID, 'a@a.com')).reason).toBe('Graph 500');
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ error: { code: ['x'] } }) });
+    expect((await probeMailbox(TENANT_ID, 'a@a.com')).reason).toBe('Graph 500');
+  });
+
+  it('accepts a 64-char code at the length boundary, rejects 65', async () => {
+    const at = 'A'.repeat(64);
+    const over = 'A'.repeat(65);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: { code: at } }) });
+    expect((await probeMailbox(TENANT_ID, 'a@a.com')).reason).toBe(`Graph 400 (${at})`);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: { code: over } }) });
+    expect((await probeMailbox(TENANT_ID, 'a@a.com')).reason).toBe('Graph 400');
+  });
+
+  it('reports a stable, non-leaking reason when token acquisition fails', async () => {
+    const { getMailboxToken } = await import('./mailboxToken');
+    vi.mocked(getMailboxToken).mockRejectedValueOnce(new Error('AADSTS700016: app not found in tenant secret-xyz'));
+    const r = await probeMailbox(TENANT_ID, 'a@a.com');
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('token acquisition failed');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

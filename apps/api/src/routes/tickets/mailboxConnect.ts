@@ -33,8 +33,10 @@ import {
   getMailboxConnection,
   isMailboxConnectionSnapshotCurrent,
   listMailboxConnections,
+  MAILBOX_VERIFICATION_FAILED,
   markPendingConsentFailed,
   probeMailbox,
+  refreshErrorReason,
   restoreVerifiedConnection,
   setConnectedMailboxStatus,
   type MailboxConnection,
@@ -241,9 +243,8 @@ function auditDetails(
   };
 }
 
-const VERIFICATION_FAILED = 'Mailbox verification failed';
 const failureMessage = (reason?: string): string =>
-  reason ? `${VERIFICATION_FAILED}: ${reason}` : VERIFICATION_FAILED;
+  reason ? `${MAILBOX_VERIFICATION_FAILED}: ${reason}` : MAILBOX_VERIFICATION_FAILED;
 
 function writeCallbackAudit(
   c: Context,
@@ -478,6 +479,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
         connectionId: session.connectionId,
         reason: probe.reason,
       });
+      captureException(new Error(`Mailbox probe failed during consent callback: ${probe.reason ?? 'unknown'}`), c);
       return fail('probe_failed', 'needs_policy', claims.tid, probe.reason);
     }
 
@@ -544,7 +546,10 @@ mailboxRoutes.post(
           failureMessage(probe.reason),
         );
       } else {
-        changed = await isMailboxConnectionSnapshotCurrent(snapshot, 'error');
+        // Already `error`: no status transition, but the reason may have
+        // changed since the last probe (#6192) — keep lastError current so
+        // verificationError doesn't go stale on the next list load.
+        changed = await refreshErrorReason(snapshot, failureMessage(probe.reason));
       }
     } else if (connection.status === 'error') {
       changed = await restoreVerifiedConnection(snapshot);
@@ -553,6 +558,7 @@ mailboxRoutes.post(
     }
     if (!probe.ok) {
       console.warn('[ticketMailbox] mailbox retest probe failed', { connectionId: id, reason: probe.reason });
+      captureException(new Error(`Mailbox retest probe failed: ${probe.reason ?? 'unknown'}`), c);
     }
     const outcome = changed ? (probe.ok ? 'verified' : 'probe_failed') : 'stale';
     writeRouteAudit(c, {
