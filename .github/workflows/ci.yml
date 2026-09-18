@@ -68,6 +68,8 @@ jobs:
     outputs:
       code: ${{ steps.classify.outputs.code }}
       docs: ${{ steps.classify.outputs.docs }}
+      agent: ${{ steps.classify.outputs.agent }}
+      app: ${{ steps.classify.outputs.app }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -100,7 +102,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nagent=true\napp=true\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too.
@@ -240,6 +242,13 @@ jobs:
       - name: Test CI build reuse contract
         run: node --test .github/scripts/ci-build-reuse.test.mjs
 
+      # The classifier fast-tracks changes to OTHER workflow files (app=false), and
+      # security.yml — which also runs this suite — does not report `CI Success`, so
+      # it cannot block a merge. lint runs on `code` alone, which makes this the
+      # blocking validation of a workflow-only change.
+      - name: Test workflow security contract
+        run: pnpm test:workflow-security
+
       - name: Verify temporary CI apt source isolation
         run: node --test .github/scripts/prepare-ci-apt-sources.test.mjs
 
@@ -267,7 +276,7 @@ jobs:
     name: Type Check
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     env:
       # tsc on the full apps/api project (dense Drizzle types) + astro check
       # exceed Node's default heap on the type-heaviest branches. Give the
@@ -307,10 +316,20 @@ jobs:
         run: pnpm exec astro check
 
   test-api:
-    name: Test API
+    name: Test API (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    # ~2470 vitest files, import-time dominated, 26-34 min unsharded. Only the
+    # main `test:run` invocation below is split across shards (mirrors
+    # integration-test's sharding); every other named step here is a
+    # single-DB-independent contract check pinned to shard 1 so it still runs
+    # exactly once.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -332,9 +351,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test extension SDK
+        if: matrix.shard == 1
         run: pnpm --filter @breeze/extension-sdk test
 
       - name: Type-check extension SDK
+        if: matrix.shard == 1
         run: pnpm --filter @breeze/extension-sdk typecheck
 
       # ee/workspace's own unit + typecheck coverage (424 tests). The
@@ -342,15 +363,20 @@ jobs:
       # through the static built-in-extension import; this covers the rest
       # (web/, __tests__/) that apps/api's tsconfig doesn't reach.
       - name: Test workspace (ee)
+        if: matrix.shard == 1
         run: pnpm --filter @breeze/ext-workspace test
 
       - name: Type-check workspace (ee)
+        if: matrix.shard == 1
         run: pnpm --filter @breeze/ext-workspace typecheck
 
       - name: Run API tests
         # Vitest resolves workspace packages from source; build-api owns the
         # production bundle check. Root `pnpm test` would also invoke that build.
-        run: pnpm --filter=@breeze/api test:run
+        # pnpm forwards args after the script name to the script itself (no
+        # bare `--`, which would make vitest ignore --shard and run
+        # everything — see integration-test's identical --shard usage).
+        run: pnpm --filter=@breeze/api test:run --shard=${{ matrix.shard }}/4
 
       # Timezone-correctness regression gate (#4046): GitHub-hosted runners
       # default to UTC, and nothing else in this job or in vitest.config.ts
@@ -368,17 +394,20 @@ jobs:
       # no effect, because Node/V8 cache the resolved zone at first Date/Intl
       # use within a process.
       - name: Run API tests (auth/SSO, pinned non-UTC TZ)
+        if: matrix.shard == 1
         env:
           TZ: America/Denver
         run: pnpm --filter=@breeze/api test:tz
 
       - name: Run load-test static contract tests
+        if: matrix.shard == 1
         run: pnpm test:load-static
 
       # Keep this explicit even though the API unit suite also discovers the
       # test. It is the release gate for the checked-in SDK v1 fixture and must
       # remain until the documented v1 compatibility window closes.
       - name: Gate SDK v1 compatibility fixture
+        if: matrix.shard == 1
         run: pnpm --filter=@breeze/api test --run src/extensions/compatibility.test.ts
 
       # Site-scope contract tests are pure static analysis (walk routes/*.ts
@@ -386,6 +415,7 @@ jobs:
       # rather than the non-blocking smoke-test. Guards both the `:deviceId`-URL
       # coverage and the input-sourced/list-style detector against regressions.
       - name: Run site-scope coverage contract test
+        if: matrix.shard == 1
         run: pnpm --filter=@breeze/api test:site-scope-coverage
 
       # #4522 — invoiceService.issue.integration.test.ts and
@@ -400,6 +430,7 @@ jobs:
       # disk, no DB/Redis), so it runs here in the fast, blocking job
       # rather than `integration-test`.
       - name: Run integration-suite coverage contract test
+        if: matrix.shard == 1
         run: pnpm --filter=@breeze/api test:integration-suite-coverage
 
       # RLS session-context contract test (vitest.config.rls.ts). Gates the
@@ -422,13 +453,14 @@ jobs:
       # `test:integration`, `test:request-db-role` and `test:rls-coverage` in the
       # blocking `integration-test` job.
       - name: Run RLS session-context contract test
+        if: matrix.shard == 1
         run: pnpm --filter=@breeze/api test:rls
 
   test-m365-graph-read-executor:
     name: Test M365 Graph Read Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -456,7 +488,7 @@ jobs:
     name: Test M365 Graph Actions Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -484,7 +516,7 @@ jobs:
     name: Test M365 Communications Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     services:
       postgres:
         image: postgres:16-alpine
@@ -608,7 +640,7 @@ jobs:
     name: Check Migrations (non-superuser)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     services:
       postgres:
         image: postgres:16
@@ -669,7 +701,7 @@ jobs:
     name: Test Web
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -701,7 +733,7 @@ jobs:
     name: Test Mobile
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -735,7 +767,7 @@ jobs:
     name: Detect Mobile Native Changes
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     permissions:
       contents: read
       pull-requests: read
@@ -842,7 +874,7 @@ jobs:
     name: Test Portal
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -877,7 +909,7 @@ jobs:
     name: Test Viewer
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -909,7 +941,7 @@ jobs:
     name: Test Office Add-in Core
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -940,7 +972,7 @@ jobs:
     name: Test Excel Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -968,7 +1000,7 @@ jobs:
     name: Test Word Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -999,7 +1031,7 @@ jobs:
     name: Test PowerPoint Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1039,7 +1071,7 @@ jobs:
     name: Test Outlook Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1165,7 +1197,7 @@ jobs:
     name: Build API
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1210,7 +1242,7 @@ jobs:
     name: Build M365 Graph Read Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1244,7 +1276,7 @@ jobs:
     name: Build M365 Graph Actions Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1280,7 +1312,7 @@ jobs:
     name: Build M365 Communications Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1316,7 +1348,7 @@ jobs:
     name: Build Web
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1359,7 +1391,7 @@ jobs:
     name: Build Portal
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1398,7 +1430,7 @@ jobs:
     name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -1517,7 +1549,7 @@ jobs:
     name: Agent Windows manifest guard
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1553,7 +1585,7 @@ jobs:
     name: Test Agent
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1605,7 +1637,7 @@ jobs:
     name: Test Agent (Windows)
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -1896,7 +1928,18 @@ jobs:
   recovery-media-e2e:
     name: Recovery media E2E (QEMU)
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    # Builds exactly two Go commands (breeze-backup, breeze-recovery-fakeserver)
+    # plus recovery-media/, so it additionally requires the classifier's `agent`
+    # output — true only when a changed path is in the pinned dependency set,
+    # .github/scripts/qemu-gate-paths.txt (those commands' transitive
+    # module-internal imports: 13 of the module's 60+ dirs, plus go.mod/go.sum
+    # and recovery-media/), or in the CI plumbing that decides this gate. A
+    # change to the SNMP poller or remote desktop does not spend ~40 min here;
+    # a change to internal/backup or internal/securefs does.
+    # agent/cmd/breeze-backup/ci_gate_test.go fails when that list drifts from
+    # `go list -deps`. Fail-closed: `agent` is `true` on an empty/unresolvable
+    # classification, and on a missing or empty gate list for ANY agent/ path.
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.agent == 'true'
     runs-on: ubuntu-latest
     # ~7 min ISO build + up to 40 min QEMU rebuild cycle (see run-qemu.sh).
     timeout-minutes: 60
@@ -1998,7 +2041,7 @@ jobs:
     name: Lint Agent (Go)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     # CGO off (matches test-agent): the agent's only cgo files are the linux
     # X11/pcap capture backends, whose C headers are not on the runner. vet +
     # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
@@ -2095,7 +2138,7 @@ jobs:
     name: Test Agent (race)
     runs-on: macos-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -2146,7 +2189,7 @@ jobs:
     name: Windows Runtime Smoke
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -2293,7 +2336,7 @@ jobs:
     name: Rust Check (Tauri apps)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 35
 
     steps:
@@ -2424,7 +2467,7 @@ jobs:
     name: Rust Check (Windows)
     runs-on: windows-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 30
     permissions:
       contents: read
@@ -2488,24 +2531,35 @@ jobs:
   # "CI Success" fan-in, and `needs.integration-test.result` there already
   # aggregates across the matrix (success only if every shard passed).
   integration-test:
-    name: Integration Tests (shard ${{ matrix.shard }}/4)
+    name: Integration Tests (shard ${{ matrix.shard }}/8)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    # Sharded 8 ways (was 4). Deliberately does NOT `needs: [lint, typecheck]`
+    # — that dependency added ~8 min of pure wait to the critical path before
+    # this job could even start, for no isolation benefit: a lint or
+    # typecheck failure still fails `CI Success` on its own (ci-success
+    # asserts LINT_RESULT/TYPECHECK_RESULT independently), so integration-test
+    # running concurrently with them cannot make a broken PR appear green —
+    # it only means an integration run against code that also fails lint
+    # runs to completion in parallel instead of being blocked behind it.
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     strategy:
       # Report every shard's result — a red shard must not cancel the others
       # (same rationale as the no-bail rule inside the suite: masking stacked
       # breakages hid #1092 behind #1042 for a day).
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
-    # ~1/4 of the suite + env/container setup + one autoMigrate pass. Raised
-    # 25→40 on 2026-09-14: shard 3 hit exactly 25:00 on three consecutive
-    # merge-group runs (shards 1 and 4 at 23–24) after the day's integration
-    # suites landed, and a job timeout reports as `cancelled`, so every queue
-    # entry was silently dequeued with `failed_checks`. Before sharding this
-    # ceiling had been raised twice (30→40→55) as the sequential runtime grew;
-    # when a shard passes ~32 min, add a fifth shard instead of raising again.
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    # ~1/8 of the suite + env/container setup + one autoMigrate pass. Raised
+    # 25→40 on 2026-09-14 (back when this was 4-way): shard 3 hit exactly
+    # 25:00 on three consecutive merge-group runs (shards 1 and 4 at 23-24)
+    # after the day's integration suites landed, and a job timeout reports as
+    # `cancelled`, so every queue entry was silently dequeued with
+    # `failed_checks`. Before sharding this ceiling had been raised twice
+    # (30→40→55) as the sequential runtime grew; going 4→8 shards roughly
+    # halves each shard's share of the suite, so the 40-minute ceiling is kept
+    # as-is for now — when a shard passes ~32 min again, add more shards
+    # instead of raising it.
     timeout-minutes: 40
 
     steps:
@@ -2578,7 +2632,7 @@ jobs:
         # pnpm forwards args after the script name to the script itself, so
         # --shard reaches vitest. Sharding only splits the file list; files
         # within a shard still run sequentially (fileParallelism: false).
-        run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/4
+        run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/8
 
       # ee/workspace's integration suite expects its own tables
       # (workspace_sources, workspace_file_index, ...) to already exist on
@@ -2735,7 +2789,7 @@ jobs:
     name: Build Smoke Image (${{ matrix.image }})
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 20
     strategy:
@@ -2800,7 +2854,7 @@ jobs:
     name: Smoke Test
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes, build-smoke-images]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 15
 
@@ -3127,7 +3181,7 @@ jobs:
     name: Guided Setup Smoke (self-host installer)
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes, build-smoke-images]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 30
 
@@ -3226,7 +3280,7 @@ jobs:
     name: Auth Browser Transition (Chromium)
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 20
     services:
       postgres:
@@ -3352,7 +3406,7 @@ jobs:
     name: Portal Dev E2E (hydration, non-blocking)
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     continue-on-error: true
     timeout-minutes: 45
 
@@ -3545,7 +3599,7 @@ jobs:
   workspace-runtime:
     name: Workspace Runtime Smoke
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 20
@@ -3586,7 +3640,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [changes, workspace-runtime, docs-check, lint, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -3594,9 +3648,12 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
           DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
+          AGENT_CHANGED: ${{ needs.changes.outputs.agent }}
+          APP_CHANGED: ${{ needs.changes.outputs.app }}
           DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
           WORKSPACE_RUNTIME_RESULT: ${{ needs.workspace-runtime.result }}
           LINT_RESULT: ${{ needs.lint.result }}
+          CHECK_MIGRATIONS_RESULT: ${{ needs.check-migrations.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
           TEST_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.test-m365-graph-read-executor.result }}
@@ -3650,6 +3707,8 @@ jobs:
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
              [[ "${LINT_RESULT}" != "success" ]] || \
+             [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
+             { [[ "${APP_CHANGED}" == "true" ]] && { \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
              [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
@@ -3668,7 +3727,6 @@ jobs:
              [[ "${TEST_WORD_ADDIN_RESULT}" != "success" ]] || \
              [[ "${TEST_POWERPOINT_ADDIN_RESULT}" != "success" ]] || \
              [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "success" ]] || \
-             [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
              [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]] || \
@@ -3678,12 +3736,51 @@ jobs:
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] || \
-             [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]] || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \
              [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "success" ]] || \
-             [[ "${RUST_CHECK_RESULT}" != "success" ]]; }; }; then
+             [[ "${RUST_CHECK_RESULT}" != "success" ]]; }; } || \
+             { [[ "${APP_CHANGED}" != "true" ]] && [[ "${APP_CHANGED}" != "false" ]]; } || \
+             { [[ "${APP_CHANGED}" == "false" ]] && { \
+             [[ "${CHECK_MIGRATIONS_RESULT}" != "success" ]] || \
+             [[ "${WORKSPACE_RUNTIME_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_SMOKE_IMAGES_RESULT}" != "skipped" ]] || \
+             [[ "${SMOKE_TEST_RESULT}" != "skipped" ]] || \
+             [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "skipped" ]] || \
+             [[ "${TYPECHECK_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_API_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_WEB_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_MOBILE_RESULT}" != "skipped" ]] || \
+             [[ "${MOBILE_NATIVE_CHANGES_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_MOBILE_IOS_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_PORTAL_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_VIEWER_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_EXCEL_ADDIN_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_WORD_ADDIN_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_POWERPOINT_ADDIN_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_API_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_WEB_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_AGENT_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_AGENT_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_AGENT_WINDOWS_RESULT}" != "skipped" ]] || \
+             [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "skipped" ]] || \
+             [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]] || \
+             [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "skipped" ]] || \
+             [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "skipped" ]] || \
+             [[ "${RUST_CHECK_RESULT}" != "skipped" ]]; }; } || \
+             { [[ "${AGENT_CHANGED}" == "true" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CHANGED}" != "true" ]] && [[ "${AGENT_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CHANGED}" == "false" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "skipped" ]]; }; }; }; then
             echo "One or more required jobs failed"
             exit 1
           fi
@@ -3691,8 +3788,15 @@ jobs:
             echo "Docs-only PR: code jobs skipped, docs-check passed; the merge queue runs the full suite before merge."
             exit 0
           fi
+          if [[ "${APP_CHANGED}" == "false" ]]; then
+            echo "Tooling-only change: lint, check-migrations (release-lineage guards) and security-audit passed; the app suite was skipped because no application path changed."
+            exit 0
+          fi
           # Workspace runtime image: non-blocking on PRs (continue-on-error), required
           # in the merge queue and manual main validation — same policy as the smoke suites.
+          # Only reached when APP_CHANGED == 'true' (the branch above already returned for
+          # 'false', and the main assertion above already rejected any other value), so
+          # this job actually ran rather than being skipped by its own app gate.
           if [[ "${IS_PR}" != "true" ]] && [[ "${WORKSPACE_RUNTIME_RESULT}" != "success" ]]; then
             echo "Workspace runtime smoke failed during merge-queue or manual validation"
             exit 1

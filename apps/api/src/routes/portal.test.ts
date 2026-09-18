@@ -357,7 +357,11 @@ describe('portal routes', () => {
       expect(sendPasswordResetMock).toHaveBeenCalledTimes(1);
       expect(sendPasswordResetMock).toHaveBeenCalledWith({
         to: 'portal@example.com',
-        resetUrl: 'http://localhost:4321/portal/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
+        resetUrl: 'http://localhost:4321/portal/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
+        // The portal_users row read has no partner and W01 adds no database
+        // read; a null partnerId resolves to the platform sender (§8.1).
+        purpose: 'portal.password_reset',
+        partnerId: null
       });
     });
 
