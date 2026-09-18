@@ -5189,7 +5189,15 @@
     "columns": {
       "email": "email",
       "role": "Ruolo",
-      "lastLogin": "Ultimo accesso"
+      "lastLogin": "Ultimo accesso",
+      "mfaStatus": "MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Registrato",
+      "pending": "In attesa",
+      "pendingByDate": "In attesa — registrazione entro il {{date}}",
+      "overdue": "In ritardo",
+      "notRequired": "Non richiesto"
     },
     "status": {
       "active": "Attivo",

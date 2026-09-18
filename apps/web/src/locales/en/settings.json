@@ -5189,13 +5189,21 @@
     "columns": {
       "email": "Email",
       "role": "Role",
-      "lastLogin": "Last login"
+      "lastLogin": "Last login",
+      "mfaStatus": "MFA"
     },
     "status": {
       "active": "Active",
       "invited": "Invited",
       "suspended": "Suspended",
       "pending": "Pending"
+    },
+    "mfaStatus": {
+      "enrolled": "Enrolled",
+      "pending": "Pending",
+      "pendingByDate": "Pending — enroll by {{date}}",
+      "overdue": "Overdue",
+      "notRequired": "Not required"
     },
     "empty": "No users match your search."
   },

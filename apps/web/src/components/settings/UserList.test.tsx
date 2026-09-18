@@ -50,3 +50,41 @@ describe('UserList — Reset MFA visibility (RMM-QA-166)', () => {
     expect(screen.queryByRole('button', { name: 'Reset MFA' })).toBeNull();
   });
 });
+
+// #5690 — Admin → Users MFA status column: enrolled / pending (with deadline
+// date) / overdue / not required.
+describe('UserList — MFA status column (#5690)', () => {
+  beforeAll(async () => {
+    await i18n.changeLanguage('en');
+  });
+  afterEach(() => cleanup());
+
+  it('shows Enrolled for a user with an established factor', () => {
+    renderRow({ ...base, mfaStatus: 'enrolled' });
+    expect(screen.getByText('Enrolled')).toBeInTheDocument();
+  });
+
+  it('shows Overdue for a user whose grace window has lapsed', () => {
+    renderRow({ ...base, mfaStatus: 'overdue' });
+    expect(screen.getByText('Overdue')).toBeInTheDocument();
+  });
+
+  it('shows Not required for a user with no MFA requirement', () => {
+    renderRow({ ...base, mfaStatus: 'not_required' });
+    expect(screen.getByText('Not required')).toBeInTheDocument();
+  });
+
+  it('shows Pending with the formatted deadline date when a grace window is active', () => {
+    renderRow({ ...base, mfaStatus: 'pending', mfaEnrollmentDeadline: '2026-11-15T00:00:00.000Z' });
+    const expectedDate = new Date('2026-11-15T00:00:00.000Z').toLocaleDateString();
+    expect(screen.getByText(`Pending — enroll by ${expectedDate}`)).toBeInTheDocument();
+  });
+
+  it('renders no MFA status cell content for a legacy payload with no mfaStatus field', () => {
+    renderRow(base);
+    expect(screen.queryByText('Enrolled')).toBeNull();
+    expect(screen.queryByText('Pending')).toBeNull();
+    expect(screen.queryByText('Overdue')).toBeNull();
+    expect(screen.queryByText('Not required')).toBeNull();
+  });
+});

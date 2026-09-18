@@ -5194,7 +5194,15 @@
     "columns": {
       "email": "E-mail",
       "role": "Função",
-      "lastLogin": "Último login"
+      "lastLogin": "Último login",
+      "mfaStatus": "MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Inscrito",
+      "pending": "Pendente",
+      "pendingByDate": "Pendente — inscrever-se até {{date}}",
+      "overdue": "Atrasado",
+      "notRequired": "Não exigido"
     },
     "status": {
       "active": "Ativo",

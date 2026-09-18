@@ -5194,7 +5194,15 @@
     "columns": {
       "email": "E-posta",
       "role": "Rol",
-      "lastLogin": "Son giriş"
+      "lastLogin": "Son giriş",
+      "mfaStatus": "MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Kayıtlı",
+      "pending": "Beklemede",
+      "pendingByDate": "Beklemede — {{date}} tarihine kadar kaydolun",
+      "overdue": "Gecikti",
+      "notRequired": "Gerekli değil"
     },
     "status": {
       "active": "Aktif",
