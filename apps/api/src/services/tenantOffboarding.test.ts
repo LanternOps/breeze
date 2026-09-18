@@ -203,7 +203,9 @@ vi.mock('drizzle-orm', () => ({
 // The marker DB_NOW (sql`now()`) resolves to under the drizzle-orm mock above.
 const SQL_NOW = { sql: 'now()' };
 
-import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { eq } from 'drizzle-orm';
+import * as tenantOffboardingModule from './tenantOffboarding';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, partners } from '../db/schema';
 import { writeAuditEvent } from './auditEvents';
 import {
@@ -217,7 +219,8 @@ import {
 import { invalidateAgentTenantCache } from './tenantStatus';
 import {
   abortOrganizationOffboarding,
-  abortPartnerOffboarding,
+  abortOrganizationOffboardingAroundStatusChange,
+  abortPartnerOffboardingAroundStatusChange,
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
   finalizeOrganizationOffboarding,
@@ -243,6 +246,12 @@ let executeQueue: unknown[][];
 // resurrects an already-emptied org — so the guards are asserted on the
 // predicate itself, not inferred from which rows the mock happened to return.
 const selectWhereLog: unknown[] = [];
+// #3996 — per-SELECT record (predicate + whether it took FOR UPDATE), in call
+// order. The lock step is a pure `SELECT ... FOR UPDATE`, so it is invisible to
+// updateLog/selectWhereLog alone: without `forUpdate` a test could not tell the
+// lock from any other read, and the whole fix is that the lock happens BEFORE
+// the status write.
+const selectCallLog: { where?: unknown; forUpdate: boolean }[] = [];
 
 // Both `await ...where(...)` and `await ...where(...).returning(...)` shapes
 // are used; the mock supports both. `.returning()` results pop from a FIFO
@@ -254,6 +263,7 @@ function setupWrites() {
   executedSqlLog.length = 0;
   executeQueue = [];
   selectWhereLog.length = 0;
+  selectCallLog.length = 0;
   updateMock.mockImplementation(
     (table: any) =>
       ({
@@ -287,9 +297,16 @@ function setupWrites() {
 // .from().where(), + optional .innerJoin() / .for('update') / .limit().
 function queueSelect(rows: unknown[]) {
   const chain: Record<string, any> = {};
+  const record: { where?: unknown; forUpdate: boolean } = { forUpdate: false };
   for (const method of ['from', 'innerJoin', 'where', 'for', 'limit', 'orderBy']) {
     chain[method] = vi.fn((...args: unknown[]) => {
-      if (method === 'where') selectWhereLog.push(args[0]);
+      // `.from()` fires exactly once per select, so it is the call-order anchor.
+      if (method === 'from') selectCallLog.push(record);
+      if (method === 'where') {
+        selectWhereLog.push(args[0]);
+        record.where = args[0];
+      }
+      if (method === 'for') record.forUpdate = true;
       return Object.assign(Promise.resolve(rows), chain);
     });
   }
@@ -672,23 +689,185 @@ describe('abortOrganizationOffboarding', () => {
   });
 });
 
-describe('abortPartnerOffboarding', () => {
+// #3996 — the abort/status-write ORDERING contract. The bug: the status flip
+// that ends a drain used to be visible (on the #2879 override branch,
+// COMMITTED) before the queued `self_uninstall` rows were cancelled, and a
+// tenant that no longer reads as `offboarding` puts its whole fleet back on
+// the ordinary command-claim path, where that row is an ordinary claimable
+// command. These tests pin the three properties that make the window
+// unreachable: the rows are LOCKED before the write, the cancel follows the
+// write inside the SAME context/transaction, and a write that did not land
+// cancels nothing.
+describe('the partner-axis bare abort is gone (#3996)', () => {
+  // Every partner caller also writes `partners.status`, so a bare abort could
+  // only ever be called AFTER the flip — the bug. The absence of the export is
+  // the guard: it makes reintroducing the old two-step shape a compile error
+  // instead of a code-review question.
+  it('exports no abortPartnerOffboarding', () => {
+    expect('abortPartnerOffboarding' in tenantOffboardingModule).toBe(false);
+    expect('abortPartnerOffboardingAroundStatusChange' in tenantOffboardingModule).toBe(true);
+  });
+});
+
+describe('abortOrganizationOffboardingAroundStatusChange', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupWrites();
   });
 
-  it('cancels drain uninstalls across every org under the partner', async () => {
-    updateReturningQueue.push([{ id: 'partner-1' }]);
-    queueSelect([{ id: 'org-1' }, { id: 'org-2' }]);
-    queueSelect([{ id: 'd1' }, { id: 'd2' }]);
-    updateReturningQueue.push([{ id: 'cmd-1', uninstallReasons: [] }]); // strip step
-    updateReturningQueue.push([{ id: 'cmd-1' }]); // cancel step
+  afterEach(() => {
+    getCurrentDbAccessContextMock.mockReturnValue(undefined);
+  });
 
-    const result = await abortPartnerOffboarding('partner-1');
+  it('locks the tenant row and the non-terminal uninstalls BEFORE the status write, then cancels after it', async () => {
+    queueSelect([{ id: 'org-1' }]); // organizations FOR UPDATE
+    queueSelect([{ id: 'd1' }]); // devices in org
+    queueSelect([{ id: 'cmd-1' }]); // device_commands FOR UPDATE (the lock)
+    updateReturningQueue.push([{ id: 'org-1' }]); // the caller's status UPDATE
+    updateReturningQueue.push([{ id: 'org-1' }]); // stamp-clear finds a stamp
+    queueSelect([{ id: 'd1' }]); // devices again, for the cancel step
+    updateReturningQueue.push([{ id: 'cmd-1', uninstallReasons: [] }]); // strip
+    updateReturningQueue.push([{ id: 'cmd-1' }]); // cancel
 
-    expect(result).toEqual({ aborted: true, uninstallsCancelled: 1 });
+    let atWriteTime: { locks: number; writes: number } | undefined;
+    const result = await abortOrganizationOffboardingAroundStatusChange('org-1', async () => {
+      atWriteTime = {
+        locks: selectCallLog.filter((sel) => sel.forUpdate).length,
+        writes: updateLog.length,
+      };
+      const [row] = await db
+        .update(organizations)
+        .set({ status: 'active' })
+        .where(eq(organizations.id, 'org-1'))
+        .returning();
+      return row;
+    });
+
+    // Both locks were already held when the status write ran, and NOTHING had
+    // been written yet — this is the assertion the pre-fix shape fails.
+    expect(atWriteTime).toEqual({ locks: 2, writes: 0 });
+    expect(selectCallLog[0]!.forUpdate).toBe(true); // organizations first ...
+    expect(selectCallLog[2]!.forUpdate).toBe(true); // ... then device_commands
+    // Lock ORDER (tenant row, then command rows) matches drain ENTRY's order,
+    // which is what keeps a concurrent entry/abort pair from deadlocking.
+    expect(JSON.stringify(selectCallLog[0]!.where)).toContain('organizations.id');
+    const lockWhere = JSON.stringify(selectCallLog[2]!.where);
+    expect(lockWhere).toContain('"inArray":["deviceCommands.deviceId",["d1"]]');
+    expect(lockWhere).toContain('self_uninstall');
+    expect(lockWhere).toContain('pending');
+    expect(lockWhere).toContain('sent');
+
+    // ... and the cancel ran after the write, in the same pass.
+    expect(result.statusChange).toEqual({ id: 'org-1' });
+    expect(result.abort).toEqual({ aborted: true, uninstallsCancelled: 1 });
+    const commandWrites = updatesFor(deviceCommands);
+    expect(commandWrites).toHaveLength(2);
+    expect(commandWrites[1]!.values.status).toBe('cancelled');
+  });
+
+  it('runs the lock, the status write and the cancel in ONE system context when the ambient one cannot see the org (#2879 override path)', async () => {
+    // The override branch is where the pre-fix window was actually COMMITTED:
+    // the route flipped the status in its own short system transaction and the
+    // cancel opened a second one afterwards. One context here == one
+    // transaction, so no intermediate state is ever observable.
+    getCurrentDbAccessContextMock.mockReturnValue({
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: ['some-other-org'],
+      accessiblePartnerIds: ['partner-1'],
+    });
+    queueSelect([{ id: 'org-1' }]); // organizations FOR UPDATE
+    queueSelect([]); // devices — none, so no command lock needed
+    updateReturningQueue.push([{ id: 'org-1' }]); // caller's status UPDATE
+    updateReturningQueue.push([{ id: 'org-1' }]); // stamp-clear
+    queueSelect([]); // devices, cancel step
+
+    const result = await abortOrganizationOffboardingAroundStatusChange('org-1', async () => {
+      const [row] = await db
+        .update(organizations)
+        .set({ status: 'suspended' })
+        .where(eq(organizations.id, 'org-1'))
+        .returning();
+      return row;
+    });
+
+    expect(result.abort.aborted).toBe(true);
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels nothing when the status write did not land (a 0-row write means the caller lost a race)', async () => {
+    queueSelect([{ id: 'org-1' }]); // organizations FOR UPDATE
+    queueSelect([{ id: 'd1' }]); // devices
+    queueSelect([{ id: 'cmd-1' }]); // command lock
+
+    const result = await abortOrganizationOffboardingAroundStatusChange(
+      'org-1',
+      async () => undefined
+    );
+
+    expect(result).toEqual({
+      statusChange: undefined,
+      abort: { aborted: false, uninstallsCancelled: 0 },
+    });
+    // No stamp clear and no command write: a tenant that raced into the
+    // lifecycle-frozen set may have a legitimately live archive drain, and the
+    // pure FOR UPDATE select leaves nothing behind when it rolls back.
+    expect(updateLog).toHaveLength(0);
+    expect(invalidateAgentTenantCache).not.toHaveBeenCalled();
+  });
+});
+
+describe('abortPartnerOffboardingAroundStatusChange', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupWrites();
+  });
+
+  it('locks the partner row and every org\'s uninstalls before the status write, then cancels across the partner', async () => {
+    queueSelect([{ id: 'partner-1' }]); // partners FOR UPDATE
+    queueSelect([{ id: 'org-1' }, { id: 'org-2' }]); // orgs under the partner
+    queueSelect([{ id: 'd1' }]); // devices across both orgs
+    queueSelect([{ id: 'cmd-1' }]); // device_commands FOR UPDATE
+    updateReturningQueue.push([{ id: 'partner-1' }]); // caller's status UPDATE
+    updateReturningQueue.push([{ id: 'partner-1' }]); // stamp-clear
+    queueSelect([{ id: 'org-1' }, { id: 'org-2' }]); // orgs, cancel step
+    queueSelect([{ id: 'd1' }]); // devices, cancel step
+    updateReturningQueue.push([{ id: 'cmd-1', uninstallReasons: [] }]); // strip
+    updateReturningQueue.push([{ id: 'cmd-1' }]); // cancel
+
+    let writesBefore: number | undefined;
+    const result = await abortPartnerOffboardingAroundStatusChange('partner-1', async () => {
+      writesBefore = updateLog.length;
+      const [row] = await db
+        .update(partners)
+        .set({ status: 'active' })
+        .where(eq(partners.id, 'partner-1'))
+        .returning();
+      return row;
+    });
+
+    expect(writesBefore).toBe(0);
+    expect(selectCallLog[0]!.forUpdate).toBe(true); // partners row first
+    expect(JSON.stringify(selectCallLog[0]!.where)).toContain('partners.id');
+    expect(selectCallLog[3]!.forUpdate).toBe(true); // then the command rows
+    expect(result.abort).toEqual({ aborted: true, uninstallsCancelled: 1 });
     expect(invalidateAgentTenantCache).toHaveBeenCalledWith(['org-1', 'org-2']);
+  });
+
+  it('cancels nothing when the partner status write did not land', async () => {
+    queueSelect([{ id: 'partner-1' }]);
+    queueSelect([{ id: 'org-1' }]);
+    queueSelect([{ id: 'd1' }]);
+    queueSelect([{ id: 'cmd-1' }]);
+
+    const result = await abortPartnerOffboardingAroundStatusChange(
+      'partner-1',
+      async () => undefined
+    );
+
+    expect(result.abort).toEqual({ aborted: false, uninstallsCancelled: 0 });
+    expect(updateLog).toHaveLength(0);
   });
 });
 

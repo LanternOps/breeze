@@ -142,7 +142,23 @@ vi.mock('../services/tenantOffboarding', async (importOriginal) => ({
     otherCommandsCancelled: 0
   }),
   abortOrganizationOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 }),
-  abortPartnerOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 })
+  // #3996 — the drain-ending status write is composed INTO the abort's own
+  // transaction, so these doubles must RUN the callback they are handed; a
+  // canned return value would leave every status route without its org/partner
+  // row. The real ordering guarantee (lock, then write, then cancel) lives in
+  // services/tenantOffboarding.test.ts and the integration suite.
+  abortOrganizationOffboardingAroundStatusChange: vi.fn(
+    async (_orgId: string, applyStatusChange: () => Promise<unknown>) => ({
+      statusChange: await applyStatusChange(),
+      abort: { aborted: false, uninstallsCancelled: 0 }
+    })
+  ),
+  abortPartnerOffboardingAroundStatusChange: vi.fn(
+    async (_partnerId: string, applyStatusChange: () => Promise<unknown>) => ({
+      statusChange: await applyStatusChange(),
+      abort: { aborted: false, uninstallsCancelled: 0 }
+    })
+  )
 }));
 
 vi.mock('../services/monitors/builtInMonitors', () => ({
@@ -345,7 +361,8 @@ import {
 } from '../services/tenantLifecycle';
 import {
   abortOrganizationOffboarding,
-  abortPartnerOffboarding,
+  abortOrganizationOffboardingAroundStatusChange,
+  abortPartnerOffboardingAroundStatusChange,
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
@@ -992,7 +1009,14 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      // #3996 — the cancel must be composed INTO the status write's
+      // transaction, not issued after it. Asserting the composed entry point
+      // (and that the bare post-flip abort is NOT used) is what stops the old
+      // two-step shape being reintroduced.
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -1012,7 +1036,10 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -3665,7 +3692,13 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      // #3996 — see the partner cases: composed with the status write, and
+      // the bare post-flip abort must be gone.
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
+      expect(abortOrganizationOffboarding).not.toHaveBeenCalled();
       expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
@@ -3686,7 +3719,11 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
+      expect(abortOrganizationOffboarding).not.toHaveBeenCalled();
       expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 

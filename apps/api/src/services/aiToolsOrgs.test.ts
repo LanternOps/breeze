@@ -15,7 +15,15 @@ vi.mock('./tenantLifecycle', () => ({
   restoreOrganizationTenantAccess: vi.fn(async () => undefined),
 }));
 vi.mock('./tenantOffboarding', () => ({
-  abortOrganizationOffboarding: vi.fn(async () => ({ aborted: false, uninstallsCancelled: 0 })),
+  // #3996 — the status write is composed INTO the abort's transaction, so the
+  // double here must actually run the callback it is handed (a stub returning
+  // a canned result would make every update_org status test see no org row).
+  abortOrganizationOffboardingAroundStatusChange: vi.fn(
+    async (_orgId: string, applyStatusChange: () => Promise<unknown>) => ({
+      statusChange: await applyStatusChange(),
+      abort: { aborted: false, uninstallsCancelled: 0 },
+    })
+  ),
 }));
 // add_contact delegates to the shared contact CRUD service (#3258) rather than
 // writing `contacts` directly — createContact's own correctness (trimming,
@@ -37,6 +45,7 @@ import {
   revokeOrganizationTenantAccess,
   restoreOrganizationTenantAccess,
 } from './tenantLifecycle';
+import { abortOrganizationOffboardingAroundStatusChange } from './tenantOffboarding';
 import { registerOrgTools, slugifyOrgName, generateUniqueOrgSlug } from './aiToolsOrgs';
 import { createContact, ContactValidationError } from './contacts/crud';
 import type { AiTool } from './aiTools';
@@ -446,6 +455,12 @@ describe('manage_organizations update_org', () => {
     expect(mockDb.update).not.toHaveBeenCalled();
   });
 
+  it('leaves the abort path untouched for a name-only patch (no status, no drain to end)', async () => {
+    updateQueue.push([{ id: ORG_1, name: 'Renamed', slug: 'acme-dental', status: 'active' }]);
+    await getTools().manage.handler({ action: 'update_org', orgId: ORG_1, name: 'Renamed' }, partnerAuth());
+    expect(abortOrganizationOffboardingAroundStatusChange).not.toHaveBeenCalled();
+  });
+
   it('patches name and returns the safe projection', async () => {
     updateQueue.push([{ id: ORG_1, name: 'Renamed', slug: 'acme-dental', status: 'active' }]);
     const out = JSON.parse(
@@ -461,6 +476,14 @@ describe('manage_organizations update_org', () => {
     updateQueue.push([{ id: ORG_1, name: 'Acme', slug: 'acme', status: 'suspended' }]);
     await getTools().manage.handler({ action: 'update_org', orgId: ORG_1, status: 'suspended' }, partnerAuth());
     expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith(ORG_1);
+    // #3996 — this tool is a second writer of org status, so it carries the
+    // same ordering contract as the PATCH route: the status write goes THROUGH
+    // the abort (which locks the drain's uninstalls first and cancels them in
+    // the same transaction), never before a separate abort call.
+    expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+      ORG_1,
+      expect.any(Function)
+    );
 
     updateQueue.push([{ id: ORG_1, name: 'Acme', slug: 'acme', status: 'active' }]);
     await getTools().manage.handler({ action: 'update_org', orgId: ORG_1, status: 'active' }, partnerAuth());

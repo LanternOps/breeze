@@ -626,52 +626,190 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
  * `draining` for that org via the partner axis and the partner is still
  * churning. Reactivate the PARTNER to abort a partner-level drain.
  */
+/*
+ * #3996 — there is deliberately no `abortPartnerOffboarding` twin of this
+ * function any more. Every partner-axis caller also writes
+ * `partners.status`, and for those the cancel MUST be composed into the
+ * status write's transaction via `abortPartnerOffboardingAroundStatusChange`
+ * below; a bare partner abort exists only to be called after the flip, which
+ * is the bug. This org-axis form survives because `orgArchive`'s
+ * archive-restore path has a genuine use for it: it cancels BEFORE its own
+ * status CAS in the same transaction, so no post-flip window exists there.
+ */
 export async function abortOrganizationOffboarding(orgId: string): Promise<OffboardingAbortResult> {
   // Same #2877 structure as entry: the suspended/churned/active transition
   // routes (and DELETE /organizations/:id) call this right after UPDATEing the
   // same organizations row in the request transaction, so the stamp-clear must
   // run on that transaction, not a fresh connection.
+  return inCallerOrSystemDbContext({ orgId }, () => abortOrganizationDrainHere(orgId));
+}
+
+/** The org abort's DB work, on whatever context/transaction is already active. */
+async function abortOrganizationDrainHere(orgId: string): Promise<OffboardingAbortResult> {
+  const cleared = await db
+    .update(organizations)
+    .set({ offboardingStartedAt: null, updatedAt: new Date() })
+    .where(and(eq(organizations.id, orgId), isNotNull(organizations.offboardingStartedAt)))
+    .returning({ id: organizations.id });
+
+  if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+
+  const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
+    [orgId],
+    'organization_offboarding_aborted'
+  );
+  await invalidateAgentTenantCache([orgId]);
+  return { aborted: true, uninstallsCancelled };
+}
+
+/** The partner abort's DB work, on whatever context/transaction is already active. */
+async function abortPartnerDrainHere(partnerId: string): Promise<OffboardingAbortResult> {
+  const cleared = await db
+    .update(partners)
+    .set({ offboardingStartedAt: null, updatedAt: new Date() })
+    .where(and(eq(partners.id, partnerId), isNotNull(partners.offboardingStartedAt)))
+    .returning({ id: partners.id });
+
+  if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+
+  const orgRows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, partnerId));
+  const orgIds = orgRows.map((row) => row.id);
+
+  const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
+    orgIds,
+    'partner_offboarding_aborted'
+  );
+  await invalidateAgentTenantCache(orgIds);
+  return { aborted: true, uninstallsCancelled };
+}
+
+const NOT_ABORTED: OffboardingAbortResult = { aborted: false, uninstallsCancelled: 0 };
+
+/**
+ * #3996 — take the drain's own rows under lock BEFORE the caller flips the
+ * tenant status away from `offboarding`, and cancel them in the SAME
+ * transaction as that flip.
+ *
+ * The bug this closes: the drain narrowing is keyed on
+ * `organizations.status === 'offboarding'` (`getAgentTenantState`), so the
+ * moment the status write is visible the tenant is no longer draining and
+ * every agent under it authenticates on the ORDINARY path, where
+ * `claimPendingCommandsForDevice` is called with no type allowlist. A still
+ * `pending` `self_uninstall` is then an ordinary claimable command — and the
+ * blast radius is the tenant's whole fleet, not one endpoint. On the #2879
+ * suspended-lifecycle override path that window was genuinely COMMITTED: the
+ * status UPDATE ran in its own short system transaction and the cancel ran in
+ * a second one afterwards. This is the org/partner-scale sibling of the
+ * device-level bug fixed in #3986.
+ *
+ * Why locking, not just reordering. Atomicity alone does not close it (see
+ * the #3996 thread): while the abort transaction is open the last COMMITTED
+ * state is still `offboarding` + pending rows, so an agent request proceeds
+ * against that in its own transaction and claims the row. What does serialize
+ * the two is the lock: `claimPendingCommandsForDevice` selects candidates
+ * `FOR UPDATE SKIP LOCKED` (`commandDispatch.ts`), so a row this function has
+ * already locked is SKIPPED by a concurrent claim rather than delivered, for
+ * the whole remainder of the transaction. Taking the lock before the status
+ * write therefore leaves no window — committed or in-flight — in which the
+ * tenant reads as non-draining while its uninstalls are still claimable.
+ *
+ * Lock ORDER is deliberate and must not be reshuffled: tenant row first, then
+ * the command rows, matching entry (`beginOrganizationOffboarding` →
+ * `queueDrainUninstalls`, which UPDATEs `organizations` then locks `devices`
+ * before inserting). Locking the commands first would invert the order
+ * against a concurrent entry and make an abort/entry pair deadlockable.
+ *
+ * The cancel runs only if `applyStatusChange` reports the write landed
+ * (non-`undefined`). A 0-row status write means the caller lost a race — most
+ * sharply into the lifecycle-frozen set, where an `archived`/`merging` tenant
+ * may have a legitimately live archive drain — and cancelling that tenant's
+ * uninstalls would be wrong. The pure `FOR UPDATE` select mutates nothing, so
+ * the miss path leaves no trace beyond releasing its locks at commit.
+ *
+ * Cost: the lock select waits on any in-flight agent claim transaction for
+ * the same row (short-lived — a heartbeat handler). Waiting is the point: the
+ * abort then cancels a row that is `sent` rather than racing its delivery.
+ * The residual is an uninstall already on the wire, which the API cannot
+ * recall at all — that is #3995's agent-side pre-teardown fence, not this.
+ */
+export async function abortOrganizationOffboardingAroundStatusChange<T>(
+  orgId: string,
+  applyStatusChange: () => Promise<T | undefined>
+): Promise<{ statusChange: T | undefined; abort: OffboardingAbortResult }> {
   return inCallerOrSystemDbContext({ orgId }, async () => {
-    const cleared = await db
-      .update(organizations)
-      .set({ offboardingStartedAt: null, updatedAt: new Date() })
-      .where(and(eq(organizations.id, orgId), isNotNull(organizations.offboardingStartedAt)))
-      .returning({ id: organizations.id });
+    await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1)
+      .for('update');
+    await lockDrainUninstallsForOrgIds([orgId]);
 
-    if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+    const statusChange = await applyStatusChange();
+    if (statusChange === undefined) return { statusChange, abort: NOT_ABORTED };
 
-    const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
-      [orgId],
-      'organization_offboarding_aborted'
-    );
-    await invalidateAgentTenantCache([orgId]);
-    return { aborted: true, uninstallsCancelled };
+    return { statusChange, abort: await abortOrganizationDrainHere(orgId) };
   });
 }
 
-export async function abortPartnerOffboarding(partnerId: string): Promise<OffboardingAbortResult> {
+/** Partner-axis twin of `abortOrganizationOffboardingAroundStatusChange`. */
+export async function abortPartnerOffboardingAroundStatusChange<T>(
+  partnerId: string,
+  applyStatusChange: () => Promise<T | undefined>
+): Promise<{ statusChange: T | undefined; abort: OffboardingAbortResult }> {
   return inCallerOrSystemDbContext({ partnerId }, async () => {
-    const cleared = await db
-      .update(partners)
-      .set({ offboardingStartedAt: null, updatedAt: new Date() })
-      .where(and(eq(partners.id, partnerId), isNotNull(partners.offboardingStartedAt)))
-      .returning({ id: partners.id });
-
-    if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
-
+    await db
+      .select({ id: partners.id })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1)
+      .for('update');
     const orgRows = await db
       .select({ id: organizations.id })
       .from(organizations)
       .where(eq(organizations.partnerId, partnerId));
-    const orgIds = orgRows.map((row) => row.id);
+    await lockDrainUninstallsForOrgIds(orgRows.map((row) => row.id));
 
-    const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
-      orgIds,
-      'partner_offboarding_aborted'
-    );
-    await invalidateAgentTenantCache(orgIds);
-    return { aborted: true, uninstallsCancelled };
+    const statusChange = await applyStatusChange();
+    if (statusChange === undefined) return { statusChange, abort: NOT_ABORTED };
+
+    return { statusChange, abort: await abortPartnerDrainHere(partnerId) };
   });
+}
+
+/**
+ * Lock every non-terminal `self_uninstall` under these orgs for the rest of
+ * the current transaction. Predicate deliberately mirrors
+ * `cancelDrainUninstallsForOrgIds`'s strip step MINUS the `tenantOwned`
+ * conjunct: co-owned and abuse-queued rows are locked too (they are on the
+ * same devices and a claim does not care who owns the reason), but the cancel
+ * that follows still only terminalises rows this drain owns. Locking a
+ * superset is safe; locking a subset would leave a claimable row behind,
+ * which is the bug.
+ */
+async function lockDrainUninstallsForOrgIds(orgIds: string[]): Promise<void> {
+  if (orgIds.length === 0) return;
+  const deviceRows = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(inArray(devices.orgId, orgIds));
+  const deviceIds = deviceRows.map((row) => row.id);
+  if (deviceIds.length === 0) return;
+
+  await db
+    .select({ id: deviceCommands.id })
+    .from(deviceCommands)
+    .where(
+      and(
+        inArray(deviceCommands.deviceId, deviceIds),
+        eq(deviceCommands.type, 'self_uninstall'),
+        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .for('update');
 }
 
 /**

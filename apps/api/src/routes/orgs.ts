@@ -33,8 +33,8 @@ import {
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
 import {
-  abortOrganizationOffboarding,
-  abortPartnerOffboarding,
+  abortOrganizationOffboardingAroundStatusChange,
+  abortPartnerOffboardingAroundStatusChange,
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
@@ -1278,11 +1278,27 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
 
-  const [partner] = await db
-    .update(partners)
-    .set(updates)
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning(partnerPublicColumns());
+  const runPartnerUpdate = async () => {
+    const [row] = await db
+      .update(partners)
+      .set(updates)
+      .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+      .returning(partnerPublicColumns());
+    return row;
+  };
+
+  // #3996 — same ordering contract as the org route: a status write that ends
+  // a partner drain locks and cancels the queued uninstalls in its OWN
+  // transaction, because the moment the partner stops reading as `offboarding`
+  // every agent under every one of its orgs is back on the ordinary claim
+  // path. Scoped to exactly the statuses that abort below (`pending` is
+  // deliberately not one of them — see the branch comments).
+  const statusEndsPartnerDrain =
+    'status' in data
+    && (data.status === 'suspended' || data.status === 'churned' || data.status === 'active');
+  const partner = statusEndsPartnerDrain
+    ? (await abortPartnerOffboardingAroundStatusChange(id, runPartnerUpdate)).statusChange
+    : await runPartnerUpdate();
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -1305,14 +1321,12 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     // drain reaper severs and flips to churned.
     await beginPartnerOffboarding(partner.id, auth.user?.id ?? null);
   } else if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
-    // Cancel in-flight drain uninstalls first (no-op unless offboarding) —
-    // an uncollected self_uninstall must not survive into a later
-    // reactivation of a suspended partner.
-    await abortPartnerOffboarding(partner.id);
+    // In-flight drain uninstalls were cancelled with the status write above
+    // (#3996; no-op unless offboarding) — an uncollected self_uninstall must
+    // not survive into a later reactivation of a suspended partner.
     await revokePartnerTenantAccess(partner.id);
   } else if ('status' in data && data.status === 'active') {
     // Reactivation: restore agent tokens this partner's revoke suspended.
-    await abortPartnerOffboarding(partner.id);
     await restorePartnerTenantAccess(partner.id);
   }
 
@@ -1337,19 +1351,25 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
   const auth = c.get('auth');
   const id = c.req.param('id')!;
 
-  const [partner] = await db
-    .update(partners)
-    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning();
+  // Hard delete keeps the immediate-sever semantics; if a drain was in
+  // progress, cancel its uninstalls so nothing lingers (no-op otherwise) —
+  // locked and committed with the status write, never after it (#3996).
+  const { statusChange: partner } = await abortPartnerOffboardingAroundStatusChange(
+    id,
+    async () => {
+      const [row] = await db
+        .update(partners)
+        .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+        .returning();
+      return row;
+    }
+  );
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  // Hard delete keeps the immediate-sever semantics; if a drain was in
-  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
-  await abortPartnerOffboarding(partner.id);
   await revokePartnerTenantAccess(partner.id);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
@@ -2390,11 +2410,35 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   // transaction (matching the create path) instead of adding statements after
   // this catch. The suspendedLifecycleOverride branch is already immune: it
   // opens a fresh system-scoped tx of its own.
+  // #3996 — a status write that ENDS a drain must not become visible before
+  // the drain's queued `self_uninstall` rows are locked and cancelled: the
+  // instant the tenant stops reading as `offboarding`, every agent under it
+  // authenticates on the ordinary path where that row is an ordinary
+  // claimable command. `abortOrganizationOffboardingAroundStatusChange` locks
+  // the rows, runs this UPDATE, and cancels — all in one transaction, which on
+  // the #2879 override branch replaces the two-transaction split that made the
+  // intermediate state committed and observable. It supplies that branch's
+  // system context itself (the suspended org is outside the request's
+  // accessible set, so `inCallerOrSystemDbContext` falls through to a fresh
+  // system context — exactly the context `runUpdate` needs), and reuses the
+  // request transaction on every other path.
+  //
+  // The branch condition must stay in lockstep with the abort branches below:
+  // every defined status other than `offboarding` ends a drain.
+  const statusEndsDrain = data.status !== undefined && data.status !== 'offboarding';
   let organization: Awaited<ReturnType<typeof runUpdate>>[number] | undefined;
   try {
-    [organization] = suspendedLifecycleOverride
-      ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
-      : await runUpdate();
+    if (statusEndsDrain) {
+      const composed = await abortOrganizationOffboardingAroundStatusChange(
+        id,
+        async () => (await runUpdate())[0]
+      );
+      organization = composed.statusChange;
+    } else {
+      [organization] = suspendedLifecycleOverride
+        ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
+        : await runUpdate();
+    }
   } catch (error) {
     if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
       // Only reachable when a concurrent write claimed the slug between the
@@ -2433,13 +2477,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   } else if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
     // Leaving a drain for suspended/churned must not leave uncollected
     // self_uninstalls behind: a later reactivation would deliver them to the
-    // reinstated fleet. No-op when the org wasn't offboarding.
-    await abortOrganizationOffboarding(organization.id);
+    // reinstated fleet. The cancel already ran in the same transaction as the
+    // status UPDATE above (#3996) — no-op when the org wasn't offboarding.
     await revokeOrganizationTenantAccess(organization.id);
   } else if (data.status === 'active' || data.status === 'trial') {
-    // Reactivation: cancel any in-flight drain uninstalls (see above), then
-    // restore agent tokens this org's revoke suspended.
-    await abortOrganizationOffboarding(organization.id);
+    // Reactivation: the in-flight drain uninstalls were cancelled with the
+    // status write (#3996); restore agent tokens this org's revoke suspended.
     await restoreOrganizationTenantAccess(organization.id);
   }
 
@@ -2484,19 +2527,26 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
   const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
-  const [organization] = await db
-    .update(organizations)
-    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
-    .where(conditions)
-    .returning();
+  // Hard delete keeps the immediate-sever semantics; if a drain was in
+  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
+  // #3996 — `churned` is not a draining status either, so the cancel has to be
+  // locked and committed with the status write, not after it.
+  const { statusChange: organization } = await abortOrganizationOffboardingAroundStatusChange(
+    id,
+    async () => {
+      const [row] = await db
+        .update(organizations)
+        .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
+        .where(conditions)
+        .returning();
+      return row;
+    }
+  );
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  // Hard delete keeps the immediate-sever semantics; if a drain was in
-  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
-  await abortOrganizationOffboarding(organization.id);
   await revokeOrganizationTenantAccess(organization.id);
 
   writeRouteAudit(c, {
