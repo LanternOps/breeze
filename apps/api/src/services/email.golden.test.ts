@@ -74,6 +74,18 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'invoice.sent (no partner name)', params: { ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
 ];
 
+// GOLDEN is hand-written, so a purpose added to the registry with no matching
+// row would silently go untested. Assert the coverage both ways: every
+// registry purpose has at least one golden row, and no golden row names a
+// purpose the registry doesn't have.
+describe('GOLDEN covers exactly the registry (no purpose silently untested)', () => {
+  it('the set of purposes exercised equals the set of registered purposes', () => {
+    const goldenPurposes = new Set(GOLDEN.map((row) => row.params.purpose));
+    const registryPurposes = new Set(Object.keys(MAIL_PURPOSES));
+    expect(goldenPurposes).toEqual(registryPurposes);
+  });
+});
+
 const originalEnv = { ...process.env };
 
 function resetEmailEnv() {

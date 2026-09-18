@@ -82,4 +82,13 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
     expect(ALL_PURPOSES).not.toContain('staff.sending_domain_status');
     expect(ALL_PURPOSES).not.toContain('sending_domain.test');
   });
+
+  // A purpose outside the registry can only reach mailPurposePolicy by
+  // bypassing TypeScript (G5 is compile-time only). Fail open to the
+  // platform lane rather than throwing — resolveSender (senderResolution.ts)
+  // is responsible for logging when this happens; this module stays
+  // dependency-free and pure.
+  it('falls back to the platform lane for a purpose not in the registry', () => {
+    expect(mailPurposePolicy('nope' as never)).toEqual({ lane: 'platform' });
+  });
 });

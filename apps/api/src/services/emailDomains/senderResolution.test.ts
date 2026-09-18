@@ -111,4 +111,21 @@ describe('resolveSender (W01: always the platform lane)', () => {
     });
     expect(plain.from).toBe(DEFAULT_FROM);
   });
+
+  // A purpose outside the registry can only reach here by bypassing TypeScript
+  // (a stale build, an `any`, a cast) — mailPurposePolicy already fails open to
+  // the platform lane (mailPurposes.test.ts), but that must not happen quietly:
+  // an unclassified send reaching production is exactly the failure mode G5's
+  // compile-time guard exists to prevent, so it needs to show up in logs.
+  it('warns and routes to the platform lane when the purpose is not in the registry', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unknown = 'nope.unknown' as MailPurpose;
+
+    const resolved = await resolveSender({ purpose: unknown, partnerId: null, defaultFrom: DEFAULT_FROM });
+
+    expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'platform_purpose' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('[email] unknown mail purpose %s — routed to the platform lane', unknown);
+    warn.mockRestore();
+  });
 });

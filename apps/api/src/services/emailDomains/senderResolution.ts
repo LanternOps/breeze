@@ -1,4 +1,5 @@
 import {
+  MAIL_PURPOSES,
   mailPurposePolicy,
   type MailPurpose,
   type PartnerMailStream,
@@ -92,6 +93,15 @@ export function platformFallbackFrom(
 }
 
 export async function resolveSender(input: ResolveSenderInput): Promise<ResolvedSender> {
+  // A purpose outside the registry can only reach here by bypassing
+  // TypeScript (G5 is a compile-time guard, erased at runtime). Rather than
+  // let mailPurposePolicy's platform fallback happen silently, log it — an
+  // unclassified send reaching production is the exact failure mode that
+  // guard exists to prevent.
+  if (!(input.purpose in MAIL_PURPOSES)) {
+    console.warn('[email] unknown mail purpose %s — routed to the platform lane', input.purpose);
+  }
+
   const from = platformFallbackFrom(input.purpose, input.defaultFrom, input.partnerName);
   const policy = mailPurposePolicy(input.purpose);
 
