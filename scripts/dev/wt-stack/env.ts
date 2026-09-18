@@ -39,12 +39,15 @@ const DEV_ENV: Record<string, string> = {
   // applies, so MFA-policy specs are unaffected.
   MFA_FORCE_FOR_PARTNER_ADMIN: 'false',
   // Partner sending domains W05. `fake` is the deterministic adapter: it makes
-  // no external calls, verifies `*.verify.test` on the first check, fails
-  // `*.fail.test`, and hands a send to the platform transport so Mailpit shows
-  // the custom From. config/validate.ts refuses it in production, and the
-  // settings tab is hidden whenever this is unset — which is why the E2E spec
-  // needs it. .env.stack is passed LAST to compose, so this wins over a stale
-  // root .env, and docker-compose.yml's x-api-env anchor (added in W02) is what
+  // no external calls itself, verifies `*.verify.test` on the first check, and
+  // fails `*.fail.test`. A test send is suppressed unless the platform email
+  // transport is SMTP (a local sink, e.g. Mailpit) — Resend/Mailgun, or no
+  // email service configured at all, never see the fake domains this adapter
+  // manages, since those domains were never registered with a real provider.
+  // config/validate.ts refuses `fake` in production, and the settings tab is
+  // hidden whenever this is unset — which is why the E2E spec needs it.
+  // .env.stack is passed LAST to compose, so this wins over a stale root
+  // .env, and docker-compose.yml's x-api-env anchor (added in W02) is what
   // carries it into the api and worker containers.
   EMAIL_DOMAINS_PROVIDER: 'fake',
   // Caddy/postgres/redis images are digest-pinned in base compose; reuse the
