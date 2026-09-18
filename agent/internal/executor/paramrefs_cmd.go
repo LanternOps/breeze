@@ -30,10 +30,7 @@ import (
 // `call` behind an `if`/`for`/`else` prefix — `if exist x call y {{p}}` — is
 // still rejected.
 
-var (
-	cmdCallLine   = regexp.MustCompile(`(?i)(^|[\s&(|@])call\s`)
-	cmdForFClause = regexp.MustCompile(`(?i)\bfor\b[^)]*\bin\s*\([^)]*$`)
-)
+var cmdCallLine = regexp.MustCompile(`(?i)(^|[\s&(|@])call\s`)
 
 func cmdHint(key string) string {
 	return "read it as %" + parameterEnvName(key) +
@@ -62,7 +59,7 @@ func renderCMDParameters(content string, params map[string]string) (string, bool
 			return "", false, renderErr(key, "a cmd.exe `call` statement, which re-parses its command line",
 				cmdHint(key))
 		}
-		if cmdForFClause.MatchString(prefix) {
+		if cmdInForInClause(prefix) {
 			return "", false, renderErr(key, "a cmd.exe `for /f … in ( )` clause, whose contents are parsed as a command",
 				cmdHint(key))
 		}
@@ -79,8 +76,15 @@ func renderCMDParameters(content string, params map[string]string) (string, bool
 // Both guards below used to read the physical line only, so a trailing `^`
 // carried `call` or a `for /f … in (` clause onto the next line and out of
 // their view. A caret pair (`^^`) is an escaped caret, not a continuation, so
-// only an ODD run of trailing carets continues the line. Quote state is not
-// tracked across the join: over-joining can only widen the guards.
+// only an ODD run of trailing carets continues the line.
+//
+// Quote state is deliberately NOT tracked across the join. A trailing caret
+// inside an open double-quoted string is reported to be a literal caret rather
+// than a continuation, but the exact rule differs between cmd.exe versions and
+// between the `/C` and interactive parsers, so this joins anyway: over-joining
+// only ever WIDENS the two guards (more text is considered part of the
+// statement), which fails closed. Under-joining would hide a `call` or an
+// in-clause from them, which fails open.
 func cmdLogicalPrefix(src string, pos int) string {
 	start := lineStart(src, pos)
 	parts := []string{strings.ReplaceAll(src[start:pos], "\r", "")}
@@ -98,6 +102,93 @@ func cmdLogicalPrefix(src string, pos int) string {
 		parts[i], parts[j] = parts[j], parts[i]
 	}
 	return strings.Join(parts, "")
+}
+
+// cmdInForInClause reports whether the cursor at the end of prefix is still
+// inside an unclosed `for … in ( … )` clause, whose contents cmd parses as a
+// command (`for /f … in ('cmd')` runs it), so a delayed-expansion value there
+// is not data.
+//
+// The scan is quote- and caret-aware for the same reason cmdStatementPrefix is:
+// the regex this replaced (`\bfor\b[^)]*\bin\s*\([^)]*$`) treated ANY `)` as
+// the end of the clause, so a `)` that cmd does not read that way took the
+// clause out of the guard's view and the value rendered into it —
+// `for /f … in ('echo ^) {{p}}')` (caret-escaped) and
+// `for /f … in ('echo )' {{p}})` (inside the clause's own quoted command).
+// Inside the clause both `"` and `'` protect a paren, because `'…'` is how the
+// `for /f` command form is written.
+func cmdInForInClause(prefix string) bool {
+	const (
+		stateNone   = iota // no `for` pending
+		stateFor           // `for` seen, looking for `in`
+		stateIn            // `in` seen, looking for `(`
+		stateClause        // inside the `( … )` clause
+	)
+	state := stateNone
+	depth := 0
+	dquote, squote := false, false
+
+	for i := 0; i < len(prefix); i++ {
+		c := prefix[i]
+		if c == '^' && !dquote && !squote {
+			i++ // a caret escapes the next byte: never a paren or a quote
+			continue
+		}
+		if state == stateClause {
+			switch {
+			case c == '"' && !squote:
+				dquote = !dquote
+			case c == '\'' && !dquote:
+				squote = !squote
+			case dquote || squote:
+				// quoted text: parens in here are data
+			case c == '(':
+				depth++
+			case c == ')':
+				if depth--; depth == 0 {
+					state = stateNone
+				}
+			}
+			continue
+		}
+		if c == '"' {
+			dquote = !dquote
+			continue
+		}
+		if dquote {
+			continue
+		}
+		if isCmdWordByte(c) {
+			j := i
+			for j < len(prefix) && isCmdWordByte(prefix[j]) {
+				j++
+			}
+			switch word := strings.ToLower(prefix[i:j]); {
+			case word == "for":
+				state = stateFor
+			case word == "in" && state == stateFor:
+				state = stateIn
+			case state == stateIn:
+				state = stateNone // `in` was not followed by a clause
+			}
+			i = j - 1
+			continue
+		}
+		if c == '(' && state == stateIn {
+			state = stateClause
+			depth = 1
+			dquote, squote = false, false
+			continue
+		}
+		if state == stateIn && !isSpaceByte(c) {
+			state = stateNone
+		}
+	}
+	return state == stateClause
+}
+
+func isCmdWordByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // cmdLineContinues reports whether a physical line ends in an unescaped caret,

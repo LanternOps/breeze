@@ -171,6 +171,38 @@ func TestRenderPythonStringLiterals(t *testing.T) {
 			wantErr:     true,
 			errContains: "replacement field",
 		},
+		// PEP 701 (Python 3.12+): a `#` comment is legal inside a MULTI-LINE
+		// f-string replacement field and runs to the end of the line, so a `}`
+		// in it is comment text. Counting that brace closed the field early and
+		// demoted the placeholder after it to string data, escaping the value
+		// into an expression slot.
+		{
+			name:        "a comment inside a multi-line f-string field does not close it",
+			script:      "x=1\nprint(f\"\"\"{ x # }\n + {{p}} }\"\"\")\n",
+			params:      map[string]string{"p": `__import__("os").system("id")`},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			name:        "a placeholder inside an f-string field comment is rejected",
+			script:      "print(f\"\"\"{ x # {{p}}\n }\"\"\")\n",
+			params:      map[string]string{"p": "v"},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			// A `#` in string DATA is not a comment, in either literal shape.
+			name:   "a hash in triple-quoted f-string data is string data",
+			script: "print(f\"\"\"# {{p}}\"\"\")\n",
+			params: map[string]string{"p": "v"},
+			want:   "print(f\"\"\"# v\"\"\")\n",
+		},
+		{
+			name:   "a hash in single-line f-string data is string data",
+			script: `print(f"# {{p}}")`,
+			params: map[string]string{"p": "v"},
+			want:   `print(f"# v")`,
+		},
 		{
 			// Positive control: once the field really closes, the placeholder
 			// after it is string data again even though the field held a string

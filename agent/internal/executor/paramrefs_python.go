@@ -177,6 +177,17 @@ func scanPythonString(r *scanner) error {
 					return err
 				}
 				continue
+			case field > 0 && lit.triple && r.cur() == '#':
+				// PEP 701 (Python 3.12+): a `#` comment is legal inside a
+				// MULTI-LINE f-string replacement field and runs to the end of
+				// the line, so a `}` in it is comment text and not the end of
+				// the field. Counting that brace desynced `field` and demoted
+				// the placeholder after it to string data — the value was then
+				// escaped into an expression slot instead of being rejected.
+				if err := scanPythonFieldComment(r); err != nil {
+					return err
+				}
+				continue
 			case r.cur() == '{':
 				field++
 				r.copyByte()
@@ -200,6 +211,25 @@ func scanPythonString(r *scanner) error {
 		if !lit.triple && r.cur() == '\n' {
 			// Unterminated single-line literal; let Python report it.
 			return nil
+		}
+		r.copyByte()
+	}
+	return nil
+}
+
+// scanPythonFieldComment copies a `#` comment inside a multi-line f-string
+// replacement field through to the end of its line. A placeholder inside the
+// comment is still inside the field, so it is rejected for the same reason one
+// in the expression itself is — the cursor is in a region Python parses as code.
+func scanPythonFieldComment(r *scanner) error {
+	for !r.done() && r.cur() != '\n' {
+		if key, width, ok := r.placeholder(); ok {
+			if _, known := r.value(key); known {
+				return renderErr(key, "an f-string replacement field, which Python evaluates as an expression",
+					pythonHint(key))
+			}
+			r.skipLiteral(width)
+			continue
 		}
 		r.copyByte()
 	}

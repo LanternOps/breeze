@@ -31,6 +31,10 @@ const (
 	// `$[ ]`, `${name[…]}`, `$( )` — go through the same rules as anywhere
 	// else in the script.
 	bfHeredoc
+	// bfParamWord is a `${name<op>word}` expansion: its subscript/offset
+	// regions are arithmetic and its word body is a word-ish context that
+	// expands nested constructs (see stepNested's frame matrix).
+	bfParamWord
 )
 
 type bashFrame struct {
@@ -52,6 +56,14 @@ type bashFrame struct {
 
 	// heredoc describes a bfHeredoc frame's body.
 	heredoc bashHeredoc
+
+	// bfParamWord state: arith marks the subscript/offset region, wordBody
+	// marks that the expansion's operator has been seen.
+	arith    bool
+	wordBody bool
+	// interp marks a frame whose region expands without quote removal, so a
+	// single-quoted span inside it interpolates instead of being spliced.
+	interp bool
 
 	// wordSink is the bfCode frame whose current word a quoting frame feeds.
 	// `de"c"lare` and `\declare` are the `declare` builtin, so the literal
@@ -102,6 +114,8 @@ func renderBashParameters(content string, params map[string]string) (string, boo
 			err = r.stepBracket(f)
 		case bfHeredoc:
 			err = r.stepHeredoc(f)
+		case bfParamWord:
+			err = r.stepParamWord(f)
 		}
 		if err != nil {
 			return "", false, err
@@ -248,20 +262,9 @@ func (r *bashRenderer) stepCode(f *bashFrame) error {
 		r.copyByte()
 		r.push(&bashFrame{kind: bfDouble, wordSink: f})
 		return nil
-	case r.hasPrefix("$(("):
-		r.copyN(3)
-		r.push(&bashFrame{kind: bfArith, closer: "))"})
-		return nil
-	case r.hasPrefix("$("):
-		r.copyN(2)
-		r.push(&bashFrame{kind: bfCode, subst: true})
-		return nil
-	case r.hasPrefix("${"):
-		return r.scanParamExpansion()
-	case r.hasPrefix("$["):
-		r.copyN(2)
-		r.push(&bashFrame{kind: bfArith, closer: "]"})
-		return nil
+	case r.hasPrefix("$((") || r.hasPrefix("$(") || r.hasPrefix("${") || r.hasPrefix("$["):
+		_, err := r.stepNested(f)
+		return err
 	case c == '`':
 		r.copyByte()
 		if f.backtick {
@@ -319,7 +322,13 @@ func (r *bashRenderer) stepCode(f *bashFrame) error {
 func (r *bashRenderer) stepSingle(f *bashFrame) error {
 	if key, width, ok := r.placeholder(); ok {
 		if value, known := r.value(key); known {
-			return r.emitPlaceholder(key, value, width, formSingle)
+			// Inside an interpolating `${…}` word body the quotes are literal
+			// data and expansion still happens, so splicing would emit them.
+			form := formSingle
+			if f.interp {
+				form = formInterp
+			}
+			return r.emitPlaceholder(key, value, width, form)
 		}
 		r.skipLiteral(width)
 		return nil
@@ -366,32 +375,23 @@ func (r *bashRenderer) stepDouble(f *bashFrame) error {
 		r.skipLiteral(width)
 		return nil
 	}
-	switch {
-	case r.cur() == '\\':
-		if r.i+1 < len(r.src) {
-			f.sink(r.src[r.i+1])
-		}
-		r.copyN(2)
-	case r.cur() == '"':
+	if r.cur() == '"' {
 		r.copyByte()
 		r.pop()
-	case r.hasPrefix("$(("):
-		r.copyN(3)
-		r.push(&bashFrame{kind: bfArith, closer: "))"})
-	case r.hasPrefix("$("):
-		r.copyN(2)
-		r.push(&bashFrame{kind: bfCode, subst: true})
-	case r.hasPrefix("${"):
-		return r.scanParamExpansion()
-	case r.cur() == '`':
-		r.copyByte()
-		r.push(&bashFrame{kind: bfCode, backtick: true})
-	default:
-		f.sink(r.cur())
-		r.copyByte()
+		return nil
 	}
+	if handled, err := r.stepNested(f); handled {
+		return err
+	}
+	f.sink(r.cur())
+	r.copyByte()
 	return nil
 }
+
+// bashArithContext names the arithmetic contexts in rejection messages. Every
+// arithmetic region shares it so that the frame-matrix test can compare
+// verdicts across frame kinds.
+const bashArithContext = "a bash arithmetic expression"
 
 func (r *bashRenderer) stepArith(f *bashFrame) error {
 	if key, width, ok := r.placeholder(); ok {
@@ -400,7 +400,7 @@ func (r *bashRenderer) stepArith(f *bashFrame) error {
 			r.skipLiteral(width)
 			return nil
 		}
-		return r.emitInteger(key, value, width, "a bash arithmetic expression")
+		return r.emitInteger(key, value, width, bashArithContext)
 	}
 	if f.closer == "))" {
 		switch {
@@ -454,34 +454,25 @@ func (r *bashRenderer) stepBracket(f *bashFrame) error {
 		return r.emitPlaceholder(key, value, width, formWord)
 	}
 	switch {
-	case r.cur() == '\\':
-		r.copyN(2)
 	case r.hasPrefix("]]"):
 		r.copyN(2)
 		r.pop()
+		return nil
 	case r.cur() == '\'':
 		r.copyByte()
 		r.push(&bashFrame{kind: bfSingle})
+		return nil
 	case r.cur() == '"':
 		r.copyByte()
 		r.push(&bashFrame{kind: bfDouble})
-	case r.hasPrefix("$(("):
-		r.copyN(3)
-		r.push(&bashFrame{kind: bfArith, closer: "))"})
-	case r.hasPrefix("$("):
-		r.copyN(2)
-		r.push(&bashFrame{kind: bfCode, subst: true})
-	case r.hasPrefix("${"):
-		return r.scanParamExpansion()
-	case r.cur() == '`':
-		// `[[ ]]` performs command substitution on its operands, so a backtick
-		// opens a code frame here too — with its own command word, so `eval` and
-		// an array subscript inside it are caught.
-		r.copyByte()
-		r.push(&bashFrame{kind: bfCode, backtick: true})
-	default:
-		r.copyByte()
+		return nil
 	}
+	// `[[ ]]` performs command substitution and arithmetic on its operands, so
+	// the shared dispatcher applies here exactly as in script text.
+	if handled, err := r.stepNested(f); handled {
+		return err
+	}
+	r.copyByte()
 	return nil
 }
 
@@ -498,66 +489,6 @@ func (r *bashRenderer) scanComment() error {
 			continue
 		}
 		r.copyByte()
-	}
-	return nil
-}
-
-// scanParamExpansion copies a `${…}` expansion through. The name is copied
-// verbatim; a `:offset` or `[subscript]` makes the remainder an arithmetic
-// context, anything else (defaults, pattern replacement) behaves like the
-// inside of double quotes.
-func (r *bashRenderer) scanParamExpansion() error {
-	r.copyN(2) // "${"
-	for !r.done() && (r.cur() == '#' || r.cur() == '!') {
-		r.copyByte()
-	}
-	for !r.done() && isIdentByte(r.cur()) {
-		r.copyByte()
-	}
-	arith := false
-	if !r.done() {
-		switch r.cur() {
-		case '[':
-			arith = true
-		case ':':
-			// `:-`, `:=`, `:?`, `:+` are default-value forms, not offsets.
-			if r.i+1 >= len(r.src) || !strings.ContainsRune("-=?+", rune(r.src[r.i+1])) {
-				arith = true
-			}
-		}
-	}
-	depth := 1
-	for !r.done() {
-		if key, width, ok := r.placeholder(); ok {
-			value, known := r.value(key)
-			if !known {
-				r.skipLiteral(width)
-				continue
-			}
-			if arith {
-				if err := r.emitInteger(key, value, width, "a bash `${…}` subscript or offset"); err != nil {
-					return err
-				}
-				continue
-			}
-			r.emit(bashRef(key, formInterp), width)
-			continue
-		}
-		switch c := r.cur(); c {
-		case '\\':
-			r.copyN(2)
-		case '{':
-			depth++
-			r.copyByte()
-		case '}':
-			depth--
-			r.copyByte()
-			if depth == 0 {
-				return nil
-			}
-		default:
-			r.copyByte()
-		}
 	}
 	return nil
 }
