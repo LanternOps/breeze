@@ -84,22 +84,27 @@ describe('assertNoPendingRevocation — producer gate scope (#5611 item 1)', () 
 });
 
 describe('abandonInvoiceSessionRevocation — single audit writer (#5611 item 3)', () => {
-  it('writes exactly one audit row carrying the request snapshot', async () => {
+  it('writes exactly one audit row carrying the PRE-RESOLVED ip / ua / email, not a header shim', async () => {
     h.results.push([{ id: 'map-1', orgId: 'org-1' }, { id: 'map-2', orgId: 'org-1' }]);
     const result = await abandonInvoiceSessionRevocation({
-      invoiceId: 'inv-1', reason: 'Stripe account closed', actorUserId: 'u1',
+      invoiceId: 'inv-1', reason: 'Stripe account closed', actorUserId: 'u1', actorEmail: 'op@example.com',
       request: { ip: '203.0.113.9', userAgent: 'ua/1' },
     });
     expect(result).toEqual({ abandoned: 2, orgId: 'org-1' });
     expect(h.writeAuditEventAsync).toHaveBeenCalledTimes(1);
     expect(h.writeAuditEventAsync).toHaveBeenCalledWith(
-      { snapshot: { ip: '203.0.113.9', userAgent: 'ua/1' } },
+      // The shim carries NO headers: putting the IP on it would send it back
+      // through the proxy-trust check, which a socket-less shim can never pass.
+      { snapshot: {} },
       expect.objectContaining({
         action: 'invoice.stripe_session_abandoned',
         orgId: 'org-1',
         resourceId: 'inv-1',
         actorType: 'user',
         actorId: 'u1',
+        actorEmail: 'op@example.com',
+        ipAddress: '203.0.113.9',
+        userAgent: 'ua/1',
         details: { reason: 'Stripe account closed', sessionCount: 2 },
       }),
     );
@@ -117,5 +122,14 @@ describe('abandonInvoiceSessionRevocation — single audit writer (#5611 item 3)
       { snapshot: {} },
       expect.objectContaining({ orgId: 'org-1', details: { reason: 'nothing left but recording the decision', sessionCount: 0 } }),
     );
+  });
+
+  it('404s instead of writing an org-less audit row for an invoice that does not exist', async () => {
+    h.results.push([]);
+    h.results.push([]); // invoice org lookup → nothing
+    await expect(abandonInvoiceSessionRevocation({
+      invoiceId: 'ghost', reason: 'nothing to see here at all', actorUserId: 'u1',
+    })).rejects.toMatchObject({ status: 404, code: 'INVOICE_NOT_FOUND' });
+    expect(h.writeAuditEventAsync).not.toHaveBeenCalled();
   });
 });

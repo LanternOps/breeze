@@ -42,7 +42,7 @@ const payLink = vi.mocked(checkout.createInvoicePayLink);
 
 function app() {
   const a = new Hono();
-  a.use('*', async (c: any, next: any) => { c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', accessibleOrgIds: null }); await next(); });
+  a.use('*', async (c: any, next: any) => { c.set('auth', { user: { id: 'u1', email: 'op@example.com' }, partnerId: 'p1', accessibleOrgIds: null }); await next(); });
   a.route('/', invoiceStripeRoutes);
   return a;
 }
@@ -133,6 +133,7 @@ describe('POST /invoices/:id/stripe-sessions/abandon', () => {
     expect(res.status).toBe(200);
     expect(writeRouteAudit).not.toHaveBeenCalled();
     expect(abandon).toHaveBeenCalledWith(expect.objectContaining({
+      actorEmail: 'op@example.com',
       request: { ip: '203.0.113.9', userAgent: 'breeze-test/1' },
     }));
   });

@@ -69,9 +69,11 @@ invoiceStripeRoutes.post(
 
       // The service writes the (single) audit row — #5611: this route used to
       // write a second `invoice.stripe_session_abandoned` on top of it. The
-      // request snapshot travels in so that one row keeps the IP / UA.
+      // request snapshot travels in so that one row keeps the IP / UA / email
+      // the route row used to carry.
       const result = await abandonInvoiceSessionRevocation({
         invoiceId: inv.id, reason, actorUserId: actor.userId,
+        actorEmail: (c.get('auth') as { user?: { email?: string } } | undefined)?.user?.email ?? null,
         request: { ip: getTrustedClientIpOrUndefined(c), userAgent: c.req.header('user-agent') },
       });
       return c.json({ data: { abandoned: result.abandoned } });

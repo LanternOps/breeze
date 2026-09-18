@@ -271,6 +271,15 @@ describe('invoiceService guards', () => {
     expect(requestInvoiceSessionRevocation).not.toHaveBeenCalled();
   });
 
+  it('recordPayment on an unknown invoice 404s WITHOUT touching Stripe sessions', async () => {
+    queueResult([]); // pre-check read → no row
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await expect(
+      svc.recordPayment('missing', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, actor)
+    ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
+    expect(requestInvoiceSessionRevocation).not.toHaveBeenCalled();
+  });
+
   it('recordPayment rejects an overpayment against the in-tx balance (OVERPAYMENT 400)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '80.00' }]); // pre-check read (#5611)
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '80.00' }]); // lock select

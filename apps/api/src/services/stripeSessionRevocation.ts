@@ -592,11 +592,14 @@ export async function abandonInvoiceSessionRevocation(input: {
   invoiceId: string;
   reason: string;
   actorUserId: string | null;
+  actorEmail?: string | null;
   /**
    * IP / user-agent of the operator's request, for the audit row. This function
    * is the ONE audit writer for an abandon (#5611 — the route used to write a
    * second row on top of this one), so the request context travels in here
-   * rather than being written separately by the caller.
+   * rather than being written separately by the caller. Passed to the audit
+   * writer PRE-RESOLVED: re-deriving the IP from a header shim fails the
+   * proxy-trust check in production and drops it.
    */
   request?: { ip?: string; userAgent?: string };
 }): Promise<{ abandoned: number; orgId: string | null }> {
@@ -629,18 +632,25 @@ export async function abandonInvoiceSessionRevocation(input: {
     // The operator's DECISION is the auditable event, not the row count: an
     // abandon that found nothing left to abandon still records who accepted
     // residual exposure and why. The org comes from the invoice when no mapping
-    // row supplied it.
-    const orgId = rows[0]?.orgId
-      ?? (await db.select({ orgId: invoices.orgId }).from(invoices)
-        .where(eq(invoices.id, input.invoiceId)).limit(1))[0]?.orgId
-      ?? null;
-    await writeAuditEventAsync(requestLikeFromSnapshot(input.request ?? {}), {
+    // row supplied it. An invoice that does not exist gets no audit row at all —
+    // an org-less "success" row would be invisible to every tenant's audit view.
+    let orgId = rows[0]?.orgId ?? null;
+    if (orgId === null) {
+      const [inv] = await db.select({ orgId: invoices.orgId }).from(invoices)
+        .where(eq(invoices.id, input.invoiceId)).limit(1);
+      if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+      orgId = inv.orgId;
+    }
+    await writeAuditEventAsync(requestLikeFromSnapshot({}), {
       orgId,
       action: 'invoice.stripe_session_abandoned',
       resourceType: 'invoice',
       resourceId: input.invoiceId,
       actorType: input.actorUserId ? 'user' : 'system',
       actorId: input.actorUserId,
+      actorEmail: input.actorEmail,
+      ipAddress: input.request?.ip,
+      userAgent: input.request?.userAgent,
       result: 'success',
       details: { reason: input.reason, sessionCount: rows.length },
     });
