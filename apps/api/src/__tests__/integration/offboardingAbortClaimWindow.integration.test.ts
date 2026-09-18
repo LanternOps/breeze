@@ -3,11 +3,12 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { deviceCommands, devices, organizations } from '../../db/schema';
+import { deviceCommands, devices, organizations, partners } from '../../db/schema';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import {
   abortOrganizationOffboarding,
   abortOrganizationOffboardingAroundStatusChange,
+  abortPartnerOffboardingAroundStatusChange,
 } from '../../services/tenantOffboarding';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -66,6 +67,7 @@ import { getTestDb } from './setup';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 interface DrainingTenant {
+  partnerId: string;
   orgId: string;
   deviceId: string;
   commandId: string;
@@ -79,7 +81,10 @@ let seedCounter = 0;
  * what `queueDrainUninstalls` writes, because the claim's own predicate
  * filters on both.
  */
-async function seedDrainingTenant(label: string): Promise<DrainingTenant> {
+async function seedDrainingTenant(
+  label: string,
+  axis: 'organization' | 'partner' = 'organization'
+): Promise<DrainingTenant> {
   seedCounter += 1;
   const suffix = `${Date.now()}-${seedCounter}-${Math.random().toString(36).slice(2, 8)}`;
   const partner = await createPartner({ status: 'active' });
@@ -117,13 +122,25 @@ async function seedDrainingTenant(label: string): Promise<DrainingTenant> {
   if (!command) throw new Error('seedDrainingTenant: command insert returned no row');
 
   await withSystemDbAccessContext(async () => {
-    await getTestDb()
-      .update(organizations)
-      .set({ status: 'offboarding', offboardingStartedAt: new Date(), updatedAt: new Date() })
-      .where(eq(organizations.id, org.id));
+    if (axis === 'partner') {
+      // A PARTNER-level drain stamps only `partners.offboarding_started_at`;
+      // the org rides the partner axis in `getAgentTenantState`. Mirroring
+      // that here is what makes the partner case exercise the real fan-out
+      // (partner row -> every org -> every device's commands) rather than a
+      // relabelled copy of the org case.
+      await getTestDb()
+        .update(partners)
+        .set({ status: 'offboarding', offboardingStartedAt: new Date(), updatedAt: new Date() })
+        .where(eq(partners.id, partner.id));
+    } else {
+      await getTestDb()
+        .update(organizations)
+        .set({ status: 'offboarding', offboardingStartedAt: new Date(), updatedAt: new Date() })
+        .where(eq(organizations.id, org.id));
+    }
   });
 
-  return { orgId: org.id, deviceId: device.id, commandId: command.id };
+  return { partnerId: partner.id, orgId: org.id, deviceId: device.id, commandId: command.id };
 }
 
 /**
@@ -240,6 +257,38 @@ describe('#3996 — the abort locks the drain uninstalls before the status flip'
       // fixed. Closing the residual is #3995's agent-side fence.
       const abort = await abortOrganizationOffboarding(tenant.orgId);
       expect(abort.aborted).toBe(true);
+    }
+  );
+
+  runDb(
+    'PARTNER axis — the same window is closed across every org under the partner',
+    async () => {
+      // The partner wrapper is a structurally separate function with its own
+      // lock sequence (partner row -> orgs -> each org's device commands), and
+      // the SKIP LOCKED property it relies on is Postgres-only, so the unit
+      // suite's lock-order assertions are not a substitute for this.
+      const tenant = await seedDrainingTenant('partner-locked', 'partner');
+
+      let claimedMidAbort: string[] | undefined;
+      const result = await abortPartnerOffboardingAroundStatusChange(
+        tenant.partnerId,
+        async () => {
+          const [row] = await db
+            .update(partners)
+            .set({ status: 'active', updatedAt: new Date() })
+            .where(eq(partners.id, tenant.partnerId))
+            .returning({ id: partners.id });
+          claimedMidAbort = await ordinaryClaim(tenant.deviceId);
+          return row;
+        }
+      );
+
+      expect(claimedMidAbort, 'SKIP LOCKED must skip the row the abort holds').toEqual([]);
+      expect(result.abort).toEqual({ aborted: true, uninstallsCancelled: 1 });
+
+      const command = await readCommand(tenant.commandId);
+      expect(command?.status).toBe('cancelled');
+      expect(command?.result).toEqual({ reason: 'partner_offboarding_aborted' });
     }
   );
 });

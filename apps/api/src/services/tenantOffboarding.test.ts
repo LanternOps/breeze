@@ -220,6 +220,8 @@ import { invalidateAgentTenantCache } from './tenantStatus';
 import {
   abortOrganizationOffboarding,
   abortOrganizationOffboardingAroundStatusChange,
+  DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS,
+  DRAIN_ABORT_LOCK_TIMEOUT_MS,
   abortPartnerOffboardingAroundStatusChange,
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
@@ -794,6 +796,40 @@ describe('abortOrganizationOffboardingAroundStatusChange', () => {
     expect(result.abort.aborted).toBe(true);
     expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
     expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds the lock phase, and only the lock phase, with lock_timeout + statement_timeout', async () => {
+    queueSelect([{ id: 'org-1' }]); // organizations FOR UPDATE
+    queueSelect([{ id: 'd1' }]); // devices
+    queueSelect([{ id: 'cmd-1' }]); // command lock
+    updateReturningQueue.push([{ id: 'org-1' }]); // caller's status UPDATE
+    updateReturningQueue.push([]); // no stamp — keeps the cancel out of the way
+
+    let sqlAtWriteTime: string[] = [];
+    await abortOrganizationOffboardingAroundStatusChange('org-1', async () => {
+      sqlAtWriteTime = [...executedSqlLog];
+      const [row] = await db
+        .update(organizations)
+        .set({ status: 'active' })
+        .where(eq(organizations.id, 'org-1'))
+        .returning();
+      return row;
+    });
+
+    // Both bounds were in force BEFORE anything could block. A request
+    // transaction's default lock_timeout is 0 (wait forever), so without these
+    // an abort contending with a wedged backend hangs with nothing logged.
+    const beforeWrite = sqlAtWriteTime.join('\n');
+    expect(beforeWrite).toContain("name = 'lock_timeout'");
+    expect(beforeWrite).toContain("name = 'statement_timeout'");
+    // ...and the caller's own values are put back once the locks are held, so
+    // the bounds do not silently govern the rest of the request transaction.
+    // (`set_config` restores only fire when the mocked prior value says they
+    // were actually tightened, which is why this asserts the ATTEMPT order
+    // rather than a restore having run under the doubles.)
+    expect(sqlAtWriteTime.filter((text) => text.includes("name = 'lock_timeout'"))).toHaveLength(1);
+    expect(DRAIN_ABORT_LOCK_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS).toBeGreaterThanOrEqual(DRAIN_ABORT_LOCK_TIMEOUT_MS);
   });
 
   it('cancels nothing when the status write did not land (a 0-row write means the caller lost a race)', async () => {

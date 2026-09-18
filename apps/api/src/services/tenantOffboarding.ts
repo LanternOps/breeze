@@ -21,6 +21,12 @@ import {
   type TenantRevocationResult,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
+import {
+  lockTimeoutWasChanged,
+  tightenLockTimeout,
+  tightenStatementTimeout,
+} from '../db/lockTimeout';
+import { isTransientLockError } from '../utils/pgErrors';
 import { UNINSTALL_REASON_TENANT_OFFBOARDING } from './deviceUninstallDrain';
 import { isReusableState } from './bullmqUtils';
 import { envInt } from '../utils/envInt';
@@ -689,6 +695,67 @@ async function abortPartnerDrainHere(partnerId: string): Promise<OffboardingAbor
 const NOT_ABORTED: OffboardingAbortResult = { aborted: false, uninstallsCancelled: 0 };
 
 /**
+ * Bounds for the drain-abort lock phase. Without them an abort inherits the
+ * caller's `lock_timeout` — which in a request transaction is Postgres's
+ * default of 0, i.e. wait forever — so contending with a wedged backend would
+ * hang an admin request with nothing logged and a pooled connection pinned.
+ * `lock_timeout` alone is not enough here: it applies per lock ACQUISITION,
+ * and the command-row select locks N rows, so its effective ceiling is N x the
+ * bound (see `db/lockTimeout.ts`). `statement_timeout` is the one that bounds
+ * the whole statement. Same shape as `partnerDeviceCapacity`'s admission lock.
+ *
+ * The values are generous relative to what they contend with (an agent
+ * heartbeat's claim transaction) — the point is a bound at all, not a tight
+ * one. Exceeding it raises 55P03/57014, which `isTransientLockError` already
+ * classifies as retriable, rather than hanging.
+ */
+export const DRAIN_ABORT_LOCK_TIMEOUT_MS = 3_000;
+export const DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS = 10_000;
+
+/**
+ * Run the lock phase of an abort under bounded lock waits, then put the
+ * caller's own timeouts back.
+ *
+ * Restoring ONLY on success is deliberate (the rule `db/lockTimeout.ts`
+ * states): on the failure path the transaction is already aborted, so a
+ * restoring `set_config` would itself raise 25P02 and mask the real error with
+ * an unrelated one. A tighter bound left in force on a dying transaction
+ * costs nothing.
+ *
+ * Scoped to the lock phase alone, not the whole composed operation: the status
+ * write and the cancel can only touch rows this phase already holds, so they
+ * cannot block, and the caller's remaining statements keep the request's
+ * normal timeouts.
+ */
+async function withBoundedLockWaits<T>(scope: string, fn: () => Promise<T>): Promise<T> {
+  const tx = db as unknown as { execute(q: unknown): Promise<unknown> };
+  const priorLock = await tightenLockTimeout(tx, DRAIN_ABORT_LOCK_TIMEOUT_MS);
+  const priorStatement = await tightenStatementTimeout(tx, DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS);
+
+  let result: T;
+  try {
+    result = await fn();
+  } catch (error) {
+    if (isTransientLockError(error)) {
+      // A bare 55P03 five frames up reads as a random database error. Name the
+      // wait so a spike here is attributable to drain-abort contention.
+      console.warn(
+        `[offboarding] drain-abort lock wait exceeded ${DRAIN_ABORT_LOCK_TIMEOUT_MS}ms/${DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS}ms for ${scope} — the queued uninstalls were NOT cancelled; retry the transition`
+      );
+    }
+    throw error;
+  }
+
+  if (lockTimeoutWasChanged(priorLock, DRAIN_ABORT_LOCK_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${priorLock}ms`}, true)`);
+  }
+  if (lockTimeoutWasChanged(priorStatement, DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('statement_timeout', ${`${priorStatement}ms`}, true)`);
+  }
+  return result;
+}
+
+/**
  * #3996 — take the drain's own rows under lock BEFORE the caller flips the
  * tenant status away from `offboarding`, and cancel them in the SAME
  * transaction as that flip.
@@ -740,13 +807,15 @@ export async function abortOrganizationOffboardingAroundStatusChange<T>(
   applyStatusChange: () => Promise<T | undefined>
 ): Promise<{ statusChange: T | undefined; abort: OffboardingAbortResult }> {
   return inCallerOrSystemDbContext({ orgId }, async () => {
-    await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1)
-      .for('update');
-    await lockDrainUninstallsForOrgIds([orgId]);
+    await withBoundedLockWaits(`organization ${orgId}`, async () => {
+      await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1)
+        .for('update');
+      await lockDrainUninstallsForOrgIds([orgId]);
+    });
 
     const statusChange = await applyStatusChange();
     if (statusChange === undefined) return { statusChange, abort: NOT_ABORTED };
@@ -761,17 +830,19 @@ export async function abortPartnerOffboardingAroundStatusChange<T>(
   applyStatusChange: () => Promise<T | undefined>
 ): Promise<{ statusChange: T | undefined; abort: OffboardingAbortResult }> {
   return inCallerOrSystemDbContext({ partnerId }, async () => {
-    await db
-      .select({ id: partners.id })
-      .from(partners)
-      .where(eq(partners.id, partnerId))
-      .limit(1)
-      .for('update');
-    const orgRows = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, partnerId));
-    await lockDrainUninstallsForOrgIds(orgRows.map((row) => row.id));
+    await withBoundedLockWaits(`partner ${partnerId}`, async () => {
+      await db
+        .select({ id: partners.id })
+        .from(partners)
+        .where(eq(partners.id, partnerId))
+        .limit(1)
+        .for('update');
+      const orgRows = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.partnerId, partnerId));
+      await lockDrainUninstallsForOrgIds(orgRows.map((row) => row.id));
+    });
 
     const statusChange = await applyStatusChange();
     if (statusChange === undefined) return { statusChange, abort: NOT_ABORTED };

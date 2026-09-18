@@ -796,6 +796,9 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+      // #3996 — a name-only patch ends no drain: no tenant-row lock, no
+      // device enumeration. See the org-side twin of this assertion.
+      expect(abortPartnerOffboardingAroundStatusChange).not.toHaveBeenCalled();
     });
 
     it("returns 409 when the updated slug collides with another partner's inbound local part", async () => {
@@ -1941,6 +1944,15 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // #3996 — the hard delete flips status to `churned`, which is not a
+      // draining status either, so this route composes its status write into
+      // the abort exactly like the PATCH path. Without this assertion a
+      // revert of THIS handler to a bare `db.update(...)` — reopening the
+      // commit-then-cancel window on the delete path only — stays green.
+      expect(abortPartnerOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'partner-1',
+        expect.any(Function)
+      );
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
@@ -4423,6 +4435,11 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated by system');
+      // #3996 — a name-only patch ends no drain, so it must NOT take the
+      // tenant-row/command-row locks. A gate widened to every PATCH would
+      // otherwise put a FOR UPDATE and a full device enumeration on renames,
+      // and a pass-through mock looks identical whether it ran or not.
+      expect(abortOrganizationOffboardingAroundStatusChange).not.toHaveBeenCalled();
     });
   });
 
@@ -4444,6 +4461,12 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // #3996 — see the partner delete: `churned` ends the drain, so the
+      // cancel belongs in the same transaction as the status write.
+      expect(abortOrganizationOffboardingAroundStatusChange).toHaveBeenCalledWith(
+        'org-1',
+        expect.any(Function)
+      );
       expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
