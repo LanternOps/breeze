@@ -1,11 +1,11 @@
 package snmppoll
 
 import (
-	"errors"
-	"reflect"
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -547,6 +547,11 @@ func TestGetMulti_PacketStatus(t *testing.T) {
 			var statusErr *SnmpStatusError
 			if !errors.As(err, &statusErr) || statusErr.Status != tt.status || statusErr.Index != tt.index || len(pdus) != 0 {
 				t.Fatalf("pdus=%v error=%v, want no values and status %s index %d", pdus, err, tt.status, tt.index)
+			}
+		})
+	}
+}
+
 // recordingSNMPConn captures the encoded request without opening a socket.
 type recordingSNMPConn struct {
 	net.Conn
