@@ -107,6 +107,42 @@ func TestRenderBashParamExpansionWordBody(t *testing.T) {
 
 		// --- positives: the word body still renders --------------------
 		{
+			// An UNQUOTED expansion word-splits and globs its result, so the
+			// value is spliced in as its own quoted word — bash keeps a quoted
+			// span inside the word atomic.
+			name:   "unquoted default value renders the one-word form",
+			script: `echo ${u:-{{p}}}`,
+			params: p,
+			want:   `echo ${u:-"${BREEZE_PARAM_P}"}`,
+		},
+		{
+			name:   "unquoted alternate value renders the one-word form",
+			script: `u=1; echo ${u:+{{p}}}`,
+			params: p,
+			want:   `u=1; echo ${u:+"${BREEZE_PARAM_P}"}`,
+		},
+		{
+			// Inside double quotes there is no word splitting and no quote
+			// removal, so the bare form is correct and a splice would emit
+			// stray quote characters into the value.
+			name:   "double-quoted expansion keeps the bare form",
+			script: `echo "${u:-{{p}}}"`,
+			params: p,
+			want:   `echo "${u:-${BREEZE_PARAM_P}}"`,
+		},
+		{
+			name:   "unquoted heredoc body keeps the bare form",
+			script: "cat <<EOF\n${u:-{{p}}}\nEOF\n",
+			params: p,
+			want:   "cat <<EOF\n${u:-${BREEZE_PARAM_P}}\nEOF\n",
+		},
+		{
+			name:    "quoted heredoc rejects the placeholder outright",
+			script:  "cat <<'EOF'\n${u:-{{p}}}\nEOF\n",
+			params:  p,
+			wantErr: true,
+		},
+		{
 			name:   "default value command substitution renders a word reference",
 			script: `echo ${u:-$(echo {{p}})}`,
 			params: p,
@@ -136,49 +172,51 @@ func TestRenderBashParamExpansionWordBody(t *testing.T) {
 			name:   "a brace inside quotes does not close the expansion",
 			script: `echo ${u:-"}" {{p}}}`,
 			params: p,
-			want:   `echo ${u:-"}" ${BREEZE_PARAM_P}}`,
+			want:   `echo ${u:-"}" "${BREEZE_PARAM_P}"}`,
 		},
 		{
 			name:   "a brace inside single quotes does not close the expansion",
 			script: `echo ${u:-'}' {{p}}}`,
 			params: p,
-			want:   `echo ${u:-'}' ${BREEZE_PARAM_P}}`,
+			want:   `echo ${u:-'}' "${BREEZE_PARAM_P}"}`,
 		},
 		{
-			name:   "pattern replacement renders an interpolated reference",
+			name:   "pattern replacement renders the one-word form",
 			script: `echo ${u/a/{{p}}}`,
 			params: p,
-			want:   `echo ${u/a/${BREEZE_PARAM_P}}`,
+			want:   `echo ${u/a/"${BREEZE_PARAM_P}"}`,
 		},
 		{
-			name:   "prefix removal renders an interpolated reference",
+			// In a pattern position the quotes additionally make the value a
+			// LITERAL rather than a glob pattern.
+			name:   "prefix removal renders the one-word form",
 			script: `echo ${u#{{p}}}`,
 			params: p,
-			want:   `echo ${u#${BREEZE_PARAM_P}}`,
+			want:   `echo ${u#"${BREEZE_PARAM_P}"}`,
 		},
 		{
-			name:   "suffix removal renders an interpolated reference",
+			name:   "suffix removal renders the one-word form",
 			script: `echo ${u%%{{p}}}`,
 			params: p,
-			want:   `echo ${u%%${BREEZE_PARAM_P}}`,
+			want:   `echo ${u%%"${BREEZE_PARAM_P}"}`,
 		},
 		{
-			name:   "case modification renders an interpolated reference",
+			name:   "case modification renders the one-word form",
 			script: `echo ${u^{{p}}}`,
 			params: p,
-			want:   `echo ${u^${BREEZE_PARAM_P}}`,
+			want:   `echo ${u^"${BREEZE_PARAM_P}"}`,
 		},
 		{
 			name:   "a colon after the operator is not an offset",
 			script: `echo ${u:-a:{{p}}}`,
 			params: p,
-			want:   `echo ${u:-a:${BREEZE_PARAM_P}}`,
+			want:   `echo ${u:-a:"${BREEZE_PARAM_P}"}`,
 		},
 		{
 			name:   "subscript then default value is a word body",
 			script: `echo ${arr[1]:-{{p}}}`,
 			params: p,
-			want:   `echo ${arr[1]:-${BREEZE_PARAM_P}}`,
+			want:   `echo ${arr[1]:-"${BREEZE_PARAM_P}"}`,
 		},
 		{
 			name:   "the expansion closes and the enclosing word resumes",

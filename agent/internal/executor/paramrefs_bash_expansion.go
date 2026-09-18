@@ -83,7 +83,8 @@ func (r *bashRenderer) scanParamExpansion() {
 // opens a substring offset/length — both arithmetic contexts, in which bash
 // evaluates variable contents as an expression. Everything after an operator is
 // the expansion's WORD, which bash expands (and quote-removes) like any other
-// word.
+// word — so a value spliced in there needs the same quoting form as anywhere
+// else in that region; see paramWordForm.
 func (r *bashRenderer) stepParamWord(f *bashFrame) error {
 	if key, width, ok := r.placeholder(); ok {
 		value, known := r.value(key)
@@ -94,7 +95,7 @@ func (r *bashRenderer) stepParamWord(f *bashFrame) error {
 		if f.arith {
 			return r.emitInteger(key, value, width, bashArithContext)
 		}
-		return r.emitPlaceholder(key, value, width, formInterp)
+		return r.emitPlaceholder(key, value, width, r.paramWordForm(f))
 	}
 	if handled, err := r.stepNested(f); handled {
 		return err
@@ -142,6 +143,41 @@ func (r *bashRenderer) stepParamWord(f *bashFrame) error {
 		r.copyByte()
 	}
 	return nil
+}
+
+// paramWordForm picks the quoting form for a placeholder inside a `${…}`
+// expansion.
+//
+// The word body of an UNQUOTED expansion is not exempt from word splitting or
+// globbing: bash splits and globs the expansion's RESULT, so a bare
+// `${u:-${BREEZE_PARAM_P}}` puts the value through both — `a b` would arrive as
+// two words and `*` as a pathname match. Bash keeps a quoted span inside the
+// word atomic, though, and
+// `${u:-"$X"}` is legal in every operator position bash accepts a word in
+// (`:-`, `:=`, `:?`, `:+`, `#`, `%`, `/`, `^`, `,`), so the one-word form is
+// both safe and faithful there. In a pattern position it additionally makes the
+// value a LITERAL rather than a glob pattern, which is what a parameter value
+// is.
+//
+// Inside double quotes or an unquoted heredoc body there is no splitting and no
+// quote removal, so the bare form stays correct — quotes would be emitted as
+// literal data.
+//
+// Two operators leave a residual that quoting cannot reach, because they make
+// the expansion's result an unquoted expansion of the VARIABLE rather than of
+// the word: `${u:=word}` (bash re-splits the assigned value) and the
+// replacement half of `${u/pat/rep}`. Those split identically with no
+// placeholder involved — it is the author's own unquoted expansion — and the
+// one-word form is still emitted there so the value is never read as a glob.
+//
+// The name region (before any operator) keeps the bare form: neither form is
+// valid bash there (`${${X}}` and `${"${X}"}` are both a bad substitution), so
+// the run fails closed at the `bash -n` gate either way.
+func (r *bashRenderer) paramWordForm(f *bashFrame) bashForm {
+	if !f.wordBody || f.interp {
+		return formInterp
+	}
+	return formWord
 }
 
 // inInterpolatingContext reports whether the cursor sits in a region that
