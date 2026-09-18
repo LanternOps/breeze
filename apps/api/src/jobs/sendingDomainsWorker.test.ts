@@ -110,15 +110,21 @@ vi.mock('../services/emailDomains/sendCap', () => ({
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
+const { evaluateAutoSuspendMock } = vi.hoisted(() => ({
+  evaluateAutoSuspendMock: vi.fn(async (_partnerId: string) => ({ outcome: 'below_thresholds', suspendedDomainIds: [] })),
+}));
+vi.mock('../services/emailDomains/autoSuspend', () => ({ evaluateAutoSuspension: evaluateAutoSuspendMock }));
+
 import { PartnerLaneSendFailure, ProviderManagementAuthError } from '../services/emailDomains/provider';
 import {
-  SENDING_DOMAINS_QUEUE, enqueueSyncDomain, enqueueTestSend,
+  SENDING_DOMAINS_QUEUE, enqueueAutoSuspendEvaluation, enqueueSyncDomain, enqueueTestSend,
   initializeSendingDomainsWorker, runDailyMaintenance, runSendingDomainsSweep, runTestSend,
   shutdownSendingDomainsWorker,
 } from './sendingDomainsWorker';
 
 const DOMAIN_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '44444444-4444-4444-8444-444444444444';
+const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
 
 beforeEach(async () => {
   await shutdownSendingDomainsWorker();
@@ -615,5 +621,40 @@ describe('daily maintenance', () => {
     const result = await runDailyMaintenance(new Date('2026-09-17T12:00:00Z'));
     expect(result.rechecked).toBe(2);
     expect(queueAdd).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('evaluate-auto-suspend', () => {
+  it('collapses a burst for one partner into ONE job by using the partner id as jobId', async () => {
+    laneConfigured.value = true;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    expect(queueAdd).toHaveBeenCalledWith(
+      'evaluate-auto-suspend',
+      { partnerId: PARTNER_ID },
+      expect.objectContaining({ jobId: `autosuspend:${PARTNER_ID}` }),
+    );
+  });
+
+  it('does not enqueue on an instance with no partner lane configured', async () => {
+    laneConfigured.value = false;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    expect(queueAdd).not.toHaveBeenCalled();
+  });
+
+  it('the worker processor routes the job to evaluateAutoSuspension', async () => {
+    laneConfigured.value = true;
+    await initializeSendingDomainsWorker();
+    const processor = workerCtor.mock.calls[0]![1] as (job: { name: string; data: unknown }) => Promise<unknown>;
+    await processor({ name: 'evaluate-auto-suspend', data: { partnerId: PARTNER_ID } });
+    expect(evaluateAutoSuspendMock).toHaveBeenCalledWith(PARTNER_ID);
+  });
+
+  // The evaluation makes no provider call, so a retry storm cannot burn the
+  // account's 10 req/s budget — but a failure should still be retried a couple
+  // of times rather than dropped, since it ends in a kill-switch decision.
+  it('is enqueued with bounded retries', async () => {
+    laneConfigured.value = true;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    expect(queueAdd.mock.calls[0]![2]).toMatchObject({ attempts: 3 });
   });
 });
