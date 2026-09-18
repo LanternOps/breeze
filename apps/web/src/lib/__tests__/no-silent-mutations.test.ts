@@ -146,7 +146,7 @@ const TARGET_GLOBS = [
   // the books stay short an invoice, so this file is in the guarded set from
   // its first commit rather than after the first regression.
   'src/components/billing/AccountingSyncCard.tsx',
-  'src/components/billing/PartnerBillingSettings.tsx',
+  'src/components/billing/PartnerBillingSettingsPage.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
   'src/components/contracts/ContractEditor.tsx',
   'src/components/contracts/ContractDetail.tsx',
