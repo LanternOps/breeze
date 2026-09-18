@@ -30,6 +30,9 @@
  *
  *   1. compute the occurrence key;
  *   2. skip when it equals `last_occurrence_key` (this tick already ran it);
+ *   2b. skip when the occurrence predates the schedule's own `created_at` —
+ *      a brand-new baseline has a NULL key, so without this it would catch up
+ *      on the occurrence that passed BEFORE it existed (#6201);
  *   3. `queue.add('occurrence', …, { jobId })` — `getSweepOccurrenceJobId` is
  *      a pure function of (scheduleId, key), and BullMQ SILENTLY NO-OPS an add
  *      whose jobId is already present;
@@ -179,6 +182,11 @@ interface DueBaselineRow {
   timezone: string;
   sweepKinds: AiSweepKind[];
   lastOccurrenceKey: string | null;
+  /**
+   * When this baseline came into existence. Load-bearing, not informational:
+   * it is the floor for catch-up (#6201). See `processSweepTick`.
+   */
+  createdAt: Date;
 }
 
 /**
@@ -199,6 +207,7 @@ async function loadDueBaselines(): Promise<DueBaselineRow[]> {
       timezone: aiAgentSchedules.timezone,
       sweepKinds: aiAgentSchedules.sweepKinds,
       lastOccurrenceKey: aiAgentSchedules.lastOccurrenceKey,
+      createdAt: aiAgentSchedules.createdAt,
     })
     .from(aiAgentSchedules)
     .innerJoin(aiAgents, eq(aiAgents.id, aiAgentSchedules.agentId))
@@ -266,6 +275,46 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
       const occurrence = latestCronOccurrence(baseline.cron, baseline.timezone, now);
       if (!occurrence) continue;
       if (occurrence.key === baseline.lastOccurrenceKey) continue;
+
+      // Catch-up floor: never run an occurrence from before the schedule
+      // existed (#6201).
+      //
+      // `latestCronOccurrence` answers "what is the most recent minute this
+      // cron was due at?" and the module header explains why: a fixed 5-minute
+      // tick must be able to recover an occurrence a missed or drifted tick
+      // would otherwise drop, anywhere inside the 24 h lookback. But on a
+      // BRAND-NEW schedule that recovery has nothing to recover — the
+      // occurrence it finds predates the row. `last_occurrence_key` is NULL,
+      // so the dedupe check above cannot tell the two cases apart, and the
+      // first tick after creation swept immediately: v0.114.0's boot backfill
+      // created a `0 2 * * *` America/Denver baseline at 17:37 local and the
+      // 17:40Z tick ran that morning's 02:00 occurrence — 19 org runs, 11
+      // approval cards, real LLM spend, at the wrong time of day.
+      //
+      // The guard lives HERE rather than in the create paths (seeding
+      // `last_occurrence_key` at insert) because this is the single producer:
+      // it covers `ensureDefaultPatchSchedule`, the user-facing create route,
+      // seeds, and any future creator, including rows already in the database
+      // with a NULL key. Seeding would have had to be repeated, correctly, in
+      // every one of them.
+      //
+      // Strictly `<`, compared against the un-floored `createdAt`: a schedule
+      // created at 02:00:30 does NOT retro-run the 02:00 occurrence that had
+      // already passed, while one created exactly at 02:00:00 — the firing its
+      // author just asked for — still runs. Skipping deliberately leaves the
+      // key NULL: stamping it would consume the CAS's NULL previous-key and
+      // the real first firing would have nothing to claim against.
+      // `created_at` is NOT NULL and Drizzle hands back a Date, but coerce
+      // rather than call `.getTime()` on the row value directly: a non-Date
+      // would throw into the per-schedule catch below and wedge THIS schedule
+      // out of every future tick, which is far worse than one early sweep.
+      const createdAtMs = new Date(baseline.createdAt).getTime();
+      if (Number.isFinite(createdAtMs) && occurrence.at.getTime() < createdAtMs) {
+        console.debug('[AiAgentSweepScheduler] occurrence predates the schedule — no catch-up', {
+          scheduleId: baseline.id, occurrenceKey: occurrence.key, createdAt: baseline.createdAt,
+        });
+        continue;
+      }
 
       // Enqueue OUTSIDE any DB context: a BullMQ add is a Redis round trip, and
       // holding a pooled Postgres connection across it is what exhausted the
