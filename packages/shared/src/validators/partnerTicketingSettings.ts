@@ -54,3 +54,60 @@ export const timeTrackingSessionSuggestionsSchema = z.object({
   }).strict().optional(),
 }).passthrough();
 export type TimeTrackingSessionSuggestionsSettings = z.infer<typeof timeTrackingSessionSuggestionsSchema>;
+
+// ---------------------------------------------------------------------------
+// Tolerant reads (W02-API / M14)
+// ---------------------------------------------------------------------------
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+/**
+ * WHY THE FALLBACK IS THE RAW SUB-OBJECT, NOT `{}`.
+ *
+ * A stored row that fails validation is almost always PARTIALLY valid — one
+ * bad field among several good ones, written years ago by looser code. If a
+ * failed parse collapsed the whole sub-object to `{}`, a row carrying
+ * `{ enabled: false, unknownSenderMode: 'bogus' }` would read back as
+ * `enabled: undefined` — and every reader treats an absent `enabled` as TRUE
+ * (deliberately, so an upgrade cannot silently stop ingestion; see #3608).
+ * That is a fail-OPEN regression: a partner who explicitly disabled inbound
+ * email-to-ticket would have it turned back on by a typo elsewhere in the
+ * object.
+ *
+ * So validation here buys VISIBILITY, not enforcement: on success the caller
+ * gets validated, typed data; on failure it gets exactly what today's
+ * unchecked cast would have handed it, plus `valid: false` so it can warn.
+ * The per-field tolerance each reader already implements (`enabled !== false`,
+ * mode allowlists, integer-range fallbacks) remains the last line of defence.
+ * Reads must never throw on stored data — one bad historical row would
+ * otherwise be a 500 for every request touching that partner's settings.
+ */
+export function readTicketingInboundSettings(partnerSettings: unknown): {
+  settings: TicketingInboundSettings;
+  valid: boolean;
+} {
+  const raw = asRecord(asRecord(partnerSettings).ticketing).inbound;
+  if (raw === undefined || raw === null) return { settings: {}, valid: true };
+
+  const parsed = ticketingInboundSettingsSchema.safeParse(raw);
+  if (parsed.success) return { settings: parsed.data, valid: true };
+  return { settings: asRecord(raw) as TicketingInboundSettings, valid: false };
+}
+
+/** Same contract as readTicketingInboundSettings, for `timeTracking.sessionSuggestions`. */
+export function readTimeTrackingSessionSuggestions(partnerSettings: unknown): {
+  settings: NonNullable<TimeTrackingSessionSuggestionsSettings['sessionSuggestions']>;
+  valid: boolean;
+} {
+  const timeTracking = asRecord(partnerSettings).timeTracking;
+  const raw = asRecord(timeTracking).sessionSuggestions;
+  if (raw === undefined || raw === null) return { settings: {}, valid: true };
+
+  const parsed = timeTrackingSessionSuggestionsSchema.safeParse({ sessionSuggestions: raw });
+  if (parsed.success) return { settings: parsed.data.sessionSuggestions ?? {}, valid: true };
+  return {
+    settings: asRecord(raw) as NonNullable<TimeTrackingSessionSuggestionsSettings['sessionSuggestions']>,
+    valid: false,
+  };
+}
