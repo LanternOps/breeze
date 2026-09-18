@@ -41,6 +41,7 @@ import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './sc
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
+import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -89,6 +90,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -1020,6 +1024,25 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (includeExecutionStats) {
+        // Execution stats are device-attributable rows reached without naming a
+        // device: scope them to the caller's org AND to BOTH access axes. The
+        // exact-device axis applies on its own for a device-LESS analysis run
+        // (#6086); the SITE axis is the human counterpart and is a separate
+        // narrowing — a site-restricted technician carries `allowedSiteIds`
+        // and no `allowedDeviceIds`, so the device guard alone is a silent
+        // no-op for them and they read counts/avg duration for every site in
+        // the org (audit 2026-09-17 §1.1). `script_executions.device_id` is
+        // NOT NULL with an FK to `devices`, so the join below is lossless and
+        // the unrestricted caller's aggregate is unchanged — the same shape
+        // `get_script_execution_history` already uses.
+        const statsConditions: SQL[] = [eq(scriptExecutions.scriptId, scriptId)];
+        const statsOrgCondition = auth.orgCondition(scriptExecutions.orgId);
+        if (statsOrgCondition) statsConditions.push(statsOrgCondition);
+        const statsDeviceCondition = deviceScopeCondition(auth, scriptExecutions.deviceId);
+        if (statsDeviceCondition) statsConditions.push(statsDeviceCondition);
+        const statsSiteCondition = siteScopeCondition(auth, devices.siteId);
+        if (statsSiteCondition) statsConditions.push(statsSiteCondition);
+
         const [stats] = await db
           .select({
             totalExecutions: sql<number>`count(*)::int`,
@@ -1032,9 +1055,17 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             avgDurationSeconds: sql<number>`avg(extract(epoch from (${scriptExecutions.completedAt} - ${scriptExecutions.startedAt})))::numeric(10,2)`,
           })
           .from(scriptExecutions)
-          .where(eq(scriptExecutions.scriptId, scriptId));
+          .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+          .where(and(...statsConditions));
 
         result.executionStats = stats;
+        // The numbers above are narrowed but look org-wide on the wire, so the
+        // model reports them as the script's whole history. Say what they cover
+        // (review #6110).
+        if (auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined) {
+          result.executionStatsScopeNote =
+            'These execution statistics cover only the devices within your access scope, not every device in the organization.';
+        }
       }
 
       return JSON.stringify(result);
@@ -1128,6 +1159,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const executionConditions: SQL[] = [eq(scriptExecutions.scriptId, input.scriptId as string)];
       const executionOrgCondition = auth.orgCondition(scriptExecutions.orgId);
       if (executionOrgCondition) executionConditions.push(executionOrgCondition);
+      if (auth.allowedDeviceIds !== undefined) {
+        executionConditions.push(inArray(scriptExecutions.deviceId, auth.allowedDeviceIds));
+      }
       if (auth.allowedSiteIds !== undefined) {
         executionConditions.push(inArray(devices.siteId, auth.allowedSiteIds));
       }
@@ -1223,7 +1257,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         ))
         .limit(1);
 
-      if (!execution) return JSON.stringify({ error: 'Execution not found' });
+      if (!execution || (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(execution.deviceId))) {
+        return JSON.stringify({ error: 'Execution not found' });
+      }
       // Site axis: same rule verifyDeviceAccess applies on the write path.
       if (auth.canAccessSite && !auth.canAccessSite(execution.deviceSiteId)) {
         return JSON.stringify({ error: 'Execution not found' });
@@ -1425,11 +1461,18 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // registry_operations - Tier 1 base, with action escalation
+  // registry_operations - Tier 2 base, with action escalation
+  //
+  // Base raised 1 -> 2 (2026-09-17 AI tool ROLE audit §2.4, SR5-01 precedent):
+  // every action dispatches a real agent command, whose HTTP path requires
+  // devices:execute + MFA (routes/devices/commands.ts:49). read_key/get_value
+  // are classified in TIER2_ACTIONS and the writes in TIER3_ACTIONS; the base
+  // tier is what an UNCLASSIFIED action would fall back to, and Tier 1 there
+  // meant no approval gate and no audit-tier prompt.
   // ============================================
 
   registerTool({
-    tier: 1,
+    tier: 2,
     deviceArgs: ['deviceId'],
     definition: {
       name: 'registry_operations',

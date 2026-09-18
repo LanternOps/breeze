@@ -81,6 +81,19 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     osType: 'osType'
   },
+  configPolicyAssignments: {
+    id: 'id',
+    configPolicyId: 'configPolicyId',
+    level: 'level',
+    targetId: 'targetId',
+    priority: 'priority',
+    createdAt: 'createdAt',
+  },
+  configurationPolicies: {
+    id: 'id',
+    name: 'name',
+    status: 'status',
+  },
   groupMembershipLog: {
     id: 'id',
     groupId: 'groupId',
@@ -256,6 +269,15 @@ describe('groups routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
               groupBy: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([])
+              })
             })
           })
         } as any);

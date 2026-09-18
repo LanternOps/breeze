@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, within } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EnrichedPortalDevice } from '@breeze/shared';
 
 // Resolving the full API module pulls in Astro's virtual transitions module,
@@ -178,5 +179,130 @@ describe('DeviceList', () => {
   it('titles its empty state one level under the page title', () => {
     render(<DeviceList devices={[]} />);
     expect(screen.getByRole('heading', { name: 'No devices' }).tagName).toBe('H2');
+  });
+
+  describe('SSR/hydration stability for relative-time cells (#5881)', () => {
+    // `formatRelativeTime` reads the clock during render. SSR reads it once
+    // (Node's process clock); the client's first render reads it again
+    // (the browser's clock) before hydration ever commits. If either read
+    // lands on a different calendar day — a real timezone difference, or
+    // simply the gap between the two calls crossing local midnight —
+    // `calendarDaysAgo`'s LOCAL-timezone day getters put the two renders in
+    // different day buckets and React discards the SSR tree. The boundary is
+    // computed from the test runner's own local midnight (not a hardcoded UTC
+    // instant) so this reproduces on any CI runner's timezone, not just one
+    // that happens to differ from UTC.
+    it('renders byte-identical HTML for a "server" render and a "client" render taken on opposite sides of a local day boundary', () => {
+      const now = new Date();
+      const nextLocalMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      const beforeMidnight = new Date(nextLocalMidnight.getTime() - 1000); // 23:59:59 local
+      const afterMidnight = new Date(nextLocalMidnight.getTime() + 5000); // 00:00:05 local
+      // 12h before the boundary: well inside "today" at T1, but crosses into
+      // "yesterday" once the clock reads T2, the SSR-"Yesterday" vs
+      // client-"N hours ago" split from the issue repro.
+      const lastSeenAt = new Date(beforeMidnight.getTime() - 12 * 60 * 60 * 1000).toISOString();
+      const device = { ...laptop, lastSeenAt };
+
+      vi.useFakeTimers().setSystemTime(beforeMidnight);
+      const serverHtml = renderToString(<DeviceList devices={[device, server]} />);
+
+      vi.setSystemTime(afterMidnight);
+      const clientFirstRenderHtml = renderToString(<DeviceList devices={[device, server]} />);
+
+      expect(clientFirstRenderHtml).toBe(serverHtml);
+    });
+
+    it('shows the raw stamp (not a relative phrase) before mount, then swaps to relative time after mount', () => {
+      vi.useFakeTimers().setSystemTime(new Date('2026-09-03T12:00:00Z'));
+
+      const container = document.createElement('div');
+      container.innerHTML = renderToString(<DeviceList devices={[laptop]} />);
+      const preMount = container.querySelector('[data-testid="portal-device-d-1-last-online"]');
+      // The phone-only "Last online" label span shares this cell; assert on
+      // the trailing value text, not the whole cell.
+      expect(preMount?.textContent).toBe('Last onlineSep 3, 2026, 11:55 AM UTC');
+      expect(preMount?.textContent).not.toContain('ago');
+
+      render(<DeviceList devices={[laptop]} />);
+      const postMount = screen.getByTestId('portal-device-d-1-last-online');
+      expect(postMount.textContent).toContain('5 minutes ago');
+    });
+
+    // `moreFacts` (the per-row disclosure) threads `mounted` independently
+    // from the "Last online" cell above — a regression there (e.g. a stale
+    // `mounted` capture) wouldn't be caught by the "Last online" assertions.
+    it('swaps Last patch / Last backup to relative time after mount too, not just Last online', () => {
+      vi.useFakeTimers().setSystemTime(new Date('2026-09-03T12:00:00Z'));
+      // Minutes-scale gaps so the expected text is a plain elapsed-time count
+      // (TZ-independent — no calendar-day bucketing involved either way).
+      const device: EnrichedPortalDevice = {
+        ...laptop,
+        lastPatchAt: 'Sep 3, 2026, 11:50 AM UTC',
+        lastBackupAt: 'Sep 3, 2026, 11:57 AM UTC',
+      };
+
+      const container = document.createElement('div');
+      container.innerHTML = renderToString(<DeviceList devices={[device]} />);
+      const preMount = container.querySelector('[data-testid="portal-device-d-1-more"]');
+      expect(preMount?.textContent).toContain('Sep 3, 2026, 11:50 AM UTC');
+      expect(preMount?.textContent).toContain('Sep 3, 2026, 11:57 AM UTC');
+      expect(preMount?.textContent).not.toContain('minutes ago');
+
+      render(<DeviceList devices={[device]} />);
+      const postMount = screen.getByTestId('portal-device-d-1-more');
+      expect(postMount.textContent).toContain('10 minutes ago');
+      expect(postMount.textContent).toContain('3 minutes ago');
+    });
+  });
+
+  describe('scroll-and-highlight from a #<deviceId> hash', () => {
+    const scrollIntoView = vi.fn();
+
+    beforeEach(() => {
+      scrollIntoView.mockClear();
+      Element.prototype.scrollIntoView = scrollIntoView;
+    });
+
+    afterEach(() => {
+      window.location.hash = '';
+    });
+
+    it('highlights and scrolls to the row matching the hash on mount', () => {
+      window.location.hash = '#d-1';
+      render(<DeviceList devices={[laptop, server]} />);
+
+      const row = screen.getByTestId('portal-device-d-1');
+      expect(row.className).toContain('ring-2');
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+      expect(screen.getByTestId('portal-device-d-2').className).not.toContain('ring-2');
+    });
+
+    it('highlights nothing and never throws when there is no hash', () => {
+      window.location.hash = '';
+      expect(() => render(<DeviceList devices={[laptop, server]} />)).not.toThrow();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(screen.getByTestId('portal-device-d-1').className).not.toContain('ring-2');
+    });
+
+    it('highlights nothing when the hash matches no device', () => {
+      window.location.hash = '#does-not-exist';
+      render(<DeviceList devices={[laptop, server]} />);
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(screen.getByTestId('portal-device-d-1').className).not.toContain('ring-2');
+      expect(screen.getByTestId('portal-device-d-2').className).not.toContain('ring-2');
+    });
+
+    it('clears the highlight after the timeout', () => {
+      vi.useFakeTimers();
+      window.location.hash = '#d-1';
+      render(<DeviceList devices={[laptop, server]} />);
+
+      expect(screen.getByTestId('portal-device-d-1').className).toContain('ring-2');
+      act(() => {
+        vi.runAllTimers();
+      });
+      expect(screen.getByTestId('portal-device-d-1').className).not.toContain('ring-2');
+    });
   });
 });

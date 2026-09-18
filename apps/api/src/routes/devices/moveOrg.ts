@@ -241,10 +241,13 @@ moveOrgRoutes.post(
         // action_intents composites must stay IMMEDIATE so a newly added
         // referencing row type fails fast instead of silently at COMMIT.
         //
+        // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third
+        // composite (ticket_id, org_id) child FK, same shape and same reason.
+        //
         // Safe to precede the org lock below: SET CONSTRAINTS takes no table
         // locks, so it does not participate in this transaction's lock order.
         await tx.execute(
-          sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`,
+          sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED`,
         );
         // Creation barrier / cross-org move lock order (#3778): BOTH organizations
         // FOR SHARE, ascending UUID, as the FIRST statement of this transaction —
@@ -269,7 +272,7 @@ moveOrgRoutes.post(
         // its org_id and trip sd_occ_ticket_org_fk (deliberately NOT deferred
         // by name above) as an opaque 23503. Cheap precondition, same 409 the
         // ticket-level move answers with.
-        await assertDeviceTicketsNotPinnedToDeliverable(tx, deviceId);
+        await assertDeviceTicketsNotPinnedToDeliverable(tx, deviceId, sourceOrgId);
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
 
@@ -869,6 +872,24 @@ moveOrgRoutes.post(
         // org_id, so re-stamping it here does not touch that contract.
         await tx.execute(
           sql`UPDATE ${sql.identifier('ticket_email_links')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
+        // ticket_checklist_items (#5783 W01) denormalizes org_id from its
+        // ticket and has no device_id, so neither the generic loop nor
+        // breeze_cascade_device_org_id() (which discovers its tables BY the
+        // device_id column) reaches it. Tickets bound to this device move org,
+        // so their checklist rows must follow via the same tickets join, or the
+        // source org keeps read access to this device's checklist steps after
+        // the move and the target org loses them. Placed AFTER
+        // ticket_email_links to extend — not reorder — the documented global
+        // lock order; moveTicketOrg's loop appends it last for the same reason.
+        //
+        // Unlike the statements above, this table's FK is composite and
+        // DEFERRABLE INITIALLY IMMEDIATE, which is why
+        // ticket_checklist_items_ticket_org_fk is named in this transaction's
+        // SET CONSTRAINTS … DEFERRED at the top.
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_checklist_items')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
         // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in

@@ -5,6 +5,7 @@ import { Bot, PauseCircle, Plus } from 'lucide-react';
 import { AI_AGENT_KINDS, type AiAgentsSystemStatusDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { useHashState } from '@/lib/useHashState';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { handleActionError, runAction } from '@/lib/runAction';
@@ -42,6 +43,8 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 export default function AiAgentsPage() {
   const { t } = useTranslation('settings');
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  // AI patch agent W01 (#5747): which org a "Run now" would belong to.
+  const orgScope = useOrgScope();
 
   const [agents, setAgents] = useState<AiAgentDto[]>([]);
   // #4170: which kinds already have an active partner-wide baseline for this
@@ -68,6 +71,10 @@ export default function AiAgentsPage() {
    *  is rendered here, not in the form. */
   const [editorDirty, setEditorDirty] = useState(false);
   const [enablingId, setEnablingId] = useState<string | null>(null);
+  /** AI patch agent W01 (#5747) — the patch agent whose "Run now" is in
+   *  flight; every Run now is disabled while one is, the same single-fire
+   *  posture `reenable` takes. */
+  const [runningNowId, setRunningNowId] = useState<string | null>(null);
   const allOrgsHintId = useId();
   const inertHintId = useId();
   /** The agent a Re-enable just restored, so its live row can show a one-time
@@ -389,6 +396,83 @@ export default function AiAgentsPage() {
     );
   };
 
+  /**
+   * AI patch agent W01 (#5747) — when this agent next fires, computed by the
+   * list route with the same cron evaluator the schedules drawer uses. An
+   * agent with no enabled baseline, or one whose stored cron cannot be
+   * evaluated, reports null and renders an em dash: "no next run" is a fact
+   * worth showing, not a cell to omit.
+   */
+  const nextOccurrenceCell = (agent: AiAgentDto) => (
+    <span data-testid={`ai-agent-next-occurrence-${agent.id}`}>
+      {agent.nextOccurrenceAt
+        ? t('aiAgentsPage.nextOccurrence', { at: formatDateTime(agent.nextOccurrenceAt) })
+        // A bare em dash, not a translated key: it is punctuation in every
+        // locale, and an eight-way "translation" of it is what pushes the
+        // exact-English duplicate baselines up. Same precedent as
+        // `sweepReasonLabel`'s own `'—'` on RunDetailPage.
+        : '—'}
+    </span>
+  );
+
+  /**
+   * "Run now" for a patch agent: queues one device-less patch run for the
+   * SELECTED org. Wrapped in `runAction` with an inline thunk (the
+   * no-silent-mutations guard is a lexical check), so the route's HTTP-200
+   * `{ success: false, skipped }` decline surfaces as a failure toast rather
+   * than as a button that appears to do nothing.
+   *
+   * There is no shared API client for AI agents — this file calls
+   * `fetchWithAuth` inline everywhere else, and one call does not justify
+   * introducing one.
+   */
+  const runningRef = useRef(false);
+  const runPatchNow = useCallback(async (agent: AiAgentDto, orgId: string) => {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    setRunningNowId(agent.id);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/ai/patch-plan/runs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orgId }),
+        }),
+        successMessage: t('aiAgentsPage.toasts.runNowQueued'),
+        errorFallback: t('aiAgentsPage.toasts.runNowFailed'),
+        friendly: (code) => (code === 'no_patch_agent'
+          ? t('aiAgentsPage.errors.noPatchAgent')
+          : undefined),
+        onUnauthorized: UNAUTHORIZED,
+      });
+    } catch (err) {
+      handleActionError(err, t('aiAgentsPage.toasts.runNowFailed'));
+    } finally {
+      setRunningNowId(null);
+      runningRef.current = false;
+    }
+  }, [t]);
+
+  /** The Run now control, for an enabled patch agent only. Disabled — with the
+   *  reason in its tooltip — while the page is on "All organizations": a patch
+   *  run belongs to exactly one org, and guessing one is worse than asking. */
+  const runNowButton = (agent: AiAgentDto) => {
+    if (agent.kind !== 'patch' || !agent.enabled) return null;
+    const orgId = orgScope.scope === 'org' ? orgScope.orgId : null;
+    return (
+      <button
+        type="button"
+        onClick={() => { if (orgId) void runPatchNow(agent, orgId); }}
+        disabled={orgId === null || runningNowId !== null}
+        title={orgId === null ? t('aiAgentsPage.runNowNoOrg') : undefined}
+        className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+        data-testid={`ai-agent-run-now-${agent.id}`}
+      >
+        {t('aiAgentsPage.actions.runNow')}
+      </button>
+    );
+  };
+
   const showFirstRun = loaded && !error && agents.length === 0;
   const showAllDisabled = loaded && !error && live.length === 0 && disabled.length > 0;
 
@@ -672,6 +756,7 @@ export default function AiAgentsPage() {
                     </span>
                   )}
                   {lastRunCell(agent)}
+                  {nextOccurrenceCell(agent)}
                 </p>
                 {justReenabledId === agent.id && (
                   <p
@@ -691,6 +776,7 @@ export default function AiAgentsPage() {
               >
                 {t('aiAgentsPage.actions.runs')}
               </a>
+              {runNowButton(agent)}
               <button
                 type="button"
                 onClick={() => openEditor({ agent })}
@@ -758,6 +844,10 @@ export default function AiAgentsPage() {
                       })}
                     </span>
                     {lastRunCell(agent)}
+                    {/* A disabled agent never fires, so this reads "—" for
+                        every row here — kept for column parity with the live
+                        list above rather than as live information. */}
+                    {nextOccurrenceCell(agent)}
                   </p>
                 </div>
                 <a

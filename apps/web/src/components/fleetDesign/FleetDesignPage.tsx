@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { Download, DraftingCompass, FileText, Play, RotateCcw } from "lucide-react";
-import type { FleetDesignOutcome, FleetDesignLedgerItem, FleetDesignRollbackResult } from "@breeze/shared";
+import { Download, DraftingCompass, FileText, Play, Power, RotateCcw } from "lucide-react";
+import { FLEET_DESIGNER_ENABLE_ERROR_CODES, type FleetDesignOutcome, type FleetDesignLedgerItem, type FleetDesignRollbackResult, type FleetDesignerSetup } from "@breeze/shared";
 import { useOrgStore } from "../../stores/orgStore";
 import { fetchWithAuth } from "../../stores/auth";
 import { showToast } from "../shared/Toast";
 import { ActionError, runAction } from "@/lib/runAction";
 import { useHashState } from "@/lib/useHashState";
+import { usePermissions } from "@/lib/permissions";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { PageHeader } from "../shared/PageHeader";
 import { EmptyState } from "../shared/EmptyState";
@@ -17,8 +18,10 @@ import DriftPanel from "./DriftPanel";
 import ApplyDrawer from "./ApplyDrawer";
 import { useDesignSelection } from "./useDesignSelection";
 import {
+  enableDesigner,
   fileAsDocument,
   getDesign,
+  getDesignerSetup,
   listApplied,
   listDesigns,
   rollback,
@@ -35,6 +38,7 @@ import {
  * Task 8 for the full behaviour contract.
  */
 const SPECIFIC_SKIP_REASONS = new Set([
+  "no_designer_agent",
   "mode_off",
   "kill_switch_off",
   "agent_disabled",
@@ -45,6 +49,11 @@ const SPECIFIC_SKIP_REASONS = new Set([
   "design_rate",
   "duplicate",
 ]);
+
+/** `POST /ai/fleet-design/designer/enable` refusals with their own copy —
+ *  the shared list, so a code added on the API side is a type-level
+ *  reminder that `page.designerSetup.errors.*` needs a key for it. */
+const ENABLE_ERROR_CODES: ReadonlySet<string> = new Set(FLEET_DESIGNER_ENABLE_ERROR_CODES);
 
 function toCamelCase(reason: string): string {
   return reason.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
@@ -78,6 +87,13 @@ export default function FleetDesignPage() {
   const [siteId, setSiteId] = useState("");
   const [starting, setStarting] = useState(false);
   const [startSkipReason, setStartSkipReason] = useState<string>();
+  // #6214: whether a designer agent is there to run at all. Loaded up front
+  // so the page says "Enable Fleet Designer" BEFORE the first click dead-ends
+  // on a skip reason, and again after every enable / declined start.
+  const [setup, setSetup] = useState<FleetDesignerSetup | null>(null);
+  const [enabling, setEnabling] = useState(false);
+  const { can } = usePermissions();
+  const canWriteAgents = can("ai_agents", "write");
 
   const [selectedRunId, setSelectedRunId] = useHashState<string | undefined>(undefined, parseRunIdHash);
   const [detail, setDetail] = useState<FleetDesignDetail | null>(null);
@@ -113,6 +129,48 @@ export default function FleetDesignPage() {
   useEffect(() => {
     void loadList();
   }, [loadList]);
+
+  // Best-effort like the site list: a failed probe hides the banner rather
+  // than blocking the page — the start button still reports the skip reason.
+  const loadSetup = useCallback(async () => {
+    if (!selectedOrgId) {
+      setSetup(null);
+      return;
+    }
+    try {
+      setSetup(await getDesignerSetup(selectedOrgId));
+    } catch {
+      setSetup(null);
+    }
+  }, [selectedOrgId]);
+
+  useEffect(() => {
+    void loadSetup();
+  }, [loadSetup]);
+
+  const handleEnable = async () => {
+    if (!selectedOrgId) return;
+    setEnabling(true);
+    try {
+      await runAction<{ data: FleetDesignerSetup }>({
+        request: () => enableDesigner(selectedOrgId),
+        errorFallback: t("page.designerSetup.enableError"),
+        friendly: (code) =>
+          ENABLE_ERROR_CODES.has(code)
+            ? t(/* i18n-dynamic */ `page.designerSetup.errors.${toCamelCase(code)}`)
+            : undefined,
+        successMessage: t("page.designerSetup.enableSuccess"),
+        parseSuccess: (d) => d as { data: FleetDesignerSetup },
+      });
+      setStartSkipReason(undefined);
+    } catch {
+      // runAction already toasted the failure (a 403/409/422 from the enable
+      // route is a labelled refusal, not a crash); the banner stays.
+    } finally {
+      setEnabling(false);
+      void loadSetup();
+    }
+  };
 
   // Best-effort site list for the optional scope selector — a failure here
   // just means "no site scoping offered", not a page error.
@@ -189,7 +247,16 @@ export default function FleetDesignPage() {
     } catch (err) {
       if (err instanceof ActionError && err.body && typeof err.body === "object" && "skipped" in err.body) {
         setStartSkipReason(String((err.body as { skipped: unknown }).skipped));
+      } else if (
+        err instanceof ActionError &&
+        err.status === 404 &&
+        (err.body as { error?: unknown } | null)?.error === "no_designer_agent"
+      ) {
+        // Not a `skipped` body: the run route 404s when no designer agent
+        // resolves at all. Same dead end for the user, so same banner slot.
+        setStartSkipReason("no_designer_agent");
       }
+      void loadSetup();
     } finally {
       setStarting(false);
     }
@@ -253,6 +320,7 @@ export default function FleetDesignPage() {
 
   const outcome: FleetDesignOutcome | undefined = detail?.summary.fleetDesign?.outcome;
   const drift = detail?.summary.fleetDesign?.drift ?? null;
+  const unavailable = detail?.summary.fleetDesign?.unavailable;
   const hasAppliedRows = ledger.some((i) => i.status === "applied");
 
   return (
@@ -325,6 +393,38 @@ export default function FleetDesignPage() {
           </p>
         )}
       </div>
+
+      {setup && setup.status !== "ready" && (
+        <div
+          className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300/60 bg-amber-50 p-3 text-sm dark:border-amber-700/60 dark:bg-amber-950/30"
+          role="status"
+          data-testid="fleet-design-designer-setup"
+          data-status={setup.status}
+        >
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">{t(/* i18n-dynamic */ `page.designerSetup.status.${toCamelCase(setup.status)}`)}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {setup.status === "kill_switch_off"
+                ? t("page.designerSetup.killSwitchHint")
+                : setup.canEnable && canWriteAgents
+                  ? t("page.designerSetup.enableHint")
+                  : t("page.designerSetup.askPartnerAdmin")}
+            </p>
+          </div>
+          {setup.canEnable && canWriteAgents && (
+            <button
+              type="button"
+              onClick={() => void handleEnable()}
+              disabled={enabling}
+              data-testid="fleet-design-enable-button"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            >
+              <Power className="h-4 w-4" />
+              {t("page.designerSetup.enableButton")}
+            </button>
+          )}
+        </div>
+      )}
 
       {listError && <p className="text-sm text-destructive">{listError}</p>}
       {!listLoading && items.length === 0 && !listError && <EmptyState title={t("page.empty")} />}
@@ -432,7 +532,11 @@ export default function FleetDesignPage() {
 
           {drift && <DriftPanel drift={drift} />}
 
-          <FleetDesignViewer outcome={outcome} selection={selection} />
+          <FleetDesignViewer
+            outcome={outcome}
+            selection={selection}
+            unavailable={Array.isArray(unavailable) ? unavailable.filter((key): key is string => typeof key === "string") : []}
+          />
 
           <ApplyDrawer
             open={drawerOpen}

@@ -7,9 +7,10 @@ import {
 } from './sync';
 
 describe('m365 sync domain vocabulary', () => {
-  it('names exactly the six persisted domains in schedule order', () => {
+  it('names exactly the seven persisted domains in schedule order', () => {
     expect(M365_SYNC_DOMAINS).toEqual([
       'users', 'signin_activity', 'intune_devices', 'ca_policies', 'skus', 'secure_score',
+      'signin_events',
     ]);
     expect(new Set(M365_SYNC_DOMAINS).size).toBe(M365_SYNC_DOMAINS.length);
   });
@@ -31,6 +32,15 @@ describe('m365 sync domain vocabulary', () => {
     expect(M365_SYNC_DOMAIN_INTERVAL_BOUNDS.signin_activity.min).toBe(24 * 3600);
     expect(M365_SYNC_DOMAIN_INTERVAL_BOUNDS.signin_activity.max).toBe(7 * 24 * 3600);
     expect(M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS.signin_activity).toBe(24 * 3600);
+  });
+
+  it('floors signin_events at a day too — /auditLogs/signIns is its own expensive surface', () => {
+    // #5784 W05. A DIFFERENT Graph surface from signin_activity's
+    // /users?$select=signInActivity (its own token bucket in the executor), but
+    // the same order of expense, so the same 24 h floor and 7-day ceiling.
+    expect(M365_SYNC_DOMAIN_INTERVAL_BOUNDS.signin_events.min).toBe(24 * 3600);
+    expect(M365_SYNC_DOMAIN_INTERVAL_BOUNDS.signin_events.max).toBe(7 * 24 * 3600);
+    expect(M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS.signin_events).toBe(24 * 3600);
   });
 
   it('narrows unknown strings', () => {

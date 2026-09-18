@@ -226,7 +226,7 @@ func TestSNMPDevice_ClientConfig(t *testing.T) {
 	dev := SNMPDevice{
 		IP:             "10.0.0.1",
 		Port:           161,
-		Version:        gosnmp.Version2c,
+		Version:        Version2c,
 		Auth:           SNMPAuth{Community: "public"},
 		OIDs:           []string{".1.3.6.1.2.1.1.5.0"},
 		Timeout:        3000000000, // 3s in ns
@@ -241,7 +241,7 @@ func TestSNMPDevice_ClientConfig(t *testing.T) {
 	if cfg.Port != 161 {
 		t.Errorf("Port = %d, want 161", cfg.Port)
 	}
-	if cfg.Version != gosnmp.Version2c {
+	if cfg.Version != Version2c {
 		t.Errorf("Version = %v, want Version2c", cfg.Version)
 	}
 	if cfg.Auth.Community != "public" {
@@ -258,7 +258,7 @@ func TestSNMPDevice_ClientConfig(t *testing.T) {
 func TestSNMPDevice_ClientConfig_V3Fields(t *testing.T) {
 	dev := SNMPDevice{
 		IP:      "10.0.0.2",
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth: SNMPAuth{
 			Username:       "admin",
 			AuthProtocol:   gosnmp.SHA256,
@@ -602,10 +602,10 @@ func TestParseValue_OctetStringSanitization(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildMetrics — ValueEncoding declaration
+// buildGetMetrics — ValueEncoding declaration
 // ---------------------------------------------------------------------------
 
-func TestBuildMetrics_ValueEncoding(t *testing.T) {
+func TestBuildGetMetrics_ValueEncoding(t *testing.T) {
 	tests := []struct {
 		name         string
 		pdu          gosnmp.SnmpPDU
@@ -693,9 +693,9 @@ func TestBuildMetrics_ValueEncoding(t *testing.T) {
 	stamp := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildMetrics([]gosnmp.SnmpPDU{tt.pdu}, stamp)
+			got := buildGetMetrics(nil, []gosnmp.SnmpPDU{tt.pdu}, stamp)
 			if len(got) != 1 {
-				t.Fatalf("buildMetrics() returned %d metrics, want 1", len(got))
+				t.Fatalf("buildGetMetrics() returned %d metrics, want 1", len(got))
 			}
 			m := got[0]
 			if m.Value != tt.wantValue {
@@ -734,13 +734,13 @@ func TestBuildMetrics_ValueEncoding(t *testing.T) {
 	}
 }
 
-func TestBuildMetrics_EmptyPDUsYieldsEmptySlice(t *testing.T) {
-	got := buildMetrics(nil, time.Now().UTC())
+func TestBuildGetMetrics_EmptyPDUsYieldsEmptySlice(t *testing.T) {
+	got := buildGetMetrics(nil, nil, time.Now().UTC())
 	if got == nil {
-		t.Fatal("buildMetrics(nil) = nil, want non-nil empty slice")
+		t.Fatal("buildGetMetrics(nil) = nil, want non-nil empty slice")
 	}
 	if len(got) != 0 {
-		t.Fatalf("buildMetrics(nil) returned %d metrics, want 0", len(got))
+		t.Fatalf("buildGetMetrics(nil) returned %d metrics, want 0", len(got))
 	}
 }
 
@@ -762,5 +762,87 @@ func TestParseValue_BigIntNegativeOverflow(t *testing.T) {
 	}
 	if s != val.String() {
 		t.Errorf("ParseValue = %q, want %q", s, val.String())
+	}
+}
+
+type retryPDUSource struct {
+	fakePDUSource
+	get func([]string) ([]gosnmp.SnmpPDU, error)
+}
+
+func (s *retryPDUSource) GetMulti(oids []string) ([]gosnmp.SnmpPDU, error) {
+	return s.get(oids)
+}
+
+func TestCollectWithSource_GetPacketStatus(t *testing.T) {
+	specs := []OIDSpec{
+		{OID: "1.3.6.1.2.1.1.1.0", Name: "description", Mode: ModeGet},
+		{OID: "1.3.6.1.2.1.1.3.0", Name: "uptime", Mode: ModeGet},
+		{OID: "1.3.6.1.2.1.1.5.0", Name: "hostname", Mode: ModeGet},
+	}
+	for _, tt := range []struct {
+		name       string
+		indices    []uint8
+		batches    [][]int
+		wantErrors map[int]bool
+	}{
+		{"first OID", []uint8{1}, [][]int{{0, 1, 2}, {1, 2}}, map[int]bool{0: true}},
+		{"last OID", []uint8{3}, [][]int{{0, 1, 2}, {0, 1}}, map[int]bool{2: true}},
+		{"two missing OIDs", []uint8{2, 2}, [][]int{{0, 1, 2}, {0, 2}, {0}}, map[int]bool{1: true, 2: true}},
+		{"all missing", []uint8{1, 1, 1}, [][]int{{0, 1, 2}, {1, 2}, {2}}, map[int]bool{0: true, 1: true, 2: true}},
+		{"whole batch", []uint8{0}, [][]int{{0, 1, 2}}, map[int]bool{0: true, 1: true, 2: true}},
+		{"invalid index", []uint8{4}, [][]int{{0, 1, 2}}, map[int]bool{0: true, 1: true, 2: true}},
+		{"invalid index after retry", []uint8{2, 3}, [][]int{{0, 1, 2}, {0, 2}}, map[int]bool{0: true, 1: true, 2: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			src := &retryPDUSource{get: func(oids []string) ([]gosnmp.SnmpPDU, error) {
+				if calls >= len(tt.batches) {
+					t.Fatalf("unexpected GET call %d: %v", calls+1, oids)
+				}
+				batch := tt.batches[calls]
+				if len(oids) != len(batch) {
+					t.Fatalf("GET %d: got %v, want spec indices %v", calls+1, oids, batch)
+				}
+				for i, index := range batch {
+					if oids[i] != specs[index].OID {
+						t.Fatalf("GET %d OID %d = %s, want %s", calls+1, i, oids[i], specs[index].OID)
+					}
+				}
+				calls++
+				if calls <= len(tt.indices) {
+					return nil, &SnmpStatusError{Status: gosnmp.NoSuchName, Index: tt.indices[calls-1]}
+				}
+				var pdus []gosnmp.SnmpPDU
+				for _, oid := range oids {
+					pdus = append(pdus, gosnmp.SnmpPDU{Name: oid, Type: gosnmp.OctetString, Value: "value:" + oid})
+				}
+				return pdus, nil
+			}}
+			metrics, err := collectWithSource(src, specs, DefaultPollLimits, stamp)
+			if err != nil || len(metrics) != len(specs) {
+				t.Fatalf("got %d metrics, error=%v; want %d rows (errors and recovered values)", len(metrics), err, len(specs))
+			}
+			if calls != len(tt.batches) {
+				t.Errorf("GET calls = %d, want %d", calls, len(tt.batches))
+			}
+			for i, spec := range specs {
+				m := metricByOID(metrics, spec.OID)
+				if m == nil {
+					t.Errorf("missing metric for %s", spec.OID)
+					continue
+				}
+				if m.BaseOID != spec.OID || m.Name != spec.Name || m.Instance != "" || m.Timestamp != stamp {
+					t.Errorf("unexpected metric metadata: %+v", m)
+				}
+				if tt.wantErrors[i] {
+					if m.Error != ErrCodeSNMPError || m.Value != nil {
+						t.Errorf("unexpected error row: %+v", m)
+					}
+				} else if m.Error != "" || m.Value != "value:"+spec.OID {
+					t.Errorf("unexpected value row: %+v", m)
+				}
+			}
+		})
 	}
 }

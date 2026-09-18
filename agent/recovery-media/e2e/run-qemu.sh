@@ -181,9 +181,24 @@ cmdline="boot=live components console=ttyS0,115200n8 breeze.media=1 breeze.ci=1 
 # 13,140/16,325 when the previous 20 min cap killed QEMU mid-restore), so the
 # whole boot → rebuild → validate → poweroff cycle needs ~25 min plus margin.
 # ci.yml's job timeout-minutes covers this plus the ~7 min ISO build.
+# -no-reboot: this is the only boot in this script that can ever be asked
+# to reset rather than power off, and it is booted via -kernel/-initrd/
+# -append, which QEMU RE-APPLIES on every reset — so a guest reset here
+# would silently re-enter the live recovery environment with breeze.ci=1
+# still on the cmdline and run a whole second unattended recovery attempt,
+# appending another "media_booted" to progress.json. That is not what
+# caused issue #5890 (the trailing media_booted there came from the losing
+# in-guest console instance reclaiming the recovery-console lock during
+# the shutdown window — fixed in internal/recoveryconsole/console.go), but
+# it is the same observable failure from a second cause, and it is only
+# not reachable today because the CI cmdline happens to say
+# breeze.after=poweroff. -no-reboot makes QEMU exit on a guest reset
+# instead, so that second cause can never masquerade as the first.
+# Asserted by run-qemu_test.sh.
 echo "run-qemu: boot 1 — recovery ISO (CI-unattended), cmdline: $cmdline"
 timeout 2400 "$qemu_bin" \
   -machine q35,accel=tcg -cpu max -m 3G -smp 2 \
+  -no-reboot \
   -drive if=pflash,format=raw,readonly=on,file="$ovmf_code" \
   -drive if=pflash,format=raw,file="$out_dir/OVMF_VARS.fd" \
   -drive file="$target_img",format=raw,if=virtio \

@@ -67,10 +67,19 @@
       "on_ticket_resolve": "Geliefert, sobald das verknüpfte Ticket gelöst wird"
     },
     "autoEvidenceReport": "Berichtsläufe als Nachweis anhängen",
+    "autoEvidenceNone": "Keine",
+    "autoEvidenceHelp": "Der Nachweis wird am Fälligkeitstag erstellt und für den Kunden sichtbar, sobald der Vorgang als geliefert markiert wird.",
+    "autoEvidenceEmpty": "Es sind noch keine verwalteten Nachweisberichtstypen verfügbar.",
     "owner": "Verantwortlich",
     "ticketCategory": "Ticket-Kategorie",
     "portalVisible": "Im Kundenportal anzeigen",
-    "sortOrder": "Sortierreihenfolge"
+    "sortOrder": "Sortierreihenfolge",
+    "instructions": "Interne Anweisungen",
+    "instructionsHint": "Intern — wird dem Kunden nie angezeigt.",
+    "checklistTemplate": "Checklisten-Vorlage",
+    "checklistTemplateNone": "Keine",
+    "checklistTemplateAllOrgs": "Alle Orgs",
+    "checklistTemplateManage": "Checklisten-Vorlagen verwalten"
   },
   "drawer": {
     "title": "Vorkommen",
@@ -84,7 +93,10 @@
     "uploadEvidence": "Datei als Nachweis hochladen",
     "uploadEvidenceHint": "PDF, JPEG, PNG oder WebP, bis zu 10 MB. Die Datei wird in der Dokumentenbibliothek dieser Organisation abgelegt.",
     "evidenceDocument": "Dokument",
-    "upload": "Hochladen"
+    "upload": "Hochladen",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Checkliste anzeigen",
+    "hideChecklist": "Checkliste ausblenden"
   },
   "evidence": {
     "reportRun": "Berichtslauf",
@@ -177,7 +189,8 @@
       "leadDays": "So viele Tage vor Fälligkeit öffnen",
       "graceDays": "So viele Tage nach Fälligkeit als versäumt markieren",
       "artifactRequired": "Nachweis erforderlich",
-      "completionMode": "Abschluss"
+      "completionMode": "Abschluss",
+      "autoEvidenceReportType": "Nachweisberichtstyp"
     },
     "ownerScope": {
       "legend": "Für wen ist dieses Set?",

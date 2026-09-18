@@ -13,9 +13,12 @@
  *    link one existing document as the newer version of another. Byte upload
  *    stays OUT of MCP by design (spec §3 "Out (v1)").
  *
- * `apply_template` is deliberately ABSENT: template sets land in W05, and that
- * action is the only approval-gated one in this family (it arms unattended
- * ticket creation). Everything here is tier 2 and ungated.
+ * `apply_template` (W05) is the ONLY approval-gated (Tier 3) action in this
+ * family: it arms unattended ticket creation for every future period of every
+ * applied item. Since #5784 W01 it also provisions the org's managed evidence
+ * definition for any item carrying `autoEvidenceReportType` — provisioning
+ * only; it never generates and never publishes (the OD-12 delivery gate sits
+ * downstream). Everything else here is tier 2 and ungated.
  *
  * This is a second door onto the same services as routes/serviceDeliverables.ts
  * and routes/orgKeyDates.ts, so it must agree with them:
@@ -178,7 +181,10 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
       + 'Delivering an occurrence whose deliverable requires an artifact fails with EVIDENCE_REQUIRED until evidence is linked. '
       + '`apply_template` copies every item of a deliverable template set into the organization (optionally pinned to a contract) as '
       + 'scheduled deliverables; it arms unattended ticket creation for every future period and therefore requires approval. It is '
-      + 'all-or-nothing: if any item name already exists on the target nothing is written and the colliding names are returned.',
+      + 'all-or-nothing: if any item name already exists on the target nothing is written and the colliding names are returned. '
+      + 'A template item with an autoEvidenceReportType is resolved to that organization\'s managed evidence report definition '
+      + '(created on demand) and the deliverable is linked to it; the evidence run is generated on the due day and becomes '
+      + 'customer-visible only when the occurrence is delivered.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -316,7 +322,9 @@ export const LIST_DELIVERABLE_TEMPLATES_TOOL: AiTool = {
     description:
       'List deliverable template sets the caller can use: sets owned by an accessible organization, plus the partner-wide sets '
       + '("all organizations") when the caller holds a partner token. Each set lists its items with cadence, lead and grace days and '
-      + 'whether an artifact is required. Read-only.',
+      + 'whether an artifact is required, plus its internal `instructions` runbook prose and the '
+      + '`checklistTemplateId` of the ticket checklist that will be seeded onto each occurrence\'s ticket. '
+      + 'Both are INTERNAL — never repeat them to a customer. Read-only.',
     input_schema: {
       type: 'object' as const,
       properties: { orgId: { type: 'string', description: 'Filter to sets owned by one organization (UUID)' } },

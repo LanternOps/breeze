@@ -311,18 +311,34 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  * parked idle-in-transaction waiting for an inner connection, reaped at the
  * 60s idle_in_transaction_session_timeout as `500 @60s`, re-polled by agents,
  * repeat (US prod outage, 2026-07-24).
+ *
+ * `eventlogs` (#6097) is here because its BullMQ log-forwarding enqueue was
+ * discovered running inside the request-long wrap, pinning a pooled
+ * connection idle-in-transaction across the Redis round trip on every
+ * forwarded event-log submit — the exact #1105 shape. `runOutsideDbContext`
+ * alone does not fix this (see the note at the wrap site below): only an
+ * opted-out route avoids ever opening the outer transaction. The handler now
+ * self-manages two short org-scoped contexts of its own (one for the
+ * device/settings read, one for the insert + forwarding-config read), with
+ * the rate-limit check and the forwarding enqueue running genuinely outside
+ * any open transaction in between.
  */
-const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands']);
+const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands', 'eventlogs']);
 
 /**
  * Single-segment actions allowed during a TENANT (`offboarding`) drain:
- * `/api/v1/agents/<agentId>/<action>`. #2774's original set.
+ * `/api/v1/agents/<agentId>/<action>`. #2774's original set, minus the
+ * credential MINT — see #3997 below.
  */
-const TENANT_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', 'rotate-token']);
+const TENANT_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs']);
 
 /**
- * #3986 — the DEVICE-remove drain's set, which is deliberately NARROWER than
- * the tenant one: `rotate-token` is dropped.
+ * #3986 — the DEVICE-remove drain's set. `rotate-token` is dropped here too;
+ * #3997 then dropped it from the tenant set above for the same reason, so the
+ * two sets are currently identical. They stay SEPARATE declarations because
+ * they answer different questions and either may be re-widened independently;
+ * the intersection below is what guarantees a re-widening can never hand an
+ * action back to a drain kind that had taken it away.
  *
  * `routes/agents/token.ts` has no independent `devices.status` guard, and the
  * credentials it mints OUTLIVE the drain window — nothing revokes a staged or
@@ -346,12 +362,36 @@ const TENANT_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', '
  * — it is matched by its own two-segment branch below, and stays allowed for
  * both drain kinds so an agent that already persisted a staged credential can
  * finish and avoid being locked out mid-drain.
+ *
+ * #3997 — the same reasoning applied to the TENANT axis, which #3986 left
+ * alone on scope discipline. Nothing revokes what the mint produced:
+ * `abortOrganizationOffboarding` / `abortPartnerOffboarding`
+ * (services/tenantOffboarding.ts) call `cancelDrainUninstallsForOrgIds` and
+ * NOT `severAgentCredentialsForOrgIds` — that runs only on the finalize paths.
+ * So a rotation performed inside the window leaves the tenant fully active
+ * again, with the rotated agent + watchdog + helper credentials as the CURRENT
+ * ones and the legitimate machine's token DEMOTED. A routine, attacker-
+ * independent administrative action (start offboarding, then abort it) is
+ * enough to promote a stolen token into a durable credential set.
+ *
+ * Dropping the mint costs the tenant axis nothing either. Nothing in agent
+ * auth ever REQUIRES a rotation to keep authenticating: a current token has no
+ * expiry in `matchAgentTokenHash`, and `isAgentTokenRotationDue` only sets the
+ * advisory `x-token-rotation-required` response header — it never refuses a
+ * request. A staged-but-unconfirmed rotation authenticates on the pending hash
+ * and can still reach `rotate-token/confirm`. And the drain window is
+ * OFFBOARDING_DRAIN_WINDOW_HOURS (72h by default), two orders of magnitude
+ * under the 30-day rotation max age. There is no legitimate flow that must
+ * START a rotation inside the window.
  */
 const DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs']);
 
 /**
  * Both drains at once (a removed device inside an offboarding tenant): the
- * INTERSECTION of the two sets, never either one whole.
+ * INTERSECTION of the two sets, never either one whole. Since #3997 the two
+ * sets are equal, so this is currently just that shared surface — the
+ * intersection is kept so that re-widening ONE set can never leak an action
+ * into a drain kind that excludes it.
  *
  * Two independent narrowing gates compose by intersection, full stop. The
  * earlier "whichever drain is the tenant one wins" form composed by union in
@@ -441,9 +481,10 @@ const CORE_AGENT_ACTION_INDEX = CORE_AGENT_MOUNT_SEGMENTS.length + 1;
  * - commands / commands/:id/result: the poll + ack pair
  * - rotate-token/confirm: lets an agent that already persisted a staged
  *   credential finish, so a mid-stage rotation can't lock it out mid-drain.
- *   The MINT half (`rotate-token`) is allowed for a TENANT drain only — see
- *   DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS for why a removed device must not
- *   be able to mint credentials that outlive its window.
+ *   The MINT half (`rotate-token`) is allowed for NEITHER drain kind as of
+ *   #3997 — see DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS for why neither a
+ *   removed device nor an offboarding tenant may mint credentials that
+ *   outlive the drain window.
  * - logs: post-mortem evidence for devices that never drain
  * Everything else (inventory, patches, WS-adjacent, extension gateway) is
  * refused with an explicit 403 so a departing customer's — or a removed
@@ -826,15 +867,15 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // "my tenant is leaving" from "this machine was removed"; tenant drain keeps
   // its established `tenant_offboarding` code when both apply.
   //
-  // The two drain kinds do NOT share one action set. A tenant drain keeps
-  // #2774's original surface; a DEVICE drain additionally drops `rotate-token`,
-  // because the credentials that route mints outlive the drain window and
-  // would become live again on restore (see
-  // DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS). When BOTH apply they compose by
-  // INTERSECTION (BOTH_DRAINS_ALLOWED_ACTIONS) — two narrowing gates can only
-  // ever narrow further. Letting the tenant set win instead handed
-  // `rotate-token` straight back to a removed device, which is the one case
-  // the device set exists to cover.
+  // Each drain kind carries its own action set, resolved separately. Neither
+  // set contains `rotate-token`: the credentials that route mints outlive the
+  // drain window and nothing revokes them, so they go live again on a device
+  // restore (#3986) or on an offboarding abort (#3997) — see
+  // DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS for the full argument. When BOTH
+  // apply they compose by INTERSECTION (BOTH_DRAINS_ALLOWED_ACTIONS) — two
+  // narrowing gates can only ever narrow further. Letting the tenant set win
+  // instead handed `rotate-token` straight back to a removed device, which is
+  // the one case the device set exists to cover.
   //
   // The error CODE still reports the tenant drain when both apply: it is the
   // agent-visible, longer-lived condition, and #2774's clients already parse

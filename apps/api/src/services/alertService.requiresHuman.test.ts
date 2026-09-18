@@ -69,7 +69,9 @@ vi.mock('./featureConfigResolver', () => ({
   isInMaintenanceWindow: vi.fn(),
 }));
 
-vi.mock('./monitors/monitorResolver', () => ({ resolveMonitorsForDevice: vi.fn(async () => []) }));
+vi.mock('./monitors/monitorResolver', () => ({
+  resolveMonitorsForDevice: vi.fn(async () => ({ kind: 'resolved', monitors: [] })),
+}));
 vi.mock('./monitors/episodeService', () => ({
   recordMonitorEvaluation: vi.fn(),
   detachMonitorFromDevice: vi.fn(),

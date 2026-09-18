@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   createReportSchema,
+  endpointManagementConfigFields,
+  endpointManagementConfigSchema,
   hardwareLifecycleConfigFields,
   hardwareLifecycleConfigSchema,
   securityCompliancePostureConfigFields,
   securityCompliancePostureConfigSchema,
+  identityAccessConfigFields,
+  identityAccessConfigSchema,
+  threatDetectionConfigFields,
+  threatDetectionConfigSchema,
   updateReportSchema,
+  vulnerabilityManagementConfigFields,
+  vulnerabilityManagementConfigSchema,
 } from './schemas';
 
 const builderConfig = {
@@ -100,6 +108,65 @@ describe('report config schema', () => {
     );
   });
 
+  it('keeps the endpoint management persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(endpointManagementConfigFields).sort()).toEqual(
+      Object.keys(endpointManagementConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults an endpoint management config', () => {
+    expect(endpointManagementConfigSchema.parse({})).toEqual({
+      sites: [], staleEnrolmentDays: 14, trendDays: 30, includeLicences: true,
+    });
+  });
+
+  it('rejects an out-of-range trendDays', () => {
+    expect(() => endpointManagementConfigSchema.parse({ trendDays: 0 })).toThrow();
+    expect(() => endpointManagementConfigSchema.parse({ trendDays: 400 })).toThrow();
+  });
+
+  it('preserves endpoint management staleEnrolmentDays on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Endpoints', type: 'endpoint_management_review',
+      config: { staleEnrolmentDays: 30, includeLicences: false },
+    });
+    expect(parsed.config.staleEnrolmentDays).toBe(30);
+    expect(parsed.config.includeLicences).toBe(false);
+  });
+
+  it('keeps the vulnerability management persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(vulnerabilityManagementConfigFields).sort()).toEqual(
+      Object.keys(vulnerabilityManagementConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults a vulnerability management config to the spec values', () => {
+    expect(vulnerabilityManagementConfigSchema.parse({})).toEqual({
+      sites: [], severityFloor: 'high', topN: 25, includeAccepted: true,
+    });
+  });
+
+  it('rejects an unknown severity floor', () => {
+    expect(() => vulnerabilityManagementConfigSchema.parse({ severityFloor: 'catastrophic' })).toThrow();
+  });
+
+  it('rejects a topN outside the schema range, for the API caller that bypasses the form', () => {
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 0 })).toThrow();
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 501 })).toThrow();
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 25.5 })).toThrow();
+    expect(vulnerabilityManagementConfigSchema.parse({ topN: 500 }).topN).toBe(500);
+  });
+
+  it('preserves vulnerability management options on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Vulns', type: 'vulnerability_management',
+      config: { severityFloor: 'medium', topN: 50, includeAccepted: false },
+    });
+    expect(parsed.config.severityFloor).toBe('medium');
+    expect(parsed.config.topN).toBe(50);
+    expect(parsed.config.includeAccepted).toBe(false);
+  });
+
   it('preserves hardware lifecycle replaceAgeYears on create', () => {
     const parsed = createReportSchema.parse({
       name: 'Lifecycle', type: 'hardware_lifecycle',
@@ -146,5 +213,63 @@ describe('report config schema', () => {
       config: { backupRequired: true },
     });
     expect(updated.config?.backupRequired).toBe(true);
+  });
+
+  it('keeps the threat detection persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(threatDetectionConfigFields).sort()).toEqual(
+      Object.keys(threatDetectionConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults a threat detection config', () => {
+    expect(threatDetectionConfigSchema.parse({})).toEqual({
+      sites: [], includeCarriedIn: true, topIncidents: 100,
+    });
+  });
+
+  it('rejects an out-of-range topIncidents', () => {
+    expect(() => threatDetectionConfigSchema.parse({ topIncidents: 0 })).toThrow();
+    expect(() => threatDetectionConfigSchema.parse({ topIncidents: 1001 })).toThrow();
+  });
+
+  it('preserves threat detection topIncidents on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Threat detection', type: 'threat_detection_review',
+      config: { topIncidents: 25, includeCarriedIn: false },
+    });
+    expect(parsed.config?.topIncidents).toBe(25);
+    expect(parsed.config?.includeCarriedIn).toBe(false);
+  });
+
+  // #5784 W06 — the identity and access review.
+  it('keeps the identity access persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(identityAccessConfigFields).sort()).toEqual(
+      Object.keys(identityAccessConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults an identity access config to the spec values', () => {
+    expect(identityAccessConfigSchema.parse({})).toEqual({
+      dormantDays: 45, homeCountries: [], adminDetail: true,
+    });
+  });
+
+  it('has no sites key — the report is org-wide by construction', () => {
+    // A site selector would promise a filter M365 identity data cannot deliver.
+    expect(Object.keys(identityAccessConfigSchema.shape)).not.toContain('sites');
+  });
+
+  it('rejects a malformed home country code', () => {
+    expect(() => identityAccessConfigSchema.parse({ homeCountries: ['United States'] })).toThrow();
+  });
+
+  it('preserves identity access dormantDays and homeCountries on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Identity', type: 'identity_access_review',
+      config: { dormantDays: 60, homeCountries: ['US', 'CA'], adminDetail: false },
+    });
+    expect(parsed.config.dormantDays).toBe(60);
+    expect(parsed.config.homeCountries).toEqual(['US', 'CA']);
+    expect(parsed.config.adminDetail).toBe(false);
   });
 });

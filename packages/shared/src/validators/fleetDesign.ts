@@ -31,6 +31,15 @@ export const triggerFleetDesignRunSchema = z.object({
 
 export type TriggerFleetDesignRunInput = z.infer<typeof triggerFleetDesignRunSchema>;
 
+/** `POST /ai/fleet-design/designer/enable` (#6214): one click from the Fleet
+ *  Design page that creates the partner's designer agent (or turns an
+ *  existing one on). Same `.strict()` posture as the run trigger above. */
+export const enableFleetDesignerSchema = z.object({
+  orgId: uuid,
+}).strict();
+
+export type EnableFleetDesignerInput = z.infer<typeof enableFleetDesignerSchema>;
+
 const functionEntry = z.object({
   functionKey,
   label: fleetDesignText(80).optional(),

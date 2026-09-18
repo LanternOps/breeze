@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
 import { getConfig } from '../../config/validate';
+import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import type {
   InboundEmailProvider,
   NormalizedInboundEmail,
@@ -59,6 +60,7 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       references: refs ? refs.split(/\s+/) : undefined,
       autoSubmitted: parseHeader(b['message-headers'], 'Auto-Submitted'),
       precedence: parseHeader(b['message-headers'], 'Precedence'),
+      outboundMarker: parseHeader(b['message-headers'], BREEZE_OUTBOUND_HEADER),
       senderAuth: extractSenderAuth(b),
       senderAuthDiagnostic: senderAuthGap(b['message-headers']),
       attachments: [],

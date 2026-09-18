@@ -510,4 +510,70 @@ describe('report recipient routes', () => {
     expect(state.getReport).not.toHaveBeenCalled();
     expect(rootDb.current.select).not.toHaveBeenCalled();
   });
+
+  // #4248 W03 (Task 9): a system-managed definition (the weekly AI narrative,
+  // the Fleet Design) is delivered by its own path, never by the report
+  // worker — so a manual recipient on it would never receive anything.
+  describe('system-managed report definitions refuse manual recipients', () => {
+    function systemManagedReport(type: string) {
+      state.getReport.mockResolvedValue({ id: REPORT_ID, orgId: ORG_ID, type, config: {} });
+    }
+
+    it('refuses a recipient on an ai_org_narrative definition', async () => {
+      systemManagedReport('ai_org_narrative');
+      state.results.push([{ id: CONTACT_ID }]);
+
+      const response = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID }),
+      });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'report_type_system_managed', type: 'ai_org_narrative' });
+      expect(state.inserted).toHaveLength(0);
+    });
+
+    it('refuses the CONVERT writer too — it inserts independently', async () => {
+      systemManagedReport('ai_org_narrative');
+
+      const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+        body: JSON.stringify({ email: 'alex@example.test' }),
+      });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'report_type_system_managed', type: 'ai_org_narrative' });
+      expect(state.inserted).toHaveLength(0);
+      expect(state.createContact).not.toHaveBeenCalled();
+    });
+
+    it('refuses ai_fleet_design as well — the exclusion list holds two types', async () => {
+      systemManagedReport('ai_fleet_design');
+      state.results.push([{ id: CONTACT_ID }]);
+
+      const response = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID }),
+      });
+
+      expect(response.status).toBe(409);
+      expect(state.inserted).toHaveLength(0);
+    });
+
+    it('still accepts a recipient on an ordinary scheduled report', async () => {
+      state.getReport.mockResolvedValue({ id: REPORT_ID, orgId: ORG_ID, type: 'device_inventory', config: {} });
+      state.results.push([{ id: CONTACT_ID }]);
+
+      const response = await app().request(`/${REPORT_ID}/recipients`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contactId: CONTACT_ID }),
+      });
+
+      expect(response.status).toBe(201);
+    });
+  });
 });

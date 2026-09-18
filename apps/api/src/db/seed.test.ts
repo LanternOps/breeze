@@ -551,3 +551,33 @@ describe('Workspace and connected-app permission defaults on upgrade (fail-close
     }
   });
 });
+
+describe('agreements RBAC (W02)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name);
+
+  it('seeds both agreements permission rows', () => {
+    const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);
+    expect(keys).toContain('agreements:read');
+    expect(keys).toContain('agreements:write');
+  });
+
+  it('Partner Billing can read and write agreements', () => {
+    expect(byName('Partner Billing')!.permissions).toEqual(
+      expect.arrayContaining(['agreements:read', 'agreements:write']),
+    );
+  });
+
+  it('Partner Billing Viewer can read agreements but not write them', () => {
+    const perms = byName('Partner Billing Viewer')!.permissions;
+    expect(perms).toContain('agreements:read');
+    expect(perms).not.toContain('agreements:write');
+  });
+
+  // Spec §4: templates are partner-scope in the UI today (partnerScopeOnly),
+  // so Org Admin's grant set is deliberately unchanged by this wave.
+  it('leaves Org Admin without an agreements grant', () => {
+    const perms = byName('Org Admin')!.permissions;
+    expect(perms).not.toContain('agreements:read');
+    expect(perms).not.toContain('agreements:write');
+  });
+});

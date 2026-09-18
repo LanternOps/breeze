@@ -5,8 +5,11 @@ import {
   Bell,
   CalendarClock,
   FileText,
+  KeyRound,
+  Laptop,
   Loader2,
   Plus,
+  ShieldAlert,
   ShieldCheck,
   X
 } from 'lucide-react';
@@ -18,6 +21,26 @@ import {
   HardwareLifecycleOptionsForm,
   type HardwareLifecycleOptions,
 } from './HardwareLifecycleOptionsForm';
+import {
+  DEFAULT_THREAT_DETECTION_OPTIONS,
+  ThreatDetectionOptionsForm,
+  type ThreatDetectionOptions,
+} from './ThreatDetectionOptionsForm';
+import {
+  DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS,
+  EndpointManagementOptionsForm,
+  type EndpointManagementOptions,
+} from './EndpointManagementOptionsForm';
+import {
+  DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS,
+  VulnerabilityManagementOptionsForm,
+  type VulnerabilityManagementOptions,
+} from './VulnerabilityManagementOptionsForm';
+import {
+  DEFAULT_IDENTITY_ACCESS_OPTIONS,
+  IdentityAccessOptionsForm,
+  type IdentityAccessOptions,
+} from './IdentityAccessOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -68,6 +91,10 @@ const reportTypeValues: TemplateReportType[] = [
   'executive_summary',
   'security_compliance_posture',
   'hardware_lifecycle',
+  'threat_detection_review',
+  'endpoint_management_review',
+  'vulnerability_management',
+  'identity_access_review',
   'devices',
   'alerts',
   'patches',
@@ -112,6 +139,78 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-emerald-500/15',
       iconColor: 'text-emerald-600'
+    }
+  },
+  {
+    id: 'threat_detection_review',
+    name: 'Threat Detection Review',
+    description:
+      'The threat detections held for a period, with the window actually covered stated on the face of it — never a zero for a source that was not connected.',
+    defaults: {
+      name: 'Threat Detection Review',
+      type: 'threat_detection_review',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: ShieldAlert,
+    tone: {
+      iconBg: 'bg-rose-500/15',
+      iconColor: 'text-rose-600'
+    }
+  },
+  {
+    id: 'endpoint_management_review',
+    name: 'Intune Endpoint Management Review',
+    description:
+      'Microsoft Intune evidence: enrolment coverage, compliance breakdown with a 30-day trend, stale enrolments and licence seats, with the freshness of each sync stated.',
+    defaults: {
+      name: 'Intune Endpoint Management Review',
+      type: 'endpoint_management_review',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Laptop,
+    tone: {
+      iconBg: 'bg-cyan-500/15',
+      iconColor: 'text-cyan-600'
+    }
+  },
+  {
+    id: 'vulnerability_management',
+    name: 'Vulnerability Management Report',
+    description:
+      'Open findings by severity with actively exploited (KEV) and high-EPSS called out separately, the patchable findings to remediate first, and the accepted-risk exceptions expiring next period.',
+    defaults: {
+      name: 'Vulnerability Management Report',
+      type: 'vulnerability_management',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: ShieldAlert,
+    tone: {
+      iconBg: 'bg-rose-500/15',
+      iconColor: 'text-rose-600'
+    }
+  },
+  {
+    id: 'identity_access_review',
+    name: 'Identity & Access Review',
+    description:
+      'Interactive Microsoft 365 sign-ins for a period, with the identity inventory, dormant accounts, conditional access posture and remote-access client presence — and the window actually covered stated on the face of it.',
+    defaults: {
+      name: 'Identity & Access Review',
+      type: 'identity_access_review',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: KeyRound,
+    tone: {
+      iconBg: 'bg-sky-500/15',
+      iconColor: 'text-sky-600'
     }
   },
   {
@@ -206,11 +305,13 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
   const name = item.name ?? fallback?.name;
   if (!name) return null;
 
-  // A saved report that matches a curated template (by id or name) folds into
-  // that curated card. `/reports/templates` returns every saved report, and
-  // "Use template" saves one under the curated name, so keying the row by its
-  // own UUID would render a second card with the same name after every use.
-  const id = fallback?.id ?? item.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  // A saved report keeps its own id even when it matches a curated template
+  // (by id or name) — `mergeTemplates` uses `fallback` to fold its display
+  // (icon/tone/description) onto the curated card, but the id itself must
+  // stay unique per saved report. Two saved reports that both kept the
+  // curated name (e.g. one monthly, one quarterly) must render as two cards,
+  // not collapse onto the curated template's shared id.
+  const id = item.id ?? fallback?.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
   const previewImage = item.previewImage ?? item.previewUrl ?? fallback?.previewImage;
   const fallbackType = fallback?.defaults.type ?? 'executive_summary';
   const rawType = item.defaults?.type ?? item.type ?? item.reportType ?? fallback?.defaults.type;
@@ -249,7 +350,16 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
 const mergeTemplates = (items: TemplateApiItem[]) => {
   const fallbackMap = new Map(defaultTemplates.map(template => [template.id, template]));
   const fallbackNameMap = new Map(defaultTemplates.map(template => [template.name.toLowerCase(), template]));
-  const normalized = new Map<string, ReportTemplate>();
+
+  // Saved reports that match a curated template (by id or name) replace that
+  // curated slot in the grid, grouped by the curated template's id — but each
+  // match keeps its own card. One match swaps in for the synthetic card in
+  // place; several matches (e.g. a monthly and a quarterly "Hardware
+  // Lifecycle Report") all render, side by side, instead of one silently
+  // shadowing the rest.
+  const matchesByFallbackId = new Map<string, ReportTemplate[]>();
+  const extras: ReportTemplate[] = [];
+  const seenIds = new Set<string>();
 
   items.forEach(item => {
     const fallback =
@@ -257,14 +367,19 @@ const mergeTemplates = (items: TemplateApiItem[]) => {
       (item.name && fallbackNameMap.get(item.name.toLowerCase())) ||
       undefined;
     const template = normalizeTemplate(item, fallback);
-    if (template) {
-      normalized.set(template.id, template);
+    if (!template || seenIds.has(template.id)) return;
+    seenIds.add(template.id);
+
+    if (fallback) {
+      const bucket = matchesByFallbackId.get(fallback.id) ?? [];
+      bucket.push(template);
+      matchesByFallbackId.set(fallback.id, bucket);
+    } else {
+      extras.push(template);
     }
   });
 
-  const merged = defaultTemplates.map(template => normalized.get(template.id) ?? template);
-  const defaultIds = new Set(defaultTemplates.map(template => template.id));
-  const extras = Array.from(normalized.values()).filter(template => !defaultIds.has(template.id));
+  const merged = defaultTemplates.flatMap(template => matchesByFallbackId.get(template.id) ?? [template]);
 
   return [...merged, ...extras];
 };
@@ -304,6 +419,14 @@ export default function ReportTemplates() {
   const [backupRequired, setBackupRequired] = useState(false);
   const [lifecycleTemplate, setLifecycleTemplate] = useState<ReportTemplate | null>(null);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
+  const [threatTemplate, setThreatTemplate] = useState<ReportTemplate | null>(null);
+  const [threatOptions, setThreatOptions] = useState<ThreatDetectionOptions>(DEFAULT_THREAT_DETECTION_OPTIONS);
+  const [endpointManagementTemplate, setEndpointManagementTemplate] = useState<ReportTemplate | null>(null);
+  const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
+  const [vulnerabilityTemplate, setVulnerabilityTemplate] = useState<ReportTemplate | null>(null);
+  const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
+  const [identityTemplate, setIdentityTemplate] = useState<ReportTemplate | null>(null);
+  const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -388,6 +511,26 @@ export default function ReportTemplates() {
       if (type === 'hardware_lifecycle') {
         setLifecycleOptions(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
         setLifecycleTemplate(template);
+        return;
+      }
+      if (type === 'threat_detection_review') {
+        setThreatOptions(DEFAULT_THREAT_DETECTION_OPTIONS);
+        setThreatTemplate(template);
+        return;
+      }
+      if (type === 'endpoint_management_review') {
+        setEndpointManagementOptions(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
+        setEndpointManagementTemplate(template);
+        return;
+      }
+      if (type === 'vulnerability_management') {
+        setVulnerabilityOptions(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
+        setVulnerabilityTemplate(template);
+        return;
+      }
+      if (type === 'identity_access_review') {
+        setIdentityOptions(DEFAULT_IDENTITY_ACCESS_OPTIONS);
+        setIdentityTemplate(template);
         return;
       }
       if (type && !reportTypeSurvivesBuilder(type)) {
@@ -583,6 +726,102 @@ export default function ReportTemplates() {
                 onCancel={() => setLifecycleTemplate(null)}
                 onSubmit={() => {
                   void handleCreateDirect(lifecycleTemplate, { ...lifecycleOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {threatTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(threatTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <ThreatDetectionOptionsForm
+                value={threatOptions}
+                onChange={setThreatOptions}
+                busy={creatingId === threatTemplate.id}
+                submitLabel={t('reports.threatDetectionOptions.createReport')}
+                onCancel={() => setThreatTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(threatTemplate, { ...threatOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {endpointManagementTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(endpointManagementTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <EndpointManagementOptionsForm
+                value={endpointManagementOptions}
+                onChange={setEndpointManagementOptions}
+                busy={creatingId === endpointManagementTemplate.id}
+                submitLabel={t('reports.endpointManagementOptions.createReport')}
+                onCancel={() => setEndpointManagementTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(endpointManagementTemplate, { ...endpointManagementOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {vulnerabilityTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(vulnerabilityTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <VulnerabilityManagementOptionsForm
+                value={vulnerabilityOptions}
+                onChange={setVulnerabilityOptions}
+                busy={creatingId === vulnerabilityTemplate.id}
+                submitLabel={t('reports.vulnerabilityManagementOptions.createReport')}
+                onCancel={() => setVulnerabilityTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(vulnerabilityTemplate, { ...vulnerabilityOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {identityTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(identityTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <IdentityAccessOptionsForm
+                value={identityOptions}
+                onChange={setIdentityOptions}
+                busy={creatingId === identityTemplate.id}
+                submitLabel={t('reports.identityAccessOptions.createReport')}
+                onCancel={() => setIdentityTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(identityTemplate, { ...identityOptions });
                 }}
               />
             </div>

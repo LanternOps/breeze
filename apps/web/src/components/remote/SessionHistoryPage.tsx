@@ -159,7 +159,14 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
                   </div>
                   <div>
                     <dt className="text-sm text-muted-foreground">{t('common:labels.status')}</dt>
-                    <dd className="text-sm capitalize">{selectedSession.status}</dd>
+                    <dd className="text-sm capitalize">
+                      {selectedSession.status}
+                      {selectedSession.terminationPhase === 'pending' && (
+                        <span className="ml-2 normal-case text-xs text-warning">
+                          {t('sessionHistoryPage.teardownPending')}
+                        </span>
+                      )}
+                    </dd>
                   </div>
                   <div>
                     <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.duration')}</dt>

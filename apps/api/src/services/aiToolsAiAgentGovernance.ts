@@ -48,6 +48,10 @@ import {
   SupervisedKeyGrantError,
 } from './aiAgents/supervisedKeyGrant';
 import type { AiTool, AiToolTier } from './aiTools';
+import {
+  canMutateOrgWideGovernance,
+  SITE_CEILING_WRITE_DENIED_MESSAGE,
+} from './siteCeilingAccess';
 
 /**
  * The three structural facts only the DISPATCH site can establish, checked
@@ -150,6 +154,24 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
           auth.principal?.kind ?? 'unknown',
           context?.actionIntentId,
         );
+        // SITE CEILING (audit §1.1). The grant converts "ask a human" into
+        // "run unattended for this ORG", fanning out across every site — there
+        // is nothing to narrow for a caller who holds only part of the org, so
+        // a site or exact-device ceiling fails closed exactly as it does for
+        // every other org-wide governance object. Enforced here rather than in
+        // `assertReleaseContext` so it applies to the caller's context on BOTH
+        // paths: the chat raise, and the release, which re-runs this handler
+        // under the requester's LIVE site restriction
+        // (`buildAuthContextForIntent`, actionIntents/actorContext.ts).
+        // Returned, not thrown, for the same reason every other refusal here
+        // is: `isReturnedToolError` must see `{error}` to terminalize the
+        // intent as `failed:tool_returned_error`.
+        if (!canMutateOrgWideGovernance(auth)) {
+          return JSON.stringify({
+            error: 'site_ceiling',
+            message: SITE_CEILING_WRITE_DENIED_MESSAGE,
+          });
+        }
         const result = await authorizeSupervisedKey({
           orgId,
           kind: input.kind as AiAgentKind,

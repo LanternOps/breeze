@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuth = vi.fn();
@@ -48,6 +48,9 @@ const card = {
     enrollmentIp: '198.51.100.2',
   }],
   denials24h: 3,
+  sendingDomains: [
+    { domain: 'mail.acme.example', status: 'verified', verifiedAt: '2026-09-01T00:00:00.000Z' },
+  ],
   matchedSuspendedAxes: ['email_domain'],
 };
 
@@ -311,5 +314,17 @@ describe('TrustQueue', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
 
     expect(await screen.findByText('Sign in as a platform admin')).toBeTruthy();
+  });
+});
+
+describe("the evidence card's sending domains (W06)", () => {
+  it("shows the partner's sending domains inside the expanded evidence card", async () => {
+    fetchWithAuth.mockResolvedValue(queueResponse());
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+    fireEvent.click(screen.getByTestId('trust-queue-expand-partner-1'));
+    const cardEl = await screen.findByTestId('trust-queue-card-partner-1');
+    expect(within(cardEl).getByTestId('trust-queue-sending-domains-partner-1').textContent)
+      .toContain('mail.acme.example');
   });
 });

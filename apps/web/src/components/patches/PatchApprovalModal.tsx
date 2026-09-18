@@ -20,6 +20,9 @@ type PatchApprovalModalProps = {
   orgName?: string | null;
   /** Number of devices in the target ring/scope, for the confirm message. */
   ringDeviceCount?: number | null;
+  /** Which action tab is preselected on open (default 'approve'). Used by the
+   * "Unapprove" row action to open straight into 'decline' (#5585). */
+  initialAction?: PatchApprovalAction;
   onClose: () => void;
   onSubmit?: (patchId: string, action: PatchApprovalAction, notes: string) => void | Promise<void>;
   loading?: boolean;
@@ -59,6 +62,7 @@ export default function PatchApprovalModal({
   ringId,
   orgName,
   ringDeviceCount,
+  initialAction,
   onClose,
   onSubmit,
   loading
@@ -70,16 +74,20 @@ export default function PatchApprovalModal({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string>();
   const [approveConfirmOpen, setApproveConfirmOpen] = useState(false);
+  // Decline-only: clear every ring approval for this patch, not just the
+  // current/blanket scope (#5585). Reset alongside the rest of the form.
+  const [allRings, setAllRings] = useState(false);
 
   useEffect(() => {
     if (open) {
-      setAction('approve');
+      setAction(initialAction ?? 'approve');
       setNotes('');
       setDeferUntil(getDefaultDeferUntil());
       setSubmitting(false);
       setSubmitError(undefined);
+      setAllRings(false);
     }
-  }, [open, patch?.id]);
+  }, [open, patch?.id, initialAction]);
 
   const isSubmitting = useMemo(() => loading ?? submitting, [loading, submitting]);
   // Approval is partner-scoped. Partner/system users can approve partner-wide
@@ -149,8 +157,15 @@ export default function PatchApprovalModal({
     try {
       // Map actions to API endpoints: approve, decline, or defer
       const endpoint = action === 'approve' ? 'approve' : action === 'decline' ? 'decline' : 'defer';
+      const declineAllRings = action === 'decline' && allRings;
       const body: Record<string, unknown> = { note: notes };
-      if (ringId) body.ringId = ringId;
+      // allRings and ringId are mutually exclusive on the API — clearing every
+      // ring approval supersedes whatever scope this modal opened in (#5585).
+      if (declineAllRings) {
+        body.allRings = true;
+      } else if (ringId) {
+        body.ringId = ringId;
+      }
       // Partner-wide (no ring): the API resolves the partner from auth.partnerId.
       // Ring-scoped: the API resolves the org from the ring.
       if (action === 'defer') {
@@ -164,7 +179,9 @@ export default function PatchApprovalModal({
         action === 'approve'
           ? t('patchApprovalModal.toast.approved')
           : action === 'decline'
-            ? t('patchApprovalModal.toast.declined')
+            ? declineAllRings
+              ? t('patchApprovalModal.toast.declinedAllRings')
+              : t('patchApprovalModal.toast.declined')
             : t('patchApprovalModal.toast.deferred');
 
       // Surface success/failure via runAction (toast + HTTP-200 {success:false}
@@ -250,6 +267,28 @@ export default function PatchApprovalModal({
             disabled={isSubmitting}
           />
         </div>
+
+        {action === 'decline' && (
+          <label
+            htmlFor="patch-decline-all-rings"
+            className="mt-4 flex items-start gap-2 rounded-md border px-3 py-2 text-sm"
+          >
+            <input
+              id="patch-decline-all-rings"
+              type="checkbox"
+              checked={allRings}
+              onChange={(event) => setAllRings(event.target.checked)}
+              disabled={isSubmitting}
+              className="mt-0.5 h-4 w-4 rounded border-muted-foreground/40"
+            />
+            <span>
+              <span className="font-medium">{t('patchApprovalModal.allRings.label')}</span>
+              <span className="block text-xs text-muted-foreground">
+                {t('patchApprovalModal.allRings.description')}
+              </span>
+            </span>
+          </label>
+        )}
 
         {action === 'defer' && (
           <div className="mt-6">

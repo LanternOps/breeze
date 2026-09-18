@@ -59,7 +59,6 @@ const item = (partnerId: string, name: string, sku: string) => ({
   itemType: 'service' as const,
   name,
   sku,
-  unitPrice: '1.00',
   costCurrency: 'USD',
 });
 

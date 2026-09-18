@@ -12,11 +12,27 @@ export function isBlank(value: unknown): boolean {
   return typeof value === 'string' && value.trim() === '';
 }
 
-export function formatTimestamp(value?: string | null): string {
+// Absolute stamps on this page never carry seconds: "First seen" explicitly
+// drops them (spec §11 Formatting), and a page where some stamps show seconds
+// and others don't reads as a bug. Seconds also carry no information at
+// scan/poll cadences. `timeZone` is the site's zone when the asset has a site
+// (see `resolveAssetTimezone`), else the browser's.
+const ABSOLUTE_STAMP_OPTIONS: Intl.DateTimeFormatOptions = {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+};
+
+export function formatTimestamp(value?: string | null, timezone?: string): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return formatDateTime(date);
+  return formatDateTime(
+    date,
+    timezone ? { ...ABSOLUTE_STAMP_OPTIONS, timeZone: timezone } : ABSOLUTE_STAMP_OPTIONS,
+  );
 }
 
 // Kinds that get a muted label on their row instead of an action or a

@@ -41,6 +41,14 @@ const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
   computer_control: 120_000,
   // Report generation — aggregates across many devices
   generate_report: 90_000,
+  // Execution plane W04 — a workspace step's own timeout is clamped to
+  // `analysisMaxStepTimeoutSeconds` (600s ceiling) inside WorkspaceService;
+  // this outer guard must sit ABOVE it or it would cancel a legitimate step
+  // at 60s, orphaning a sandbox process the run is still paying for.
+  workspace_run: 660_000,
+  // Staging and collecting stream up to 64 MiB per file through the worker.
+  workspace_stage: 180_000,
+  workspace_collect: 180_000,
 };
 
 export function getToolTimeout(toolName: string): number {

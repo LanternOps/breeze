@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { aiTools } from './aiTools';
+import { aiTools, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { TOOL_PERMISSIONS } from './aiGuardrails';
+import { TOOL_TIERS } from './aiAgentSdkTools';
 
 describe('aiTools registry parity', () => {
   const toolNames = Array.from(aiTools.keys());
@@ -49,5 +50,22 @@ describe('aiTools registry parity', () => {
     const registered = new Set(toolNames);
     const unknown = [...legacySchemaGaps, ...legacyPermissionGaps].filter(name => !registered.has(name));
     expect(unknown, `Not in the aiTools registry: ${unknown.join(', ')}`).toEqual([]);
+  });
+
+  // Task A10: tenant (BYO MCP) tool names are qualified as `<slug>__<name>`
+  // (packages/shared/src/validators/toolSources.ts's `qualifiedToolName`) —
+  // the ONLY thing that lets `routes/mcpServer.ts`'s `tools/call` and
+  // `aiAgentSdk.ts`'s `createSessionPreToolUse` dispatch on name shape alone
+  // (`isTenantToolName`) rather than a slower membership check against every
+  // resolved tenant tool. A core tool ever registered with `__` in its name
+  // would silently collide with that dispatch and get routed as if it were a
+  // tenant tool.
+  it('no core tool name (TOOL_TIERS or getToolDefinitions()) contains "__"', () => {
+    const tierNames = Object.keys(TOOL_TIERS).filter(name => name.includes('__'));
+    const definitionNames = getToolDefinitions()
+      .map(tool => tool.name)
+      .filter(name => name.includes('__'));
+    expect(tierNames, `TOOL_TIERS names containing "__": ${tierNames.join(', ')}`).toEqual([]);
+    expect(definitionNames, `getToolDefinitions() names containing "__": ${definitionNames.join(', ')}`).toEqual([]);
   });
 });

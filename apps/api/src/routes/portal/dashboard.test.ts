@@ -108,6 +108,7 @@ describe('GET /dashboard', () => {
     expect(mocks.dashboardForOrg).toHaveBeenCalledWith(
       '11111111-1111-4111-8111-111111111111',
       expect.objectContaining({ timezone: 'America/Denver' }),
+      expect.any(Object),
     );
   });
 
