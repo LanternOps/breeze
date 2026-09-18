@@ -200,7 +200,11 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   // empty state names the next due date: the server-derived nextDue, else the
   // anchor when it is still ahead of us (a past anchor of a recurring
   // deliverable says nothing about the next period, so omit the date then).
-  const today = new Date().toISOString().slice(0, 10);
+  // anchorDueDate/nextDue are plain dates (no timezone), so "today" must be
+  // the viewer's LOCAL calendar date, not UTC (see OrgServiceTab's todayIso) —
+  // otherwise this is off by a day near midnight for anyone not on UTC.
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const firstDue =
     deliverable.nextDue ?? (deliverable.anchorDueDate.slice(0, 10) >= today ? deliverable.anchorDueDate : null);
 
