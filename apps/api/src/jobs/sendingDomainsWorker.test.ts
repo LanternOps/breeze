@@ -657,4 +657,17 @@ describe('evaluate-auto-suspend', () => {
     await enqueueAutoSuspendEvaluation(PARTNER_ID);
     expect(queueAdd.mock.calls[0]![2]).toMatchObject({ attempts: 3 });
   });
+
+  // BullMQ refuses a later add() whose jobId still matches a RETAINED record,
+  // so keeping completed/failed jobs would silently drop every subsequent
+  // evaluation for that partner — the collapse-the-burst design turned into a
+  // permanent mute.
+  it('retains no job record, so a later evaluation for the same partner is not dropped', async () => {
+    laneConfigured.value = true;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    expect(queueAdd.mock.calls[0]![2]).toMatchObject({
+      removeOnComplete: true,
+      removeOnFail: true,
+    });
+  });
 });

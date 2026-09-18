@@ -495,10 +495,12 @@ const ZERO_METRICS: SendingPartnerMetricsDto = Object.freeze({
 export async function listAllSendingDomainsWithMetrics(
   opts: { limit: number },
 ): Promise<Array<SendingDomainDto & { partnerId: string; partnerName: string; metrics: SendingPartnerMetricsDto }>> {
-  const [domains, windowStats] = await Promise.all([
-    listAllSendingDomains(opts),
-    loadAllPartnerSendingWindowStats(),
-  ]);
+  // SEQUENTIAL, not Promise.all: each call opens its own
+  // withSystemDbAccessContext transaction, so running them concurrently pins
+  // three pooled connections per admin GET (this request's plus both children)
+  // instead of two — the shape that hangs at concurrency >= pool size.
+  const domains = await listAllSendingDomains(opts);
+  const windowStats = await loadAllPartnerSendingWindowStats();
   const byPartner = new Map(windowStats.map((s) => [s.partnerId, s]));
   return domains.map((domain) => {
     const stats = byPartner.get(domain.partnerId);
