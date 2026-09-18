@@ -136,6 +136,12 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
     expect(screen.getByTestId('ai-agent-mode-act-unavailable')).toBeInTheDocument();
   });
 
+  it('arrow keys never land on a disabled act card when it is the only other designer option', () => {
+    const { onChange } = setup({ kind: 'designer', mode: 'off', actSupported: false });
+    fireEvent.keyDown(screen.getByTestId('ai-agent-mode-off'), { key: 'ArrowRight' });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('arrow keys step across only the two offered designer modes', () => {
     const { onChange } = setup({ kind: 'designer', mode: 'off' });
     fireEvent.keyDown(screen.getByTestId('ai-agent-mode-off'), { key: 'ArrowRight' });

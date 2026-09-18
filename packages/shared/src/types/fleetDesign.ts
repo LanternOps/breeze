@@ -189,3 +189,17 @@ export interface FleetDesignerSetup {
    *  an org-scoped token when the fix needs a partner-wide write. */
   canEnable: boolean;
 }
+
+/** Refusals `POST /ai/fleet-design/designer/enable` can answer with, as the
+ *  `error` token. Shared so the web's friendly-copy allowlist and the API's
+ *  status table are both typed against the same list. */
+export const FLEET_DESIGNER_ENABLE_ERROR_CODES = [
+  'partner_scope_required',
+  'partner_admin_required',
+  'kill_switch_off',
+  'agent_kind_exists',
+  'act_prerequisites_not_met',
+  'invalid_recipients',
+] as const;
+
+export type FleetDesignerEnableErrorCode = (typeof FLEET_DESIGNER_ENABLE_ERROR_CODES)[number];

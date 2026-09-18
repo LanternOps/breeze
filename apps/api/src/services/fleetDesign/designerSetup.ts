@@ -17,7 +17,12 @@
  * setup would have produced. Nothing here is a new write path.
  */
 import { and, eq, isNull } from 'drizzle-orm';
-import { createAiAgentSchema, type FleetDesignerSetup, type FleetDesignerSetupStatus } from '@breeze/shared';
+import {
+  createAiAgentSchema,
+  type FleetDesignerEnableErrorCode,
+  type FleetDesignerSetup,
+  type FleetDesignerSetupStatus,
+} from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgents, type AiAgentRow } from '../../db/schema';
 import { envFlag } from '../../config/env';
@@ -36,13 +41,7 @@ import { normalizeAgentPolicy, resolveEffectiveAgent, type ResolvedAgent } from 
 
 export const DEFAULT_DESIGNER_AGENT_NAME = 'Fleet Designer';
 
-export type DesignerEnableErrorCode =
-  | 'partner_scope_required'
-  | 'partner_admin_required'
-  | 'kill_switch_off'
-  | 'agent_kind_exists'
-  | 'act_prerequisites_not_met'
-  | 'invalid_recipients';
+export type DesignerEnableErrorCode = FleetDesignerEnableErrorCode;
 
 /** The one error shape the route maps. `detail` carries the underlying
  *  service error's actionable payload (`missing`, invalid ids) untouched. */
@@ -88,8 +87,11 @@ function partnerRowNeedsFix(resolved: ResolvedAgent): boolean {
 }
 
 function statusOf(resolved: ResolvedAgent | null): FleetDesignerSetupStatus {
-  if (!resolved) return 'missing';
+  // Checked before `missing`: creating an agent under a platform-wide kill
+  // switch would land on the same `enabled: false` the switch forces, so
+  // offering "Enable" there would be a button that cannot work.
   if (killSwitchOff()) return 'kill_switch_off';
+  if (!resolved) return 'missing';
   if (!resolved.effective.enabled) return 'disabled';
   if (resolved.effective.mode === 'off') return 'off';
   return 'ready';
@@ -136,9 +138,14 @@ export async function enableDesigner(auth: AuthContext, orgId: string): Promise<
 
 async function enableDesignerInner(auth: AuthContext, orgId: string): Promise<FleetDesignerSetup> {
   const resolved = await resolveEffectiveAgent(auth, orgId, 'designer');
+  if (killSwitchOff()) throw new DesignerEnableError('kill_switch_off');
 
   if (!resolved) {
     if (!auth.partnerId) throw new DesignerEnableError('partner_scope_required');
+    // An org-scoped token carries a partnerId too; createAgent's own
+    // assertAgentWriteAllowed would refuse it, but naming the remedy here
+    // keeps the answer the same one describeDesignerSetup's canEnable gave.
+    if (!partnerWritable(auth)) throw new DesignerEnableError('partner_admin_required');
     // Parsed through the create schema so every nested default the settings
     // form would have materialised (limits, triggers, actAssets, …) is
     // present — createAgent relies on that, see its assertActPrerequisites.
@@ -154,17 +161,15 @@ async function enableDesignerInner(auth: AuthContext, orgId: string): Promise<Fl
     return describeDesignerSetup(auth, orgId);
   }
 
-  if (killSwitchOff()) throw new DesignerEnableError('kill_switch_off');
-
-  if (partnerRowNeedsFix(resolved)) {
-    // getAgent is bound to the caller's visibility: an org-scoped token
-    // cannot see (let alone write) the partner baseline, and updateAgent
-    // would refuse anyway — name the real remedy instead of a bare 404.
-    const partnerRow = await getAgent(auth, resolved.agentId);
-    if (!partnerRow) throw new DesignerEnableError('partner_admin_required');
-    if (rowIsOff(partnerRow)) await updateAgent(auth, partnerRow.id, turnOnPatch(partnerRow, auth));
-  }
-
+  // Two rows may need a change. The org override goes FIRST: the route
+  // answers a refusal with a mapped response (so the request transaction
+  // still commits whatever ran before it), and of the two possible partial
+  // outcomes only one is consequential — a partner-wide row switched on
+  // for every org under the partner, behind a toast saying it failed. With
+  // the org row first, a failure on either step leaves the design off
+  // everywhere it was off before: the org row alone can never self-enable
+  // (`resolveEffectiveAgentInner` needs the partner baseline).
+  //
   // The org override (if any) narrows the partner baseline: `enabled` is
   // AND-ed and `mode` is min-ed, so an off org row keeps the design off no
   // matter what the partner row says.
@@ -174,6 +179,15 @@ async function enableDesignerInner(auth: AuthContext, orgId: string): Promise<Fl
     .where(and(eq(aiAgents.orgId, orgId), eq(aiAgents.kind, 'designer'), isNull(aiAgents.disabledAt)))
     .limit(1);
   if (orgRow && rowIsOff(orgRow)) await updateAgent(auth, orgRow.id, turnOnPatch(orgRow, auth));
+
+  if (partnerRowNeedsFix(resolved)) {
+    // getAgent is bound to the caller's visibility: an org-scoped token
+    // cannot see (let alone write) the partner baseline, and updateAgent
+    // would refuse anyway — name the real remedy instead of a bare 404.
+    const partnerRow = await getAgent(auth, resolved.agentId);
+    if (!partnerRow) throw new DesignerEnableError('partner_admin_required');
+    if (rowIsOff(partnerRow)) await updateAgent(auth, partnerRow.id, turnOnPatch(partnerRow, auth));
+  }
 
   return describeDesignerSetup(auth, orgId);
 }

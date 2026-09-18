@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { FleetDesignOutcome } from '@breeze/shared';
+import { FLEET_DESIGNER_ENABLE_ERROR_CODES, type FleetDesignOutcome } from '@breeze/shared';
+import en from '../../locales/en/fleetDesign.json';
 import FleetDesignPage from './FleetDesignPage';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) }) }));
@@ -183,6 +184,14 @@ describe('FleetDesignPage', () => {
 
       await screen.findByTestId('fleet-design-designer-setup');
       expect(screen.queryByTestId('fleet-design-enable-button')).not.toBeInTheDocument();
+    });
+
+    it('has friendly copy for every enable error code the API can answer with', () => {
+      const errors = (en as { page: { designerSetup: { errors: Record<string, string> } } }).page.designerSetup.errors;
+      for (const code of FLEET_DESIGNER_ENABLE_ERROR_CODES) {
+        const key = code.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+        expect(errors[key], `page.designerSetup.errors.${key}`).toBeTruthy();
+      }
     });
 
     it('never offers enable for the platform kill switch', async () => {

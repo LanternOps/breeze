@@ -40,6 +40,7 @@ vi.mock('../../db', () => ({ db: { select: selectMock } }));
 const { describeDesignerSetup, enableDesigner, DesignerEnableError } = await import('./designerSetup');
 const { ActPrerequisitesNotMetError, AgentKindConflictError } = await import('../aiAgents/agentService');
 const { AgentAccessDeniedError } = await import('../aiAgents/access');
+const { InvalidAgentRecipientsError } = await import('../aiAgents/recipients');
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const PARTNER_ID = '22222222-2222-4222-8222-222222222222';
@@ -141,6 +142,12 @@ describe('describeDesignerSetup', () => {
     await expect(describeDesignerSetup(partnerAdminAuth(), ORG_ID)).resolves.toMatchObject({ status: 'off', canEnable: true });
   });
 
+  it('reports kill_switch_off ahead of missing — creating an agent under the switch cannot help', async () => {
+    envFlagMock.mockReturnValue(false);
+    resolveEffectiveAgentMock.mockResolvedValue(null);
+    await expect(describeDesignerSetup(partnerAdminAuth(), ORG_ID)).resolves.toEqual({ status: 'kill_switch_off', agentId: null, canEnable: false });
+  });
+
   it('reports disabled ahead of off', async () => {
     resolveEffectiveAgentMock.mockResolvedValue(resolved({ enabled: false, mode: 'off' }));
     await expect(describeDesignerSetup(partnerAdminAuth(), ORG_ID)).resolves.toMatchObject({ status: 'disabled' });
@@ -175,12 +182,32 @@ describe('enableDesigner', () => {
     expect(createAgentMock).not.toHaveBeenCalled();
   });
 
-  it('refuses when the platform kill switch is off, touching nothing', async () => {
+  it('refuses to create for an org-scoped token even though it carries a partnerId', async () => {
+    resolveEffectiveAgentMock.mockResolvedValue(null);
+    await expect(enableDesigner(orgAuth(), ORG_ID)).rejects.toMatchObject({ code: 'partner_admin_required' });
+    expect(createAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the platform kill switch is off, touching nothing — with or without an existing agent', async () => {
     envFlagMock.mockReturnValue(false);
     resolveEffectiveAgentMock.mockResolvedValue(resolved({ enabled: false }));
-    await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).rejects.toBeInstanceOf(DesignerEnableError);
+    await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).rejects.toMatchObject({ code: 'kill_switch_off' });
+    resolveEffectiveAgentMock.mockResolvedValue(null);
+    await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).rejects.toMatchObject({ code: 'kill_switch_off' });
     expect(updateAgentMock).not.toHaveBeenCalled();
     expect(createAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a role-only recipient list untouched when turning a row on', async () => {
+    resolveEffectiveAgentMock
+      .mockResolvedValueOnce(resolved({ mode: 'off', provenance: { mode: 'partner' } }))
+      .mockResolvedValueOnce(resolved());
+    getAgentMock.mockResolvedValue(agentRow({ recipients: { userIds: [], roleIds: ['role-1'] } }));
+    updateAgentMock.mockResolvedValue(agentRow({ enabled: true, mode: 'act' }));
+
+    await enableDesigner(partnerAdminAuth(), ORG_ID);
+
+    expect(updateAgentMock).toHaveBeenCalledWith(expect.anything(), PARTNER_AGENT_ID, { enabled: true, mode: 'act' });
   });
 
   it('turns on the partner row (adding the caller as recipient when it has none) and an off org override', async () => {
@@ -194,14 +221,27 @@ describe('enableDesigner', () => {
     await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).resolves.toMatchObject({ status: 'ready' });
 
     expect(updateAgentMock).toHaveBeenCalledTimes(2);
-    expect(updateAgentMock).toHaveBeenNthCalledWith(1, expect.anything(), PARTNER_AGENT_ID, {
+    // Org row FIRST (the org row already had a recipient: only the switches
+    // are touched), partner row second — see enableDesignerInner's ordering note.
+    expect(updateAgentMock).toHaveBeenNthCalledWith(1, expect.anything(), ORG_AGENT_ID, { enabled: true, mode: 'act' });
+    expect(updateAgentMock).toHaveBeenNthCalledWith(2, expect.anything(), PARTNER_AGENT_ID, {
       enabled: true,
       mode: 'act',
       recipients: { userIds: [USER_ID] },
     });
-    // The org row already had a recipient: only the switches are touched.
-    expect(updateAgentMock).toHaveBeenNthCalledWith(2, expect.anything(), ORG_AGENT_ID, { enabled: true, mode: 'act' });
     expect(createAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('never touches the partner-wide row when the org override refuses to turn on', async () => {
+    resolveEffectiveAgentMock.mockResolvedValue(resolved({ enabled: false, mode: 'off' }));
+    selectMock.mockReturnValue(selectChain([agentRow({ id: ORG_AGENT_ID, orgId: ORG_ID, partnerId: null, enabled: false, mode: 'off' })]));
+    updateAgentMock.mockRejectedValueOnce(new ActPrerequisitesNotMetError(['recipient']));
+
+    await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).rejects.toMatchObject({ code: 'act_prerequisites_not_met' });
+
+    expect(updateAgentMock).toHaveBeenCalledTimes(1);
+    expect(updateAgentMock.mock.calls[0]![1]).toBe(ORG_AGENT_ID);
+    expect(getAgentMock).not.toHaveBeenCalled();
   });
 
   it('leaves a healthy partner row alone and fixes only the org override', async () => {
@@ -235,6 +275,12 @@ describe('enableDesigner', () => {
 
     createAgentMock.mockRejectedValueOnce(new AgentKindConflictError('designer'));
     await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).rejects.toMatchObject({ code: 'agent_kind_exists' });
+
+    createAgentMock.mockRejectedValueOnce(new InvalidAgentRecipientsError(['bad-user'], []));
+    await expect(enableDesigner(partnerAdminAuth(), ORG_ID)).rejects.toMatchObject({
+      code: 'invalid_recipients',
+      detail: { invalidUserIds: ['bad-user'], invalidRoleIds: [] },
+    });
 
     resolveEffectiveAgentMock.mockResolvedValue(resolved({ mode: 'off', provenance: { mode: 'partner' } }));
     getAgentMock.mockResolvedValue(agentRow());

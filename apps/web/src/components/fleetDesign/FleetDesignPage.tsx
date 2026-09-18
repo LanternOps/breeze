@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { Download, DraftingCompass, FileText, Play, Power, RotateCcw } from "lucide-react";
-import type { FleetDesignOutcome, FleetDesignLedgerItem, FleetDesignRollbackResult, FleetDesignerSetup } from "@breeze/shared";
+import { FLEET_DESIGNER_ENABLE_ERROR_CODES, type FleetDesignOutcome, type FleetDesignLedgerItem, type FleetDesignRollbackResult, type FleetDesignerSetup } from "@breeze/shared";
 import { useOrgStore } from "../../stores/orgStore";
 import { fetchWithAuth } from "../../stores/auth";
 import { showToast } from "../shared/Toast";
@@ -50,15 +50,10 @@ const SPECIFIC_SKIP_REASONS = new Set([
   "duplicate",
 ]);
 
-/** `POST /ai/fleet-design/designer/enable` refusals with their own copy. */
-const ENABLE_ERROR_CODES = new Set([
-  "partner_scope_required",
-  "partner_admin_required",
-  "kill_switch_off",
-  "agent_kind_exists",
-  "act_prerequisites_not_met",
-  "invalid_recipients",
-]);
+/** `POST /ai/fleet-design/designer/enable` refusals with their own copy —
+ *  the shared list, so a code added on the API side is a type-level
+ *  reminder that `page.designerSetup.errors.*` needs a key for it. */
+const ENABLE_ERROR_CODES: ReadonlySet<string> = new Set(FLEET_DESIGNER_ENABLE_ERROR_CODES);
 
 function toCamelCase(reason: string): string {
   return reason.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
