@@ -52,7 +52,7 @@ func TestQEMUGatePathsMatchBackupDependencySet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open %s: %v", gateFile, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	got := map[string]bool{}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
