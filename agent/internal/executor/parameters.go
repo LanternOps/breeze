@@ -31,8 +31,8 @@ import (
 // SYSTEM path never would — reintroducing drift in the opposite direction.
 //
 // Returns nil when the payload has no "parameters" object at all. nil and an
-// empty map behave identically downstream (SubstituteParameters returns the
-// content untouched; buildEnvironment appends nothing), so callers may assign
+// empty map behave identically downstream (RenderParameterReferences returns
+// the content untouched; buildEnvironment appends nothing), so callers may assign
 // the result unconditionally.
 //
 // SecretEnv is deliberately NOT handled here. Secrets are parsed and validated

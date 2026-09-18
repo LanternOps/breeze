@@ -3,10 +3,12 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -447,10 +449,27 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 		return result, err
 	}
 
-	// Substitute parameters first, then validate
-	scriptContent := SubstituteParameters(script.Script, script.Parameters)
+	// Rewrite `{{param}}` placeholders into references to the BREEZE_PARAM_*
+	// environment variables buildEnvironment exports (paramrefs.go), so a
+	// parameter value is DATA to the interpreter rather than script text. A
+	// context that cannot carry the value safely (bash arithmetic, a quoted
+	// heredoc, a PowerShell literal here-string, …) fails the run here, before
+	// anything is written to disk or executed.
+	scriptContent, rendered, renderFailure := RenderParameterReferences(script.Script, script.ScriptType, script.Parameters)
+	if renderFailure != nil {
+		log.Warn("script parameter rendering failed", "executionId", script.ID, "error", renderFailure)
+		result.ExitCode = -1
+		result.Error = fmt.Sprintf("script parameter substitution failed: %v", renderFailure)
+		result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+		return result, renderFailure
+	}
+	if rendered && renderedScriptHookForTests != nil {
+		scriptContent = renderedScriptHookForTests(scriptContent)
+	}
 
-	// Validate script content for security (after parameter substitution)
+	// Validate script content for security (after parameter rendering). The
+	// denylist is defense in depth against the script AUTHOR, not against
+	// parameter values — those are no longer part of the script text.
 	if err := e.validateScript(scriptContent, script.AcknowledgedSecurityPatterns); err != nil {
 		log.Warn("script validation failed", "executionId", script.ID, "error", err)
 		result.ExitCode = -1
@@ -470,6 +489,21 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	}
 	defer CleanupScript(scriptPath)
 
+	// Fail closed on a render that produced un-parseable bash. bash executes a
+	// script line by line, so a bug in the placeholder rewriting must not be
+	// allowed to run the first half of a script before the shell trips over
+	// the damage. Python and PowerShell compile the whole file up front and
+	// cmd.exe has no syntax-only mode, so the gate is bash-only.
+	if rendered && strings.EqualFold(script.ScriptType, ScriptTypeBash) {
+		if err := checkBashSyntax(scriptPath); err != nil {
+			log.Warn("rendered bash script failed the syntax gate", "executionId", script.ID, "error", err)
+			result.ExitCode = -1
+			result.Error = err.Error()
+			result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+			return result, err
+		}
+	}
+
 	// Determine timeout
 	timeout := script.Timeout
 	if timeout <= 0 {
@@ -485,6 +519,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 
 	// Build command
 	shellCmd, shellArgs := GetShellCommand(script.ScriptType)
+	shellArgs = withDelayedExpansion(shellArgs, script.ScriptType, rendered)
 	if shellCmd == "" {
 		err := fmt.Errorf("no shell available for script type: %s", script.ScriptType)
 		result.ExitCode = -1
@@ -924,16 +959,92 @@ func (e *Executor) configureRunAs(cmd *exec.Cmd, runAs string) error {
 		// On Unix systems, we can use sudo
 		originalArgs := cmd.Args
 		cmd.Path = "/usr/bin/sudo"
-		if strings.EqualFold(target, "root") {
-			cmd.Args = append([]string{"sudo", "-n"}, originalArgs...)
-		} else {
-			cmd.Args = append([]string{"sudo", "-n", "-u", target}, originalArgs...)
+		sudoArgs := []string{"sudo", "-n"}
+		// sudo strips the environment by default, which would drop every
+		// BREEZE_PARAM_*/BREEZE_VAR_* the script now REFERENCES rather than
+		// embeds — the script would see empty parameters instead of failing.
+		// Only names are passed on the command line, never values.
+		if preserve := preserveEnvArg(cmd.Env); preserve != "" {
+			sudoArgs = append(sudoArgs, preserve)
 		}
+		if !strings.EqualFold(target, "root") {
+			sudoArgs = append(sudoArgs, "-u", target)
+		}
+		cmd.Args = append(sudoArgs, originalArgs...)
 		return nil
 
 	default:
 		return fmt.Errorf("runAs not supported on %s", runtime.GOOS)
 	}
+}
+
+// withDelayedExpansion turns on cmd.exe's delayed expansion when a rendered
+// cmd script references its parameters as `!BREEZE_PARAM_X!`. Delayed
+// expansion inserts the value AFTER the line is parsed (unlike `%VAR%`, which
+// is textual and pre-parse, so `a & calc` would execute), and it is off unless
+// cmd.exe is started with /V:ON — which has to precede /C. Scripts with no
+// rendered placeholder are left alone, because /V:ON also eats a literal `!`
+// in the author's own text.
+func withDelayedExpansion(shellArgs []string, scriptType string, rendered bool) []string {
+	if !rendered || !strings.EqualFold(scriptType, ScriptTypeCMD) {
+		return shellArgs
+	}
+	return append([]string{"/V:ON"}, shellArgs...)
+}
+
+// preserveEnvArg builds sudo's --preserve-env=<names> argument for every
+// BREEZE_* variable present in the command's environment, or "" when there are
+// none. Names are sorted so the argv is deterministic (and testable).
+func preserveEnvArg(env []string) string {
+	var names []string
+	for _, entry := range env {
+		eq := strings.IndexByte(entry, '=')
+		if eq <= 0 {
+			continue
+		}
+		name := entry[:eq]
+		if strings.HasPrefix(name, "BREEZE_") {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return "--preserve-env=" + strings.Join(names, ",")
+}
+
+// renderedScriptHookForTests lets a test corrupt the rendered script text to
+// prove the bash syntax gate below fails closed. Never set in production.
+var renderedScriptHookForTests func(string) string
+
+// checkBashSyntax runs the bash parser over the rendered script without
+// executing it.
+func checkBashSyntax(scriptPath string) error {
+	bashPath, _ := GetShellCommand(ScriptTypeBash)
+	if bashPath == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bashPath, "-n", scriptPath)
+	hideWindow(cmd)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("script syntax check timed out after parameter substitution")
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		// bash itself could not be run (not installed, denied). The gate cannot
+		// judge the script; leave the decision to the interpreter.
+		log.Warn("could not run the rendered-script syntax check", "error", err)
+		return nil
+	}
+	return fmt.Errorf("script is not valid after parameter substitution: %s",
+		strings.TrimSpace(procoutput.BytesToUTF8(output)))
 }
 
 // limitedWriter wraps a buffer with a size limit and tracks truncation.

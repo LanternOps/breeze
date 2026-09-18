@@ -393,14 +393,14 @@ Every parameter has a **source** that decides where its value comes from. By def
 
 ### Using parameters in script content
 
-The agent substitutes parameter placeholders before execution. Two placeholder formats are supported:
+Parameter values are delivered to your script as **data, never as script text**. Every parameter is exported into the script's environment as `BREEZE_PARAM_<KEY>` (the key upper-cased, `-` becomes `_`), and the agent rewrites each placeholder into a reference to that variable in the script's own language before the script runs. A value containing quotes, `$`, `&` or a newline is therefore just a value — it cannot become another command.
 
 | Format | Example |
 |--------|---------|
 | `{{paramName}}` | `echo "Threshold is {{threshold}}"` |
 | `${{paramName}}` | `echo "Threshold is ${{threshold}}"` |
 
-Both formats are replaced with the parameter value. Parameters are also injected as environment variables with the prefix `BREEZE_PARAM_`:
+Both formats work in every script type, inside or outside quotes, and both are equivalent to reading the environment variable yourself:
 
 ```bash
 # These are equivalent inside a script:
@@ -408,8 +408,38 @@ echo "Threshold is {{threshold}}"
 echo "Threshold is $BREEZE_PARAM_THRESHOLD"
 ```
 
-<Aside type="caution">
-  Parameter substitution happens **before** security validation. The agent's security validator scans the fully-resolved script content for dangerous patterns. A parameter value that injects a dangerous command will be caught and rejected.
+```powershell
+Write-Output "Threshold is {{threshold}}"
+Write-Output "Threshold is $env:BREEZE_PARAM_THRESHOLD"
+```
+
+```python
+print(f"Threshold is {{threshold}}")
+print("Threshold is " + os.environ["BREEZE_PARAM_THRESHOLD"])
+```
+
+A placeholder whose name is not a parameter of the script is left in the script exactly as written.
+
+#### Contexts a placeholder cannot be used in
+
+A few places re-interpret the *contents* of a variable as code, so no reference can carry a value there safely. The agent fails the run before executing anything and names the parameter and the context. Reference the environment variable directly instead (`$BREEZE_PARAM_KEY`, `$env:BREEZE_PARAM_KEY`, `os.environ["BREEZE_PARAM_KEY"]`, `%BREEZE_PARAM_KEY%`), or assign it to your own variable first.
+
+| Script type | Rejected context | Use instead |
+|---|---|---|
+| Bash | Arithmetic and subscripts — `$(( ))`, `(( ))`, `$[ ]`, `let`, `declare -i`, `arr[…]`, `${name:offset}`, and `[[ … -eq … ]]` operands — unless the value is a plain integer | A plain-integer parameter, or `$(( BREEZE_PARAM_N ))` after validating it yourself |
+| Bash | A quoted heredoc (`<<'EOF'`), where nothing expands | An unquoted heredoc (`<<EOF`) with `$BREEZE_PARAM_KEY` in the body |
+| Bash | `eval`, `trap` and `alias` command lines | Restructure so the value is an argument, not code |
+| Bash | Variable-name positions (`read`, `unset`, `printf -v`, `for NAME in`, `declare -n`) unless the value is a valid identifier | A parameter restricted to identifiers |
+| PowerShell | A literal here-string (`@' … '@`), where nothing expands | An expanding here-string (`@" … "@`) with `$env:BREEZE_PARAM_KEY` |
+| PowerShell | `Invoke-Expression` / `iex` statements | Call the command directly with the value as an argument |
+| Python | A raw string literal (`r"…"`) when the value contains a backslash or the literal's quote character | A normal literal, or `os.environ[...]` |
+| Python | A bytes literal (`b"…"`) when the value is not ASCII | A text literal, or encode it yourself |
+| cmd | Values containing a line break; `call` statements; a `for /f … in ( )` clause | `%BREEZE_PARAM_KEY%` read into a variable first |
+
+A single-quoted string is fine in both bash and PowerShell: the agent rewrites the quoting so the value still arrives as one literal datum.
+
+<Aside>
+  Because values are no longer part of the script text, the agent's security validator scans what the script *author* wrote. It is a guardrail against dangerous operations in the script itself, not an injection filter for parameter values — those can no longer be executed as code. Scripts with parameters are also syntax-checked (`bash -n`) after the rewrite, and cmd scripts run with delayed expansion (`/V:ON`) enabled, which consumes a literal `!` in the script's own text.
 </Aside>
 
 ---
