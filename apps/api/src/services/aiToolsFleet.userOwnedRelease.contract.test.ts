@@ -33,16 +33,39 @@ import { describe, expect, it } from 'vitest';
  *   2. its `tool:action` is agent-mintable — a tier-3 entry in
  *      `aiGuardrails.ts`'s `TIER3_SUPERVISED_ACTIONS` or
  *      `TIER3_FOUR_EYES_ACTIONS` (tier 1/2 actions never mint an intent);
- *   3. the action is actually reachable — present in the tool's own
- *      `input_schema` `action` enum. Several branches in this file are
- *      defense-in-depth behind a disabled-action gate and are excluded from
- *      the enum, so an agent cannot invoke them at all.
+ *   3. the action is actually reachable. Reachability is read from the ZOD
+ *      validator (`services/aiToolSchemasFleet.ts`), which is the real
+ *      runtime gate via `validateToolInput`, NOT from the tool's JSON
+ *      `input_schema` enum — that one is advisory, LLM-facing prose, and the
+ *      two already disagree (`manage_patches:setup_auto_approval` is in the
+ *      Zod enum but not the JSON one). Keying the exemption off the advisory
+ *      list would silently excuse a genuinely reachable FK write.
+ *
+ * A branch whose action IS in the Zod enum but which is hard-refused before
+ * any write must say so in `AGENT_UNREACHABLE` below, and the exemption is
+ * itself verified against the source — it cannot be asserted by comment.
  */
 const API_SRC = fileURLToPath(new URL('..', import.meta.url));
 
 const FLEET_SRC = readFileSync(join(API_SRC, 'services/aiToolsFleet.ts'), 'utf8');
+const SCHEMAS_SRC = readFileSync(join(API_SRC, 'services/aiToolSchemasFleet.ts'), 'utf8');
 const GUARDRAILS_SRC = readFileSync(join(API_SRC, 'services/aiGuardrails.ts'), 'utf8');
 const WORKER_SRC = readFileSync(join(API_SRC, 'jobs/intentReleaseWorker.ts'), 'utf8');
+
+/**
+ * `tool:action` pairs that pass the Zod validator but are hard-refused by the
+ * handler before reaching any write, so an agent cannot actually cause the FK
+ * insert. Each entry is PROVEN against the source below (a refusal naming the
+ * action, positioned before the write) — an entry that stops being true fails
+ * the suite rather than quietly widening the exemption.
+ */
+const AGENT_UNREACHABLE: ReadonlySet<string> = new Set([
+  // aiToolsFleet.ts returns 'Action "setup_auto_approval" is disabled. Patch
+  // policies must be managed through configuration policies.' near the top of
+  // the manage_patches handler; the configuration_policies insert further down
+  // is dead defense-in-depth.
+  'manage_patches:setup_auto_approval',
+]);
 
 // ---------------------------------------------------------------------------
 // 1. Every property name that is a `users.id` FK anywhere in db/schema.
@@ -91,8 +114,35 @@ interface WriteSite {
   property: string;
   tool: string;
   actions: string[];
-  /** The tool's own input_schema action enum — empty if it has none. */
-  schemaActions: string[];
+}
+
+/**
+ * The REAL reachability gate: the Zod enum `validateToolInput` enforces, read
+ * from `services/aiToolSchemasFleet.ts`. An action absent here cannot reach
+ * the handler at all, whatever the JSON input_schema advertises.
+ */
+function zodActions(tool: string): string[] {
+  const at = SCHEMAS_SRC.indexOf(`${tool}: z.object({`);
+  if (at < 0) return [];
+  const m = /action:\s*z\.enum\(\[([^\]]*)\]\)/.exec(SCHEMAS_SRC.slice(at));
+  if (!m) return [];
+  return [...m[1]!.matchAll(/'([^']+)'/g)].map((a) => a[1]!);
+}
+
+/**
+ * Proves an `AGENT_UNREACHABLE` entry: the handler must refuse the action as
+ * disabled at a line BEFORE the write that the exemption is excusing.
+ */
+function hasDisabledRefusalBefore(tool: string, action: string, writeLine: number): boolean {
+  const lines = FLEET_SRC.split('\n');
+  const handlerLine = lines.findIndex((l) => l.includes(`safeHandler('${tool}'`));
+  if (handlerLine < 0) return false;
+  for (let i = handlerLine; i < writeLine - 1; i++) {
+    if (!new RegExp(`action === '${action}'`).test(lines[i]!)) continue;
+    const window = lines.slice(i, Math.min(i + 6, writeLine - 1)).join('\n');
+    if (/disabled/i.test(window) && /return JSON\.stringify\(\{\s*error/.test(window)) return true;
+  }
+  return false;
 }
 
 /**
@@ -113,13 +163,9 @@ function fleetWriteSites(): WriteSite[] {
   let depth = 0;
   /** Open `if (action === …)` guards: the depth they opened at + their actions. */
   let guards: { depth: number; actions: string[] }[] = [];
-  const enums: string[][] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-
-    const enumMatch = /action:\s*\{\s*type:\s*'string',\s*enum:\s*\[([^\]]*)\]/.exec(line);
-    if (enumMatch) enums.push([...enumMatch[1]!.matchAll(/'([^']+)'/g)].map((a) => a[1]!));
 
     const handler = /safeHandler\(\s*'([^']+)'/.exec(line);
     if (handler) {
@@ -139,13 +185,7 @@ function fleetWriteSites(): WriteSite[] {
       const actions = guards.length
         ? guards.map((g) => g.actions).reduce((acc, a) => acc.filter((x) => a.includes(x)))
         : [];
-      sites.push({
-        line: i + 1,
-        property: write[1]!,
-        tool,
-        actions,
-        schemaActions: enums.at(-1) ?? [],
-      });
+      sites.push({ line: i + 1, property: write[1]!, tool, actions });
     }
 
     depth += opens - closes;
@@ -181,6 +221,54 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
     expect(allowlist).toContain('manage_tickets:log_time_entry');
     // Every site resolved a tool and at least one action guard.
     expect(sites.filter((s) => s.actions.length === 0)).toEqual([]);
+    // Pin the guard ATTRIBUTION itself, independent of the allowlist's current
+    // contents: a mis-attributing parse that still produced non-empty sets
+    // would otherwise slip past every assertion below. One narrow case
+    // (`create`) and the nested multi-action case that motivated brace-depth
+    // tracking in the first place.
+    expect(sites.find((s) => s.tool === 'manage_deployments' && s.property === 'createdBy')).toMatchObject({
+      tool: 'manage_deployments',
+      actions: ['create'],
+    });
+    // `patch_approvals.approved_by` is written from FOUR branches: the nested
+    // `approve || decline` guard inside the combined partner-wide gate, plus
+    // `defer` and `bulk_approve` separately. Pinning the per-site sets AND
+    // their union proves the intersection narrows on nesting (the first site
+    // must be exactly approve+decline, not the outer four) without depending
+    // on which site the scan happens to reach first.
+    const approvalSites = sites.filter((s) => s.tool === 'manage_patches' && s.property === 'approvedBy');
+    expect(approvalSites.map((s) => s.actions)).toEqual([
+      ['approve', 'decline'],
+      ['defer'],
+      ['bulk_approve'],
+    ]);
+    // The Zod validator is the reachability source, so it must parse.
+    expect(zodActions('manage_patches')).toContain('install');
+    expect(zodActions('manage_deployments')).toContain('create');
+  });
+
+  it('every AGENT_UNREACHABLE exemption is still proven by a disabled-action refusal in the source', () => {
+    // An exemption asserted only by comment is how a genuinely reachable FK
+    // write gets excused. Each entry must name an action the handler refuses
+    // as disabled BEFORE the write it excuses — and must actually excuse a
+    // write, so a stale entry is removed rather than left to rot.
+    const unproven: string[] = [];
+    for (const key of AGENT_UNREACHABLE) {
+      const [tool, action] = key.split(':') as [string, string];
+      const excused = sites.filter(
+        (s) => s.tool === tool && s.actions.includes(action) && usersFk.has(s.property),
+      );
+      if (excused.length === 0) {
+        unproven.push(`${key} (stale: no users-FK write to excuse)`);
+        continue;
+      }
+      for (const site of excused) {
+        if (!hasDisabledRefusalBefore(tool, action, site.line)) {
+          unproven.push(`${key} (no disabled-action refusal before aiToolsFleet.ts:${site.line})`);
+        }
+      }
+    }
+    expect(unproven, JSON.stringify(unproven, null, 2)).toEqual([]);
   });
 
   it('every agent-mintable, reachable users-FK write is in USER_OWNED_RELEASE_ACTIONS', () => {
@@ -190,9 +278,11 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
       for (const action of site.actions) {
         const key = `${site.tool}:${action}`;
         if (!tier3.has(key)) continue; // tier 1/2 — never mints an intent
-        // Unreachable: excluded from the tool's own action enum (a
-        // defense-in-depth branch behind a disabled-action gate).
-        if (site.schemaActions.length > 0 && !site.schemaActions.includes(action)) continue;
+        // Not accepted by the Zod validator, so the handler is never reached.
+        if (!zodActions(site.tool).includes(action)) continue;
+        // Accepted by the validator but hard-refused before the write; the
+        // exemption is proven by its own `it` above.
+        if (AGENT_UNREACHABLE.has(key)) continue;
         if (!allowlist.has(key)) {
           missing.push(`${key} writes ${site.property} (users FK) at aiToolsFleet.ts:${site.line}`);
         }
@@ -241,11 +331,16 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
 
   it('documents the tier-2 users-FK writes that cannot be fixed by this allowlist', () => {
     // A tier-2 action auto-executes inline under the agent's own auth — there
-    // is no approval and so no approver to own the row. Those sites carry the
-    // SAME latent 23503 but need a different fix (a nullable/system
-    // attribution, or lifting the action to tier 3), tracked separately.
+    // is no approval and so no approver to own the row. These sites carry the
+    // SAME latent 23503 but need a different fix (nullable/system attribution,
+    // lifting the action to tier 3, or refusing agent principals outright),
+    // which is why they are NOT smuggled into this PR.
+    //
+    //   Tracked by: LanternOps/breeze#6206
+    //
     // This assertion is an INVENTORY, not an exemption: it fails when the set
-    // changes, so a new tier-2 users-FK write cannot land unnoticed.
+    // changes either way, so a new tier-2 users-FK write cannot land
+    // unnoticed — and when #6206 lands, shrink this list.
     const tier2Exposed = new Set<string>();
     const tier2Body = GUARDRAILS_SRC.slice(
       GUARDRAILS_SRC.indexOf('const TIER2_ACTIONS'),
@@ -260,7 +355,7 @@ describe('aiToolsFleet users-FK writes are user-owned on release (#6200)', () =>
       for (const action of site.actions) {
         const key = `${site.tool}:${action}`;
         if (!tier2.has(key)) continue;
-        if (site.schemaActions.length > 0 && !site.schemaActions.includes(action)) continue;
+        if (!zodActions(site.tool).includes(action)) continue;
         tier2Exposed.add(key);
       }
     }

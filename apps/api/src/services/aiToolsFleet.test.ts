@@ -1222,6 +1222,7 @@ describe('user-owned release attribution (#6200)', () => {
       { approverRelease: { approverUserId: approverId } } as any,
     ));
 
+    console.log('DEBUG_DEPLOY_RESULT', JSON.stringify(result));
     expect(result.success).toBe(true);
     expect(insertValuesSpy).toHaveBeenCalledWith(
       expect.objectContaining({ createdBy: approverId }),
@@ -1242,6 +1243,75 @@ describe('user-owned release attribution (#6200)', () => {
   it('manage_patches:rollback with a mismatched approverRelease.approverUserId refuses and performs no insert', async () => {
     const result = JSON.parse(await tool.handler(
       { action: 'rollback', patchId, deviceIds: [deviceId] },
+      approverAuth,
+      { approverRelease: { approverUserId: 'someone-else' } } as any,
+    ));
+
+    expect(result.error).toBe('approver_auth_mismatch');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("manage_patches:rollback with a matching approverRelease.approverUserId inserts patch_rollbacks.initiatedBy from the approver's auth.user.id", async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null }]),
+        }),
+      }),
+    } as never);
+    const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'rollback-1' }]) }));
+    vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+    const result = JSON.parse(await tool.handler(
+      { action: 'rollback', patchId, deviceIds: [deviceId] },
+      approverAuth,
+      { approverRelease: { approverUserId: approverId } } as any,
+    ));
+
+    expect(result.success).toBe(true);
+    expect(insertValuesSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ initiatedBy: approverId }),
+    );
+  });
+
+  it("manage_deployments:create with a matching approverRelease.approverUserId inserts deployments.createdBy from the approver's auth.user.id", async () => {
+    const deploymentsTool = toolMap.get('manage_deployments')!;
+    const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'deployment-1', name: 'Rollout' }]) }));
+    vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+    const result = JSON.parse(await deploymentsTool.handler(
+      {
+        action: 'create',
+        name: 'Rollout',
+        type: 'agent_update',
+        payload: { version: '1.2.3' },
+        targetType: 'device',
+        targetConfig: { deviceIds: [deviceId] },
+        rolloutConfig: { batchSize: 1 },
+      },
+      approverAuth,
+      { approverRelease: { approverUserId: approverId } } as any,
+    ));
+
+    expect(result.success).toBe(true);
+    expect(insertValuesSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ createdBy: approverId }),
+    );
+  });
+
+  it('manage_deployments:create with a mismatched approverRelease.approverUserId refuses and performs no insert', async () => {
+    const deploymentsTool = toolMap.get('manage_deployments')!;
+
+    const result = JSON.parse(await deploymentsTool.handler(
+      {
+        action: 'create',
+        name: 'Rollout',
+        type: 'agent_update',
+        payload: { version: '1.2.3' },
+        targetType: 'device',
+        targetConfig: { deviceIds: [deviceId] },
+        rolloutConfig: { batchSize: 1 },
+      },
       approverAuth,
       { approverRelease: { approverUserId: 'someone-else' } } as any,
     ));
