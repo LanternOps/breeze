@@ -106,11 +106,18 @@ export interface EmailDomainProvider {
   createDomain(i: CreateProviderDomainInput): Promise<ProviderDomain>;
   findDomainByName(domain: string): Promise<ProviderDomain | null>;
   /**
-   * `static` has no provider object, so its key is the DOMAIN NAME and this
-   * method delegates to findDomainByName (plan amendment 5). Every other
-   * adapter takes its provider domain id.
+   * `static` has no provider object, so its key is the DOMAIN NAME (plan
+   * amendment 5). Every other adapter takes its provider domain id.
+   *
+   * `opts.partnerSlug` is the OWNER re-check, and only `static` reads it: its
+   * allow-list entries may be bound (`acme.com:msp-a`), and an operator who
+   * re-binds an entry to another partner must revoke the first one. Matching on
+   * the domain alone would leave the original partner sending indefinitely.
+   * A bound entry whose slug does not match — including when no slug is
+   * supplied — reports `failed`, exactly as a delisted domain does.
+   * `resend` and `fake` ignore it.
    */
-  getDomain(providerDomainId: string): Promise<ProviderDomain>;
+  getDomain(providerDomainIdOrKey: string, opts?: { partnerSlug?: string | null }): Promise<ProviderDomain>;
   requestVerification(providerDomainId: string): Promise<void>;
   /** A 404 from the provider is SUCCESS: the domain is already gone. */
   deleteDomain(providerDomainId: string): Promise<void>;

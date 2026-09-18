@@ -115,15 +115,24 @@ const LISTED: ProviderDomain = { providerDomainId: null, state: 'pending', recor
 const DELISTED: ProviderDomain = { providerDomainId: null, state: 'failed', records: [] };
 
 /**
- * Whether the operator still lists this NAME. The partner binding is enforced
- * at create; a re-check only asks whether the domain is still allowed at all,
- * so a bound entry re-checks true without the caller carrying a slug.
+ * Whether the operator still lists this NAME, re-read on every call because the
+ * operator may edit the list and restart.
  *
- * Re-read on every call: the operator may edit the list and restart.
+ * The partner binding is re-checked here, not only at create. An operator who
+ * edits `acme.com:msp-a` to `acme.com:msp-b` is re-assigning the domain, and
+ * matching on the name alone would leave msp-a sending as it indefinitely. A
+ * bound entry therefore matches only its own slug, and fails CLOSED when the
+ * caller supplies none — ownership that cannot be proven is not ownership.
+ * An UNBOUND entry still matches any partner (the single-partner install).
  */
-function isStillListed(domain: string): boolean {
+function isStillListed(domain: string, partnerSlug?: string | null): boolean {
   const target = domain.trim().toLowerCase().replace(/\.+$/, '');
-  return getEmailDomainsConfig().staticAllowed.some((entry) => entry.domain === target);
+  const slug = typeof partnerSlug === 'string' ? partnerSlug.trim().toLowerCase() : null;
+  return getEmailDomainsConfig().staticAllowed.some((entry) => {
+    if (entry.domain !== target) return false;
+    if (entry.partnerSlug === null) return true;
+    return slug !== null && entry.partnerSlug === slug;
+  });
 }
 
 export function createStaticDomainProvider(): EmailDomainProvider {
@@ -143,8 +152,8 @@ export function createStaticDomainProvider(): EmailDomainProvider {
       return isStillListed(domain) ? { ...LISTED } : null;
     },
 
-    async getDomain(domainName: string): Promise<ProviderDomain> {
-      return isStillListed(domainName) ? { ...LISTED } : { ...DELISTED };
+    async getDomain(domainName: string, opts?: { partnerSlug?: string | null }): Promise<ProviderDomain> {
+      return isStillListed(domainName, opts?.partnerSlug) ? { ...LISTED } : { ...DELISTED };
     },
 
     async requestVerification(): Promise<void> {

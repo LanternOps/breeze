@@ -81,8 +81,28 @@ describe('findDomainByName / getDomain', () => {
     await expect(createStaticDomainProvider().findDomainByName('open.com')).resolves.toBeNull();
   });
 
-  it('ignores the partner binding on re-check — the binding is enforced at create', async () => {
-    await expect(createStaticDomainProvider().getDomain('bound.com')).resolves.toMatchObject({ state: 'pending' });
+  it('getDomain REVOKES a bound entry re-bound to a different partner — failed, exactly like a delisted domain', async () => {
+    // The operator edited EMAIL_DOMAINS_STATIC_ALLOWED from acme.com:msp-a to
+    // acme.com:msp-b. Matching on the domain alone would leave partner A
+    // sending as a domain the operator has re-assigned.
+    await expect(createStaticDomainProvider().getDomain('bound.com', { partnerSlug: 'other' }))
+      .resolves.toEqual({ providerDomainId: null, state: 'failed', records: [] });
+  });
+
+  it('getDomain keeps a bound entry pending for its OWN partner slug', async () => {
+    await expect(createStaticDomainProvider().getDomain('bound.com', { partnerSlug: 'acme' }))
+      .resolves.toMatchObject({ state: 'pending' });
+  });
+
+  it('getDomain keeps an UNBOUND entry pending for any partner, and with no slug at all', async () => {
+    const provider = createStaticDomainProvider();
+    await expect(provider.getDomain('open.com', { partnerSlug: 'anyone' })).resolves.toMatchObject({ state: 'pending' });
+    await expect(provider.getDomain('open.com')).resolves.toMatchObject({ state: 'pending' });
+  });
+
+  it('getDomain fails CLOSED on a bound entry when no slug is supplied — ownership cannot be proven', async () => {
+    await expect(createStaticDomainProvider().getDomain('bound.com'))
+      .resolves.toEqual({ providerDomainId: null, state: 'failed', records: [] });
   });
 });
 

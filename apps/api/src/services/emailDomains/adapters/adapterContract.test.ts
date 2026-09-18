@@ -43,8 +43,15 @@ beforeEach(() => {
   process.env.EMAIL_DOMAINS_RESEND_API_KEY = 're_full';
   process.env.EMAIL_DOMAINS_STATIC_ALLOWED = 'contract.example';
   // Happy-path Resend doubles; individual cases override.
-  domainsCreate.mockResolvedValue({ data: { id: 'dom_1', name: 'contract.example', status: 'not_started', region: 'us-east-1', created_at: '2026-09-17T10:00:00.000Z', records: [] }, error: null });
-  domainsGet.mockResolvedValue({ data: { id: 'dom_1', name: 'contract.example', status: 'verified', region: 'us-east-1', created_at: '2026-09-17T10:00:00.000Z', records: [] }, error: null });
+  // A real Resend createDomain always returns the DKIM/SPF set to publish, so
+  // the double does too — an empty records[] here would make the
+  // "records iff verifiesByDns" contract case vacuous for this adapter.
+  const resendRecords = [
+    { record: 'DKIM', name: 'resend._domainkey', type: 'CNAME', ttl: 'Auto', status: 'not_started', value: 'x.dkim.amazonses.com' },
+    { record: 'SPF', name: 'send', type: 'TXT', ttl: 'Auto', status: 'not_started', value: 'v=spf1 include:amazonses.com ~all' },
+  ];
+  domainsCreate.mockResolvedValue({ data: { id: 'dom_1', name: 'contract.example', status: 'not_started', region: 'us-east-1', created_at: '2026-09-17T10:00:00.000Z', records: resendRecords }, error: null });
+  domainsGet.mockResolvedValue({ data: { id: 'dom_1', name: 'contract.example', status: 'verified', region: 'us-east-1', created_at: '2026-09-17T10:00:00.000Z', records: resendRecords }, error: null });
   domainsVerify.mockResolvedValue({ data: { id: 'dom_1', object: 'domain' }, error: null });
   domainsRemove.mockResolvedValue({ data: { id: 'dom_1', object: 'domain', deleted: true }, error: null });
   domainsList.mockResolvedValue({ data: { data: [], object: 'list', has_more: false }, error: null });
@@ -147,9 +154,29 @@ describe.each(ADAPTERS)('EmailDomainProvider contract — $name', (adapter) => {
       .toContain((raised as PartnerLaneSendFailure).error.kind);
   });
 
-  it('an adapter that does not verify by DNS returns no records at all', async () => {
+  // Explicit per adapter rather than `if (!adapter.verifiesByDns)`: a guarded
+  // assertion silently becomes a no-op for the two DNS adapters, so a future
+  // adapter that returned records while declaring verifiesByDns === false would
+  // still read green.
+  it('createDomain returns DNS records iff the adapter verifies by DNS', async () => {
     const result = await adapter.build().createDomain({ domain: adapter.domain, partnerRef: 'p1', partnerSlug: 'acme' });
-    if (!adapter.verifiesByDns) expect(result.records).toEqual([]);
+    if (adapter.verifiesByDns) {
+      expect(result.records.length, 'a DNS-verifying adapter must tell the partner what to publish').toBeGreaterThan(0);
+    } else {
+      expect(result.records, 'a non-DNS adapter has nothing to publish').toEqual([]);
+    }
+  });
+
+  it('getDomain accepts the optional partnerSlug re-check without changing a non-static adapter', async () => {
+    // `static` uses opts to revoke a re-bound allow-list entry; resend and fake
+    // ignore it. The contract is that passing it is always safe.
+    const provider = adapter.build();
+    const withOpts = await provider.getDomain(adapter.key, { partnerSlug: 'acme' });
+    expect(['pending', 'verified', 'at_risk', 'failed']).toContain(withOpts.state);
+    if (adapter.id !== 'static') {
+      const withoutOpts = await provider.getDomain(adapter.key);
+      expect(withOpts.state).toBe(withoutOpts.state);
+    }
   });
 });
 
