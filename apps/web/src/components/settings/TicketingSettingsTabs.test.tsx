@@ -2,18 +2,23 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { grantedActions } = vi.hoisted(() => ({ grantedActions: new Set<string>() }));
-// Every case in this file describes an already-WARM page: the partner scope is
-// known before the group renders. The cold-load window (`status: 'unresolved'`,
+const { grantedActions, currentScope } = vi.hoisted(() => ({
+  grantedActions: new Set<string>(),
+  currentScope: { value: 'partner' as 'partner' | 'organization' },
+}));
+// Every case in this file describes an already-WARM page: the scope is known
+// before the group renders. The cold-load window (`status: 'unresolved'`,
 // which is where every direct landing on this surface actually starts) is what
 // TicketingSettingsTabs.coldLoad.test.tsx covers, driving the real auth store.
-vi.mock('../../lib/authScope', () => {
-  const claims = { scope: 'partner' as const, orgId: null, partnerId: 'partner-1' };
-  return {
-    getJwtClaims: () => claims,
-    useJwtClaims: () => ({ status: 'resolved' as const, claims }),
-  };
-});
+// `currentScope` is mutable so the org-scope describe block below can flip it
+// without a separate mock module.
+vi.mock('../../lib/authScope', () => ({
+  getJwtClaims: () => ({ scope: currentScope.value, orgId: currentScope.value === 'organization' ? 'org-1' : null, partnerId: currentScope.value === 'partner' ? 'partner-1' : null }),
+  useJwtClaims: () => ({
+    status: 'resolved' as const,
+    claims: { scope: currentScope.value, orgId: currentScope.value === 'organization' ? 'org-1' : null, partnerId: currentScope.value === 'partner' ? 'partner-1' : null },
+  }),
+}));
 vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({
     can: (resource: string, action: string) => grantedActions.has(`${resource}:${action}`),
@@ -61,11 +66,13 @@ describe('TicketingSettingsTabs', () => {
     await i18n.changeLanguage('en');
     window.location.hash = '';
     grantedActions.clear();
+    currentScope.value = 'partner';
   });
 
   afterEach(async () => {
     window.location.hash = '';
     await i18n.changeLanguage('en');
+    currentScope.value = 'partner';
   });
 
   it('renders all seven tabs and defaults to statuses', () => {
@@ -144,5 +151,46 @@ describe('TicketingSettingsTabs', () => {
     });
 
     expect(screen.getByTestId('ticketing-tab-categories')).toHaveTextContent('Categorias');
+  });
+});
+
+describe('TicketingSettingsTabs — org scope (dual-ownership Templates tab regression)', () => {
+  beforeEach(() => {
+    window.location.hash = '';
+    grantedActions.clear();
+    currentScope.value = 'organization';
+  });
+
+  afterEach(() => {
+    window.location.hash = '';
+    currentScope.value = 'partner';
+  });
+
+  it('shows the Templates tab for an org-scoped user, rendering only the checklist templates page', async () => {
+    render(<TicketingSettingsTabs />);
+    expect(screen.getByTestId('ticketing-tab-templates')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('ticketing-tab-templates'));
+    expect(screen.getByTestId('ticketing-tab-panel-templates')).toBeInTheDocument();
+    expect(screen.getByTestId('stub-ticket-checklist-templates-page')).toBeInTheDocument();
+    expect(screen.queryByTestId('stub-canned-responses-card')).not.toBeInTheDocument();
+    // No pending placeholder in place of the checklist page — templates is not
+    // gated on scope resolution any more.
+    expect(screen.queryByTestId('ticketing-tab-panel-pending')).not.toBeInTheDocument();
+  });
+
+  it('shows both CannedResponsesCard and TicketChecklistTemplatesPage for a partner-scoped user (control)', async () => {
+    currentScope.value = 'partner';
+    render(<TicketingSettingsTabs />);
+    await userEvent.click(screen.getByTestId('ticketing-tab-templates'));
+    expect(screen.getByTestId('stub-canned-responses-card')).toBeInTheDocument();
+    expect(screen.getByTestId('stub-ticket-checklist-templates-page')).toBeInTheDocument();
+  });
+
+  it('does not widen access: forms/email/timeTracking tabs stay hidden for org scope', () => {
+    render(<TicketingSettingsTabs />);
+    expect(screen.queryByTestId('ticketing-tab-forms')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ticketing-tab-email')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ticketing-tab-timeTracking')).not.toBeInTheDocument();
   });
 });

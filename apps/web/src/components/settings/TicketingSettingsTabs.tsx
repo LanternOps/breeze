@@ -19,13 +19,19 @@ export const TICKETING_HUB_TABS = [
 ] as const;
 export type TicketingHubTab = (typeof TICKETING_HUB_TABS)[number];
 
-// Tabs that require partner scope server-side (Forms/Email/Templates/Time
-// capture all touch partner-wide config or PATCH /orgs/partners/me). BASE_TABS
-// render for any scope.
+// Tabs that require partner scope server-side (Forms/Email/Time capture all
+// touch partner-wide config or PATCH /orgs/partners/me). BASE_TABS render for
+// any scope.
+//
+// `templates` is NOT here: TicketChecklistTemplatesPage is a dual-ownership
+// (org XOR partner) surface that does its own scope gating internally — an
+// org-scoped user creates org-owned checklist templates and never sees the
+// owner selector. Gating the whole tab on partner scope regressed that (an
+// org-scoped user lost checklist-template management entirely). Only the
+// CannedResponsesCard half of this tab's panel is partner-only.
 const PARTNER_ONLY_TABS: Array<{ id: TicketingHubTab; labelKey: string }> = [
   { id: 'forms', labelKey: 'ticketingSettingsTabs.intakeForms' },
   { id: 'email', labelKey: 'ticketingSettingsTabs.email' },
-  { id: 'templates', labelKey: 'ticketingSettingsTabs.templates' },
   { id: 'timeTracking', labelKey: 'ticketingSettingsTabs.timeCapture' },
 ];
 const PARTNER_ONLY_TAB_IDS: readonly TicketingHubTab[] = PARTNER_ONLY_TABS.map((tab) => tab.id);
@@ -34,6 +40,7 @@ const BASE_TABS: Array<{ id: TicketingHubTab; labelKey: string }> = [
   { id: 'statuses', labelKey: 'ticketingSettingsTabs.statuses' },
   { id: 'priorities', labelKey: 'ticketingSettingsTabs.prioritiesSLAs' },
   { id: 'categories', labelKey: 'ticketingSettingsTabs.categories' },
+  { id: 'templates', labelKey: 'ticketingSettingsTabs.templates' },
 ];
 
 /**
@@ -122,9 +129,9 @@ export default function TicketingSettingsTabs() {
           {canReadMailbox ? <M365MailboxCard /> : null}
         </div>
       )}
-      {activeTab === 'templates' && canManagePartnerTicketing && (
+      {activeTab === 'templates' && (
         <div data-testid="ticketing-tab-panel-templates" className="space-y-6">
-          <CannedResponsesCard />
+          {canManagePartnerTicketing && <CannedResponsesCard />}
           <TicketChecklistTemplatesPage />
         </div>
       )}

@@ -52,10 +52,14 @@ function tokenArrives(payload: Record<string, unknown>) {
   });
 }
 
+// `templates` is deliberately NOT in this list: TicketChecklistTemplatesPage is
+// a dual-ownership (org XOR partner) surface that does its own scope gating
+// internally, so the Templates tab is always visible — only the
+// CannedResponsesCard half of its panel is partner-only. See the dedicated
+// "Templates tab (dual-ownership, not scope-gated)" describe block below.
 const PARTNER_ONLY = [
   { tab: 'forms', panel: 'ticketing-tab-panel-forms', card: 'stub-ticket-forms-card' },
   { tab: 'email', panel: 'ticketing-tab-panel-email', card: 'stub-inbound-email-card' },
-  { tab: 'templates', panel: 'ticketing-tab-panel-templates', card: 'stub-canned-responses-card' },
   { tab: 'timeTracking', panel: 'ticketing-tab-panel-timeTracking', card: 'stub-time-tracking-card' },
 ] as const;
 
@@ -73,7 +77,7 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     await i18n.changeLanguage('en');
   });
 
-  it('partner scope arriving after first paint reveals all four partner-only tabs', async () => {
+  it('partner scope arriving after first paint reveals all three partner-only tabs', async () => {
     render(<TicketingSettingsTabs />);
 
     // First paint: no token, so the scope is unknown. The tabs fail closed —
@@ -146,18 +150,18 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     expect(await screen.findByTestId('ticketing-tab-panel-statuses')).toBeInTheDocument();
 
     act(() => {
-      window.location.hash = '#templates';
+      window.location.hash = '#forms';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
 
     expect(screen.getByTestId('ticketing-tab-panel-pending')).toBeInTheDocument();
-    expect(screen.queryByTestId('ticketing-tab-templates')).toBeNull();
-    expect(window.location.hash).toBe('#templates');
+    expect(screen.queryByTestId('ticketing-tab-forms')).toBeNull();
+    expect(window.location.hash).toBe('#forms');
 
     tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
 
-    await waitFor(() => expect(screen.getByTestId('stub-canned-responses-card')).toBeInTheDocument());
-    expect(window.location.hash).toBe('#templates');
+    await waitFor(() => expect(screen.getByTestId('stub-ticket-forms-card')).toBeInTheDocument());
+    expect(window.location.hash).toBe('#forms');
   });
 
   it('a token going away again re-hides the partner-only tabs instead of keeping the stale grant', async () => {
@@ -188,7 +192,7 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
   });
 
   it('a present-but-undecodable token is a settled denial, not a permanent "pending"', async () => {
-    window.location.hash = '#templates';
+    window.location.hash = '#forms';
     render(<TicketingSettingsTabs />);
     expect(await screen.findByTestId('ticketing-tab-panel-pending')).toBeInTheDocument();
 
@@ -200,7 +204,54 @@ describe('TicketingSettingsTabs vs. late-arriving JWT scope (#4013)', () => {
     // server rejects such a token with a 401 rather than degrading the page, so
     // the user is on their way out anyway; what matters is that we do not spin.
     await waitFor(() => expect(screen.queryByTestId('ticketing-tab-panel-pending')).toBeNull());
-    expect(screen.queryByTestId('ticketing-tab-templates')).toBeNull();
-    expect(screen.queryByTestId('ticketing-tab-panel-templates')).toBeNull();
+    expect(screen.queryByTestId('ticketing-tab-forms')).toBeNull();
+    expect(screen.queryByTestId('ticketing-tab-panel-forms')).toBeNull();
+  });
+});
+
+describe('TicketingSettingsTabs — Templates tab (dual-ownership, not scope-gated)', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+    grantedActions.clear();
+    useAuthStore.setState({ tokens: null });
+    window.location.hash = '#templates';
+  });
+
+  afterEach(async () => {
+    useAuthStore.setState({ tokens: null });
+    window.location.hash = '';
+    await i18n.changeLanguage('en');
+  });
+
+  it('is visible and renders TicketChecklistTemplatesPage even before scope resolves — no pending placeholder', async () => {
+    render(<TicketingSettingsTabs />);
+
+    expect(await screen.findByTestId('ticketing-tab-templates')).toBeInTheDocument();
+    expect(screen.getByTestId('ticketing-tab-panel-templates')).toBeInTheDocument();
+    expect(screen.getByTestId('stub-ticket-checklist-templates-page')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticketing-tab-panel-pending')).toBeNull();
+    expect(screen.queryByTestId('stub-canned-responses-card')).toBeNull();
+  });
+
+  it('reveals CannedResponsesCard once partner scope resolves, alongside the always-present checklist page', async () => {
+    render(<TicketingSettingsTabs />);
+    expect(await screen.findByTestId('stub-ticket-checklist-templates-page')).toBeInTheDocument();
+
+    tokenArrives({ scope: 'partner', partnerId: 'partner-1' });
+
+    await waitFor(() => expect(screen.getByTestId('stub-canned-responses-card')).toBeInTheDocument());
+    expect(screen.getByTestId('stub-ticket-checklist-templates-page')).toBeInTheDocument();
+  });
+
+  it('keeps CannedResponsesCard hidden (but the checklist page visible) once org scope resolves', async () => {
+    render(<TicketingSettingsTabs />);
+    expect(await screen.findByTestId('stub-ticket-checklist-templates-page')).toBeInTheDocument();
+
+    tokenArrives({ scope: 'organization', orgId: 'org-1' });
+
+    await waitFor(() => expect(useAuthStore.getState().tokens).not.toBeNull());
+    expect(screen.getByTestId('stub-ticket-checklist-templates-page')).toBeInTheDocument();
+    expect(screen.queryByTestId('stub-canned-responses-card')).toBeNull();
+    expect(screen.queryByTestId('ticketing-tab-panel-pending')).toBeNull();
   });
 });
