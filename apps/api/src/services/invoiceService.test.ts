@@ -738,15 +738,20 @@ describe('issueInvoice document_locale stamp', () => {
   });
 
   /** Queue the issue transaction's db calls for a manual-line-only draft. */
-  function queueIssuePath(inv: Record<string, unknown>, partner: Record<string, unknown>) {
+  function queueIssuePath(
+    inv: Record<string, unknown>,
+    partner: Record<string, unknown>,
+    branding: Record<string, unknown>[] = [],
+  ) {
     queueResult([inv]); // 0. pre-tx fast-fail read (RLS-scoped, non-authoritative)
     queueResult([inv]); // 1. invoice row lock
     queueResult([{ id: 'l1', invoiceId: 'inv1', sourceType: 'manual', sourceId: null, lineTotal: '100.00', taxable: false, customerVisible: true }]); // 2. lines lock
     queueResult([{ id: 'org1', name: 'Customer', taxExempt: false, taxRate: null, taxId: null }]); // 3. org
     queueResult([partner]); // 4. partner (read inside the tx, after all locks)
-    queueResult([{ counter: 1 }]); // 5. counter upsert
-    queueResult([{ id: 'inv1' }]); // 6. guarded update ... returning
-    queueResult([{ ...inv, status: 'sent' }]); // 7. final re-select
+    queueResult(branding); // 5. portal branding for the invoice's org (W02-API: the shared footer chain's last resort)
+    queueResult([{ counter: 1 }]); // 6. counter upsert
+    queueResult([{ id: 'inv1' }]); // 7. guarded update ... returning
+    queueResult([{ ...inv, status: 'sent' }]); // 8. final re-select
   }
 
   function issueSet(): Record<string, unknown> {
@@ -786,6 +791,46 @@ describe('issueInvoice document_locale stamp', () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
     enqueueAccountingInvoicePushMock.mockRejectedValueOnce(new Error('boom'));
     await expect(svc.issueInvoice('inv1', actor)).resolves.toBeDefined();
+  });
+
+  /**
+   * Settings consolidation W02-API (M11, audit finding 22): the issue-time
+   * `terms` stamp now goes through the SHARED resolveInvoiceFooter, so it
+   * considers `portal_branding.footerText` — the fallback the render path has
+   * always had. Behaviour note: already-issued invoices are untouched (their
+   * `terms` column is written and this path never re-runs); a NEWLY issued
+   * invoice whose only configured footer is the portal-branding one now
+   * FREEZES that text at issue instead of tracking later portal-branding
+   * edits. That is the "one snapshot moment" direction rule 6 wants.
+   */
+  it('stamps terms from the portal-branding footer when the partner has none', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: null },
+      [{ footerText: 'Powered by Acme Portal' }],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBe('Powered by Acme Portal');
+  });
+
+  it('prefers the partner footer over portal branding when both are set', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: 'Partner footer' },
+      [{ footerText: 'Portal footer' }],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBe('Partner footer');
+  });
+
+  it('stamps a null terms when neither a partner footer nor a portal footer exists', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: null },
+      [],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBeNull();
   });
 });
 

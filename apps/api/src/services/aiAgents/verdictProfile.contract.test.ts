@@ -13,7 +13,10 @@ import {
   triageToolAllowlist,
 } from './triageProfile';
 import { TOOL_TIERS } from '../aiAgentSdkTools';
-import { TIER2_READONLY_TOOLS } from '../aiGuardrails';
+import { TIER2_READONLY_TOOLS, checkGuardrails, isReadOnlyResolution } from '../aiGuardrails';
+import { PATCH_OUTCOME_TOOL_NAME, PATCH_TOOL_ALLOWLIST, patchToolAllowlist } from './patchProfile';
+import { AI_AGENT_RUN_PROFILES, AI_AGENT_SCHEDULE_KINDS } from '@breeze/shared';
+import { outcomeToolsForProfile } from './outcomeTools';
 
 const FORBIDDEN = [
   'services/aiGuardrails.ts',
@@ -59,6 +62,30 @@ describe('verdict profile has no safety bypass (spec §7)', () => {
     expect(src).not.toMatch(/['"]design['"]/);
     expect(src).not.toMatch(/isDesignProfile\(/);
     expect(src).not.toMatch(/DESIGN_/);
+    // AI patch agent (W01) — same contract for the `patch` profile. A patch
+    // plan's evidence carries untrusted VENDOR text (patch titles), so none
+    // of these files may relax a check "because a patch run only proposes".
+    expect(src).not.toMatch(/['"]patch['"]/);
+    expect(src).not.toMatch(/isPatchProfile\(/);
+    expect(src).not.toMatch(/PATCH_/);
+  });
+  it('the patch floor reaches no mutating tool; its only non-read entry is its outcome tool', () => {
+    const floor = patchToolAllowlist(['manage_patches:install', 'run_script']);
+    expect(floor.filter((n) => !(PATCH_TOOL_ALLOWLIST as readonly string[]).includes(n))).toEqual([PATCH_OUTCOME_TOOL_NAME]);
+    const tiers = TOOL_TIERS as Record<string, number | undefined>;
+    expect(tiers[PATCH_OUTCOME_TOOL_NAME]).toBeUndefined();
+    for (const entry of PATCH_TOOL_ALLOWLIST) {
+      const [base, action] = entry.split(':') as [string, string | undefined];
+      if (action === undefined) {
+        const tier = tiers[base];
+        expect(tier === 1 || (tier === 2 && TIER2_READONLY_TOOLS.has(base)), entry).toBe(true);
+      } else {
+        // An action-level entry resolves through the guardrail's own
+        // tiering — the same resolution the run's pre-hook applies.
+        const check = checkGuardrails(base, { action });
+        expect(isReadOnlyResolution(base, check), entry).toBe(true);
+      }
+    }
   });
   it('outcome tools never import the db or execute a registered tool', () => {
     const src = readFileSync(join(__dirname, 'outcomeTools.ts'), 'utf8');
@@ -127,5 +154,48 @@ describe('verdict profile has no safety bypass (spec §7)', () => {
     // executable tool — it must not appear in the execution tier table at all.
     const tiers = TOOL_TIERS as Record<string, number | undefined>;
     expect(tiers[TRIAGE_OUTCOME_TOOL_NAME]).toBeUndefined();
+  });
+});
+
+/**
+ * AI patch agent W01 (#5747), Task 13 — the per-profile and per-schedule-kind
+ * switches stay exhaustive.
+ *
+ * `profileCaps` (runService.ts) and `buildAdmission` (aiAgentSweepScheduler.ts)
+ * are both module-private — `profileCaps` is a helper of one caller and
+ * `buildAdmission` is an inline closure over the sweeper's loop state — and
+ * neither is worth exporting purely to be driven here. Each already ends in a
+ * `const exhaustive: never` default, so TypeScript refuses to compile a missing
+ * arm; these assertions are the second line: they fail the moment a NEW profile
+ * or schedule kind is added to the shared union without a matching `case` in
+ * the switch, which is what tsc reports as a type error somewhere else
+ * entirely.
+ */
+describe('every run profile and schedule kind has an arm in its switch', () => {
+  it('outcomeToolsForProfile answers for every profile, and only patch gets submit_patch_plan', () => {
+    for (const profile of AI_AGENT_RUN_PROFILES) {
+      const tools = outcomeToolsForProfile(profile);
+      expect(Array.isArray(tools), profile).toBe(true);
+      expect(tools.includes(PATCH_OUTCOME_TOOL_NAME as never), profile)
+        .toBe(profile === 'patch');
+    }
+  });
+
+  it('profileCaps carries a case for every run profile', () => {
+    const src = readFileSync(join(__dirname, 'runService.ts'), 'utf8');
+    const body = src.slice(src.indexOf('function profileCaps('));
+    for (const profile of AI_AGENT_RUN_PROFILES) {
+      expect(body, profile).toContain(`case '${profile}'`);
+    }
+    expect(body).toContain('const exhaustive: never');
+  });
+
+  it('the sweeper admission switch carries a case for every schedule kind', () => {
+    const src = readFileSync(join(__dirname, '../../jobs/aiAgentSweepScheduler.ts'), 'utf8');
+    const body = src.slice(src.indexOf('const buildAdmission'));
+    for (const kind of AI_AGENT_SCHEDULE_KINDS) {
+      expect(body, kind).toContain(`case '${kind}'`);
+    }
+    expect(body).toContain('const exhaustive: never');
   });
 });

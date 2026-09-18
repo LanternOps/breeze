@@ -28,9 +28,10 @@ export const catalogItems = pgTable('catalog_items', {
   billingType: catalogBillingTypeEnum('billing_type').notNull().default('one_time'),
   billingFrequency: catalogBillingFrequencyEnum('billing_frequency'),
   commitmentTermMonths: integer('commitment_term_months'),
-  // DEPRECATED read-mirror of the partner-currency catalog_item_prices row
-  // (multi-currency wave 3). Written for compatibility, read by nothing.
-  unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
+  // Sell prices live in catalog_item_prices (per currency) with per-org
+  // overrides in catalog_item_org_pricing. The deprecated `unit_price`
+  // read-mirror of the partner-currency row was dropped by
+  // 2026-10-17-130000-drop-catalog-items-unit-price.sql (#3812).
   costBasis: numeric('cost_basis', { precision: 12, scale: 2 }),
   markupPercent: numeric('markup_percent', { precision: 6, scale: 2 }),
   // Multi-currency wave 3: currency of cost_basis. NOT NULL, no default —

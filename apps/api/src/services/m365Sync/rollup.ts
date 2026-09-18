@@ -44,6 +44,10 @@ export const ROLLUP_COUNTER_SOURCES: Record<M365SyncDomain, Record<string, Rollu
     secure_score_max: 'secureScoreMax',
   },
   signin_activity: {},
+  // #5784 W05. The daily posture rollup has no sign-in-event column, and adding
+  // one would be a schema change this wave deliberately does not make: the
+  // events are raw evidence for W06's period report, not a posture counter.
+  signin_events: {},
 };
 
 /** numeric(8,2) columns: drizzle binds them as strings. */

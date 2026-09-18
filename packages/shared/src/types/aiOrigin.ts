@@ -43,6 +43,42 @@ export function serializeAiOrigin(origin: AiOriginRef | undefined): {
   };
 }
 
+/**
+ * The authorized, per-viewer summary of one execution's or command's AI
+ * origin (#5022 W02, spec OD-9 A).
+ *
+ * A provenance pointer is NOT permission to disclose its target: `session`
+ * and `agentRun` are present ONLY when the calling viewer can actually open
+ * that transcript/run under its OWN ownership rules. When the id fails that
+ * check, the key is omitted entirely (never nulled, never returned-and-hidden
+ * client-side) — `resolvable: false` is the only signal, and `kind` still
+ * survives, because "an AI did this" is exactly what the device page is for
+ * and reveals nothing about whose conversation it was.
+ */
+export interface AiOriginSummaryDto {
+  kind: AiInitiatorKind;
+  /** Agent name, or the assistant label. Never a transcript excerpt. */
+  label: string;
+  occurredAt: string; // ISO
+  toolName: string | null;
+  /** Present ONLY when the viewer can actually open it. Omitted otherwise. */
+  session?: { id: string };
+  agentRun?: { id: string };
+  /** false ⇒ the UI reads "origin not available". */
+  resolvable: boolean;
+}
+
+/**
+ * The device Overview right-rail's de-duplicated 7-day AI activity count
+ * (#5022 W02). DISPATCHED mutations, not completed ones — see the
+ * de-duplication rule in services/aiOriginSummary.ts's route handler.
+ */
+export interface DeviceAiActivityDto {
+  dispatchedActions: number;
+  windowDays: number;
+  since: string; // ISO
+}
+
 export function deserializeAiOrigin(row: {
   aiOriginKind: string | null;
   aiOriginSessionId: string | null;

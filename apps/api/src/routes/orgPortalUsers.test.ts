@@ -116,6 +116,10 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     const res = await invite({ email: 'new@acme.example', name: 'New Cust' });
     expect(res.status).toBe(200);
     expect(sendInvite).toHaveBeenCalledWith(expect.objectContaining({ to: 'new@acme.example', inviteUrl: expect.stringContaining('/portal/accept-invite?token=raw-token') }));
+    // Spec §8.1: the partner comes from the VERIFIED auth context, never
+    // request input. A partner-scoped caller must hand a real id over, or
+    // portal invites silently stay on the platform sender forever.
+    expect((sendInvite.mock.calls.at(-1)![0] as { partnerId?: string | null }).partnerId).toBe('p-1');
   });
 
   // ---- #3258 W03: an invited LOGIN is linked to the org's CONTACT ----

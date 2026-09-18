@@ -59,6 +59,101 @@ function requireOrgAccess(actor: ContractActor, orgId: string): void {
   }
 }
 
+/**
+ * SITE AXIS (sub-org, app-layer only — Postgres RLS does NOT defend it).
+ *
+ * `contracts` carries no site column, so unlike an invoice or a quote a contract
+ * has no document-level site to check. Its site-attributable unit is the LINE
+ * (`contract_lines.site_id`, set for the SITE_SCOPABLE_LINE_TYPES). The rule
+ * below mirrors `requireSiteAccess` (invoiceService.ts) / `assertSite`
+ * (quoteService.ts) on that unit:
+ *
+ *  - unrestricted actor (`allowedSiteIds === undefined`) → no-op, no extra query;
+ *  - a line is reachable iff `siteId` is non-null AND in the allowlist. A null
+ *    site is an org-level line, DENIED to a restricted actor — byte-for-byte the
+ *    invoice/quote "null-site document is denied" rule;
+ *  - READ (`getContract`, `listContracts`) is PARTIAL: the line set is filtered to
+ *    reachable lines and a contract with no reachable line is denied/omitted.
+ *    Invoices/quotes cannot express this because their site lives on the header;
+ *    this is the one deliberate divergence, and it is the narrower behaviour;
+ *  - every WHOLE-DOCUMENT operation — the estimate aggregate, the lifecycle
+ *    transitions, header updates, currency changes and all line writes — requires
+ *    EVERY line to be reachable, because it acts on or totals the whole document.
+ *    A contract with NO lines is unattributable and therefore denied, and
+ *    `createContract` is denied outright for a restricted actor (mirroring
+ *    `createManualInvoice` rejecting a null-site invoice).
+ *
+ * WHY THIS IS A SECOND LINE, NOT THE FIRST (#6110 review, finding 1).
+ * Every door onto this service is PARTNER-scoped: every route file under
+ * `routes/contracts/` is `requireScope('partner','system')` (contracts.ts:16,
+ * bulk.ts:11, lines.ts:18, lifecycle.ts:13, periods.ts:10, …), and the AI/MCP
+ * tools now refuse organization scope too (`aiToolsContracts.ts`
+ * `partnerScopeRefusal`). Only `scope === 'organization'` tokens ever carry
+ * `allowedSiteIds` (middleware/auth.ts:727-734), so in production a restricted
+ * `ContractActor` should never reach this file at all. The rule below is
+ * therefore DEFENCE IN DEPTH: it exists so that the day a fifth door opens at
+ * organization scope — a portal read, a new tool, a widened route — the site
+ * axis is already enforced instead of being discovered missing. Postgres RLS
+ * does not defend the sub-org axis, so there is no third line under this one.
+ *
+ * INTENTIONALLY FAIL-CLOSED ON NON-SITE-SCOPABLE LINE TYPES. Only
+ * `SITE_SCOPABLE_LINE_TYPES` (per_device, per_device_role —
+ * packages/shared/src/validators/contracts.ts:36) can carry a `site_id` at all;
+ * a `flat`, `manual`, `per_seat` or `per_device_group` line is always null-site.
+ * A restricted actor is therefore denied EVERY whole-document operation on any
+ * contract that carries even one such line — which is most real contracts. That
+ * is deliberate: the alternative is letting a site-limited actor cancel, re-price
+ * or re-currency a document whose value is partly attributable to sites it
+ * cannot see. Widening it needs a per-line authorization model, not a looser
+ * predicate here.
+ */
+export function contractLineSiteDenied(
+  actor: ContractActor,
+  siteId: string | null | undefined,
+): boolean {
+  if (!actor.allowedSiteIds) return false; // unrestricted (partner/system, all-sites org user)
+  return !siteId || !actor.allowedSiteIds.includes(siteId);
+}
+
+function siteDenied(): never {
+  throw new ContractServiceError('Site access denied', 403, 'SITE_DENIED');
+}
+
+/** Line-level gate for a single `siteId` a write is about to touch. */
+function requireLineSiteAccess(actor: ContractActor, siteId: string | null | undefined): void {
+  if (contractLineSiteDenied(actor, siteId)) siteDenied();
+}
+
+/**
+ * Whole-document gate. Returns immediately (ZERO extra queries) for an
+ * unrestricted actor; otherwise one id+site scan of the contract's lines, and a
+ * denial if any line is unreachable or the contract has no lines at all.
+ */
+export async function requireWholeContractSiteAccess(
+  actor: ContractActor,
+  contractId: string,
+  executor: DbExecutor = db,
+): Promise<void> {
+  if (!actor.allowedSiteIds) return;
+  const rows = await executor
+    .select({ id: contractLines.id, siteId: contractLines.siteId })
+    .from(contractLines)
+    .where(eq(contractLines.contractId, contractId));
+  if (rows.length === 0) siteDenied();
+  if (rows.some((r) => contractLineSiteDenied(actor, r.siteId))) siteDenied();
+}
+
+/** Read-path filter: the reachable subset, denying when nothing is reachable. */
+function visibleLinesOrDeny<T extends { siteId: string | null }>(
+  actor: ContractActor,
+  lines: T[],
+): T[] {
+  if (!actor.allowedSiteIds) return lines;
+  const visible = lines.filter((l) => !contractLineSiteDenied(actor, l.siteId));
+  if (visible.length === 0) siteDenied();
+  return visible;
+}
+
 export async function getOwnedContractOr404(contractId: string, actor: ContractActor) {
   const [c] = await db.select().from(contracts).where(eq(contracts.id, contractId)).limit(1);
   if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
@@ -227,6 +322,10 @@ export async function createContract(input: {
   autoRenew?: boolean; renewalTermMonths?: number | null; renewalNoticeDays?: number | null;
 }, actor: ContractActor) {
   requireOrgAccess(actor, input.orgId);
+  // Site axis: a brand-new contract carries no line and is therefore
+  // unattributable to a site — denied to a site-restricted actor, mirroring
+  // createManualInvoice rejecting a null-site invoice.
+  if (actor.allowedSiteIds) siteDenied();
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
   // Derive partnerId from the org row — never trust actor.partnerId for the contract's FK.
   // Creation barrier (#3778): org SHARE lock first, held to commit, so a
@@ -256,9 +355,23 @@ export async function getContract(contractId: string, actor: ContractActor) {
   // #3205 W03: (sortOrder, createdAt, id). sortOrder alone is not a total order
   // — addContractLineToContract defaults it to 0, so everything created through
   // the editor ties — and Postgres was free to reshuffle the table on any edit.
-  const lines = await db.select().from(contractLines)
+  const allLines = await db.select().from(contractLines)
     .where(eq(contractLines.contractId, contractId))
     .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
+  // Site axis: a restricted actor sees only its reachable lines, and a contract
+  // with none is denied (see contractLineSiteDenied). No-op when unrestricted.
+  const lines = visibleLinesOrDeny(actor, allLines);
+  // #6110 finding 3: a PARTIAL read must not look like a complete one. When any
+  // line was hidden, say so, and withhold the billing-period history — every
+  // number in it (invoice totals, snapshot/uncovered/overage counts) is a
+  // WHOLE-DOCUMENT aggregate computed over lines this actor cannot see. Null +
+  // the flag is honest; a filtered-looking array of unfiltered totals is not.
+  const linesFilteredBySiteScope = actor.allowedSiteIds
+    ? lines.length !== allLines.length
+    : undefined;
+  if (linesFilteredBySiteScope === true) {
+    return { contract, lines: await withLineRefs(lines), periods: null, linesFilteredBySiteScope };
+  }
   // #3205 W07: one LEFT JOIN supplies the per-period outcome summary for the
   // detail table. JSON digests remain exclusive to the expanded outcome read.
   const periods = await db
@@ -282,13 +395,25 @@ export async function getContract(contractId: string, actor: ContractActor) {
     )
     .where(eq(contractBillingPeriods.contractId, contractId))
     .orderBy(desc(contractBillingPeriods.periodStart));
-  return { contract, lines: await withLineRefs(lines), periods };
+  return {
+    contract,
+    lines: await withLineRefs(lines),
+    periods: periods as typeof periods | null,
+    ...(linesFilteredBySiteScope === undefined ? {} : { linesFilteredBySiteScope }),
+  };
 }
 
 type ContractRow = typeof contracts.$inferSelect;
 export type ContractListRow = ContractRow & {
   estimatedPeriodValue: string | null;
   estimateError?: 'GROUP_EVALUATION_FAILED';
+  /**
+   * #6110 finding 3. Present ONLY for a site-restricted actor. True when this
+   * contract carries lines the actor cannot reach, in which case
+   * `estimatedPeriodValue` is withheld (null) rather than reported as a
+   * partial-but-unlabelled total.
+   */
+  linesFilteredBySiteScope?: boolean;
 };
 
 export async function listContracts(query: {
@@ -303,6 +428,18 @@ export async function listContracts(query: {
   if (actor.accessibleOrgIds !== null) {
     conds.push(inArray(contracts.orgId, actor.accessibleOrgIds));
   }
+  // Site axis in SQL, NOT after the fetch (#6110 finding 2). The post-fetch drop
+  // below still runs, but on its own it filtered the page AFTER `limit` had
+  // already been applied — a restricted actor could get an empty (or short) page
+  // while reachable contracts sat just past the cut. Narrowing here makes
+  // ordering and limit apply to the rows the actor can actually see.
+  if (actor.allowedSiteIds) {
+    // Empty allowlist = no site is reachable = no contract is. Answer without a
+    // query; an `IN ()` list would not even be valid SQL.
+    if (actor.allowedSiteIds.length === 0) return [];
+    const siteList = sql.join(actor.allowedSiteIds.map((s) => sql`${s}`), sql`, `);
+    conds.push(sql`EXISTS (SELECT 1 FROM contract_lines cl WHERE cl.contract_id = ${contracts.id} AND cl.site_id IN (${siteList}))`);
+  }
   const rows = await db.select().from(contracts)
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
@@ -315,7 +452,12 @@ export async function listContracts(query: {
   const ids = rows.map((r) => r.id);
   const allLines = await db.select().from(contractLines).where(inArray(contractLines.contractId, ids));
   const byContract = new Map<string, typeof allLines>();
+  /** Contracts that carry at least one line this actor cannot reach (#6110 finding 3). */
+  const partial = new Set<string>();
   for (const l of allLines) {
+    // Site axis: a restricted actor's estimate must be built from ITS lines only,
+    // and a contract with no reachable line is dropped from the page below.
+    if (contractLineSiteDenied(actor, l.siteId)) { partial.add(l.contractId); continue; }
     const list = byContract.get(l.contractId);
     if (list) list.push(l); else byContract.set(l.contractId, [l]);
   }
@@ -323,6 +465,8 @@ export async function listContracts(query: {
   const sc: SeatCache = new Map();
   const out: ContractListRow[] = [];
   for (const c of rows) {
+    // Site axis: contracts with no line this actor can reach are omitted entirely.
+    if (actor.allowedSiteIds && (byContract.get(c.id) ?? []).length === 0) continue;
     let cents = 0;
     let estimateError: 'GROUP_EVALUATION_FAILED' | undefined;
     let unresolved = false;
@@ -340,9 +484,15 @@ export async function listContracts(query: {
       if (err instanceof ContractServiceError && err.code === 'GROUP_EVALUATION_FAILED') estimateError = err.code;
       else throw err;
     }
+    // #6110 finding 3: a per-period value summed over only the lines this actor
+    // can see is a DIFFERENT number from the contract's actual period value, and
+    // nothing on the row would say so. Withhold it and flag the row instead —
+    // `computeContractEstimate` already refuses the same aggregate outright.
+    const filtered = actor.allowedSiteIds ? partial.has(c.id) : undefined;
+    const flag = filtered === undefined ? {} : { linesFilteredBySiteScope: filtered };
     out.push(estimateError
-      ? { ...c, estimatedPeriodValue: null, estimateError }
-      : { ...c, estimatedPeriodValue: unresolved ? null : fromCents(cents) });
+      ? { ...c, estimatedPeriodValue: null, estimateError, ...flag }
+      : { ...c, estimatedPeriodValue: (unresolved || filtered) ? null : fromCents(cents), ...flag });
   }
   return out;
 }
@@ -709,6 +859,8 @@ export async function computeContractEstimate(
   deviceEvidence?: Map<string, readonly DeviceSnapshotRow[]>,
 ): Promise<ContractEstimate> {
   const contract = await getOwnedContractOr404(contractId, actor);
+  // The estimate totals EVERY line into one number, so it is a whole-document read.
+  await requireWholeContractSiteAccess(actor, contractId);
   const lines = await db.select().from(contractLines)
     .where(eq(contractLines.contractId, contractId))
     .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
@@ -958,6 +1110,7 @@ export async function summarizeActiveContractMrrByOrg(
 
 export async function updateContract(contractId: string, patch: UpdateContractInput, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
+  await requireWholeContractSiteAccess(actor, contractId);
   assertEditable(c);
   // Schedule fields (billingTiming, intervalMonths, startDate) drive next_billing_at.
   // Editing them on a non-draft contract would leave next_billing_at stale → mis-bills.
@@ -999,6 +1152,7 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
 
 export async function deleteDraftContract(contractId: string, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
+  await requireWholeContractSiteAccess(actor, contractId);
   assertDraft(c);
   await db.delete(contracts).where(eq(contracts.id, contractId)); // lines cascade
 }
@@ -1279,6 +1433,8 @@ export async function changeContractCurrency(
     // so a concurrent activate, line write or billing run serializes against the
     // restamp — which is what makes the eligibility check below race-safe.
     const c = await lockContract(tx, contractId, actor);
+    // Restamping rewrites every line's currency — a whole-document write.
+    await requireWholeContractSiteAccess(actor, contractId, tx);
     if (c.status !== 'draft') {
       // Wave 6 (#3778), owner-approved escape hatch. ONLY 'active' opens; every
       // other status keeps the wave-2 rejection byte-for-byte.
@@ -1359,7 +1515,7 @@ export async function changeContractCurrency(
 /**
  * Multi-currency wave 3 (#3775, spec §6): a catalog-sourced contract line is
  * priced by the resolver in the CONTRACT's currency (org override → price book,
- * never the deprecated unit_price mirror, never converted) and any client-
+ * never another currency's row, never converted) and any client-
  * supplied unitPrice/taxable is IGNORED — the resolver is authoritative, exactly
  * as generateDueInvoice's catalog path already is. A tech who wants a different
  * price adds a non-catalog line, which still requires and stamps the client
@@ -1408,8 +1564,15 @@ function mapCatalogResolveError(err: unknown): never {
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
+    // Site axis: a line write acts on the whole document (and the new line's own
+    // site is checked below, once the line type has decided whether it keeps one).
+    await requireWholeContractSiteAccess(actor, contractId, tx);
     assertEditable(c);
     assertSpecDeviceSetLine(input);
+    // A restricted actor may only create a line inside its sites; a non-site-scopable
+    // (org-level, siteId null) line is denied, as a null-site invoice/quote is.
+    // Checked BEFORE pricing so the answer is the authorization one, not a 400.
+    requireLineSiteAccess(actor, SITE_SCOPABLE_LINE_TYPES.has(input.lineType) ? (input.siteId ?? null) : null);
     let unitPrice: string;
     let taxable: boolean;
     if (input.catalogItemId) {
@@ -1494,6 +1657,7 @@ export async function updateContractLine(
 ): Promise<{ line: DecoratedContractLine; audit: ContractLineAudit }> {
   const { before, line, contract } = await db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
+    await requireWholeContractSiteAccess(actor, contractId, tx);
     assertEditable(c);
 
     const [current] = await tx.select().from(contractLines)
@@ -1544,6 +1708,11 @@ export async function updateContractLine(
     // mergeContractLinePatch drops patch.unitPrice / patch.taxable.
 
     const merged = mergeContractLinePatch(current, patch, resolved);
+    // The patch may MOVE the line: a restricted actor can neither move it out of
+    // its sites nor clear the site (which would make the line org-level).
+    if (actor.allowedSiteIds) {
+      requireLineSiteAccess(actor, SITE_SCOPABLE_LINE_TYPES.has(merged.lineType) ? merged.siteId : null);
+    }
     // #4693: re-stamp from the resolved site when the id changed; clearing the
     // id makes the line deliberately org-wide, rather than marking it deleted.
     if (patchHasKey(patch, 'siteId')) {
@@ -1618,6 +1787,7 @@ export async function removeContractLine(
 ): Promise<ContractLineAudit> {
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
+    await requireWholeContractSiteAccess(actor, contractId, tx);
     assertEditable(c);
     // #3205 W03: read before deleting so contract.line.removed names the real
     // lineType, and so a miss is a typed 404 rather than a silent 200 (the
@@ -1642,6 +1812,7 @@ export async function activateContract(contractId: string, actor: ContractActor,
   // or a concurrent line write (same lock order as every other contract writer).
   const { row, c } = await db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
+    await requireWholeContractSiteAccess(actor, contractId, tx);
     if (c.status !== 'draft' && c.status !== 'paused') {
       throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
     }
@@ -1664,6 +1835,7 @@ export async function activateContract(contractId: string, actor: ContractActor,
 
 export async function pauseContract(contractId: string, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
+  await requireWholeContractSiteAccess(actor, contractId);
   if (c.status !== 'active') {
     throw new ContractServiceError('Only active contracts can be paused', 409, 'INVALID_STATE');
   }
@@ -1676,6 +1848,7 @@ export async function pauseContract(contractId: string, actor: ContractActor) {
 
 export async function resumeContract(contractId: string, actor: ContractActor, asOfISO: string = todayISO()) {
   const c = await getOwnedContractOr404(contractId, actor);
+  await requireWholeContractSiteAccess(actor, contractId);
   if (c.status !== 'paused') {
     throw new ContractServiceError('Only paused contracts can be resumed', 409, 'INVALID_STATE');
   }
@@ -1690,6 +1863,7 @@ export async function resumeContract(contractId: string, actor: ContractActor, a
 
 export async function cancelContract(contractId: string, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
+  await requireWholeContractSiteAccess(actor, contractId);
   if (c.status === 'cancelled') return c;
   const [row] = await db.update(contracts)
     .set({ status: 'cancelled', nextBillingAt: null, updatedAt: new Date() })

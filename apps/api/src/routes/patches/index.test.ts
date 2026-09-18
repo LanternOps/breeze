@@ -428,6 +428,38 @@ describe('patch routes', () => {
     expect(body.data[0].os).toBe('macos');
   });
 
+  // GET /patches was scope-only: every sibling patch READ requires
+  // `devices:read` (compliance.ts, approvals.ts), but the list route — which
+  // returns the same patch inventory, joined per-org — required no permission
+  // at all, so a token holding NO device permission could still enumerate it.
+  it('denies the patch list without devices:read', async () => {
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    // Refused before any query runs.
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('allows the patch list with devices:read', async () => {
+    mockAuthState.permissions = [{ resource: 'devices', action: 'read' }];
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListResult([]) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+  });
+
   it('includes cveIds and version in the patch list response', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectPatchListResult([

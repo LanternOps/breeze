@@ -90,6 +90,10 @@ describe('computeExposureBudget', () => {
     expect(contractMock.countContractDevices).toHaveBeenCalledWith(ORG_ID, null);
     expect(result).toEqual({
       distinctDevices: 2,
+      // #4442 W05 — the window's own device SET, returned so the sweep
+      // readiness cohort can do its `|existing ∪ candidates|` union without a
+      // second copy of this query.
+      exposedDeviceIds: new Set(['a', 'b']),
       allowance: 5, // floor(100 * 5 / 100)
       contractDeviceCount: 100,
       maxFleetPercentPerDay: 5,

@@ -141,6 +141,13 @@ func TestServiceInstallDarwin_DelegatesHelperStaging(t *testing.T) {
 	if strings.Contains(text, "os.WriteFile(darwinDesktopHelperBinaryPath") {
 		t.Fatal("service_cmd_darwin.go writes the desktop helper path directly — helper bytes must only ever come from stageDesktopHelper (#3457)")
 	}
+	// #5899: hosted builds stage the helper from their own control plane, which
+	// only works if the install command passes the persisted server URL through.
+	// A silent drop of this line would break hosted macOS installs only — the one
+	// OS whose install path CI cannot execute.
+	if !strings.Contains(text, "serverURL: helperServerURL,") {
+		t.Fatal("service_cmd_darwin.go no longer passes the persisted server URL into stageDesktopHelper — hosted helper staging would silently fall back to the public GitHub release (#5899)")
+	}
 	if !strings.Contains(text, "desktopHelperLaunchAgentsWanted(") {
 		t.Fatal("service_cmd_darwin.go no longer gates the helper LaunchAgents on a helper binary being present")
 	}
@@ -190,7 +197,7 @@ func TestIsDevBuildVersion(t *testing.T) {
 }
 
 func TestDesktopHelperUnavailableWarning_IsActionable(t *testing.T) {
-	msg := desktopHelperUnavailableWarning(os.ErrNotExist, "0.109.0", "darwin", "arm64")
+	msg := desktopHelperUnavailableWarning(os.ErrNotExist, "0.109.0", "darwin", "arm64", "")
 	for _, want := range []string{
 		"desktop helper not installed",
 		"agent service is installed",

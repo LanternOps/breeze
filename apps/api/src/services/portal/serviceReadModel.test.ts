@@ -126,6 +126,7 @@ describe('serviceOverview', () => {
       occurrenceId: 'o1', evidenceId: 'e1', kind: 'report_run', documentId: null,
       documentTitle: null, documentPortalVisible: null, documentDeletedAt: null,
       reportRunId: 'r1', reportName: 'Vulnerability review', reportPortalSelfService: true,
+      occurrenceStatus: 'delivered',
       createdAt: new Date('2026-10-02T09:05:00Z'),
     };
     seed({ enableReports: false, evidence: [run] });
@@ -235,6 +236,50 @@ describe('deliverableOccurrences', () => {
     for (const where of state.wheres) {
       expect(new PgDialect().sqlToQuery(where as SQL).params).toContain(ORG_ID);
     }
+  });
+
+  it('does not publish report_run evidence for an occurrence that is not delivered (#5784 OD-12)', async () => {
+    // The scorecard link is a download path too: an artifact generated at
+    // 05:18 on the due day must not reach the customer before the technician
+    // delivers the occurrence.
+    state.rows.push([{ id: 'd1', name: 'Threat detection review', cadence: 'monthly', artifactRequired: true }]);
+    state.rows.push([{
+      id: 'o1', status: 'open', dueAt: '2026-10-31', originalDueAt: '2026-10-31',
+      periodStart: '2026-10-01', periodEnd: '2026-10-31', deliveredAt: null, deliveryNote: null,
+      nameSnapshot: 'Threat detection review',
+    }]);
+    state.rows.push([{
+      occurrenceId: 'o1', evidenceId: 'e1', kind: 'report_run', documentId: null,
+      documentTitle: null, documentPortalVisible: null, documentDeletedAt: null,
+      reportRunId: 'r1', reportName: 'Service evidence — Threat detection review', reportPortalSelfService: true,
+      occurrenceStatus: 'open', createdAt: new Date('2026-10-31T05:18:00Z'),
+    }]);
+    state.rows.push([{ enableReports: true }]);
+
+    const dto = await deliverableOccurrences(ORG_ID, 'd1', { timezone: 'UTC', now: NOW });
+    expect(dto!.occurrences[0]!.evidence).toEqual([]);
+    expect(dto!.occurrences[0]!.artifactState).toBe('none');
+  });
+
+  it('publishes report_run evidence once the occurrence is delivered (#5784 OD-12)', async () => {
+    state.rows.push([{ id: 'd1', name: 'Threat detection review', cadence: 'monthly', artifactRequired: true }]);
+    state.rows.push([{
+      id: 'o1', status: 'delivered', dueAt: '2026-10-31', originalDueAt: '2026-10-31',
+      periodStart: '2026-10-01', periodEnd: '2026-10-31',
+      deliveredAt: new Date('2026-11-01T09:00:00Z'), deliveryNote: null,
+      nameSnapshot: 'Threat detection review',
+    }]);
+    state.rows.push([{
+      occurrenceId: 'o1', evidenceId: 'e1', kind: 'report_run', documentId: null,
+      documentTitle: null, documentPortalVisible: null, documentDeletedAt: null,
+      reportRunId: 'r1', reportName: 'Service evidence — Threat detection review', reportPortalSelfService: true,
+      occurrenceStatus: 'delivered', createdAt: new Date('2026-10-31T05:18:00Z'),
+    }]);
+    state.rows.push([{ enableReports: true }]);
+
+    const dto = await deliverableOccurrences(ORG_ID, 'd1', { timezone: 'UTC', now: NOW });
+    expect(dto!.occurrences[0]!.evidence[0]).toMatchObject({ kind: 'report_run', reportRunId: 'r1' });
+    expect(dto!.occurrences[0]!.artifactState).toBe('report');
   });
 
   it('marks a late delivery and publishes its document evidence', async () => {

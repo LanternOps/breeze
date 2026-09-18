@@ -171,3 +171,30 @@ describe('DeviceEventLogViewer — result badge (#4405 follow-through)', () => {
     expect(badge).not.toHaveTextContent('Success');
   });
 });
+
+// #5022 W02 — ai.command.executed rows (AI-dispatched device commands) must
+// render under the existing AI category/initiated-by badges, proven by
+// data-testid rather than assumed from "already wired" server-side mapping.
+describe('DeviceEventLogViewer — ai.command. rows (#5022 W02)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('renders an ai.command.executed row under the AI category with the AI initiator badge', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      jsonResponse({
+        data: [
+          activity('a1', { result: 'dispatched' }),
+        ].map((entry) => ({
+          ...entry,
+          action: 'ai.command.executed',
+          category: 'ai',
+          initiatedBy: 'ai',
+          actor: { type: 'ai_agent', name: 'AI Agent', email: null },
+        })),
+        pagination: { page: 1, limit: 50, total: 1, totalIsLowerBound: false },
+      }),
+    );
+    render(<DeviceEventLogViewer deviceId="dev-1" />);
+    expect(await screen.findByTestId('event-category-ai')).toBeInTheDocument();
+    expect(screen.getByTestId('event-initiated-by-ai')).toBeInTheDocument();
+  });
+});

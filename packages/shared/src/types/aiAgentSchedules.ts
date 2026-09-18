@@ -13,8 +13,15 @@
  * evaluator in the sweeper (disk usage, agent last-checkin age, pending
  * reboot flag, last backup age, service state, unpatched-critical count),
  * so a schedule can only reference a kind the sweeper actually knows how to
- * run. `expiring_certs` was considered and deferred — see the P2-2 plan's
- * amendments doc.
+ * run.
+ *
+ * `expiring_certs` (#5751 W03, #5754) joined the catalog once it gained a real
+ * evidence source: the typed `network_monitors.tls_*` columns, fed by the TLS
+ * observation the Go agent emits on every HTTPS `http_check`. It is
+ * **finding-only** — `SweepProposedAction` is a closed union and there is no
+ * safe automated certificate renewal — so it proposes nothing, registers no
+ * subject probe, and `isActEligibleSweepKind('expiring_certs')` is false by
+ * construction.
  */
 export const AI_SWEEP_KINDS = [
   'disk_pressure',
@@ -23,6 +30,7 @@ export const AI_SWEEP_KINDS = [
   'failed_backups',
   'service_down',
   'unpatched_critical',
+  'expiring_certs',
 ] as const;
 export type AiSweepKind = (typeof AI_SWEEP_KINDS)[number];
 
@@ -44,8 +52,13 @@ export type AiSweepKind = (typeof AI_SWEEP_KINDS)[number];
  * can never change it — an override that could flip a sweep baseline into a
  * narrative one for a single org would silently produce a run profile the
  * partner never configured.
+ *
+ * AI patch agent (W01) added `patch`: one `patch`-profile run per org that
+ * returns a patch plan (`types/aiPatchPlan.ts`). Like `narrative`/`design` it
+ * sweeps nothing (zero-cardinality `sweepKinds`), and it fires at most once
+ * a day (see `isDailyOrRarerLiteralCron`).
  */
-export const AI_AGENT_SCHEDULE_KINDS = ['sweep', 'narrative', 'design'] as const;
+export const AI_AGENT_SCHEDULE_KINDS = ['sweep', 'narrative', 'design', 'patch'] as const;
 export type AiAgentScheduleKind = (typeof AI_AGENT_SCHEDULE_KINDS)[number];
 
 /** Severity a sweep evaluator assigns to one `SweepFinding`. */
@@ -123,6 +136,14 @@ export interface AiAgentScheduleDto {
   timezone: string;
   sweepKinds: AiSweepKind[];
   enabled: boolean;
+  /**
+   * #4442 W04 — unattended ("act mode") sweep execution. THREE-VALUED and
+   * deliberately raw so a UI can tell "inherit" from "explicitly off":
+   *   on a partner BASELINE: `true` = armed, `false`/`null` = not armed;
+   *   on an org OVERRIDE:    `false` = explicitly disarmed, `true`/`null` = inherit.
+   * The effective value is `AiAgentEffectiveScheduleDto.effective.actMode`.
+   */
+  actMode: boolean | null;
   lastEnqueuedAt: string | null;
   lastOccurrenceKey: string | null;
   lastRunSummary: AiAgentScheduleRunSummary | null;
@@ -138,6 +159,6 @@ export interface AiAgentScheduleDto {
  * (see `AiAgentPolicyProvenance`).
  */
 export interface AiAgentEffectiveScheduleDto extends AiAgentScheduleDto {
-  effective: { enabled: boolean; sweepKinds: AiSweepKind[] };
-  override: { id: string; enabled: boolean; sweepKinds: AiSweepKind[] } | null;
+  effective: { enabled: boolean; sweepKinds: AiSweepKind[]; actMode: boolean };
+  override: { id: string; enabled: boolean; sweepKinds: AiSweepKind[]; actMode: boolean | null } | null;
 }

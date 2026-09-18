@@ -2233,6 +2233,19 @@ ssoRoutes.post('/reauth/start', authMiddleware, async (c) => {
     return c.json({ error: 'Account has a password' }, 400);
   }
 
+  // #4050: this route deliberately has NO axis-pool (`inPool`) check of the
+  // kind /link/start/:providerId performs above, and that asymmetry is correct
+  // BY CONSTRUCTION, not an oversight. /link/start takes `providerId` from the
+  // request path, so it must prove the client-supplied provider is plausible
+  // for the caller's axis before starting a round-trip. Here the provider is
+  // derived exclusively from the caller's OWN `user_sso_identities` row below,
+  // i.e. from a binding /link/start (or the login path) already axis-checked
+  // when it was created — there is no attacker-controlled parameter for an
+  // axis check to defend against, and re-deriving the caller's own axis could
+  // only ever reject a link the caller legitimately holds.
+  //
+  // INVARIANT: if this route ever grows a `providerId` (or org/partner) input,
+  // it MUST regain /link/start's `inPool` check in the same change.
   const [identity] = await db
     .select({ providerId: userSsoIdentities.providerId })
     .from(userSsoIdentities)

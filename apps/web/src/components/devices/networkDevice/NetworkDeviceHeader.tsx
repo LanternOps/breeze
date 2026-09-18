@@ -1,16 +1,21 @@
-// The page header card: type icon tile, name/type/approval/online badges,
+// The page header card: type icon tile, name/type/approval/reachability badges,
 // the IP/MAC/manufacturer subtitle line, and the header-level actions (Open
-// Web UI, Manage in Discovery).
+// Web UI, Settings).
 
-import { ChevronRight, MapPin, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
+import { Settings, MapPin, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { DiscoveredAsset } from '../../discovery/DiscoveredAssetList';
 import { typeConfig, approvalStatusConfig } from '../../discovery/DiscoveredAssetList';
 import { ProxyConnectPopover } from './ProxyConnectPopover';
-import type { DeviceOption } from './types';
+import { formatReachability, type ReachabilityTone, type TFn } from './reachabilityCopy';
+import type { Reachability, DeviceOption } from './types';
 
 export function NetworkDeviceHeader({
   asset,
+  lastError,
+  reachability,
+  timezone,
+  nicVendor,
   displayName,
   siteName,
   typeMeta,
@@ -24,8 +29,13 @@ export function NetworkDeviceHeader({
   devicesError,
   onRetryDevices,
   onAnnounce,
+  onOpenSettings,
 }: {
   asset: DiscoveredAsset;
+  lastError?: string | null;
+  reachability: Reachability | null;
+  timezone: string;
+  nicVendor: string | null;
   displayName: string;
   siteName: string | null;
   typeMeta?: (typeof typeConfig)[keyof typeof typeConfig];
@@ -39,8 +49,15 @@ export function NetworkDeviceHeader({
   devicesError: boolean;
   onRetryDevices: () => void;
   onAnnounce: (message: string) => void;
+  onOpenSettings: () => void;
 }) {
   const { t } = useTranslation('devices');
+  const reach = formatReachability(reachability, t as TFn, timezone);
+  const TONE_CLASSES: Record<ReachabilityTone, string> = {
+    success: 'bg-success/15 text-success border-success/30',
+    destructive: 'bg-destructive/15 text-destructive border-destructive/30',
+    muted: 'bg-muted text-muted-foreground border-muted',
+  };
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -63,43 +80,62 @@ export function NetworkDeviceHeader({
               >
                 {typeLabel}
               </span>
-              <span
-                className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${approvalMeta?.color ?? approvalStatusConfig.dismissed.color}`}
-              >
-                {approvalLabel}
-              </span>
+              {asset.approvalStatus !== 'approved' && (
+                <span
+                  data-testid="network-detail-approval-badge"
+                  className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${approvalMeta?.color ?? 'bg-muted text-muted-foreground border-muted'}`}
+                >
+                  {approvalLabel}
+                </span>
+              )}
               <span
                 data-testid="network-device-status"
-                className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${
-                  asset.isOnline
-                    ? 'bg-success/15 text-success border-success/30'
-                    : 'bg-muted text-muted-foreground border-muted'
-                }`}
+                title={reach.title || undefined}
+                className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${TONE_CLASSES[reach.tone]}`}
               >
-                {asset.isOnline ? <Wifi aria-hidden="true" className="h-3 w-3" /> : <WifiOff aria-hidden="true" className="h-3 w-3" />}
-                {asset.isOnline ? t('common:states.online') : t('common:states.offline')}
+                <span aria-hidden="true" className="h-2 w-2 rounded-full bg-current" />
+                {reach.label}
               </span>
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-              {siteName && (
-                <span className="flex items-center gap-1" data-testid="network-detail-site">
-                  <MapPin aria-hidden="true" className="h-3.5 w-3.5" />
-                  {siteName}
-                </span>
-              )}
-              <span className="font-mono">{asset.ip}</span>
-              {asset.mac !== '—' && <span className="font-mono">{asset.mac}</span>}
-              {asset.manufacturer !== '—' && (
-                <span className="min-w-0 max-w-[16rem] truncate" title={asset.manufacturer}>
-                  {asset.manufacturer}
-                </span>
-              )}
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+              {[
+                siteName ? (
+                  <span key="site" className="flex items-center gap-1" data-testid="network-detail-site">
+                    <MapPin aria-hidden="true" className="h-3.5 w-3.5" />
+                    {siteName}
+                  </span>
+                ) : null,
+                <span key="ip" className="font-mono">{asset.ip}</span>,
+                asset.mac !== '—' ? <span key="mac" className="font-mono">{asset.mac}</span> : null,
+                asset.manufacturer !== '—' ? (
+                  <span key="mfr" className="min-w-0 max-w-[16rem] truncate" title={asset.manufacturer}>
+                    {asset.manufacturer}
+                  </span>
+                ) : null,
+                nicVendor && nicVendor !== asset.manufacturer ? (
+                  <span key="nic" className="min-w-0 max-w-[16rem] truncate" title={nicVendor}>
+                    {nicVendor}
+                  </span>
+                ) : null,
+              ]
+                .filter(Boolean)
+                .map((node, index) => (
+                  <span key={index} className="flex items-center gap-2">
+                    {index > 0 && <span aria-hidden="true">·</span>}
+                    {node}
+                  </span>
+                ))}
             </div>
+            {lastError && (
+              <p data-testid="network-device-last-error" className="mt-2 break-words text-sm text-destructive">
+                {t('networkDeviceDetailPage.header.lastError', { error: lastError })}
+              </p>
+            )}
           </div>
         </div>
-        {/* Approve / reclassify remain in Discovery until slice 3 of #1424
-            brings them inline; unlink for manual links is available inline on
-            the Monitoring tab. Other actions link out for now. */}
+        {/* The device page owns this asset now (spec §10, D7): Settings is the
+            one way in, and the old "Manage in Discovery" hand-off is gone —
+            Discovery links HERE, not the other way round. */}
         <div className="flex items-center gap-2">
           <ProxyConnectPopover
             variant="header"
@@ -113,14 +149,15 @@ export function NetworkDeviceHeader({
             onRetryDevices={onRetryDevices}
             onAnnounce={onAnnounce}
           />
-          <a
-            href={`/discovery?asset=${asset.id}#assets`}
-            data-testid="network-detail-manage-discovery"
-            className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          <button
+            type="button"
+            data-testid="network-detail-settings"
+            onClick={onOpenSettings}
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
-            {t('networkDeviceDetailPage.manageInDiscovery')}
-            <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
-          </a>
+            <Settings aria-hidden="true" className="h-4 w-4" />
+            {t('networkDeviceDetailPage.header.settings')}
+          </button>
         </div>
       </div>
     </div>

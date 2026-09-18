@@ -54,4 +54,27 @@ describe('serviceDeliverables validators', () => {
     expect(addEvidenceSchema.safeParse({ kind: 'report_run', reportRunId: 'nope' }).success).toBe(false));
   it('reschedule requires an ISO date', () =>
     expect(rescheduleOccurrenceSchema.safeParse({ dueAt: '31/10/2026' }).success).toBe(false));
+
+  // ── #5808 W03: internal instructions + the checklist-template pointer ─────
+  it('create accepts instructions and checklistTemplateId', () => {
+    const out = createDeliverableSchema.parse({ ...base, instructions: 'Check X before Y', checklistTemplateId: '11111111-1111-4111-8111-111111111111' });
+    expect(out.instructions).toBe('Check X before Y');
+    expect(out.checklistTemplateId).toBe('11111111-1111-4111-8111-111111111111');
+  });
+  it('create omits both when absent, rather than defaulting them', () => {
+    const out = createDeliverableSchema.parse(base);
+    expect(out.instructions).toBeUndefined();
+    expect(out.checklistTemplateId).toBeUndefined();
+  });
+  it('update accepts clearing BOTH to null', () => {
+    // updateDeliverableSchema is written out longhand, so a field added only to
+    // the create shape would be a silent gap where an update cannot clear it.
+    expect(updateDeliverableSchema.parse({ instructions: null, checklistTemplateId: null }))
+      .toEqual({ instructions: null, checklistTemplateId: null });
+  });
+  it('rejects a non-guid checklistTemplateId and over-long instructions', () => {
+    expect(createDeliverableSchema.safeParse({ ...base, checklistTemplateId: 'nope' }).success).toBe(false);
+    expect(updateDeliverableSchema.safeParse({ checklistTemplateId: 'nope' }).success).toBe(false);
+    expect(createDeliverableSchema.safeParse({ ...base, instructions: 'x'.repeat(10001) }).success).toBe(false);
+  });
 });

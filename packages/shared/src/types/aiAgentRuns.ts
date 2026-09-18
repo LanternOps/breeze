@@ -1,5 +1,7 @@
 import type { AiApprovalScope, AiToolStatus } from './ai';
 import type { AiAgentRunFleetDesignDto } from './fleetDesign';
+import type { AiAgentRunPatchDto } from './aiPatchPlan';
+import type { AiRunArtifactDto } from './aiArtifacts';
 import type {
   ActExecutionVerdict,
   ActVerificationVerdict,
@@ -14,7 +16,23 @@ import type {
 } from './aiAgents';
 import type { AiSweepKind, AiSweepSeverity } from './aiAgentSchedules';
 import type { AiAgentRunNarrativeDto } from './orgNarrativeReport';
+import type { AnalysisFinding, AnalysisProposedAction } from './aiAgents';
 import type { TicketTriageProposal } from './ticketTriage';
+
+/**
+ * Execution plane W04 — the run-detail projection of `AnalysisOutcome`
+ * (`types/aiAgents.ts`). Structurally identical today and deliberately its
+ * own name: the outcome type is the MODEL's contract (validated by
+ * `analysisOutcomeSchema`), this one is the CLIENT's, and the two are free to
+ * diverge — W05 adds the resolved artifact list and the workspace step
+ * transcript to the client side without touching what the model may submit.
+ */
+export interface AnalysisOutcomeDto {
+  summary: string;
+  findings: AnalysisFinding[];
+  artifactHandles: string[];
+  proposedActions: AnalysisProposedAction[];
+}
 
 /**
  * Wave 6 PR 1 (#3828) — the execution-trace DTOs: what `GET /ai/agents/runs`
@@ -404,13 +422,22 @@ export type AlertVerdictSuggestionDisposition = 'intent_created' | 'not_created'
  * verdict that lost the race. See `alertVerdicts.ts`'s write-ordering
  * docstring for the full mechanism (deferred self-FK + 23505 handling).
  */
+/**
+ * `'intent_invalid_provenance'` — `createActionIntent`'s
+ * `remediationTriggerSchema.parse(...)` rejected the `trigger` this file
+ * built (a `ZodError`). That is a code defect in the caller, never a
+ * business-outcome denial, so it is reported to Sentry and kept distinct
+ * from `'intent_error'` (a genuinely-thrown business error, e.g.
+ * `org_resolution_failed`).
+ */
 export type AlertVerdictSuggestionReason =
   | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error'
   | 'not_allowlisted' | 'superseded_concurrently'
   // #5290 — the target is a recurrence-escalation alert. The verdict is still
   // recorded (advisory analysis is wanted), but the suggested mutation is
   // refused: a requires-human alert is closed by a person, never by the machine.
-  | 'requires_human';
+  | 'requires_human'
+  | 'intent_invalid_provenance';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one
@@ -449,11 +476,22 @@ export interface AiAgentRunAlertVerdictDto {
  */
 export type SweepProposalReason =
   | 'device_not_in_evidence'
+  // #4442 W04 — the ANTI-SUBSTITUTION refusal. The device was in the evidence
+  // set, but the SUBJECT the proposal names (a service name, a mount point, a
+  // set of vulnerability ids) matches no row the system actually loaded.
+  // Distinct from `device_not_in_evidence` because it is a different claim:
+  // evidence about service A does not authorize acting on service B.
+  | 'subject_not_in_evidence'
   | 'device_not_in_org'
   | 'not_allowlisted'
   | 'no_eligible_approvers'
   | 'intent_error'
-  | 'max_actions_per_run';
+  | 'max_actions_per_run'
+  // `createActionIntent`'s `remediationTriggerSchema.parse(...)` rejected the
+  // `trigger` this file built (a `ZodError`) — a code defect, not a
+  // business-outcome denial. Reported to Sentry; see
+  // `AlertVerdictSuggestionReason`'s matching member for the full rationale.
+  | 'intent_invalid_provenance';
 
 /**
  * Phase 2 wave P2-2 (scheduled sweeps) — the safe projection of one
@@ -478,7 +516,54 @@ export interface AiAgentRunSweepFindingDto {
     disposition: 'intent_created' | 'refused' | 'cap_reached' | 'error';
     reason: SweepProposalReason | null;
     intentId: string | null;
+    /**
+     * #4442 W05 — what actually HAPPENED to the minted intent, read live off
+     * `action_intents` rather than inferred from the run's pending-only
+     * `intent_ids`. `null` when no intent was minted, or when the intent is
+     * no longer readable. `auto_executing` is the act-mode case: approved by
+     * POLICY, not by a human.
+     */
+    outcome: AiAgentRunSweepProposalOutcome | null;
+    /**
+     * #4442 W05 — was this proposal inside the occurrence's readiness cohort,
+     * i.e. minted act-eligible? `null` for a DISARMED occurrence and for every
+     * run from before act mode, which is what keeps those rendering exactly as
+     * they did. `false` means an ordinary supervised card — never a drop.
+     */
+    cohort: boolean | null;
+    /**
+     * #4442 W05 — which cap ended the cohort walk (`fleet_cap`, `day_cap` or
+     * `occurrence_cap`), so the UI can say WHY the rest are waiting. `null`
+     * when nothing bound, and for a disarmed occurrence.
+     */
+    stoppedBy: string | null;
   } | null;
+}
+
+/**
+ * #4442 W05 — the live outcome of a sweep-minted intent. `auto_executing`
+ * exists because act mode makes the interesting outcomes non-pending: an
+ * intent approved by POLICY (`decided_via = 'policy'`) is running unattended,
+ * which reads very differently from one a human approved.
+ */
+export const AI_AGENT_RUN_SWEEP_PROPOSAL_OUTCOMES = [
+  'pending', 'auto_executing', 'executed', 'failed', 'declined', 'expired',
+] as const;
+export type AiAgentRunSweepProposalOutcome =
+  (typeof AI_AGENT_RUN_SWEEP_PROPOSAL_OUTCOMES)[number];
+
+/**
+ * #4442 W05 — the per-occurrence act roll-up shown above the findings table.
+ * `devicesActed` counts DISTINCT devices whose proposal was minted
+ * act-eligible, not intents; `devicesProposed` counts distinct devices any
+ * surviving proposal named. Deliberately NOT a promise of atomic execution: a
+ * cohort member can still lose the authorize race or fail decide-time
+ * revalidation and degrade to a human approval on its own.
+ */
+export interface AiAgentRunSweepActSummaryDto {
+  devicesActed: number;
+  devicesProposed: number;
+  stoppedBy: string | null;
 }
 
 /**
@@ -490,10 +575,69 @@ export interface AiAgentRunSweepFindingDto {
 export interface AiAgentRunSweepDto {
   scheduleId: string | null;
   occurrenceKey: string | null;
+  /**
+   * #4442 W05 — the act roll-up, or `null` for a DISARMED occurrence and for
+   * every pre-act-mode run (no cohort was ever computed, so there is nothing
+   * truthful to say).
+   */
+  actSummary: AiAgentRunSweepActSummaryDto | null;
   kinds: AiSweepKind[];
   summary: string;
   findings: AiAgentRunSweepFindingDto[];
   evidenceTruncated: boolean;
+}
+
+/**
+ * Execution plane W03 (spec §5.8) — one live progress beat published by
+ * `emitRunProgress` and read back by `readRunProgress` (`services/aiAgents/
+ * runProgress.ts`) off the capped Redis ring, never the DB.
+ */
+export interface AiAgentRunProgressEntryDto {
+  step: string;
+  label: string;
+  ordinal: number;
+  at: string;
+}
+
+/**
+ * One `workspace_run` step, off `ai_run_workspaces.steps` (execution-plane spec
+ * §5.8). This is the audit trail a technician needs to trust a finding: the
+ * handles name the `step_script` and `step_stdout` artifacts, so the run page
+ * can show EXACTLY what code ran and what it printed. A handle is null when the
+ * artifact has since expired (30-day TTL) — render "expired", never a dead link.
+ */
+export interface AiAgentRunWorkspaceStepDto {
+  ordinal: number;
+  language: 'bash' | 'python' | 'node';
+  scriptArtifactHandle: string | null;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  stdoutArtifactHandle: string | null;
+}
+
+/**
+ * The sandbox this run used, projected off `ai_run_workspaces` (spec §6.2).
+ * `provider_ref` is deliberately NOT projected — it is a vendor handle the
+ * reaper needs and nothing outside the API has any use for.
+ */
+export interface AiAgentRunWorkspaceDto {
+  backend: string;
+  region: 'eu' | 'us';
+  status: string;
+  bootstrapHash: string | null;
+  /** Exact selected image reference; null for legacy/unknown runtimes. */
+  runtimeImage: string | null;
+  createdAt: string;
+  readyAt: string | null;
+  destroyedAt: string | null;
+  cpuMs: number | null;
+  wallMs: number | null;
+  memAllocatedMb: number | null;
+  stagedBytes: number;
+  artifactBytes: number;
+  stepCount: number;
+  steps: AiAgentRunWorkspaceStepDto[];
 }
 
 export interface AiAgentRunDetailDto {
@@ -587,6 +731,10 @@ export interface AiAgentRunDetailDto {
    * Additive nullable field — does NOT bump the DTO schema version.
    */
   reportRunId: string | null;
+  /** Live progress beats (spec §5.8). Always an array — `[]` for a finished
+   *  run whose one-hour window has expired, and for every run from before this
+   *  field existed. Additive: does NOT bump AI_AGENT_RUN_DTO_SCHEMA_VERSION. */
+  progress: AiAgentRunProgressEntryDto[];
   /**
    * Fleet Designer (W01) — the report this run produced, for a
    * `design`-profile run that reached a `submit_fleet_design` outcome. Null
@@ -595,6 +743,93 @@ export interface AiAgentRunDetailDto {
    * (same rule as `alertVerdict`/`sweep`/`narrative` above).
    */
   fleetDesign: AiAgentRunFleetDesignDto | null;
+  /**
+   * AI patch agent (W01) — the patch plan this run produced, for a
+   * `patch`-profile run that reached a `submit_patch_plan` outcome. Null for
+   * every non-patch run and for a patch run that has not produced one.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`
+   * (same rule as `alertVerdict`/`sweep`/`narrative`/`fleetDesign` above).
+   */
+  patch: AiAgentRunPatchDto | null;
+  /**
+   * Execution plane W04 — the outcome an `analysis`-profile run submitted via
+   * `submit_analysis`. Null for every other profile and for an analysis run
+   * that has not produced one. Additive nullable field — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (same rule as the siblings above).
+   *
+   * `proposedActions` inside it are PROPOSALS a technician turns into intents
+   * through the normal approval flow; nothing in the run executed them, and
+   * nothing downstream of this DTO may treat them as approved.
+   */
+  analysis: AnalysisOutcomeDto | null;
+  /**
+   * Execution plane W04 — sandbox compute billed to this run, in cents. 0 for
+   * every run that never created a sandbox (including every non-analysis
+   * profile), which is why it is a plain number rather than nullable: "no
+   * sandbox" and "a sandbox that cost nothing" are the same answer to the
+   * only question the UI asks.
+   */
+  computeCents: number;
+  /**
+   * Execution plane W04 — true when the provider could not report usage and
+   * the run settled at its RESERVATION rather than at measured usage (spec
+   * §9). The run page renders a worst-case 25¢ differently from a measured
+   * 12¢; without this flag the two are indistinguishable and a support
+   * question about a bill has no answer. Always present, `false` for every
+   * run that measured.
+   */
+  computeUsageEstimated: boolean;
+  /**
+   * #4248 W03 (AI Scorecard, OD-7 B) — how the narrative's EMAIL delivery
+   * went, for a `narrative`-profile run that materialised an artifact. Null
+   * for every other run. COUNTS ONLY: a skipped count is a small authority
+   * oracle, acceptable to someone who already holds `ai_agents:read` on the
+   * run; the recipients themselves are never named. Non-null whenever the run
+   * produced an artifact — including with `total: 0`, so a failed recipient
+   * lookup (`recipientsUnresolved`) is still visible.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null;
+  /**
+   * Execution plane W05 (spec §5.8) — artifacts this run produced or captured,
+   * newest first. Empty for every run that produced none. The previews are RAW
+   * customer bytes: text-escape before rendering, never
+   * `dangerouslySetInnerHTML` (spec §8).
+   * Additive and ALWAYS PRESENT — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  artifacts: AiRunArtifactDto[];
+  /**
+   * Execution plane W05 (spec §5.8, §6.2) — the sandbox and its step
+   * transcript, or null when the run never created one.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  workspace: AiAgentRunWorkspaceDto | null;
+}
+
+/** See `AiAgentRunDetailDto.narrativeDelivery`. */
+export interface AiAgentRunNarrativeDeliveryDto {
+  total: number;
+  sent: number;
+  /**
+   * Permanently not delivered. Deliberately NOT called "skipped (insufficient
+   * authority)": the same terminal state is reached by an authority refusal,
+   * by a recipient with no usable address, AND by a hard provider refusal, so
+   * naming one cause would send a technician to investigate permissions when
+   * the real problem is a missing address or a mail-provider error.
+   */
+  refused: number;
+  /** Not delivered YET — still queued or mid-send; the reconciler retries. */
+  pending: number;
+  /** Provider outcome ambiguous — never auto-replayed; a human decision. */
+  unknown: number;
+  /**
+   * The recipient lookup itself failed, so the narrative was stored with ZERO
+   * delivery rows and nobody was emailed. Without this, the run detail cannot
+   * tell that apart from an org that deliberately has no recipients — and the
+   * weekly report reaches nobody in silence.
+   */
+  recipientsUnresolved: boolean;
 }
 
 /**
