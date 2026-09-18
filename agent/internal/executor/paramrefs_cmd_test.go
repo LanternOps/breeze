@@ -91,6 +91,74 @@ func TestRenderCMDContexts(t *testing.T) {
 			wantErr:     true,
 			errContains: "call",
 		},
+
+		// A caret escapes the next character, so `^&` is a literal ampersand
+		// passed to the command — NOT a statement separator. Splitting on it
+		// hid the `call` that still re-parses the whole line.
+		{
+			name:        "a caret-escaped ampersand does not end the call statement",
+			script:      `call x ^& echo {{p}}`,
+			params:      p,
+			wantErr:     true,
+			errContains: "call",
+		},
+		{
+			name:        "a caret-escaped pipe does not end the call statement",
+			script:      `call x ^| echo {{p}}`,
+			params:      p,
+			wantErr:     true,
+			errContains: "call",
+		},
+		{
+			name:        "a caret-escaped open paren does not end the call statement",
+			script:      `call x ^( echo {{p}}`,
+			params:      p,
+			wantErr:     true,
+			errContains: "call",
+		},
+		{
+			name:        "a caret-escaped close paren does not end the call statement",
+			script:      `call x ^) echo {{p}}`,
+			params:      p,
+			wantErr:     true,
+			errContains: "call",
+		},
+
+		// A trailing caret escapes the newline, so cmd parses the continued
+		// physical lines as ONE logical line. Line-scoped guards missed both.
+		{
+			name:        "a caret continuation keeps the call statement",
+			script:      "call ^\nfoo {{p}}\n",
+			params:      p,
+			wantErr:     true,
+			errContains: "call",
+		},
+		{
+			name:        "a CRLF caret continuation keeps the call statement",
+			script:      "call ^\r\nfoo {{p}}\r\n",
+			params:      p,
+			wantErr:     true,
+			errContains: "call",
+		},
+		{
+			name:        "a caret continuation keeps the for /f in-clause",
+			script:      "for /f \"tokens=*\" %%a in (^\n'echo {{p}}'^\n) do @echo %%a\n",
+			params:      p,
+			wantErr:     true,
+			errContains: "for /f",
+		},
+		{
+			name:   "a doubled caret at end of line is not a continuation",
+			script: "echo ^^\necho {{p}}\n",
+			params: p,
+			want:   "echo ^^\necho !BREEZE_PARAM_P!\n",
+		},
+		{
+			name:   "a plain preceding line is not joined",
+			script: "call foo\necho {{p}}\n",
+			params: p,
+			want:   "call foo\necho !BREEZE_PARAM_P!\n",
+		},
 	})
 }
 

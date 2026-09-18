@@ -135,6 +135,14 @@ func (r *bashRenderer) stepHeredoc(f *bashFrame) error {
 	case r.hasPrefix("$["):
 		r.copyN(2)
 		r.push(&bashFrame{kind: bfArith, closer: "]"})
+	case r.cur() == '`':
+		// Backtick command substitution is performed in an unquoted heredoc
+		// exactly as it is in script text, so the body is a CODE frame with its
+		// own simple-command state: `eval`, an array subscript and `declare -i`
+		// all re-interpret the value in there. Copying the backtick as plain
+		// text emitted the `${NAME}` interpolation into a code context instead.
+		r.copyByte()
+		r.push(&bashFrame{kind: bfCode, backtick: true})
 	default:
 		r.copyByte()
 	}

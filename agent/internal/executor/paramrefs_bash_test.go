@@ -223,6 +223,105 @@ func TestRenderBashHeredocs(t *testing.T) {
 			params: p,
 			want:   "cat <<A <<B\na=${BREEZE_PARAM_P}\nA\nb=${BREEZE_PARAM_P}\nB\n",
 		},
+
+		// A backtick in an UNQUOTED heredoc body opens command substitution, so
+		// the body of that backtick is a code context with all of the
+		// command-word, subscript and arithmetic rules — copying the backtick as
+		// plain text handed the value straight to bash.
+		{
+			name:   "heredoc backtick body is a code context",
+			script: "cat <<EOF\nv=`basename {{p}}`\nEOF\n",
+			params: p,
+			want:   "cat <<EOF\nv=`basename \"${BREEZE_PARAM_P}\"`\nEOF\n",
+		},
+		{
+			name:        "heredoc backtick eval is rejected",
+			script:      "cat <<EOF\n`eval {{p}}`\nEOF\n",
+			params:      p,
+			wantErr:     true,
+			errContains: "eval",
+		},
+		{
+			name:        "heredoc backtick eval with quotes is rejected",
+			script:      "cat <<EOF\n`eval \"{{p}}\"`\nEOF\n",
+			params:      p,
+			wantErr:     true,
+			errContains: "eval",
+		},
+		{
+			name:        "heredoc backtick subscript rejects non-integer",
+			script:      "cat <<EOF\n`a[{{n}}]=1`\nEOF\n",
+			params:      map[string]string{"n": "z[$(id)]"},
+			wantErr:     true,
+			errContains: "arithmetic",
+		},
+		{
+			name:        "heredoc backtick declare -i rejects non-integer",
+			script:      "cat <<EOF\n`declare -i q={{n}}`\nEOF\n",
+			params:      map[string]string{"n": "z[$(id)]"},
+			wantErr:     true,
+			errContains: "arithmetic",
+		},
+		{
+			name:   "heredoc backtick closes and the body resumes",
+			script: "cat <<EOF\na=`echo {{p}}` b={{p}}\nEOF\n",
+			params: p,
+			want:   "cat <<EOF\na=`echo \"${BREEZE_PARAM_P}\"` b=${BREEZE_PARAM_P}\nEOF\n",
+		},
+		{
+			name:   "heredoc escaped backtick is not a code context",
+			script: "cat <<EOF\n\\`{{p}}\\`\nEOF\n",
+			params: p,
+			want:   "cat <<EOF\n\\`${BREEZE_PARAM_P}\\`\nEOF\n",
+		},
+		{
+			name:   "escaped backtick inside a heredoc backtick body stays in it",
+			script: "cat <<EOF\n`echo \\` {{p}}`\nEOF\n",
+			params: p,
+			want:   "cat <<EOF\n`echo \\` \"${BREEZE_PARAM_P}\"`\nEOF\n",
+		},
+		{
+			name:   "quoted heredoc backtick is still inert",
+			script: "cat <<'EOF'\n`echo hi`\nEOF\necho {{p}}\n",
+			params: p,
+			want:   "cat <<'EOF'\n`echo hi`\nEOF\necho \"${BREEZE_PARAM_P}\"\n",
+		},
+	})
+}
+
+// TestRenderBashBracketBackticks covers `[[ ]]`, which performs command
+// substitution on its operands: a backtick there opens a code frame just like
+// anywhere else, and copying it as plain text let a value reach `eval` and an
+// array subscript.
+func TestRenderBashBracketBackticks(t *testing.T) {
+	p := map[string]string{"p": "v"}
+	runRenderCases(t, ScriptTypeBash, []renderCase{
+		{
+			name:   "bracket backtick body is a code context",
+			script: "[[ -n `basename {{p}}` ]]",
+			params: p,
+			want:   "[[ -n `basename \"${BREEZE_PARAM_P}\"` ]]",
+		},
+		{
+			name:        "bracket backtick eval is rejected",
+			script:      "if [[ -n `eval {{p}}` ]]; then :; fi",
+			params:      p,
+			wantErr:     true,
+			errContains: "eval",
+		},
+		{
+			name:        "bracket backtick subscript rejects non-integer",
+			script:      "[[ -n `a[{{n}}]=1` ]]",
+			params:      map[string]string{"n": "z[$(id)]"},
+			wantErr:     true,
+			errContains: "arithmetic",
+		},
+		{
+			name:   "bracket backtick closes and the operand resumes",
+			script: "[[ `echo {{p}}` == {{p}} ]]",
+			params: p,
+			want:   "[[ `echo \"${BREEZE_PARAM_P}\"` == \"${BREEZE_PARAM_P}\" ]]",
+		},
 	})
 }
 
