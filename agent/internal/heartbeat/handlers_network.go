@@ -97,9 +97,9 @@ func parseDiscoverySNMPCredentials(payload map[string]any) []discovery.SNMPCrede
 		if ms := tools.GetPayloadInt(entry, "timeout", 0); ms > 0 {
 			cred.Timeout = time.Duration(ms) * time.Millisecond
 		}
-		if cred.IsV3() || strings.TrimSpace(cred.Community) != "" {
-			out = append(out, cred)
-		}
+		// Incomplete entries are kept: discovery.ResolveSNMPCredentials is the
+		// one place that decides usability and logs why an entry was skipped.
+		out = append(out, cred)
 	}
 	return out
 }

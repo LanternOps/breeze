@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -170,5 +171,44 @@ func TestNormalizeConfigV3CredentialsDropPublicDefault(t *testing.T) {
 	cfg = normalizeConfig(ScanConfig{})
 	if len(cfg.SNMPCredentials) != 1 || cfg.SNMPCredentials[0].Community != "public" {
 		t.Fatalf("expected legacy public default when nothing configured, got %+v", cfg.SNMPCredentials)
+	}
+}
+
+// End-to-end wiring for issue #6234: a v3 ScanConfig must hand exactly its v3
+// credential to the SNMP probe — never a substituted "public" community.
+func TestScanHandsV3CredentialToSNMPProbeWithoutPublic(t *testing.T) {
+	origDiscoverSNMP := discoverSNMP
+	origReadARPCache := readARPCache
+	t.Cleanup(func() {
+		discoverSNMP = origDiscoverSNMP
+		readARPCache = origReadARPCache
+	})
+	readARPCache = func() map[string]string { return map[string]string{} }
+
+	var seen []SNMPCredential
+	discoverSNMP = func(targets []net.IP, creds []SNMPCredential, timeout time.Duration, workers int) map[string]*SNMPInfo {
+		seen = creds
+		return map[string]*SNMPInfo{}
+	}
+
+	scanner := NewScanner(ScanConfig{
+		Subnets: []string{"192.0.2.10"},
+		Methods: []string{"snmp"},
+		SNMPCredentials: []SNMPCredential{{
+			Version: "v3", Username: "ro-monitor",
+			AuthProtocol: "sha", AuthPassphrase: "a",
+			PrivProtocol: "aes", PrivPassphrase: "p",
+		}},
+	})
+	if _, err := scanner.Scan(); err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+	if len(seen) != 1 || !seen[0].IsV3() || seen[0].Username != "ro-monitor" || seen[0].PrivPassphrase != "p" {
+		t.Fatalf("probe received %+v, want exactly the v3 credential", seen)
+	}
+	for _, c := range seen {
+		if c.Community == "public" {
+			t.Fatalf("probe received a public community alongside v3: %+v", seen)
+		}
 	}
 }

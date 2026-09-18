@@ -99,8 +99,10 @@ func TestParseDiscoverySNMPCredentials_MissingOrNull(t *testing.T) {
 	if got := parseDiscoverySNMPCredentials(map[string]any{"snmpCredentials": nil}); len(got) != 0 {
 		t.Fatalf("null → %+v", got)
 	}
-	// A v2c/v1 object with no community carries nothing the probe can use.
-	if got := parseDiscoverySNMPCredentials(map[string]any{"snmpCredentials": map[string]any{"version": "v2c"}}); len(got) != 0 {
-		t.Fatalf("v2c without community → %+v", got)
+	// An incomplete entry is passed through (not silently dropped) so the
+	// resolver can warn about it instead of the scan defaulting to public.
+	got := parseDiscoverySNMPCredentials(map[string]any{"snmpCredentials": map[string]any{"version": "v2c"}})
+	if len(got) != 1 || got[0].Version != "v2c" || got[0].Community != "" {
+		t.Fatalf("v2c without community should pass through for the resolver to reject, got %+v", got)
 	}
 }

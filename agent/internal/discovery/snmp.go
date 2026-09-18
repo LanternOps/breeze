@@ -158,11 +158,15 @@ func collectFdbForDevice(target string, creds []SNMPCredential, timeout time.Dur
 		}
 		client, err := snmppoll.NewClient(cred.clientConfig(target, timeout))
 		if err != nil {
+			slog.Debug("SNMP FDB connect failed", "target", target, "credential", cred.Describe(),
+				"class", classifySNMPProbeError(err), "error", err)
 			continue
 		}
 		fdbPort, err := client.BulkWalk("1.3.6.1.2.1.17.4.3.1.2")
 		if err != nil {
 			client.Close()
+			slog.Debug("SNMP FDB walk failed", "target", target, "credential", cred.Describe(),
+				"class", classifySNMPProbeError(err), "error", err)
 			continue
 		}
 		basePort, _ := client.BulkWalk("1.3.6.1.2.1.17.1.4.1.2")

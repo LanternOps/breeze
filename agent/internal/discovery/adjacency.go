@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -197,6 +198,8 @@ func collectDeviceAdjacencyForHost(ip string, creds []SNMPCredential, timeout ti
 		}
 		client, err := snmppoll.NewClient(cred.clientConfig(ip, timeout))
 		if err != nil {
+			slog.Debug("SNMP adjacency connect failed", "target", ip, "credential", cred.Describe(),
+				"class", classifySNMPProbeError(err), "error", err)
 			continue
 		}
 		adj := collectDeviceAdjacency(client, ip)
