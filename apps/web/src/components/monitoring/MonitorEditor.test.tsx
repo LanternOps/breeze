@@ -533,12 +533,15 @@ describe('MonitorEditor (#5289)', () => {
     expect(body.condition.scriptId).toBe('11111111-2222-4333-8444-555555555555');
   });
 
-  it('edit mode: shows the previously-saved script selected in the picker even when the script list resolves after the monitor (#6207)', async () => {
+  it('edit mode: retains the previously-saved script — in the picker AND on save — even when the script list resolves after the monitor (#6207)', async () => {
     let resolveScripts: (value: Response) => void = () => {};
     const scriptsPromise = new Promise<Response>((resolve) => {
       resolveScripts = resolve;
     });
-    fetchMock.mockImplementation(async (input: string) => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && init?.method === 'PATCH') {
+        return json({ data: { id: 'm1' } });
+      }
       if (input === '/monitor-definitions/m1') {
         return json({
           data: {
@@ -566,5 +569,21 @@ describe('MonitorEditor (#5289)', () => {
     await waitFor(() => expect(screen.getByRole('option', { name: 'Disk cleanup' })).toBeInTheDocument());
 
     expect(screen.getByTestId('condition-field-scriptId')).toHaveValue('11111111-2222-4333-8444-555555555555');
+
+    // Saving WITHOUT touching the field must still submit the real scriptId —
+    // this is what actually determines whether the monitor alerts (#6207's
+    // second symptom: monitorScriptWorker silently skips a monitor whose
+    // stored scriptId doesn't resolve to a script row).
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url, i]) => url === '/monitor-definitions/m1' && (i as RequestInit)?.method === 'PATCH'),
+      ).toBe(true),
+    );
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, i]) => url === '/monitor-definitions/m1' && (i as RequestInit)?.method === 'PATCH',
+    );
+    const patchBody = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(patchBody.condition.scriptId).toBe('11111111-2222-4333-8444-555555555555');
   });
 });
