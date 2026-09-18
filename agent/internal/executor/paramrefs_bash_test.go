@@ -172,11 +172,63 @@ func TestRenderBashHeredocs(t *testing.T) {
 			params: p,
 			want:   "cat <<EOF\nbody\nEOF\necho \"${BREEZE_PARAM_P}\"\n",
 		},
+		{
+			// An unquoted heredoc still performs arithmetic expansion, so the
+			// integer rule has to apply inside the body too.
+			name:   "heredoc arithmetic accepts an integer",
+			script: "cat <<EOF\nn=$(( {{n}} ))\nEOF\n",
+			params: map[string]string{"n": "5"},
+			want:   "cat <<EOF\nn=$(( 5 ))\nEOF\n",
+		},
+		{
+			name:        "heredoc arithmetic rejects non-integer",
+			script:      "cat <<EOF\nn=$(( {{n}} ))\nEOF\n",
+			params:      map[string]string{"n": "a[$(id)]"},
+			wantErr:     true,
+			errContains: "arithmetic",
+		},
+		{
+			name:    "heredoc dollar-bracket arithmetic rejects non-integer",
+			script:  "cat <<EOF\nn=$[{{n}}]\nEOF\n",
+			params:  map[string]string{"n": "a[$(id)]"},
+			wantErr: true,
+		},
+		{
+			name:    "heredoc brace subscript rejects non-integer",
+			script:  "cat <<EOF\nv=${arr[{{n}}]}\nEOF\n",
+			params:  map[string]string{"n": "a[$(id)]"},
+			wantErr: true,
+		},
+		{
+			name:    "heredoc substring offset rejects non-integer",
+			script:  "cat <<EOF\nv=${x:{{n}}}\nEOF\n",
+			params:  map[string]string{"n": "a[$(id)]"},
+			wantErr: true,
+		},
+		{
+			name:   "heredoc command substitution is a code context",
+			script: "cat <<EOF\nv=$(echo {{p}})\nEOF\n",
+			params: p,
+			want:   "cat <<EOF\nv=$(echo \"${BREEZE_PARAM_P}\")\nEOF\n",
+		},
+		{
+			name:   "heredoc brace default value still expands",
+			script: "cat <<EOF\nv=${x:-{{p}}}\nEOF\n",
+			params: p,
+			want:   "cat <<EOF\nv=${x:-${BREEZE_PARAM_P}}\nEOF\n",
+		},
+		{
+			name:   "two heredocs on one line are both scanned",
+			script: "cat <<A <<B\na={{p}}\nA\nb={{p}}\nB\n",
+			params: p,
+			want:   "cat <<A <<B\na=${BREEZE_PARAM_P}\nA\nb=${BREEZE_PARAM_P}\nB\n",
+		},
 	})
 }
 
 func TestRenderBashArithmeticContexts(t *testing.T) {
 	ok := map[string]string{"n": "5"}
+	withP := map[string]string{"p": "v", "n": "5"}
 	negative := map[string]string{"n": "-5"}
 	bad := map[string]string{"n": "a[$(id)]"}
 	runRenderCases(t, ScriptTypeBash, []renderCase{
@@ -201,6 +253,19 @@ func TestRenderBashArithmeticContexts(t *testing.T) {
 		{name: "declare -i rejects non-integer", script: `declare -i total={{n}}`, params: bad, wantErr: true},
 		{name: "numeric comparison rejects non-integer", script: `[[ 1 -eq {{n}} ]]`, params: bad, wantErr: true},
 		{name: "let rejects non-integer", script: `let x={{n}}`, params: bad, wantErr: true},
+
+		// An array-assignment initializer (`name=( [sub]=v )` / `name+=( … )`) is an
+		// arithmetic context for its subscripts even though no name precedes the `[`.
+		{name: "array initializer subscript", script: `arr=([{{n}}]=1)`, params: ok, want: `arr=([5]=1)`},
+		{name: "array initializer subscript rejects non-integer", script: `arr=([{{n}}]=1)`, params: bad, wantErr: true, errContains: "arithmetic"},
+		{name: "array append initializer subscript rejects non-integer", script: `arr+=([{{n}}]=1)`, params: bad, wantErr: true},
+		{name: "array initializer element is a normal word", script: `arr=({{p}})`, params: withP, want: `arr=("${BREEZE_PARAM_P}")`},
+
+		// A `[` in an ordinary word is a glob, not a subscript: only an assignment
+		// target (`name[…]=`) or `${name[…]}` re-interprets its contents.
+		{name: "glob bracket in a plain word is not a subscript", script: `echo report[{{n}}].txt`, params: bad, want: `echo report["${BREEZE_PARAM_N}"].txt`},
+		{name: "glob bracket in a redirect target is not a subscript", script: `cat log[{{n}}]`, params: bad, want: `cat log["${BREEZE_PARAM_N}"]`},
+		{name: "array subscript with append assignment is arithmetic", script: `arr[{{n}}]+=1`, params: bad, wantErr: true},
 	})
 }
 
@@ -254,4 +319,28 @@ func TestParameterEnvNameMatchesBuildEnvironment(t *testing.T) {
 			t.Fatalf("buildEnvironment did not export %s for key %q: %v", parameterEnvName(key), key, env)
 		}
 	}
+}
+
+// TestRenderBashCommandWordUnquoting pins the simple-command tracker against
+// the ways a script can spell a builtin so that it does not look like the
+// builtin: quoting and backslashes inside the word, and the `command`/`builtin`
+// wrappers that run it anyway.
+func TestRenderBashCommandWordUnquoting(t *testing.T) {
+	name := map[string]string{"v": "COUNT"}
+	bad := map[string]string{"n": "a[$(id)]"}
+	runRenderCases(t, ScriptTypeBash, []renderCase{
+		{name: "backslash-escaped declare -i", script: `\declare -i x={{n}}`, params: bad, wantErr: true, errContains: "arithmetic"},
+		{name: "double-quote-broken declare -i", script: `de"c"lare -i x={{n}}`, params: bad, wantErr: true, errContains: "arithmetic"},
+		{name: "single-quote-broken declare -i", script: `de'c'lare -i x={{n}}`, params: bad, wantErr: true, errContains: "arithmetic"},
+		{name: "fully quoted let", script: `"let" x={{n}}`, params: bad, wantErr: true, errContains: "arithmetic"},
+		{name: "backslash-escaped eval", script: `ev\al {{v}}`, params: name, wantErr: true, errContains: "eval"},
+		{name: "command wrapper does not hide eval", script: `command eval {{v}}`, params: name, wantErr: true, errContains: "eval"},
+		{name: "builtin wrapper does not hide eval", script: `builtin eval {{v}}`, params: name, wantErr: true, errContains: "eval"},
+		{name: "command -p wrapper does not hide eval", script: `command -p eval {{v}}`, params: name, wantErr: true, errContains: "eval"},
+		{name: "command wrapper does not hide trap", script: `command trap {{v}} EXIT`, params: name, wantErr: true, errContains: "trap"},
+		{name: "assignment prefix does not hide eval", script: `x=1 eval {{v}}`, params: name, wantErr: true, errContains: "eval"},
+
+		{name: "command wrapper on an ordinary command is normal", script: `command echo {{v}}`, params: name, want: `command echo "${BREEZE_PARAM_V}"`},
+		{name: "quoted word that is not a builtin is normal", script: `"ec"ho {{v}}`, params: name, want: `"ec"ho "${BREEZE_PARAM_V}"`},
+	})
 }
