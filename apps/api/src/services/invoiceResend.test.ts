@@ -27,6 +27,16 @@ const { sendEmailMock, getEmailServiceMock } = vi.hoisted(() => ({
   sendEmailMock: vi.fn(),
   getEmailServiceMock: vi.fn(),
 }));
+// W04: the real resolveSender runs over the envelope this suite captures, with
+// only the database lookup mocked. `getEmailService` is mocked wholesale here,
+// so asserting on sendEmailMock alone could never prove the lane is REACHABLE.
+vi.mock('./emailDomains/partnerLaneLookup', () => ({
+  lookupPartnerLaneIdentity: vi.fn(async () => ({
+    ok: true, partnerName: 'Lantern MSP', localPart: 'billing', displayName: null,
+    replyTo: null, domainId: 'd1', domain: 'mail.lantern.test',
+  })),
+}));
+
 vi.mock('./email', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./email')>();
   return { ...actual, getEmailService: getEmailServiceMock };
@@ -102,6 +112,25 @@ describe('resendInvoiceEmail', () => {
     expect(envelope.partnerName).toBe('Lantern MSP');
     expect(envelope).not.toHaveProperty('from');
     expect(envelope.attachments?.[0]?.filename).toBe('INV-2026-0007.pdf');
+
+    // …and that the id is enough to REACH the partner lane. A regression to
+    // partnerId: null is silent and switches `billing` off for every invoice.
+    const { resolveSender } = await import('./emailDomains/senderResolution');
+    process.env.EMAIL_DOMAINS_PROVIDER = 'fake';
+    process.env.EMAIL_DOMAINS_DAILY_SEND_CAP = '0';
+    delete process.env.EMAIL_DOMAINS_PARTNER_ALLOWLIST;
+    try {
+      const resolved = await resolveSender({
+        purpose: envelope.purpose,
+        partnerId: envelope.partnerId,
+        partnerName: envelope.partnerName,
+        defaultFrom: 'Breeze <no-reply@breeze.test>',
+      });
+      expect(resolved).toMatchObject({ lane: 'partner', from: '"Lantern MSP" <billing@mail.lantern.test>' });
+    } finally {
+      delete process.env.EMAIL_DOMAINS_PROVIDER;
+      delete process.env.EMAIL_DOMAINS_DAILY_SEND_CAP;
+    }
   });
 
   // The whole point of a re-send: it is the same document, not a new one. A

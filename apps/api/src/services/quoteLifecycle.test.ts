@@ -87,6 +87,17 @@ vi.mock('./email', async (importOriginal) => {
   return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock })) };
 });
 
+// W04: the real resolveSender runs over the envelope this suite captures, with
+// only the database lookup mocked. This is what makes the assertion below
+// non-vacuous — `getEmailService` is mocked wholesale here, so asserting on
+// sendEmailMock alone could never prove the partner lane is REACHABLE.
+vi.mock('./emailDomains/partnerLaneLookup', () => ({
+  lookupPartnerLaneIdentity: vi.fn(async () => ({
+    ok: true, partnerName: 'Acme MSP', localPart: 'billing', displayName: null,
+    replyTo: null, domainId: 'd1', domain: 'mail.acmemsp.example',
+  })),
+}));
+
 vi.mock('./quoteDeviceSet', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./quoteDeviceSet')>();
   return { ...actual, countQuoteDeviceSetLines: vi.fn() };
@@ -644,6 +655,29 @@ describe('sendQuote email delivery status', () => {
       replyTo: 'accounts@acmemsp.example',
     }));
     expect(sendEmailMock.mock.calls[0]![0]).not.toHaveProperty('from');
+
+    // …and that the id it hands over is enough to REACH the partner lane.
+    // Fails the moment this call site regresses to partnerId: null — which
+    // costs nothing at runtime and switches `billing` off for every quote.
+    const { resolveSender } = await import('./emailDomains/senderResolution');
+    process.env.EMAIL_DOMAINS_PROVIDER = 'fake';
+    process.env.EMAIL_DOMAINS_DAILY_SEND_CAP = '0';
+    delete process.env.EMAIL_DOMAINS_PARTNER_ALLOWLIST;
+    try {
+      const envelope = sendEmailMock.mock.calls[0]![0] as {
+        purpose: 'quote.sent'; partnerId: string | null; partnerName?: string | null;
+      };
+      const resolved = await resolveSender({
+        purpose: envelope.purpose,
+        partnerId: envelope.partnerId,
+        partnerName: envelope.partnerName,
+        defaultFrom: 'Breeze <no-reply@test.example>',
+      });
+      expect(resolved).toMatchObject({ lane: 'partner', from: '"Acme MSP" <billing@mail.acmemsp.example>' });
+    } finally {
+      delete process.env.EMAIL_DOMAINS_PROVIDER;
+      delete process.env.EMAIL_DOMAINS_DAILY_SEND_CAP;
+    }
   });
 
   it('uses composer recipients + cc over the billing-contact fallback', async () => {

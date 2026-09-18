@@ -168,18 +168,39 @@ describe('handleTicketEvent', () => {
   });
 
   it('public comment emails the requester', async () => {
-    selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }]);
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }])
+      // A ticket row carrying partnerId makes collectRequesterEmail read the
+      // partner for its inbound slug/override, which the FIFO must supply.
+      .mockResolvedValueOnce([{ slug: 'acme', settings: null }]);
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
       actorUserId: 'u-1', eventId: 'evt-4', payload: { commentId: 'c-1', isPublic: true }
     });
     // Spec §8.2: mail to the REQUESTER (a customer) is the partner's `support`
-    // stream, even though there is no partner lane until W04.
+    // stream.
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'enduser@acme.example',
       subject: expect.stringContaining('T-2026-0042'),
       purpose: 'ticket.customer_notification'
     }));
+    // W04 is the wave where a null partnerId would actually cost something: it
+    // is the ticket row's OWN partner_id (no new read), and a regression to
+    // null would silently switch the `support` stream off for every ticket.
+    // Folded into this case rather than a trailing one because the file's
+    // beforeEach clears sendEmailMock between cases.
+    const arg = sendEmailMock.mock.calls[0]![0] as { partnerId?: string | null; headers?: Record<string, string> };
+    expect(arg.partnerId).toBe('p-1');
+    // Spec §8.5: threading is decided by TICKETS_INBOUND_DOMAIN and nothing
+    // else. If a From change could ever move the Message-ID, an inbound reply
+    // would stop matching its ticket — the failure mode that loses a customer's
+    // reply. (The exact anchors are pinned by the threading cases below; this
+    // asserts the domain is untouched by the partner lane.)
+    for (const key of ['Message-ID', 'In-Reply-To', 'References']) {
+      const value = arg.headers?.[key];
+      if (value === undefined) continue;
+      expect(value).toContain('@tickets.example.com>');
+    }
   });
 
   it('internal comment sends nothing to the requester', async () => {
