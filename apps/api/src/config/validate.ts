@@ -2228,6 +2228,20 @@ const envSchema = envObjectSchema
         });
       }
       if (emailDomainsProvider === 'resend') {
+        // Resend only has these four. An unrecognised value would sail past boot
+        // and then throw from resolveRegion() on the partner's first domain
+        // create — a runtime failure for a typo we can catch here. Empty means
+        // "use the default" (us-east-1), so it is not an error.
+        const region = (data.EMAIL_DOMAINS_REGION ?? '').trim().toLowerCase();
+        const RESEND_REGIONS = ['us-east-1', 'eu-west-1', 'sa-east-1', 'ap-northeast-1'];
+        if (region !== '' && !RESEND_REGIONS.includes(region)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['EMAIL_DOMAINS_REGION'],
+            message: `EMAIL_DOMAINS_REGION must be one of ${RESEND_REGIONS.join(', ')} when EMAIL_DOMAINS_PROVIDER=resend — got ${JSON.stringify(region)}. Leave it unset to use us-east-1.`,
+          });
+        }
+
         const platformKey = (data.RESEND_API_KEY ?? '').trim();
         const partnerKey = (data.EMAIL_DOMAINS_RESEND_API_KEY ?? '').trim();
         if (platformKey && partnerKey && platformKey === partnerKey) {

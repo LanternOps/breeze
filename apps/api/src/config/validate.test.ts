@@ -2258,6 +2258,53 @@ describe('validateConfig', () => {
       info.mockRestore();
     });
 
+    it.each(['us-east-1', 'eu-west-1', 'sa-east-1', 'ap-northeast-1'])(
+      'accepts EMAIL_DOMAINS_REGION=%s with the resend provider',
+      (region) => {
+        withEnv({
+          ...prodBase,
+          EMAIL_DOMAINS_PROVIDER: 'resend',
+          EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+          EMAIL_DOMAINS_REGION: region,
+        }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      },
+    );
+
+    it('refuses an EMAIL_DOMAINS_REGION Resend does not have — the adapter would throw on first create', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+        EMAIL_DOMAINS_REGION: 'mars-1',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/EMAIL_DOMAINS_REGION/);
+      });
+    });
+
+    it('treats an empty EMAIL_DOMAINS_REGION as "use the default"', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+        EMAIL_DOMAINS_REGION: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('ignores EMAIL_DOMAINS_REGION when the provider is not resend — it is a Resend-only concept', () => {
+      withEnv({
+        ...prodBase,
+        IS_HOSTED: 'false',
+        EMAIL_DOMAINS_PROVIDER: 'static',
+        EMAIL_DOMAINS_REGION: 'mars-1',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
     it('never keys any EMAIL_DOMAINS requirement on EMAIL_PROVIDER', () => {
       // The self-host regression this guards: a Resend self-host that upgrades
       // must not be asked for a partner-lane key it has never heard of.
