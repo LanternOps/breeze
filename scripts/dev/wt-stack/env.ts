@@ -38,6 +38,15 @@ const DEV_ENV: Record<string, string> = {
   // the role-force component; settings-driven `security.requireMfa` still
   // applies, so MFA-policy specs are unaffected.
   MFA_FORCE_FOR_PARTNER_ADMIN: 'false',
+  // Partner sending domains W05. `fake` is the deterministic adapter: it makes
+  // no external calls, verifies `*.verify.test` on the first check, fails
+  // `*.fail.test`, and hands a send to the platform transport so Mailpit shows
+  // the custom From. config/validate.ts refuses it in production, and the
+  // settings tab is hidden whenever this is unset — which is why the E2E spec
+  // needs it. .env.stack is passed LAST to compose, so this wins over a stale
+  // root .env, and docker-compose.yml's x-api-env anchor (added in W02) is what
+  // carries it into the api and worker containers.
+  EMAIL_DOMAINS_PROVIDER: 'fake',
   // Caddy/postgres/redis images are digest-pinned in base compose; reuse the
   // values already present in the developer's root .env via compose interpolation.
 };

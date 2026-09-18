@@ -3486,6 +3486,11 @@ jobs:
           # This job tests portal hydration and billing UI, not MFA enrollment.
           # Keep the stored forced-MFA flag; suppress only its role component.
           MFA_FORCE_FOR_PARTNER_ADMIN=false
+          # tests/partner-sending-domains.spec.ts needs a sending-domain
+          # provider; `fake` is deterministic and makes no external calls.
+          # Redundant with wt-stack's .env.stack, which is passed last, but this
+          # job spells such keys out by convention.
+          EMAIL_DOMAINS_PROVIDER=fake
           # Image refs — the base docker-compose.yml requires all of these via
           # `${VAR:?}` before profile filtering, even though the dev override
           # builds api/web/portal from this checkout and stubs binaries-init.
@@ -3569,7 +3574,7 @@ jobs:
       # exercised at all. It depends on the portal rows in
       # e2e-tests/seed-fixtures.sql.
       - name: Run the portal hydration specs
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts tests/ai-agents.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts tests/ai-agents.spec.ts tests/partner-sending-domains.spec.ts
 
       - name: Upload Playwright report
         if: failure()
