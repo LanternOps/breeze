@@ -572,7 +572,8 @@
     "lastChecked": "Son Kontrol Edildi",
     "noComplianceResultsReportedAssignA": "Uyumluluk sonucu bildirilmedi. Bu cihaza uyumluluk kurallarını içeren bir Yapılandırma Politikası atayın veya bir sonraki değerlendirmeyi bekleyin.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Bir yapılandırma ilkesi atayın"
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Cihaz getirilemedi",
@@ -664,7 +665,14 @@
     "networkAsset": "Ağ varlığı",
     "networkAssets": "Ağ varlıkları",
     "operatorTasks": "Operatör Görevleri",
-    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri"
+    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri",
+    "tabGroups": {
+      "monitoring": "İzleme",
+      "inventory": "Envanter",
+      "management": "Yönetim",
+      "history": "Geçmiş ve Ağ",
+      "extensions": "Uzantılar"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -1350,7 +1358,8 @@
       "status": "Durum",
       "type": "Tür"
     },
-    "title": "Hizmet ve Süreç İzleme"
+    "title": "Hizmet ve Süreç İzleme",
+    "assignPolicy": "Bir yapılandırma ilkesi atayın"
   },
   "deviceNetworkConnections": {
     "allProtocols": "Tüm Protokoller",

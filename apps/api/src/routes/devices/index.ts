@@ -16,6 +16,7 @@ import { eventLogsRoutes } from './eventlogs';
 import { filesystemRoutes } from './filesystem';
 import { sessionsRoutes } from './sessions';
 import { diagnosticLogsRoutes } from './diagnosticLogs';
+import { tabCountsRoutes } from './tabCounts';
 import { watchdogLogsRoutes } from './watchdogLogs';
 import { bootMetricsRoutes } from './bootMetrics';
 import { diagnoseRoutes } from './diagnose';
@@ -155,6 +156,7 @@ deviceRoutes.route('/', eventLogsRoutes);
 deviceRoutes.route('/', sessionsRoutes);
 deviceRoutes.route('/', diagnosticLogsRoutes);
 deviceRoutes.route('/', watchdogLogsRoutes);
+deviceRoutes.route('/', tabCountsRoutes);
 deviceRoutes.route('/', warrantyRoutes);
 // #3205 W06: GET /:id/billing. :id-prefixed, so it cannot be shadowed by core's
 // /:id matcher — mounted here with the other sub-resources, and pinned by

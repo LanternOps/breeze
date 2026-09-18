@@ -208,4 +208,56 @@ describe('OverflowTabs', () => {
     fireEvent.click(screen.getByTestId('t-a'));
     expect(onTabChange).toHaveBeenCalledWith('a');
   });
+
+  describe('secondary tabs, counts and groups', () => {
+    beforeEach(() => {
+      stubWideLayout();
+    });
+    afterEach(() => {
+      restoreLayout();
+    });
+
+    const mixed: OverflowTab[] = [
+      { id: 'a', label: 'Alpha', icon: <span /> },
+      { id: 'b', label: 'Beta', icon: <span />, count: 3 },
+      { id: 'c', label: 'Gamma', icon: <span />, secondary: true, group: 'Signals', count: 2 },
+      { id: 'd', label: 'Delta', icon: <span />, secondary: true, group: 'Signals' },
+      { id: 'e', label: 'Epsilon', icon: <span />, secondary: true, group: 'Inventory' },
+    ];
+
+    it('keeps secondary tabs inside "More" even when the row has room for everything', () => {
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" />);
+      expect(screen.getAllByRole('tab').map(t => t.id)).toEqual(['t-a', 't-b']);
+      expect(screen.queryByTestId('t-c')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      expect(screen.getAllByRole('menuitem').map(m => m.textContent)).toEqual(['Gamma2', 'Delta', 'Epsilon']);
+    });
+
+    it('renders group headers between groups inside "More"', () => {
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      const menu = screen.getByRole('menu');
+      const headers = Array.from(menu.querySelectorAll('[data-overflow-group]')).map(h => h.textContent);
+      expect(headers).toEqual(['Signals', 'Inventory']);
+    });
+
+    it('shows a count badge on a visible tab and the summed hidden count on the "More" trigger', () => {
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" />);
+      expect(screen.getByTestId('t-b')).toHaveTextContent('Beta3');
+      expect(screen.getByRole('button', { name: /more/i })).toHaveTextContent('2');
+    });
+
+    it('omits a zero count badge', () => {
+      render(<OverflowTabs tabs={[{ id: 'z', label: 'Zed', icon: <span />, count: 0 }]} activeTab="z" onTabChange={() => {}} testIdPrefix="t-" />);
+      expect(screen.getByTestId('t-z')).toHaveTextContent(/^Zed$/);
+    });
+
+    it('selects a secondary tab from the menu and reflects it on the trigger', () => {
+      const onTabChange = vi.fn();
+      render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={onTabChange} />);
+      fireEvent.click(screen.getByRole('button', { name: /more/i }));
+      fireEvent.click(screen.getByRole('menuitem', { name: /epsilon/i }));
+      expect(onTabChange).toHaveBeenCalledWith('e');
+    });
+  });
 });

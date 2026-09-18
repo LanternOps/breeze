@@ -11,7 +11,28 @@ export type OverflowTab = {
   separator?: boolean;
   /** Tooltip text for non-obvious labels */
   title?: string;
+  /** Always lives inside the "More" menu, regardless of available width.
+   *  Primary (non-secondary) tabs still collapse into "More" width-first. */
+  secondary?: boolean;
+  /** Section header shown above this tab inside "More" (consecutive tabs
+   *  sharing a group render under one header). */
+  group?: string;
+  /** "Needs attention" count rendered as a badge; 0/undefined renders nothing.
+   *  Hidden tabs' counts are summed onto the "More" trigger. */
+  count?: number;
 };
+
+function CountBadge({ count, testId }: { count?: number; testId?: string }) {
+  if (!count || count <= 0) return null;
+  return (
+    <span
+      data-testid={testId}
+      className="ml-0.5 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-primary"
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
 
 // Stable id for a visible tab button, also used as the tab panel's
 // `aria-labelledby` target by consumers that render `role="tabpanel"`
@@ -45,10 +66,23 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   const navRef = useRef<HTMLElement>(null);
   const tabWidths = useRef<number[]>([]);
   const tabButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const [visibleCount, setVisibleCount] = useState(tabs.length);
+  const primaryTabs = tabs.filter(t => !t.secondary);
+  const secondaryTabs = tabs.filter(t => t.secondary);
+  const [visibleCount, setVisibleCount] = useState(primaryTabs.length);
   const [measured, setMeasured] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+
+  // Re-measure whenever the primary set changes (a tab promoted out of
+  // "More", a count badge appearing) — the cached widths would otherwise be
+  // stale and the visible slice could drop or duplicate a tab.
+  const primaryKey = primaryTabs.map(t => `${t.id}:${t.count ?? 0}`).join('|');
+  const lastPrimaryKey = useRef(primaryKey);
+  useLayoutEffect(() => {
+    if (lastPrimaryKey.current === primaryKey) return;
+    lastPrimaryKey.current = primaryKey;
+    setMeasured(false);
+  }, [primaryKey]);
 
   useLayoutEffect(() => {
     const nav = navRef.current;
@@ -78,8 +112,8 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
     for (let i = 0; i < tabWidths.current.length; i++) {
       totalAll += tabWidths.current[i] + (i > 0 ? gap : 0);
     }
-    if (totalAll <= availableWidth) {
-      setVisibleCount(tabs.length);
+    if (totalAll <= availableWidth && secondaryTabs.length === 0) {
+      setVisibleCount(primaryTabs.length);
       return;
     }
 
@@ -94,7 +128,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
       }
     }
     setVisibleCount(Math.max(1, fits));
-  }, [tabs.length]);
+  }, [primaryTabs.length, secondaryTabs.length]);
 
   useLayoutEffect(() => {
     if (!measured) return;
@@ -121,8 +155,12 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [moreOpen]);
 
-  const visibleTabs = measured ? tabs.slice(0, visibleCount) : tabs;
-  const overflowTabs = measured ? tabs.slice(visibleCount) : [];
+  // Secondary tabs are pinned into "More"; primaries spill in after them
+  // when the row is too narrow. Before measurement every primary is rendered
+  // (invisibly) so its width can be read.
+  const visibleTabs = measured ? primaryTabs.slice(0, visibleCount) : primaryTabs;
+  const overflowTabs = measured ? [...primaryTabs.slice(visibleCount), ...secondaryTabs] : secondaryTabs;
+  const hiddenCount = overflowTabs.reduce((sum, t) => sum + (t.id !== activeTab ? (t.count ?? 0) : 0), 0);
   const activeInOverflow = overflowTabs.some(t => t.id === activeTab);
   const activeOverflowTab = overflowTabs.find(t => t.id === activeTab);
   // Roving tabindex normally lands on whichever visible tab is active. When
@@ -191,6 +229,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
               >
                 {tab.icon}
                 {tab.label}
+                <CountBadge count={tab.count} />
                 {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
               </button>
             </span>
@@ -210,17 +249,26 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
               className={`${tabClass(activeInOverflow)} focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring`}
             >
               {activeInOverflow && activeOverflowTab ? (
-                <>{activeOverflowTab.icon} {activeOverflowTab.label}</>
+                <>{activeOverflowTab.icon} {activeOverflowTab.label}<CountBadge count={activeOverflowTab.count} /></>
               ) : (
                 <>{t('shared.more')}</>
               )}
+              <CountBadge count={hiddenCount} testId="overflow-tabs-hidden-count" />
               <ChevronDown aria-hidden="true" className={`h-3.5 w-3.5 transition ${moreOpen ? 'rotate-180' : ''}`} />
             </button>
             {moreOpen && (
-              <div role="menu" className="absolute right-0 top-full z-20 mt-1 min-w-[200px] rounded-md border bg-card py-1 shadow-lg">
-                {overflowTabs.map(tab => (
+              <div role="menu" className="absolute right-0 top-full z-20 mt-1 max-h-[70vh] min-w-[220px] overflow-y-auto rounded-md border bg-card py-1 shadow-lg">
+                {overflowTabs.map((tab, index) => (
+                  <span key={tab.id} className="contents">
+                  {tab.group && tab.group !== overflowTabs[index - 1]?.group && (
+                    <div
+                      data-overflow-group={tab.group}
+                      className={`px-4 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 ${index > 0 ? 'mt-1 border-t' : ''}`}
+                    >
+                      {tab.group}
+                    </div>
+                  )}
                   <button
-                    key={tab.id}
                     id={overflowTabId(tab.id, testIdPrefix)}
                     type="button"
                     role="menuitem"
@@ -235,8 +283,10 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
                   >
                     {tab.icon}
                     {tab.label}
+                    <CountBadge count={tab.count} />
                     {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
                   </button>
+                  </span>
                 ))}
               </div>
             )}
