@@ -27,6 +27,7 @@ import {
   ChevronsDownUp,
   ShieldCheck,
   KeyRound,
+  LayoutTemplate,
   Package,
   Plug,
   Network,
@@ -343,6 +344,7 @@ export const navSections: NavSection[] = [
       // two identical icons in one section is the confusion this wave removes.
       { name: 'Agreements', labelKey: 'nav.agreements', href: '/agreements/templates', icon: ScrollText, partnerScopeOnly: true, requiredPermission: { resource: 'agreements', action: 'read' } },
       { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
+      { name: 'Deliverable Templates', labelKey: 'nav.deliverableTemplates', href: '/settings/deliverable-templates', icon: LayoutTemplate, partnerScopeOnly: true },
     ],
   },
   {

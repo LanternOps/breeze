@@ -96,7 +96,8 @@
     "deviceBackup": "Device Backup",
     "sectionServiceDesk": "Service Desk",
     "serviceManagement": "Service Management",
-    "ticketing": "Ticketing"
+    "ticketing": "Ticketing",
+    "deliverableTemplates": "Deliverable Templates"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

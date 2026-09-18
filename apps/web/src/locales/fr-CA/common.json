@@ -96,7 +96,8 @@
     "deviceBackup": "Sauvegarde des appareils",
     "sectionServiceDesk": "Centre de services",
     "serviceManagement": "Gestion des services",
-    "ticketing": "Billetterie"
+    "ticketing": "Billetterie",
+    "deliverableTemplates": "Modèles de livrables"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

@@ -99,6 +99,9 @@ describe('navSections structure (#1321, #1324)', () => {
       // W03 — the agreement library left /contracts for its own area.
       '/agreements/templates',
       '/settings/catalog',
+      // W01 settings consolidation (#6224, M3) — deliverable templates get a
+      // nav entry under Billing.
+      '/settings/deliverable-templates',
     ]);
     expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
     expect(hrefsOf('fleet-management')).toEqual([

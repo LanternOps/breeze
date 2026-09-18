@@ -96,7 +96,8 @@
     "deviceBackup": "Cihaz Yedekleme",
     "sectionServiceDesk": "Servis masası",
     "serviceManagement": "Servis yönetimi",
-    "ticketing": "Bilet Sistemi"
+    "ticketing": "Bilet Sistemi",
+    "deliverableTemplates": "Teslimat Şablonları"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

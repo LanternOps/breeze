@@ -96,7 +96,8 @@
     "deviceBackup": "Respaldo de dispositivos",
     "sectionServiceDesk": "Mesa de servicio",
     "serviceManagement": "Gestión de servicios",
-    "ticketing": "Tickets"
+    "ticketing": "Tickets",
+    "deliverableTemplates": "Plantillas de entregables"
   },
   "documentTitles": {
     "dashboard": "Panel",
