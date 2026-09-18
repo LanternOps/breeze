@@ -258,13 +258,22 @@ function listBackupVerificationsFromMemory(orgId: string, filters: VerificationF
   return typeof filters.limit === 'number' ? rows.slice(0, filters.limit) : rows;
 }
 
+const MAX_LIST_FAILURE_REASON_LENGTH = 200;
+
 export function toVerificationListItem(row: BackupVerification): BackupVerification {
+  // Verification details are agent-controlled and can contain restore paths,
+  // failed-file names, command identifiers, and raw result internals. List
+  // consumers only get the simulated-evidence marker plus, for failed rows, a
+  // whitespace-normalized, length-capped `reason` string (never other keys).
+  const details: Record<string, unknown> = {};
+  if (row.details?.simulated === true) details.simulated = true;
+  if (row.status === 'failed' && typeof row.details?.reason === 'string') {
+    const reason = row.details.reason.replace(/\s+/g, ' ').trim().slice(0, MAX_LIST_FAILURE_REASON_LENGTH);
+    if (reason) details.reason = reason;
+  }
   return {
     ...row,
-    // Verification details are agent-controlled and can contain restore paths,
-    // failed-file names, command identifiers, and raw result internals. Every
-    // current list consumer only needs the simulated-evidence marker.
-    details: row.details?.simulated === true ? { simulated: true } : null,
+    details: Object.keys(details).length > 0 ? details : null,
   };
 }
 
