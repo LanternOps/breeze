@@ -177,6 +177,23 @@ export interface AiScriptRunContext {
   targetSessionId: number | null;
 }
 
+/**
+ * One artifact a finished `analysis` run produced, as the chat run card shows
+ * it (execution-plane spec §5.5). Deliberately NOT `AiRunArtifactDto`: the card
+ * renders a chip, not a preview, and the previews on the full DTO are raw
+ * customer bytes that have no business riding an SSE frame for every artifact
+ * of every run. The run page fetches the full DTOs when a technician opens it.
+ *
+ * `handle` is the artifact id; the download path is derived client-side as
+ * `/api/v1/ai/artifacts/<handle>` (W01's `AiRunArtifactDto.downloadPath`).
+ */
+export interface AiRunResultArtifactRef {
+  handle: string;
+  name: string;
+  bytes: number;
+  contentType: string;
+}
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   | { type: 'content_delta'; delta: string }
@@ -244,6 +261,23 @@ export type AiStreamEvent =
       status: 'success' | 'error' | 'rejected' | 'timeout';
       redactions?: Array<{ rule: string; count: number; location: string }>;
       blockReason?: string;
+    }
+  // ── Execution plane (spec §5.5) — a workspace `analysis` run associated
+  //    with this chat session. Chat-initiated launch is currently disabled
+  //    (#6086); this event shape is retained for when delegated authorization
+  //    lands. Published by services/workspace/chatRunBridge.ts, NOT by the SDK message loop: these
+  //    arrive out of band from the worker role, so a client may see them at any
+  //    point in a turn, or (when no turn is open) not at all — the run card
+  //    polls GET /ai/agents/runs/:runId as its always-correct source and treats
+  //    these as a live upgrade.
+  | { type: 'run_progress'; runId: string; step: string; label: string; ordinal: number }
+  | {
+      type: 'run_result';
+      runId: string;
+      status: 'completed' | 'failed';
+      /** `ai_agent_runs.summary` — narrative text, never a tool payload. */
+      summary: string | null;
+      artifacts: AiRunResultArtifactRef[];
     }
   // `usage` is set by the streaming manager's result case so client surfaces
   // can render turn cost (turn_complete). Technician UI ignores it.

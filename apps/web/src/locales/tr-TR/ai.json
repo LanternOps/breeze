@@ -30,6 +30,7 @@
     "contentChanged": "Bu isteğin ayrıntıları oluşturulduktan sonra değiştiği için artık onaylanamaz.",
     "expired": "Bu isteğin süresi, karar verilmeden doldu.",
     "notSoleApprover": "Artık başka bir onaylayan gerekiyor; artık kendi isteğinizi onaylayamazsınız.",
+    "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, artık başka bir onaylayan bu isteğe karar vermelidir.",
     "noApproverDevice": "Kendi isteğinizi onaylamak için Touch ID / Windows Hello gerekir.",
     "registerDevice": "Bu cihazı kaydedin",
     "decideFailed": "Karar gönderilemedi",
@@ -128,6 +129,8 @@
   "aiToolCallCard": {
     "running": "Koşuyor...",
     "approvedRunning": "Onaylandı · çalışıyor",
+    "approvedFailed": "Onaylandı · başarısız",
+    "approvedCompleted": "Onaylandı · tamamlandı",
     "input": "Giriş:",
     "error": "Hata:",
     "output": "Çıktı:"
@@ -138,7 +141,7 @@
     "tabs": {
       "orgs": "Organizasyonlar",
       "sessions": "Oturumlar",
-      "usage": "Kullanım",
+      "usage": "Office eklentisi kullanımı",
       "templates": "Şablonlar"
     }
   },
@@ -487,5 +490,19 @@
     "ownerScopeOrganization": "Yalnızca bu kuruluş",
     "ownerScopePartner": "Bu iş ortağına bağlı tüm kuruluşlar",
     "nameRequired": "Bir ad girilmesi zorunludur."
+  },
+  "aiRunCard": {
+    "title": "Analiz çalıştırması",
+    "openRun": "Tam çalıştırmayı aç",
+    "resultOnRunPage": "Bu işlem, konuşma ilerledikten sonra tamamlandı — tam sonuç çalıştırma sayfasında saklanıyor.",
+    "status": {
+      "queued": "sırada",
+      "running": "çalışıyor",
+      "completed": "tamamlandı",
+      "failed": "başarısız",
+      "cancelled": "iptal edildi",
+      "expired": "süresi doldu",
+      "skipped": "atlandı"
+    }
   }
 }

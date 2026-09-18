@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
@@ -278,5 +278,30 @@ describe('QuoteEditor — edit persisted contract block', () => {
 
     expect(screen.getByTestId('quote-block-contract-var-error-blk-c-initial_term')).toBeInTheDocument();
     expect(updateBlockMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('QuoteEditor — agreement vocabulary (spec §3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listMock.mockResolvedValue(okRes([]));
+    getMock.mockResolvedValue(okRes(templateDetail));
+  });
+
+  it('links "Create one" to the agreement template library when none exist', async () => {
+    await openContractForm();
+    const empty = await screen.findByTestId('quote-block-contract-no-templates');
+    expect(empty).toHaveTextContent('No agreement templates yet.');
+    const link = within(empty).getByRole('link', { name: 'Create one' });
+    expect(link).toHaveAttribute('href', '/agreements/templates');
+  });
+
+  it('tells the technician where legal terms belong, under the plain-text terms box', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByText('Terms & Conditions (plain text)')).toBeInTheDocument();
+    expect(
+      screen.getByText(/For reusable legal terms, add an Agreement \/ terms section/),
+    ).toBeInTheDocument();
   });
 });

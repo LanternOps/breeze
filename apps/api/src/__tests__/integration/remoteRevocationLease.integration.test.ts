@@ -15,7 +15,7 @@
  *     src/__tests__/integration/remoteRevocationLease.integration.test.ts
  */
 import './setup';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 
 // The teardown side effect (viewer-token revoke + durable stop_desktop relay) is
@@ -31,16 +31,27 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
   TEARDOWN_FAILED: -1,
 }));
 
-import { devices, organizationUsers, remoteSessions, users } from '../../db/schema';
+import {
+  devices,
+  organizations,
+  partners,
+  organizationUsers,
+  remoteSessions,
+  roles,
+  userPasskeys,
+  users,
+} from '../../db/schema';
 import {
   REVOCATION_LEASE_HARD_CAP_MS,
   REVOCATION_LEASE_TTL_MS,
   loadRevocationRecheckRow,
+  isDesktopStartCapable,
   prepareRevocationLeaseForStart,
   renewRevocationLease,
 } from '../../services/remoteRevocationLease';
 import {
   assignUserToOrganization,
+  assignUserToPartner,
   createOrganization,
   createPartner,
   createRole,
@@ -49,7 +60,7 @@ import {
 } from './db-utils';
 import { getTestDb } from './setup';
 
-async function buildFixture(options: { leaseCapable?: boolean } = {}) {
+async function buildFixture(options: { leaseCapable?: boolean; fenceCapable?: boolean } = {}) {
   const db = getTestDb();
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -83,6 +94,7 @@ async function buildFixture(options: { leaseCapable?: boolean } = {}) {
       agentVersion: '0.0.0-test',
       status: 'online',
       revocationLeaseProtocolVersion: options.leaseCapable === false ? 0 : 1,
+      desktopFenceProtocolVersion: options.fenceCapable === false ? 0 : 1,
     })
     .returning();
 
@@ -126,6 +138,7 @@ describe('revocation lease against live Postgres', () => {
     expect(row!.session.permissionsEpochSnapshot).toBeTypeOf('number');
     expect(row!.device.siteId).toBe(f.site.id);
     expect(row!.device.revocationLeaseProtocolVersion).toBe(1);
+    expect(row!.device.desktopFenceProtocolVersion).toBe(1);
     expect(row!.user.status).toBe('active');
     expect(row!.orgMembership?.roleId).toBe(f.role.id);
     // An org-scoped user has no partner membership on this axis.
@@ -275,6 +288,161 @@ describe('revocation lease against live Postgres', () => {
     });
   });
 
+  // #6107 — the lease must reach the same MFA verdict login does.
+  describe('MFA through the effective policy (#6107)', () => {
+    const savedKillSwitch = process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
+    afterEach(() => {
+      if (savedKillSwitch === undefined) delete process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
+      else process.env.MFA_FORCE_FOR_PARTNER_ADMIN = savedKillSwitch;
+    });
+
+    // Policy edits (force_mfa flips) bump permissions_epoch by trigger. These
+    // cases are about the MFA branch, so re-capture the baseline afterwards —
+    // otherwise every one of them would revoke as `permissions_changed`.
+    async function resnapshot(f: Awaited<ReturnType<typeof buildFixture>>) {
+      const db = getTestDb();
+      const [live] = await db
+        .select({ permissionsEpoch: users.permissionsEpoch })
+        .from(users)
+        .where(eq(users.id, f.user.id))
+        .limit(1);
+      await db
+        .update(remoteSessions)
+        .set({ permissionsEpochSnapshot: Number(live!.permissionsEpoch) })
+        .where(eq(remoteSessions.id, f.session.id));
+    }
+
+    async function requireMfaForOrg(orgId: string) {
+      await getTestDb()
+        .update(organizations)
+        .set({ settings: { security: { requireMfa: true } } })
+        .where(eq(organizations.id, orgId));
+    }
+
+    async function addPasskey(userId: string, disabled: boolean) {
+      await getTestDb().insert(userPasskeys).values({
+        userId,
+        credentialId: `cred-${userId}-${Math.random().toString(36).slice(2, 10)}`,
+        publicKey: 'test-public-key',
+        deviceType: 'singleDevice',
+        disabledAt: disabled ? new Date() : null,
+      });
+    }
+
+    it('kill switch off: a factorless holder of a force_mfa role keeps renewing', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildFixture();
+      await getTestDb().update(roles).set({ forceMfa: true }).where(eq(roles.id, f.role.id));
+      await resnapshot(f);
+
+      const result = await renewRevocationLease(f.session.id);
+
+      expect(result.status).toBe('renewed');
+      expect(teardownDisconnectedSessions).not.toHaveBeenCalled();
+    });
+
+    it('kill switch on: the open enrolment grace window keeps the session renewing', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'true';
+      const f = await buildFixture();
+      await getTestDb().update(roles).set({ forceMfa: true }).where(eq(roles.id, f.role.id));
+      await resnapshot(f);
+
+      const result = await renewRevocationLease(f.session.id);
+
+      expect(result.status).toBe('renewed');
+    });
+
+    it('revokes a factorless user when org settings require MFA, even with the kill switch off', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildFixture();
+      await requireMfaForOrg(f.org.id);
+      await resnapshot(f);
+
+      const result = await renewRevocationLease(f.session.id);
+
+      expect(result).toMatchObject({ status: 'revoked', reason: 'mfa_required' });
+    });
+
+    // The Partner Admin axis the kill switch is named for: a partner-scoped
+    // user (users.org_id NULL) whose PARTNER role forces MFA. Re-points the
+    // fixture's session at a partner member; the policy then runs its
+    // partner_users -> roles join and reads partners.settings for real.
+    async function buildPartnerAdminFixture() {
+      const db = getTestDb();
+      const f = await buildFixture();
+      const partnerRole = await createRole({
+        scope: 'partner',
+        partnerId: f.partner.id,
+        name: `Partner Admin ${f.session.id}`,
+      });
+      await db.update(roles).set({ forceMfa: true }).where(eq(roles.id, partnerRole.id));
+      const admin = await createUser({
+        partnerId: f.partner.id,
+        orgId: null,
+        email: `lease-padmin-${f.session.id}@example.com`,
+      });
+      await assignUserToPartner(admin.id, f.partner.id, partnerRole.id, 'all');
+      await db
+        .update(remoteSessions)
+        .set({ userId: admin.id })
+        .where(eq(remoteSessions.id, f.session.id));
+      const partnerFixture = { ...f, user: admin };
+      await resnapshot(partnerFixture);
+      return partnerFixture;
+    }
+
+    it('kill switch off: a factorless Partner Admin (force_mfa partner role) keeps renewing', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildPartnerAdminFixture();
+
+      const row = await loadRevocationRecheckRow(f.session.id);
+      expect(row!.user.orgId).toBeNull();
+      expect(row!.partnerMembership?.orgAccess).toBe('all');
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result.status).toBe('renewed');
+    });
+
+    it('revokes a factorless Partner Admin when PARTNER settings require MFA', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildPartnerAdminFixture();
+      await getTestDb()
+        .update(partners)
+        .set({ settings: { security: { requireMfa: true } } })
+        .where(eq(partners.id, f.partner.id));
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result).toMatchObject({ status: 'revoked', reason: 'mfa_required' });
+    });
+
+    it('does not count a DISABLED passkey as MFA protection', async () => {
+      const f = await buildFixture();
+      await requireMfaForOrg(f.org.id);
+      await addPasskey(f.user.id, true);
+      await resnapshot(f);
+
+      const row = await loadRevocationRecheckRow(f.session.id);
+      expect(row!.user.mfaProtected).toBe(false);
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result).toMatchObject({ status: 'revoked', reason: 'mfa_required' });
+    });
+
+    it('counts a usable passkey as MFA protection', async () => {
+      const f = await buildFixture();
+      await requireMfaForOrg(f.org.id);
+      await addPasskey(f.user.id, true);
+      await addPasskey(f.user.id, false);
+      await resnapshot(f);
+
+      const row = await loadRevocationRecheckRow(f.session.id);
+      expect(row!.user.mfaProtected).toBe(true);
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result.status).toBe('renewed');
+    });
+  });
+
   it('refuses a caller who does not own the session, without touching the row', async () => {
     const db = getTestDb();
     const f = await buildFixture();
@@ -296,6 +464,55 @@ describe('revocation lease against live Postgres', () => {
     await expect(prepareRevocationLeaseForStart(f.session.id)).resolves.toEqual({
       ok: false,
       reason: 'agent_upgrade_required',
+    });
+  });
+
+  // SEC-038 W06 (#5537): the desktop-fence gate against the real column.
+  describe('desktop fence capability gate (REMOTE_DESKTOP_FENCE_REQUIRED)', () => {
+    const original = process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    afterEach(() => {
+      if (original === undefined) delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+      else process.env.REMOTE_DESKTOP_FENCE_REQUIRED = original;
+    });
+
+    it('gate off: admits an unfenced agent', async () => {
+      delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+      const f = await buildFixture({ fenceCapable: false });
+      const result = await prepareRevocationLeaseForStart(f.session.id);
+      expect(result.ok).toBe(true);
+    });
+
+    it('gate on: refuses an unfenced agent with agent_upgrade_required', async () => {
+      process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+      const f = await buildFixture({ fenceCapable: false });
+      await expect(prepareRevocationLeaseForStart(f.session.id)).resolves.toEqual({
+        ok: false,
+        reason: 'agent_upgrade_required',
+      });
+    });
+
+    it('gate on: admits a fenced agent', async () => {
+      process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+      const f = await buildFixture();
+      const result = await prepareRevocationLeaseForStart(f.session.id);
+      expect(result.ok).toBe(true);
+    });
+
+    // The session-create fail-fast probe reads the real columns too.
+    it('isDesktopStartCapable mirrors the gate against the device row', async () => {
+      const fenced = await buildFixture();
+      const unfenced = await buildFixture({ fenceCapable: false });
+      const noLease = await buildFixture({ leaseCapable: false });
+
+      delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+      await expect(isDesktopStartCapable(fenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(unfenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(noLease.device.id)).resolves.toBe(false);
+
+      process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+      await expect(isDesktopStartCapable(fenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(unfenced.device.id)).resolves.toBe(false);
+      await expect(isDesktopStartCapable('00000000-0000-0000-0000-000000000000')).resolves.toBe(false);
     });
   });
 

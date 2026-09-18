@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -580,6 +581,8 @@ func (s *Session) handleControlMessage(data []byte) {
 				"kbps", vs.Kbps,
 				"iceLocal", vs.ICELocal,
 				"iceRemote", vs.ICERemote,
+				// Session-scoped shipping override — see metricsLogger (#5929).
+				logging.ShipAlways(),
 			)
 
 			// Feed viewer stats into the adaptive bitrate controller.

@@ -590,6 +590,7 @@ export default function DeviceEventLogViewer({
                               const IbIcon = ib.icon;
                               return (
                                 <span
+                                  data-testid={`event-initiated-by-${activity.initiatedBy}`}
                                   className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${ib.color}`}
                                 >
                                   <IbIcon className="h-2.5 w-2.5" />
@@ -600,6 +601,7 @@ export default function DeviceEventLogViewer({
 
                           {/* Category badge */}
                           <span
+                            data-testid={`event-category-${activity.category}`}
                             className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${cc.color}`}
                           >
                             <CatIcon className="h-2.5 w-2.5" />

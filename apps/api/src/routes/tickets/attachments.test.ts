@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 const {
   authRef, getScopedTicketOr404Mock, dbSelectMock, dbInsertReturningMock,
   selectColumnArgs, insertedValues, putBytesMock, deleteBytesMock, auditMock, rateLimitAllowed,
-  openBytesMock, dbRowMock, deletedRowIds, dbEventOrder,
+  openBytesMock, dbRowMock, deletedRowIds, dbEventOrder, resolveArtifactMock,
 } = vi.hoisted(() => ({
   authRef: {
     current: {
@@ -25,6 +25,7 @@ const {
   putBytesMock: vi.fn(),
   deleteBytesMock: vi.fn(),
   openBytesMock: vi.fn(),
+  resolveArtifactMock: vi.fn(),
   dbRowMock: vi.fn(),
   deletedRowIds: [] as unknown[],
   // Side effects recorded from INSIDE the request, so orderings are observable.
@@ -109,9 +110,16 @@ vi.mock('../../services/ticketAttachmentStorage', async () => {
 
 vi.mock('../../services/auditService', () => ({ createAuditLogAsync: auditMock }));
 
+// Execution plane W05 (spec §6.3) — the from-artifact attach route resolves the
+// handle through this; its own coverage is artifactService.test.ts.
+vi.mock('../../services/artifacts/artifactService', () => ({
+  resolveArtifact: resolveArtifactMock,
+  openArtifactStream: vi.fn(),
+}));
+
 import { ticketAttachmentRoutes } from './attachments';
 import { authMiddleware } from '../../middleware/auth';
-import { AttachmentStorageError } from '../../services/ticketAttachmentStorage';
+import { AttachmentExpiredError, AttachmentStorageError } from '../../services/ticketAttachmentStorage';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const app = new Hono();
@@ -322,9 +330,12 @@ function joinRow(over: Record<string, unknown> = {}, commentOver: Record<string,
       ticketId: TICKET_ID,
       commentId: 'c-1',
       uploadedByUserId: 'u-1',
+      // The byte path resolves an artifact row against the ATTACHMENT's org.
+      orgId: 'org-1',
       storageBackend: 'db',
       storageKey: null,
       data: Buffer.from('bytes'),
+      artifactId: null,
       contentType: 'image/png',
       byteSize: 5,
       originalFilename: 'photo.png',
@@ -499,5 +510,118 @@ describe('DELETE /tickets/:id/attachments/:attachmentId (W08 #3902)', () => {
     const res = await del();
     expect(res.status).toBe(503);
     expect(deletedRowIds).toHaveLength(0);
+  });
+});
+
+// Execution plane W05 (#5716, spec §6.3).
+describe('POST /tickets/:id/attachments/from-artifact', () => {
+  const ART = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const RUN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  function attach(handle: string = ART, ticketId = TICKET_ID) {
+    return app.request(`/${ticketId}/attachments/from-artifact`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ handle }),
+    });
+  }
+
+  beforeEach(() => {
+    resolveArtifactMock.mockResolvedValue({
+      id: ART,
+      orgId: 'org-1',
+      runId: RUN,
+      name: 'failed-logons.csv',
+      contentType: 'text/csv',
+      bytes: 40_112,
+      sha256: SHA,
+    });
+    dbInsertReturningMock.mockImplementation(() =>
+      Promise.resolve([{
+        id: 'aaaabbbb-cccc-4ddd-8eee-ffff00001111',
+        commentId: null,
+        contentType: 'text/csv',
+        byteSize: 40_112,
+        originalFilename: 'failed-logons.csv',
+        createdAt: new Date('2026-09-13T10:03:00Z'),
+      }]),
+    );
+  });
+
+  it('attaches by reference without copying bytes', async () => {
+    const res = await attach();
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.data.originalFilename).toBe('failed-logons.csv');
+    expect(body.data.byteSize).toBe(40_112);
+    // No byte copy: nothing was put into the attachment store.
+    expect(putBytesMock).not.toHaveBeenCalled();
+    expect(insertedValues.at(-1)).toMatchObject({
+      storageBackend: 'artifact',
+      storageKey: null,
+      data: null,
+      artifactId: ART,
+      orgId: 'org-1',
+      // Pending, exactly like an upload: the technician posts it with a comment.
+      commentId: null,
+    });
+  });
+
+  it('404s a handle that does not resolve in the ticket org, without saying why', async () => {
+    resolveArtifactMock.mockResolvedValue(null);
+    const res = await attach();
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe('ARTIFACT_NOT_FOUND');
+    expect(insertedValues).toHaveLength(0);
+  });
+
+  it('resolves the handle against the TICKET org, not the caller org', async () => {
+    // A partner-scope tech can reach many orgs; the artifact must belong to the
+    // org whose ticket is being written, or a sibling org's file lands on this
+    // customer's ticket. `authRef` is partner-scoped with orgId null here.
+    await attach();
+    expect(resolveArtifactMock).toHaveBeenCalledWith(ART, { orgId: 'org-1' });
+  });
+
+  it('refuses to attach to a deleted ticket', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({
+      id: TICKET_ID, orgId: 'org-1', deletedAt: new Date(), deviceId: null,
+    });
+    const res = await attach();
+    expect(res.status).toBe(409);
+    expect(resolveArtifactMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-uuid handle before touching the artifact service', async () => {
+    const res = await attach('not-a-uuid');
+    expect(res.status).toBe(400);
+    expect(resolveArtifactMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /tickets/:id/attachments/:attachmentId/content — expired artifact', () => {
+  it('answers 410, not 404, when the artifact pointer was nulled by the sweeper', async () => {
+    // ON DELETE SET NULL: the row survives, the bytes do not. `openBytes` is
+    // mocked in this suite, so it is made to raise what the real one raises.
+    dbRowMock.mockReturnValue(joinRow({
+      storageBackend: 'artifact', storageKey: null, data: null, artifactId: null,
+    }));
+    openBytesMock.mockRejectedValue(new AttachmentExpiredError());
+
+    const res = await app.request(`/${TICKET_ID}/attachments/${ATT_ID}/content`);
+    expect(res.status).toBe(410);
+    expect((await res.json()).code).toBe('ATTACHMENT_EXPIRED');
+  });
+
+  it('passes the ATTACHMENT org to openBytes, never the caller org', async () => {
+    dbRowMock.mockReturnValue(joinRow({
+      storageBackend: 'artifact', storageKey: null, data: null, artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    }));
+    await app.request(`/${TICKET_ID}/attachments/${ATT_ID}/content`);
+    expect(openBytesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ storageBackend: 'artifact' }),
+      { orgId: 'org-1' },
+    );
   });
 });

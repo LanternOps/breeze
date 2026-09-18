@@ -171,3 +171,44 @@ describe('manage_ai_agents handler', () => {
     await expect(handler()(ARGS, auth(), RELEASE)).rejects.toThrow('connection terminated');
   });
 });
+
+/**
+ * SITE CEILING (audit §1.1). The grant is an org-wide authority change that
+ * fans out across every site, so a caller carrying any site or exact-device
+ * ceiling has nothing to narrow and must fail closed — the same rule
+ * `canMutateOrgWideGovernance` applies to every other org-wide governance
+ * object. This gate holds on BOTH paths: the chat raise and the release, which
+ * re-runs this handler under the requester's LIVE site restriction
+ * (`buildAuthContextForIntent`, services/actionIntents/actorContext.ts:386).
+ */
+describe('manage_ai_agents — site ceiling', () => {
+  it('refuses a site-restricted caller before the executor is reached', async () => {
+    const result = await call({
+      auth: auth({ scope: 'organization', allowedSiteIds: ['site-1'], canAccessSite: () => true }),
+    });
+    expect(result.error).toBe('site_ceiling');
+    expect(authorizeSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a caller restricted to zero sites', async () => {
+    const result = await call({
+      auth: auth({ scope: 'organization', allowedSiteIds: [], canAccessSite: () => false }),
+    });
+    expect(result.error).toBe('site_ceiling');
+    expect(authorizeSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an exact-device-ceilinged caller (device-less analysis shape)', async () => {
+    const result = await call({
+      auth: auth({ scope: 'organization', allowedDeviceIds: ['dev-1'] }),
+    });
+    expect(result.error).toBe('site_ceiling');
+    expect(authorizeSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('still grants for an unrestricted caller (no regression)', async () => {
+    const result = await call({ auth: auth({ scope: 'organization' }) });
+    expect(result.success).toBe(true);
+    expect(authorizeSupervisedKeyMock).toHaveBeenCalledTimes(1);
+  });
+});

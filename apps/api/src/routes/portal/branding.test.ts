@@ -104,6 +104,7 @@ describe('GET /branding (authenticated)', () => {
     // flag as undefined and the surface silently disappears.
     expect(Object.keys(dbState.selected ?? {})).toEqual(
       expect.arrayContaining([
+        'enableDevices',
         'enableDashboard',
         'enableSecurity',
         'enableBackups',
@@ -203,6 +204,7 @@ describe('GET /branding/:domain (public)', () => {
     // fixture is clean. This is the assertion that actually fails if a
     // visibility flag is ever added to the pre-auth, unauthenticated lookup.
     for (const flag of [
+      'enableDevices',
       'enableDashboard',
       'enableSecurity',
       'enableBackups',

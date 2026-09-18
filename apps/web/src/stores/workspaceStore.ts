@@ -12,6 +12,7 @@ import {
   type PendingApproval,
   type PendingPlan,
   type ActivePlan,
+  type ChatRunState,
 } from './processStreamEvent';
 
 const MAX_TABS = 5;
@@ -31,6 +32,8 @@ export interface TabState {
   contextLabel: string | null;
   pageContext: AiPageContext | null;
   messages: AiMessage[];
+  /** Analysis runs launched from this tab's conversation, keyed by run id (W05). */
+  chatRuns: Record<string, ChatRunState>;
   isStreaming: boolean;
   isLoading: boolean;
   error: string | null;
@@ -54,6 +57,7 @@ function createEmptyTab(title?: string): TabState {
     contextLabel: null,
     pageContext: null,
     messages: [],
+    chatRuns: {},
     isStreaming: false,
     isLoading: false,
     error: null,

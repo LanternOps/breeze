@@ -3,22 +3,24 @@ import {
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_POLICY_SNAPSHOT_VERSION,
   AI_AGENT_RUN_PROFILES,
+  ANALYSIS_FINDING_SEVERITIES,
   type AiAgentPolicySnapshot,
+  type AnalysisOutcome,
   type AlertVerdictOutcome,
   type AlertVerdictSuggestedAction,
 } from './aiAgents';
 
-describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v9, phase 2 P2-5)', () => {
-  it('is the literal 9', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(10);
+describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v14, #5870 designWallClockSeconds)', () => {
+  it('is the literal 14', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(14);
   });
 
-  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-9', () => {
+  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-14', () => {
     // Type-level assertion: this only compiles if `schemaVersion` is widened
-    // to `1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9`. If a future bump forgets to
-    // widen the union, `tsc` fails this assignment, not a runtime check.
-    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    // to `1 | … | 14`. If a future bump forgets to widen the union, `tsc`
+    // fails this assignment, not a runtime check.
+    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   });
 });
 
@@ -28,6 +30,14 @@ describe('AI_AGENT_LIMIT_DEFAULTS (sweep-profile limits, phase 2 P2-2)', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepBudgetCentsPerRun).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepMaxTurns).toBe(8);
+  });
+});
+
+describe('AI_AGENT_LIMIT_DEFAULTS (patch-profile limits, AI patch agent W04 #5750)', () => {
+  it('sizes maxPatchRunsPerDay for the nightly occurrence plus reactive alert runs', () => {
+    // W04 routes patch-classified alerts into the same daily budget; 2 would
+    // let two alerts starve the scheduled occurrence.
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay).toBe(6);
   });
 });
 
@@ -49,9 +59,50 @@ describe('AI_AGENT_LIMIT_DEFAULTS (triage-profile limits, phase 2 P2-4)', () => 
   });
 });
 
-describe('AI_AGENT_RUN_PROFILES (triage profile, phase 2 P2-4)', () => {
-  it('equals full, verdict, sweep, narrative, triage, design', () => {
-    expect(AI_AGENT_RUN_PROFILES).toEqual(['full', 'verdict', 'sweep', 'narrative', 'triage', 'design']);
+describe('AI_AGENT_RUN_PROFILES (analysis profile, execution plane W04 #5715)', () => {
+  it('equals full, verdict, sweep, narrative, triage, design, patch, analysis', () => {
+    expect(AI_AGENT_RUN_PROFILES).toEqual([
+      'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis',
+    ]);
+  });
+});
+
+describe('analysis profile limits (execution plane W04, spec §5.4)', () => {
+  it('carries the spec §5.4 defaults', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxInputDevicesPerRun).toBe(50);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxTurnsPerRun).toBe(40);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisWallClockSeconds).toBe(900);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeSeconds).toBe(600);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun).toBe(25);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun).toBe(256 * 1024 * 1024);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxArtifactBytesPerRun).toBe(128 * 1024 * 1024);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxBudgetCentsPerRun).toBe(150);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxRunsPerHour).toBe(10);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxConcurrentRuns).toBe(2);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepTimeoutSeconds).toBe(300);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepsPerRun).toBe(40);
+  });
+
+  it('types an AnalysisOutcome with findings and proposed actions', () => {
+    const outcome: AnalysisOutcome = {
+      summary: 'three devices share a failing disk model',
+      findings: [{
+        title: 'SMART pre-fail on 3 devices',
+        severity: 'high',
+        detail: 'reallocated sector count climbing on ST2000-series',
+        artifactHandles: ['11111111-1111-4111-8111-111111111111'],
+      }],
+      artifactHandles: ['11111111-1111-4111-8111-111111111111'],
+      proposedActions: [{
+        tool: 'manage_alerts',
+        action: 'resolve',
+        deviceId: '22222222-2222-4222-8222-222222222222',
+        args: { alertId: '33333333-3333-4333-8333-333333333333' },
+        rationale: 'superseded by the disk finding',
+      }],
+    };
+    expect(outcome.findings[0]?.severity).toBe('high');
+    expect(ANALYSIS_FINDING_SEVERITIES).toEqual(['info', 'low', 'medium', 'high']);
   });
 });
 

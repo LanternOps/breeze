@@ -9,6 +9,7 @@ import { db } from '../db';
 import { brainDeviceContext, devices } from '../db/schema';
 import { eq, and, or, gt, isNull, desc, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { deviceIdSiteDenied } from './aiToolsSiteScope';
 
 export type ContextType = 'issue' | 'quirk' | 'followup' | 'preference';
 
@@ -112,6 +113,20 @@ export async function resolveDeviceContext(
   const conditions: SQL[] = [eq(brainDeviceContext.id, contextId)];
   const orgCond = auth.orgCondition(brainDeviceContext.orgId);
   if (orgCond) conditions.push(orgCond);
+
+  // The entry is addressed by CONTEXT id, so org scoping alone lets a
+  // device-bound or site-restricted run mutate a sibling device's entry.
+  // Resolve the entry's device and check both axes first (#6086). Unrestricted
+  // callers take no extra query.
+  if (auth.allowedDeviceIds || auth.allowedSiteIds) {
+    const [entry] = await db
+      .select({ deviceId: brainDeviceContext.deviceId })
+      .from(brainDeviceContext)
+      .where(and(...conditions))
+      .limit(1);
+    // Unknown entry → fail closed, same answer as a denied one (no probing).
+    if (!entry || await deviceIdSiteDenied(auth, entry.deviceId)) return { updated: false };
+  }
 
   const result = await db
     .update(brainDeviceContext)

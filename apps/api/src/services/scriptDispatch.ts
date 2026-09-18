@@ -1,3 +1,4 @@
+import type { RemediationTrigger } from '@breeze/shared';
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
@@ -93,6 +94,8 @@ export interface ScriptDispatchProvenance {
 }
 
 export type DispatchScriptInput = {
+  /** Recorded cause; independent of triggerType. */
+  trigger?: RemediationTrigger;
   // `hostname`, `siteId`, and `customFields` are carried for #3409 PR3's
   // sourced parameters: a `deviceCustomField` binding reads `customFields`
   // and the `builtin` source reads device/site/org properties. Nothing in
@@ -599,6 +602,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         // was worth.
         parameters: buildExecutionParameters(parameters, parameterBindings, degradedActorId),
         triggerType: input.triggerType,
+        trigger: input.trigger,
         safeTriggeredBy,
         targetSessionId: input.targetSessionId ?? null,
         provenance: input.provenance,
@@ -739,7 +743,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     if (claimed) {
       // #3409 PR4c-2: the immediate-send path claims the command itself and
       // hands it straight to the WS, bypassing
-      // `decryptClaimedCommandsForDelivery` — so the claim-time gate has to
+      // `prepareClaimedCommandsForDelivery` — so the claim-time gate has to
       // run HERE too, or a device whose agent lost the capability between the
       // preflight above and this claim would receive the script with the
       // credential unset. Only the secret-bearing path pays for it.
@@ -864,6 +868,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       ? (input.principalActorId ?? SYSTEM_ACTOR_ID)
       : (safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID);
     void createAuditLogAsync({
+      trigger: input.trigger,
       orgId: device.orgId,
       actorType: auditActorType,
       actorId: auditActorId,
@@ -938,6 +943,7 @@ function buildExecutionValues(input: {
   /** Already shaped by buildExecutionParameters (raw caller map + sidecar). */
   parameters?: unknown;
   triggerType?: DispatchScriptInput['triggerType'];
+  trigger?: RemediationTrigger;
   safeTriggeredBy?: string | null;
   targetSessionId?: number | null;
   provenance?: ScriptDispatchProvenance;
@@ -964,6 +970,9 @@ function buildExecutionValues(input: {
     orgId: device.orgId,
     triggeredBy: input.safeTriggeredBy ?? null,
     triggerType: input.triggerType ?? 'manual',
+    triggerKind: input.trigger?.kind ?? null,
+    triggerRefId: input.trigger?.refId ?? null,
+    triggerKey: input.trigger?.key ?? null,
     // #5291 W04 — the `script` monitor this run is a probe for, or NULL for
     // every non-monitor dispatch.
     monitorId: input.monitorId ?? null,

@@ -5,6 +5,8 @@ import { defineConfig } from 'vitest/config';
 // this scoping a bare `vitest run` would try to load those specs and fail.
 export default defineConfig({
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     include: ['live-signup/**/*.test.ts'],
   },
 });

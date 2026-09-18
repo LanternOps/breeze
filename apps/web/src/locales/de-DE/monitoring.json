@@ -105,6 +105,9 @@
       "test": "Test fehlgeschlagen",
       "generic": "Ein Fehler ist aufgetreten"
     },
+    "saved": "Monitor gespeichert",
+    "deleted": "Monitor gelöscht",
+    "detached": "Monitor gelöst",
     "loading": "Monitor wird geladen…",
     "noAttachments": "Noch nicht für eine Richtlinie bereitgestellt.",
     "testResult": {
@@ -246,8 +249,10 @@
     },
     "selectPolicy": "Konfigurationsrichtlinie",
     "selectTarget": "Ziel",
+    "noOrgSelected": "Wählen Sie eine Organisation aus, für die bereitgestellt werden soll.",
     "policyName": "Richtlinienname",
     "attach": "Anhängen",
+    "attached": "Monitor angehängt",
     "cancel": "Abbrechen",
     "detachConfirm": "Von {{policy}} lösen?",
     "errors": {

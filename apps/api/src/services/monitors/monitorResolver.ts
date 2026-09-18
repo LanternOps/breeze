@@ -53,6 +53,21 @@ export interface MonitorCandidate extends EffectiveMonitor {
   assignedAt: number;
 }
 
+/**
+ * Discriminated result of resolution (#5677). `resolveMonitorsForDevice` used
+ * to return `[]` both when the device genuinely has zero applicable monitors
+ * AND when the device row itself vanished mid-request (raced a delete/org
+ * move) — indistinguishable to every caller. A caller that treats an empty
+ * array as "confirmed zero, deliver/clear accordingly" (e.g. the agent
+ * heartbeat's monitoring-watch delivery) would then wipe whatever the device
+ * already has on a mere race, not a real "no monitors apply" answer. Callers
+ * MUST branch on `kind` and never fold `device_missing` into "resolved with
+ * zero monitors".
+ */
+export type MonitorResolution =
+  | { kind: 'device_missing' }
+  | { kind: 'resolved'; monitors: EffectiveMonitor[] };
+
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export function compareCandidates(a: MonitorCandidate, b: MonitorCandidate): number {
@@ -82,13 +97,13 @@ export function pickWinner(candidates: MonitorCandidate[]): MonitorCandidate {
 export async function resolveMonitorsForDevice(
   deviceId: string,
   executor: DbExecutor = db,
-): Promise<EffectiveMonitor[]> {
+): Promise<MonitorResolution> {
   const [device] = await executor
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
-  if (!device) return [];
+  if (!device) return { kind: 'device_missing' };
 
   const [org] = await executor
     .select({ partnerId: organizations.partnerId })
@@ -155,7 +170,7 @@ export async function resolveMonitorsForDevice(
     )
     .where(sql`(${sql.join(targetConditions, sql` OR `)})`);
 
-  if (assignments.length === 0) return [];
+  if (assignments.length === 0) return { kind: 'resolved', monitors: [] };
 
   const policyIds = new Set<string>();
   for (const a of assignments) {
@@ -220,7 +235,7 @@ export async function resolveMonitorsForDevice(
     }
   }
 
-  return [...candidates.values()].map((list) => {
+  const monitors = [...candidates.values()].map((list) => {
     const winner = pickWinner(list);
     return {
       monitorId: winner.monitorId,
@@ -231,6 +246,7 @@ export async function resolveMonitorsForDevice(
       inheritedFromParent: winner.inheritedFromParent,
     };
   });
+  return { kind: 'resolved', monitors };
 }
 
 export async function resolveMonitorOverrideForDevice(
@@ -238,6 +254,7 @@ export async function resolveMonitorOverrideForDevice(
   monitorId: string,
   executor: DbExecutor = db,
 ): Promise<Record<string, unknown> | null> {
-  const effective = await resolveMonitorsForDevice(deviceId, executor);
-  return effective.find((m) => m.monitorId === monitorId)?.overrides ?? null;
+  const resolution = await resolveMonitorsForDevice(deviceId, executor);
+  if (resolution.kind === 'device_missing') return null;
+  return resolution.monitors.find((m) => m.monitorId === monitorId)?.overrides ?? null;
 }

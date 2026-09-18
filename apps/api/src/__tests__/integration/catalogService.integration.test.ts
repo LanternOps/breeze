@@ -113,6 +113,20 @@ function ctxWithOrgs(partnerId: string, orgIds: string[] | null): DbAccessContex
 }
 
 describe('catalogService (breeze_app, real DB)', () => {
+  // The per-currency price book is the ONLY sell-price authority (multi-currency
+  // wave 3); the deprecated catalog_items.unit_price mirror was dropped in #3812,
+  // so every price assertion below reads catalog_item_prices. Fixture partners
+  // are USD, so the partner-currency row is the USD row.
+  const bookPriceOf = (itemId: string, currencyCode = 'USD') =>
+    withSystemDbAccessContext(async () => {
+      const rows = await db
+        .select({ unitPrice: catalogItemPrices.unitPrice })
+        .from(catalogItemPrices)
+        .where(and(eq(catalogItemPrices.itemId, itemId), eq(catalogItemPrices.currencyCode, currencyCode)))
+        .limit(1);
+      return rows[0]?.unitPrice ?? null;
+    });
+
   // ---------------------------------------------------------------------------
   // (a) createCatalogItem persistence + derivation
   // ---------------------------------------------------------------------------
@@ -133,13 +147,12 @@ describe('catalogService (breeze_app, real DB)', () => {
         fx.actorA
       )
     );
-    expect(item.unitPrice).toBe('150.00');
+    expect(item.prices).toEqual([{ currencyCode: 'USD', unitPrice: '150.00' }]);
     expect(item.costBasis).toBeNull();
 
-    const persisted = await withSystemDbAccessContext(() =>
-      db.select().from(catalogItems).where(eq(catalogItems.id, item.id)).limit(1)
-    );
-    expect(persisted[0]?.unitPrice).toBe('150.00');
+    // The legacy `unitPrice` input alias lands in the partner-currency price-book
+    // row — that row, not a column on catalog_items, is what must persist verbatim.
+    expect(await bookPriceOf(item.id)).toBe('150.00');
   });
 
   runDb('createCatalogItem: cost+markup with no explicit price derives the sell price', async () => {
@@ -162,7 +175,7 @@ describe('catalogService (breeze_app, real DB)', () => {
         fx.actorA
       )
     );
-    expect(item.unitPrice).toBe('500.00');
+    expect(item.prices).toEqual([{ currencyCode: 'USD', unitPrice: '500.00' }]);
     expect(item.costBasis).toBe('400.00');
     expect(item.markupPercent).toBe('25.00');
   });
@@ -193,13 +206,13 @@ describe('catalogService (breeze_app, real DB)', () => {
   runDb('updateCatalogItem: a {name}-only PATCH leaves unit_price at 700 (no re-derive)', async () => {
     const fx = await seedFixture();
     const item = await seedPricedItem(fx);
-    expect(item.unitPrice).toBe('700.00');
+    expect(item.prices).toEqual([{ currencyCode: 'USD', unitPrice: '700.00' }]);
 
     const updated = await withDbAccessContext(fx.ctxA, () =>
       updateCatalogItem(item.id, { name: 'Renamed widget' }, fx.actorA)
     );
     expect(updated.name).toBe('Renamed widget');
-    expect(updated.unitPrice).toBe('700.00'); // would collapse to 500.00 if it re-derived
+    expect(await bookPriceOf(item.id)).toBe('700.00'); // would collapse to 500.00 if it re-derived
   });
 
   runDb('updateCatalogItem: an {isActive:false}-only PATCH leaves unit_price at 700', async () => {
@@ -210,7 +223,7 @@ describe('catalogService (breeze_app, real DB)', () => {
       updateCatalogItem(item.id, { isActive: false }, fx.actorA)
     );
     expect(updated.isActive).toBe(false);
-    expect(updated.unitPrice).toBe('700.00');
+    expect(await bookPriceOf(item.id)).toBe('700.00');
   });
 
   runDb('updateCatalogItem: a {markupPercent} PATCH WITH cost present re-derives', async () => {
@@ -222,7 +235,7 @@ describe('catalogService (breeze_app, real DB)', () => {
       updateCatalogItem(item.id, { markupPercent: 50 }, fx.actorA)
     );
     expect(updated.markupPercent).toBe('50.00');
-    expect(updated.unitPrice).toBe('600.00');
+    expect(await bookPriceOf(item.id)).toBe('600.00');
   });
 
   runDb('updateCatalogItem: a markup-only PATCH with NO cost preserves the price (no 0.00 collapse)', async () => {
@@ -243,7 +256,7 @@ describe('catalogService (breeze_app, real DB)', () => {
         fx.actorA
       )
     );
-    expect(item.unitPrice).toBe('300.00');
+    expect(item.prices).toEqual([{ currencyCode: 'USD', unitPrice: '300.00' }]);
     expect(item.costBasis).toBeNull();
 
     const updated = await withDbAccessContext(fx.ctxA, () =>
@@ -251,7 +264,7 @@ describe('catalogService (breeze_app, real DB)', () => {
     );
     expect(updated.markupPercent).toBe('40.00');
     // With no cost to derive from, the price must be preserved, NOT collapsed to 0.00.
-    expect(updated.unitPrice).toBe('300.00');
+    expect(await bookPriceOf(item.id)).toBe('300.00');
   });
 
   runDb('updateCatalogItem: an explicit unitPrice PATCH always wins', async () => {
@@ -262,7 +275,8 @@ describe('catalogService (breeze_app, real DB)', () => {
       // cost 400 + markup 25 would derive 500, but explicit 999 must win
       updateCatalogItem(item.id, { unitPrice: 999, markupPercent: 25 }, fx.actorA)
     );
-    expect(updated.unitPrice).toBe('999.00');
+    expect(updated.id).toBe(item.id);
+    expect(await bookPriceOf(item.id)).toBe('999.00');
   });
 
   // ---------------------------------------------------------------------------
@@ -517,7 +531,7 @@ describe('catalogService (breeze_app, real DB)', () => {
     const crossPartnerComp = await withSystemDbAccessContext(async () => {
       const [row] = await db
         .insert(catalogItems)
-        .values({ partnerId: fx.partnerB.id, itemType: 'service', name: 'B comp', unitPrice: '1.00', costCurrency: 'USD' })
+        .values({ partnerId: fx.partnerB.id, itemType: 'service', name: 'B comp', costCurrency: 'USD' })
         .returning({ id: catalogItems.id });
       return row!.id;
     });
@@ -676,10 +690,9 @@ describe('catalogService (breeze_app, real DB)', () => {
       db.select().from(catalogItemPrices).where(eq(catalogItemPrices.itemId, itemId)).orderBy(catalogItemPrices.currencyCode)
     );
 
-  runDb('createCatalogItem: prices [EUR 10, USD 12] under a USD partner → two book rows, mirror 12.00, costCurrency USD', async () => {
+  runDb('createCatalogItem: prices [EUR 10, USD 12] under a USD partner → two book rows, costCurrency USD', async () => {
     const fx = await seedFixture();
     const item = await seedMultiCurrencyItem(fx);
-    expect(item.unitPrice).toBe('12.00');
     expect(item.costCurrency).toBe('USD');
     const rows = await priceRowsFor(item.id);
     expect(rows.map((r) => [r.currencyCode, r.unitPrice, r.partnerId])).toEqual([
@@ -713,7 +726,7 @@ describe('catalogService (breeze_app, real DB)', () => {
       .rejects.toMatchObject({ status: 409, code: 'NO_PRICE_FOR_CURRENCY' });
   });
 
-  runDb('setItemPrice adds a GBP row (resolvable); removeItemPrice reopens the gap; partner-currency edits mirror unit_price', async () => {
+  runDb('setItemPrice adds a GBP row (resolvable); removeItemPrice reopens the gap; partner-currency edits upsert one row', async () => {
     const fx = await seedFixture();
     const item = await seedMultiCurrencyItem(fx);
 
@@ -727,18 +740,19 @@ describe('catalogService (breeze_app, real DB)', () => {
     await expect(withDbAccessContext(fx.ctxA, () => resolvePrice(item.id, 'GBP', null, fx.actorA)))
       .rejects.toMatchObject({ status: 409, code: 'NO_PRICE_FOR_CURRENCY' });
 
-    // Upsert on (item, currency) + partner-currency mirror.
+    // Re-pricing the PARTNER currency upserts the one existing row rather than
+    // adding a second (the (item, currency) unique target), and removing it
+    // reopens the gap for that currency too — there is no longer any
+    // catalog_items column shadowing it (#3812).
     const usd = await withDbAccessContext(fx.ctxA, () => setItemPrice(item.id, 'USD', { unitPrice: 15 }, fx.actorA));
     expect(usd.unitPrice).toBe('15.00');
     expect((await priceRowsFor(item.id)).filter((r) => r.currencyCode === 'USD')).toHaveLength(1);
-    let mirror = await withSystemDbAccessContext(() =>
-      db.select({ unitPrice: catalogItems.unitPrice }).from(catalogItems).where(eq(catalogItems.id, item.id)).limit(1));
-    expect(mirror[0]?.unitPrice).toBe('15.00');
+    expect(await bookPriceOf(item.id)).toBe('15.00');
 
     await withDbAccessContext(fx.ctxA, () => removeItemPrice(item.id, 'USD', fx.actorA));
-    mirror = await withSystemDbAccessContext(() =>
-      db.select({ unitPrice: catalogItems.unitPrice }).from(catalogItems).where(eq(catalogItems.id, item.id)).limit(1));
-    expect(mirror[0]?.unitPrice).toBe('0.00');
+    expect(await bookPriceOf(item.id)).toBeNull();
+    await expect(withDbAccessContext(fx.ctxA, () => resolvePrice(item.id, 'USD', null, fx.actorA)))
+      .rejects.toMatchObject({ status: 409, code: 'NO_PRICE_FOR_CURRENCY' });
   });
 
   runDb('setItemPrice: JPY 100.5 → PRICE_NOT_REPRESENTABLE; setOrgPriceOverride JPY 10.5 → PRICE_NOT_REPRESENTABLE', async () => {
@@ -932,21 +946,20 @@ describe('catalogService (breeze_app, real DB)', () => {
     const item = await seedMultiCurrencyItem(fx);
 
     const explicit = await withDbAccessContext(fx.ctxA, () => updateCatalogItem(item.id, { unitPrice: 20 }, fx.actorA));
-    expect(explicit.unitPrice).toBe('20.00');
+    expect(explicit.id).toBe(item.id);
     expect((await priceRowsFor(item.id)).map((r) => [r.currencyCode, r.unitPrice])).toEqual([['EUR', '10.00'], ['USD', '20.00']]);
 
-    // cost in CAD + markup → CAD row only; the USD mirror stays at 20.00.
+    // cost in CAD + markup → CAD row only; the USD row stays at 20.00.
     const derived = await withDbAccessContext(fx.ctxA, () =>
       updateCatalogItem(item.id, { costBasis: 100, markupPercent: 10, costCurrency: 'CAD' }, fx.actorA));
     expect(derived.costCurrency).toBe('CAD');
-    expect(derived.unitPrice).toBe('20.00');
     expect((await priceRowsFor(item.id)).map((r) => [r.currencyCode, r.unitPrice])).toEqual([['CAD', '110.00'], ['EUR', '10.00'], ['USD', '20.00']]);
 
-    // cost currency back to USD with the same drivers → USD row re-derived + mirrored.
-    const usdDerived = await withDbAccessContext(fx.ctxA, () => updateCatalogItem(item.id, { costCurrency: 'USD' }, fx.actorA));
-    expect(usdDerived.unitPrice).toBe('20.00'); // costCurrency alone is not a price driver
-    const reDerived = await withDbAccessContext(fx.ctxA, () => updateCatalogItem(item.id, { markupPercent: 50 }, fx.actorA));
-    expect(reDerived.unitPrice).toBe('150.00');
+    // cost currency back to USD with the same drivers → costCurrency alone is not
+    // a price driver, so nothing re-derives until markup actually changes.
+    await withDbAccessContext(fx.ctxA, () => updateCatalogItem(item.id, { costCurrency: 'USD' }, fx.actorA));
+    expect(await bookPriceOf(item.id)).toBe('20.00');
+    await withDbAccessContext(fx.ctxA, () => updateCatalogItem(item.id, { markupPercent: 50 }, fx.actorA));
     expect((await priceRowsFor(item.id)).find((r) => r.currencyCode === 'USD')?.unitPrice).toBe('150.00');
   });
 
@@ -1079,7 +1092,8 @@ describe('catalogService (breeze_app, real DB)', () => {
     const merged = await withDbAccessContext(fx.ctxA, () =>
       applyImportedPricingBySku('REIMPORT-1', { prices: [{ currencyCode: 'EUR', unitPrice: 95 }], costBasis: 110.25, costCurrency: 'CAD' }, fx.actorA));
     expect(merged.id).toBe(first.id);
-    expect(merged).toMatchObject({ costBasis: '110.25', costCurrency: 'CAD', unitPrice: '100.00' }); // mirror untouched (EUR ≠ partner currency)
+    expect(merged).toMatchObject({ costBasis: '110.25', costCurrency: 'CAD' });
+    expect(await bookPriceOf(first.id)).toBe('100.00'); // the USD row is untouched (EUR ≠ partner currency)
     expect(merged.prices).toEqual([
       { currencyCode: 'EUR', unitPrice: '95.00' },
       { currencyCode: 'USD', unitPrice: '100.00' },
@@ -1119,8 +1133,7 @@ describe('catalogService (breeze_app, real DB)', () => {
       { currencyCode: 'EUR', unitPrice: '95.00' },
       { currencyCode: 'USD', unitPrice: '149.99' },
     ]);
-    // The preserved partner-currency row leaves the deprecated mirror alone too.
-    expect(merged.unitPrice).toBe('149.99');
+    expect(await bookPriceOf(first.id)).toBe('149.99');
     // Cost IS feed truth and is applied.
     expect(merged).toMatchObject({ costBasis: '70.50', costCurrency: 'USD' });
 

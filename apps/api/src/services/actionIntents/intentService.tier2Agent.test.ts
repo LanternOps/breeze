@@ -98,7 +98,7 @@ const { schema, dbState, authMock, guardrailAgentMock, aiToolsState, permState, 
     effectDigestState: {
       computeEffectDigestOutcome: vi.fn(async () => ({ kind: 'not_applicable' }) as { kind: string }),
     },
-    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    envMock: { policyDecideEnabled: vi.fn(() => false), sweepActEnabled: vi.fn(() => false) },
     policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
   };
 });
@@ -208,6 +208,11 @@ vi.mock('./intentApprovers', () => ({
   resolveIntentApprovers: intentApproversState.resolveIntentApprovers,
   resolveAgentIntentApprovers: intentApproversState.resolveAgentIntentApprovers,
   resolveIntentTargetScope: intentApproversState.resolveIntentTargetScope,
+  // Org-wide governance classifier (audit §1.1) — REAL semantics, not a
+  // constant, so the fan-out filter flag is driven by the same tool/action
+  // shape production uses. Literals: vi.mock factories are hoisted.
+  isOrgWideGovernanceIntent: (toolName: string, args: Record<string, unknown> | null | undefined) =>
+    toolName === 'manage_ai_agents' && args?.action === 'authorize_supervised_key',
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -264,6 +269,8 @@ vi.mock('./effectDigest', () => ({
 
 vi.mock('../../config/env', () => ({
   policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04 sub-flag, default OFF (dark-ship).
+  sweepActEnabled: envMock.sweepActEnabled,
 }));
 
 vi.mock('./policyDecide', () => ({

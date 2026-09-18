@@ -95,6 +95,28 @@ export interface SystemReportExecutionAuthority {
   capturedAt: Date;
 }
 
+/**
+ * The authorities a report generator may run under. `ReportExecutionAuthority`
+ * is the request-path union (user | portal_user) and stays the public surface of
+ * `generateReport`. `SystemReportExecutionAuthority` is admitted ONLY through
+ * `generateManagedEvidenceReport`, and only for a type the closed
+ * `MANAGED_EVIDENCE_REGISTRY` names (#5784, OD-5 = B).
+ */
+export type ReportGenerationAuthority =
+  | ReportExecutionAuthority
+  | SystemReportExecutionAuthority;
+
+/**
+ * The authority `generateManagedEvidenceReport` runs under (#5784). Always
+ * org-wide unrestricted: a restricted fingerprint must never be stamped on an
+ * org-wide result, because a later reader would believe the artifact was
+ * scoped when it was not. Delegates to `systemReportAuthority` (P2-3) so there
+ * is exactly one minting site with its argument validation.
+ */
+export function systemReportAuthorityFor(orgId: string): SystemReportExecutionAuthority {
+  return systemReportAuthority(orgId);
+}
+
 export type LiveReportAuthorityResult =
   | { ok: true; authority: UserReportExecutionAuthority }
   | {
