@@ -566,6 +566,10 @@
       "loginBranding": {
         "label": "Iniciar sesión",
         "description": "Apariencia de la página de inicio de sesión"
+      },
+      "modules": {
+        "label": "Módulos",
+        "description": "Mesa de servicio y facturación activadas/desactivadas"
       }
     },
     "saved": "Configuración de socio guardada",

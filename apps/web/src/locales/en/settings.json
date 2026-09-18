@@ -566,6 +566,10 @@
       "loginBranding": {
         "label": "Login Branding",
         "description": "Login page appearance"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Service desk & billing on/off"
       }
     },
     "saved": "Partner settings saved",

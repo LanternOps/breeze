@@ -566,6 +566,10 @@
       "loginBranding": {
         "label": "Identidade visual do login",
         "description": "Aparência da página de login"
+      },
+      "modules": {
+        "label": "Módulos",
+        "description": "Central de serviços e faturamento ativados/desativados"
       }
     },
     "saved": "Configurações do parceiro salvas",

@@ -566,6 +566,10 @@
       "loginBranding": {
         "label": "Branding login",
         "description": "Aspetto della pagina di login"
+      },
+      "modules": {
+        "label": "Moduli",
+        "description": "Service desk e fatturazione on/off"
       }
     },
     "saved": "Impostazioni partner salvate",

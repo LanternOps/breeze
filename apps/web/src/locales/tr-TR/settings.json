@@ -566,6 +566,10 @@
       "loginBranding": {
         "label": "Oturum Aç Markalama",
         "description": "Giriş sayfasının görünümü"
+      },
+      "modules": {
+        "label": "Modüller",
+        "description": "Servis masası ve faturalandırma açık/kapalı"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",

@@ -566,6 +566,10 @@
       "loginBranding": {
         "label": "Login-Branding",
         "description": "Erscheinungsbild der Anmeldeseite"
+      },
+      "modules": {
+        "label": "Module",
+        "description": "Service Desk & Abrechnung ein/aus"
       }
     },
     "saved": "Partnereinstellungen gespeichert",

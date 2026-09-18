@@ -566,6 +566,10 @@
       "loginBranding": {
         "label": "Connexion Branding",
         "description": "Apparence de la page de connexion"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Service desk et facturation activés/désactivés"
       }
     },
     "saved": "Paramètres partenaires enregistrés",

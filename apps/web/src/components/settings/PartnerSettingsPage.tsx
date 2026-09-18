@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
+  Blocks,
   Building2,
   Globe,
   KeyRound,
@@ -57,7 +58,7 @@ import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'modules';
 
 type Partner = {
   id: string;
@@ -96,6 +97,7 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
     label: 'partnerSettingsPage.groups.company',
     tabs: [
       { key: 'company', hash: 'company', label: 'partnerSettingsPage.tabs.company.label', description: 'partnerSettingsPage.tabs.company.description', icon: Building2 },
+      { key: 'modules', hash: 'modules', label: 'partnerSettingsPage.tabs.modules.label', description: 'partnerSettingsPage.tabs.modules.description', icon: Blocks, selfSaving: true },
       { key: 'regional', hash: 'regional', label: 'partnerSettingsPage.tabs.regional.label', description: 'partnerSettingsPage.tabs.regional.description', icon: Globe },
       { key: 'defaults', hash: 'defaults', label: 'partnerSettingsPage.tabs.defaults.label', description: 'partnerSettingsPage.tabs.defaults.description', icon: SlidersHorizontal, enforced: true },
     ],
@@ -154,7 +156,7 @@ function getTabFromHash(): TabKey | null {
 // The per-tab keys whose form state participates in dirty tracking. Self-saving
 // tabs (Ticketing, Login Branding) persist independently and are never "dirty"
 // from this page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'aiProvider'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'aiProvider' | 'modules'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -603,8 +605,13 @@ export default function PartnerSettingsPage() {
                 setContactWebsite(c.website || '');
               }}
             />
-              <PartnerModulesCard serviceManagementMode={partner?.serviceManagementMode} />
             </div>
+          )}
+
+          {/* Modules Tab (M7) — the service management on/off switch gets its
+              own home instead of living inside Company. */}
+          {activeTab === 'modules' && (
+            <PartnerModulesCard serviceManagementMode={partner?.serviceManagementMode} />
           )}
 
           {/* Regional Tab */}
