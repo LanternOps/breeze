@@ -284,15 +284,13 @@ describe('#6001 backup resolver parity (manual vs scheduled sweep)', () => {
 
   it('the sweep honours role targeting on a PARTNER assignment', async () => {
     // The partner branch joins through `organizations`, so its role/os select
-    // is the one most likely to alias the wrong table.
+    // is the one most likely to alias the wrong table. Partner is the LOWEST
+    // precedence level, so a higher-level fallback would mask a mis-wired
+    // filter entirely — this case therefore makes the filtered partner
+    // assignment the ONLY one, and asserts the device is governed by NOTHING.
     const partnerLinkId = await seedBackupPolicy({
       name: 'Partner, servers only (no paths)',
       assignment: { level: 'partner', targetId: partnerId, roleFilter: ['server'] },
-    });
-    const deviceLinkId = await seedBackupPolicy({
-      name: 'Device level (C:\\Users)',
-      paths: [WINDOWS_PATH],
-      assignment: { level: 'device', targetId: deviceId },
     });
 
     const manual = await withDbAccessContext(orgContext, () =>
@@ -300,10 +298,10 @@ describe('#6001 backup resolver parity (manual vs scheduled sweep)', () => {
     );
     const swept = await withSystemDbAccessContext(() => resolveAllBackupAssignedDevices(orgId));
 
-    // Device beats partner regardless, so assert the excluded link is gone
-    // rather than only that the winner is right.
-    expect(manual?.featureLinkId).toBe(deviceLinkId);
-    expect(swept.find((e) => e.deviceId === deviceId)?.featureLinkId).toBe(deviceLinkId);
+    // Both resolvers agree the workstation has no backup config at all —
+    // rather than the sweep silently adopting the servers-only, pathless link.
+    expect(manual).toBeNull();
+    expect(swept.find((e) => e.deviceId === deviceId)).toBeUndefined();
     expect(swept.map((e) => e.featureLinkId)).not.toContain(partnerLinkId);
   });
 
