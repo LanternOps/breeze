@@ -133,7 +133,10 @@ export function classifyResendSendError(error: ResendErrorShape): PartnerLaneSen
     name === 'security_error' ||
     status === 429
   ) {
-    return { kind: 'lane_unavailable' };
+    // Carry the provider's code: W04's ops alert must distinguish a credential
+    // failure (rotate a key) from a rate limit (it clears itself), and both
+    // arrive here as the same kind.
+    return { kind: 'lane_unavailable', detail: name || `http_${status ?? 'unknown'}` };
   }
 
   if (
@@ -238,8 +241,12 @@ export function createResendDomainProvider(): EmailDomainProvider {
 
     async deleteDomain(providerDomainId: string): Promise<void> {
       const { error } = await management.domains.remove(providerDomainId);
-      // 404 is success: the domain is already gone, which is the state we want.
-      if (error && error.statusCode !== 404 && error.name !== 'not_found') {
+      // Only a 404 is success: the domain is already gone, which is the state we
+      // want. The NAME alone is not enough — Resend also returns `not_found`
+      // for "API key not found" (401), and swallowing that would mark the row
+      // released while the provider domain is still live, with the outbox row
+      // already dropped.
+      if (error && error.statusCode !== 404) {
         throw new Error(`[emailDomains/resend] deleteDomain failed: ${error.name}: ${error.message}`);
       }
     },

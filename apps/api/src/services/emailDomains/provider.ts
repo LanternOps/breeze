@@ -51,7 +51,14 @@ export interface ProviderDomain {
 
 export type PartnerLaneSendError =
   | { kind: 'domain_unusable' }                    // provider says the domain cannot send
-  | { kind: 'lane_unavailable' }                   // 429, account paused, quota
+  /**
+   * 429, account paused, quota, bad credentials. `detail` is the provider's own
+   * error code where there is one (`invalid_api_key`, `rate_limit_exceeded`, …)
+   * so W04's ops alert can tell a credential failure — someone must rotate a
+   * key — from a rate limit that clears itself. Optional: adapters without a
+   * code (e.g. `static`) still report the kind.
+   */
+  | { kind: 'lane_unavailable'; detail?: string }
   | { kind: 'message_rejected'; detail: string }   // bad recipient, too large
   | { kind: 'ambiguous'; detail: string };         // timeout, 5xx, network
 

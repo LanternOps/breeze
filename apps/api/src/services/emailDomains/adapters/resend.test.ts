@@ -182,9 +182,19 @@ describe('deleteDomain', () => {
     domainsRemove.mockResolvedValue({ data: { id: 'd1', object: 'domain', deleted: true }, error: null });
     await expect(createResendDomainProvider().deleteDomain('d1')).resolves.toBeUndefined();
   });
-  it('treats not_found as success — the domain is already gone', async () => {
+  it('treats a 404 not_found as success — the domain is already gone', async () => {
     domainsRemove.mockResolvedValue({ data: null, error: { name: 'not_found', statusCode: 404, message: 'Domain not found' } });
     await expect(createResendDomainProvider().deleteDomain('d1')).resolves.toBeUndefined();
+  });
+  it('treats a bare 404 as success even under an unfamiliar error name', async () => {
+    domainsRemove.mockResolvedValue({ data: null, error: { name: 'some_new_code', statusCode: 404, message: 'gone' } });
+    await expect(createResendDomainProvider().deleteDomain('d1')).resolves.toBeUndefined();
+  });
+  it('THROWS on name=not_found with a non-404 status — that is an auth or routing failure, not a deleted domain', async () => {
+    // Swallowing this would mark the row released while the provider domain is
+    // still live, and the outbox row is dropped on the floor.
+    domainsRemove.mockResolvedValue({ data: null, error: { name: 'not_found', statusCode: 401, message: 'API key not found' } });
+    await expect(createResendDomainProvider().deleteDomain('d1')).rejects.toThrow(/API key not found/);
   });
   it('throws on any other error', async () => {
     domainsRemove.mockResolvedValue({ data: null, error: { name: 'application_error', statusCode: 500, message: 'boom' } });
@@ -268,6 +278,25 @@ describe('classifyResendSendError', () => {
 
   it('checks the domain-refusal text BEFORE the validation_error rule, so a not-verified refusal falls back instead of being lost', () => {
     expect(classifyResendSendError({ name: 'validation_error', statusCode: 403, message: 'The domain is not verified.' }).kind).toBe('domain_unusable');
+  });
+
+  it.each([
+    ['invalid_api_key', 'invalid_api_key'],
+    ['missing_api_key', 'missing_api_key'],
+    ['restricted_api_key', 'restricted_api_key'],
+    ['rate_limit_exceeded', 'rate_limit_exceeded'],
+    ['daily_quota_exceeded', 'daily_quota_exceeded'],
+  ])('carries the provider error name as lane_unavailable.detail for %s', (name, expected) => {
+    // W04's ops alert has to tell a credential failure (someone must rotate a
+    // key) from a rate limit (it will clear itself). Without detail both arrive
+    // as an indistinguishable `lane_unavailable`.
+    expect(classifyResendSendError({ name, statusCode: 401, message: 'whatever' }))
+      .toEqual({ kind: 'lane_unavailable', detail: expected });
+  });
+
+  it('falls back to the status code for a lane_unavailable with no recognised name', () => {
+    expect(classifyResendSendError({ name: '', statusCode: 429, message: 'slow down' }))
+      .toMatchObject({ kind: 'lane_unavailable', detail: 'http_429' });
   });
 
   it('classifies every recorded fixture to its recorded kind', () => {
