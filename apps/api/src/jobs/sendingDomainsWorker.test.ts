@@ -221,6 +221,35 @@ describe('worker registration', () => {
     await initializeSendingDomainsWorker();
     expect(probeRecord).toHaveBeenCalledWith('ok');
   });
+
+  // enqueueTestSend uses `attempts: 2` — the processor must compute finalAttempt
+  // from the job's own attemptsMade/opts.attempts, not a hardcoded constant, so
+  // a future change to the retry count stays correct without touching this
+  // file. An ambiguous send failure only writes last_test_* on the final
+  // attempt, so it distinguishes the two cases.
+  it.each([
+    [0, 2, false],
+    [1, 2, true],
+  ])('passes finalAttempt=%s for attemptsMade=%s of attempts=%s', async (attemptsMade, attempts, expectedFinal) => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
+    execRows.push([]);
+    providerMock.send.mockRejectedValue(
+      new PartnerLaneSendFailure({ kind: 'ambiguous', detail: 'connection timed out' } as never),
+    );
+
+    await initializeSendingDomainsWorker();
+    const [, processor] = workerCtor.mock.calls[0] as [string, (job: unknown) => Promise<unknown>, unknown];
+
+    await expect(processor({
+      name: 'test-send',
+      data: { domainId: DOMAIN_ID, userId: USER_ID },
+      attemptsMade,
+      opts: { attempts },
+    })).rejects.toThrow();
+
+    expect(updates.some((u) => u.lastTestStatus === 'failed')).toBe(expectedFinal);
+  });
 });
 
 describe('enqueue helpers', () => {
@@ -387,6 +416,39 @@ describe('test send (spec §6.1)', () => {
     await expect(runTestSend(DOMAIN_ID, USER_ID)).rejects.toThrow();
 
     expect(updates.some((u) => u.lastTestStatus === 'failed')).toBe(false);
+  });
+
+  // On the LAST attempt there is no further BullMQ retry to swallow into —
+  // without a write here, nothing ever lands in last_test_* and the partner UI
+  // polls forever for a result that will never appear.
+  it('on the final attempt, records the ambiguous failure and still rethrows', async () => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
+    execRows.push([]);
+    providerMock.send.mockRejectedValue(
+      new PartnerLaneSendFailure({ kind: 'ambiguous', detail: 'connection timed out' } as never),
+    );
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID, { finalAttempt: true })).rejects.toThrow();
+
+    expect(updates.at(-1)).toMatchObject({
+      lastTestStatus: 'failed',
+      lastTestError: expect.stringContaining('connection timed out'),
+    });
+    expect(markStaticVerifiedMock).not.toHaveBeenCalled();
+  });
+
+  it('on a non-final attempt, leaves last_test_* untouched and still rethrows', async () => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
+    execRows.push([]);
+    providerMock.send.mockRejectedValue(
+      new PartnerLaneSendFailure({ kind: 'ambiguous', detail: 'connection timed out' } as never),
+    );
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID, { finalAttempt: false })).rejects.toThrow();
+
+    expect(updates).toHaveLength(0);
   });
 
   // Spec §7: the test goes to the calling user's own VERIFIED address. Without

@@ -272,7 +272,11 @@ async function drainReleaseOutbox(
  * `tryCountPartnerLaneSend` ships in W04. Until then the only bound is the
  * route's 5/h/partner limit. W04 adds the call.
  */
-export async function runTestSend(domainId: string, userId: string): Promise<'sent' | 'refused' | 'skipped'> {
+export async function runTestSend(
+  domainId: string,
+  userId: string,
+  opts?: { finalAttempt?: boolean },
+): Promise<'sent' | 'refused' | 'skipped'> {
   const provider = getEmailDomainProvider();
   if (!provider) return 'skipped';
 
@@ -397,6 +401,24 @@ export async function runTestSend(domainId: string, userId: string): Promise<'se
       && (err.error.kind === 'domain_unusable' || err.error.kind === 'message_rejected');
     if (!refusal) {
       console.warn(`[SendingDomains] test send for ${domainId} failed transiently — retrying:`, err instanceof Error ? err.message : err);
+      // On the LAST attempt there is no further retry to swallow into, so a
+      // silent rethrow would leave last_test_* empty forever and the partner
+      // UI would poll for a result that never arrives. Record the failure
+      // (never verify — see markStaticDomainVerified below) and still rethrow
+      // so the job is recorded failed and Sentry sees it.
+      if (opts?.finalAttempt) {
+        const detail = err instanceof PartnerLaneSendFailure
+          ? (err.error.kind === 'ambiguous' || err.error.kind === 'lane_unavailable' || err.error.kind === 'message_rejected'
+            ? err.error.detail
+            : undefined) ?? err.message
+          : (err instanceof Error ? err.message : String(err));
+        await withSystemDbAccessContext(
+          () => db.update(partnerSendingDomains)
+            .set({ lastTestAt: new Date(), lastTestStatus: 'failed', lastTestError: String(detail).slice(0, 500), updatedAt: sql`now()` })
+            .where(eq(partnerSendingDomains.id, domainId)),
+          'sendingDomainTestSendFinalAttemptFailed',
+        );
+      }
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -542,7 +564,8 @@ function createSendingDomainsWorker(): Worker<SendingDomainsJobData> {
           return runSendingDomainsSweep();
         case TEST_SEND_JOB: {
           const data = job.data as { domainId: string; userId: string };
-          return runTestSend(data.domainId, data.userId);
+          const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+          return runTestSend(data.domainId, data.userId, { finalAttempt });
         }
         case DAILY_JOB:
           return runDailyMaintenance();
