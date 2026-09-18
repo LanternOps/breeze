@@ -372,9 +372,15 @@ describe('releaseSendingDomainsForPartner', () => {
         .where(eq(emailProviderDomainReleases.domain, domain));
       expect(outbox).toHaveLength(1);
       expect(outbox[0]).toMatchObject({ provider: 'fake', providerDomainId: 'dom_managed', reason: 'partner_released' });
-      const [row] = await db.select({ providerDomainId: partnerSendingDomains.providerDomainId })
-        .from(partnerSendingDomains).where(eq(partnerSendingDomains.domain, domain));
+      const [row] = await db.select({
+        providerDomainId: partnerSendingDomains.providerDomainId,
+        status: partnerSendingDomains.status,
+        statusReason: partnerSendingDomains.statusReason
+      }).from(partnerSendingDomains).where(eq(partnerSendingDomains.domain, domain));
       expect(row?.providerDomainId).toBeNull();
+      // Same statement as the handle, and the CHECK accepts the new reason.
+      expect(row?.status).toBe('removing');
+      expect(row?.statusReason).toBe('partner_released');
     });
   });
 
@@ -455,6 +461,41 @@ describe('cascadeDeletePartner with live sending domains', () => {
       expect(outbox).toHaveLength(1);
       expect(outbox[0]!.domain).toBe(domain);
       await db.delete(emailProviderDomainReleases).where(eq(emailProviderDomainReleases.domain, domain));
+    });
+  });
+
+  it('SUCCEEDS on an ADOPTED domain (provider_managed = false with a live handle) without writing an outbox row', async () => {
+    // The dangerous shape: a domain Breeze did not create but whose handle it
+    // still holds. The release must null the handle so the BEFORE DELETE guard
+    // lets the purge through, and must NOT queue a provider delete — that row
+    // is very likely the operator's own primary sending domain.
+    const partner = await createPartner();
+    await createOrganization({ partnerId: partner.id });
+    const domain = uniqueDomain('cascade-adopted');
+    const [row] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(partnerSendingDomains).values({
+        partnerId: partner.id, domain, provider: 'fake', providerDomainId: 'dom_adopted',
+        providerManaged: false, status: 'verified'
+      }).returning());
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(partnerSenderIdentities).values({
+        partnerId: partner.id, sendingDomainId: row!.id, stream: 'billing', localPart: 'billing'
+      }));
+
+    const stats = await cascadeDeletePartner(partner.id, SENTINEL_ACTOR);
+    expect(stats.totalRowsDeleted).toBeGreaterThan(0);
+
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const domains = await db.select({ id: partnerSendingDomains.id }).from(partnerSendingDomains)
+        .where(eq(partnerSendingDomains.partnerId, partner.id));
+      expect(domains, 'the release guard must not have blocked the cascade').toHaveLength(0);
+      const identities = await db.select({ id: partnerSenderIdentities.id }).from(partnerSenderIdentities)
+        .where(eq(partnerSenderIdentities.partnerId, partner.id));
+      expect(identities).toHaveLength(0);
+      // The guarantee: nothing downstream can ever delete the operator's domain.
+      const outbox = await db.select().from(emailProviderDomainReleases)
+        .where(eq(emailProviderDomainReleases.providerDomainId, 'dom_adopted'));
+      expect(outbox, 'an adopted domain must never be queued for provider deletion').toHaveLength(0);
     });
   });
 });

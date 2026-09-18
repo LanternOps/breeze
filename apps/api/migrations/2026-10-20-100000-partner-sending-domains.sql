@@ -75,10 +75,14 @@ CREATE TABLE IF NOT EXISTS partner_sending_domains (
     CHECK (status IN ('provisioning','pending','verified','at_risk','failed','suspended','removing')),
   CONSTRAINT partner_sending_domains_provider_chk
     CHECK (provider IN ('resend','ses','static','fake')),
+  -- 'partner_released' is stamped by releaseSendingDomainsForPartner together
+  -- with status='removing', in the same UPDATE that nulls provider_domain_id,
+  -- so a released row never reads as a working sending domain.
   CONSTRAINT partner_sending_domains_status_reason_chk
     CHECK (status_reason IS NULL OR status_reason IN (
       'provider_conflict','provider_rejected','quota_exhausted','dns_not_detected',
-      'dns_removed','platform_suspended','abuse_auto','failed_expired','user_removed')),
+      'dns_removed','platform_suspended','abuse_auto','failed_expired','user_removed',
+      'partner_released')),
   CONSTRAINT partner_sending_domains_test_status_chk
     CHECK (last_test_status IS NULL OR last_test_status IN ('pending','sent','failed')),
   -- `static` has no provider object at all (§3.1).

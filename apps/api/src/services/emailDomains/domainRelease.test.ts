@@ -65,6 +65,25 @@ describe('releaseSendingDomainsForPartner', () => {
     expect(state.updates[0]!.set).toMatchObject({ providerDomainId: null });
   });
 
+  it('marks the row removing/partner_released in the SAME update that nulls the handle', async () => {
+    // Without this the row is left claiming `verified` with no provider domain
+    // behind it, which reads to an operator as a working sending domain.
+    state.rows = [managed()];
+    await releaseSendingDomainsForPartner('p1');
+    expect(state.updates[0]!.set).toMatchObject({
+      providerDomainId: null,
+      status: 'removing',
+      statusReason: 'partner_released'
+    });
+    expect(state.updates[0]!.set.statusChangedAt).toBeInstanceOf(Date);
+  });
+
+  it('marks an UNMANAGED row removing/partner_released too — it is leaving with the partner either way', async () => {
+    state.rows = [managed({ providerManaged: false })];
+    await releaseSendingDomainsForPartner('p1');
+    expect(state.updates[0]!.set).toMatchObject({ status: 'removing', statusReason: 'partner_released' });
+  });
+
   it('NEVER writes an outbox row for a domain Breeze does not manage — that is the operator\'s own sending domain', async () => {
     state.rows = [managed({ providerManaged: false })];
     expect(await releaseSendingDomainsForPartner('p1')).toBe(1);

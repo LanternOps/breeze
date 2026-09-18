@@ -49,7 +49,10 @@ describe('normalizeSendingDomain — rejected', () => {
     ['*.acme.com', 'wildcard'],
     ['192.0.2.10', 'ip_literal'],
     ['255.255.255.255', 'ip_literal'],
-    ['[2001:db8::1]', 'port'],
+    // A bracketed IPv6 literal is an ADDRESS, not a port mistake — classified
+    // before the colon rule so the message names the real problem.
+    ['[2001:db8::1]', 'ip_literal'],
+    ['[::1]', 'ip_literal'],
     ['localhost', 'too_few_labels'],
     ['acme', 'too_few_labels'],
     ['acme..com', 'label_length'],
@@ -61,10 +64,25 @@ describe('normalizeSendingDomain — rejected', () => {
     ['acme_mail.com', 'label_charset'],
     [`${Array.from({ length: 5 }, () => 'a'.repeat(50)).join('.')}.com`, 'too_long'],
     ['acme.123', 'numeric_tld'],
-    ['acme.0', 'numeric_tld']
+    ['acme.0', 'numeric_tld'],
+    // Malformed punycode: `xn--` with an undecodable payload. The WHATWG host
+    // parser applies UTS-46 and throws, which is the one path that yields
+    // idn_invalid — previously the only reason with no case covering it.
+    ['xn--a.com', 'idn_invalid'],
+    ['xn--0.com', 'idn_invalid']
   ];
   it.each(cases)('rejects %s with %s', (input, reason) => {
     expect(normalizeSendingDomain(input)).toEqual({ ok: false, reason });
+  });
+
+  it('classifies an IPv6 literal as ip_literal, never as a port problem', () => {
+    // The bracket test runs before the colon test precisely so these do not
+    // report `port`, which would send the operator hunting for a ":587".
+    for (const literal of ['[::]', '[2001:db8::1]', '[fe80::1%25eth0]']) {
+      expect(normalizeSendingDomain(literal), literal).toEqual({ ok: false, reason: 'ip_literal' });
+    }
+    // A real host:port is still a port problem.
+    expect(normalizeSendingDomain('acme.com:587')).toEqual({ ok: false, reason: 'port' });
   });
 });
 
@@ -154,7 +172,8 @@ describe('constant sets', () => {
   it('pins the status reason set the migration CHECK allows', () => {
     expect([...SENDING_DOMAIN_STATUS_REASONS]).toEqual([
       'provider_conflict', 'provider_rejected', 'quota_exhausted', 'dns_not_detected',
-      'dns_removed', 'platform_suspended', 'abuse_auto', 'failed_expired', 'user_removed'
+      'dns_removed', 'platform_suspended', 'abuse_auto', 'failed_expired', 'user_removed',
+      'partner_released'
     ]);
   });
   it('pins the stream set W01 PartnerMailStream declares', () => {

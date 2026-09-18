@@ -78,9 +78,19 @@ export async function releaseSendingDomainsForPartner(partnerId: string): Promis
             target: [emailProviderDomainReleases.provider, emailProviderDomainReleases.providerDomainId]
           });
       }
+      // status/status_reason move in the SAME statement as the handle. A row
+      // left claiming `verified` with no provider domain behind it reads to an
+      // operator (and to any UI) as a working sending domain.
+      const now = new Date();
       await db
         .update(partnerSendingDomains)
-        .set({ providerDomainId: null, updatedAt: new Date() })
+        .set({
+          providerDomainId: null,
+          status: 'removing',
+          statusReason: 'partner_released',
+          statusChangedAt: now,
+          updatedAt: now
+        })
         .where(eq(partnerSendingDomains.id, row.id));
       released++;
     }

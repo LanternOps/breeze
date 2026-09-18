@@ -18,7 +18,10 @@ export type SendingDomainStatusValue = (typeof SENDING_DOMAIN_STATUSES)[number];
 
 export const SENDING_DOMAIN_STATUS_REASONS = [
   'provider_conflict', 'provider_rejected', 'quota_exhausted', 'dns_not_detected',
-  'dns_removed', 'platform_suspended', 'abuse_auto', 'failed_expired', 'user_removed'
+  'dns_removed', 'platform_suspended', 'abuse_auto', 'failed_expired', 'user_removed',
+  // Stamped with status='removing' by releaseSendingDomainsForPartner when the
+  // partner is cascaded or offboarded.
+  'partner_released'
 ] as const;
 export type SendingDomainStatusReason = (typeof SENDING_DOMAIN_STATUS_REASONS)[number];
 
@@ -57,8 +60,10 @@ export function normalizeSendingDomain(input: string): NormalizeSendingDomainRes
   if (raw.includes('/') || raw.includes('?') || raw.includes('#')) return { ok: false, reason: 'path' };
   if (raw.includes('@')) return { ok: false, reason: 'at_sign' };
   if (raw.includes('*')) return { ok: false, reason: 'wildcard' };
-  // Covers both `acme.com:587` and an IPv6 literal, which can only appear
-  // bracketed and always carries colons.
+  // A bracketed IPv6 literal is checked BEFORE the colon rule: it always
+  // carries colons, so the port rule would otherwise swallow it and tell
+  // someone who pasted an IPv6 address that their "port" is the problem.
+  if (raw.startsWith('[') || raw.endsWith(']')) return { ok: false, reason: 'ip_literal' };
   if (raw.includes(':')) return { ok: false, reason: 'port' };
 
   const trimmedDots = raw.replace(/\.+$/, '');
