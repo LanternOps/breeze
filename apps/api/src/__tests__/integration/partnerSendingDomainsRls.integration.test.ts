@@ -629,6 +629,7 @@ describe('W03 — provider release guard and sweep claim (breeze_app role)', () 
   // domain. The service escapes with `runOutsideDbContext` first; this is the
   // only test that can prove it against real RLS.
   it('platform-admin actions reach ANOTHER partner from inside a partner-scoped request context', async () => {
+    const f = await fixture();
     const [bRow] = await seedDomain(f.partnerB, { domain: uniqueDomain('admin-cross') });
 
     await withDbAccessContext(partnerContext(f.partnerA, [f.orgA]), async () => {
