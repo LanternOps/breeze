@@ -2072,7 +2072,9 @@
       "total": "Total"
     },
     "title": "Invoices",
-    "tryAgain": "Try again"
+    "tryAgain": "Try again",
+    "exportBillables": "Export billables",
+    "exportBillablesDialogTitle": "Export billables"
   },
   "orgBillingSettings": {
     "address": {

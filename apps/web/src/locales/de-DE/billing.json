@@ -2072,7 +2072,9 @@
       "total": "Insgesamt"
     },
     "title": "Rechnungen",
-    "tryAgain": "Versuchen Sie es erneut"
+    "tryAgain": "Versuchen Sie es erneut",
+    "exportBillables": "Abrechenbare Leistungen exportieren",
+    "exportBillablesDialogTitle": "Abrechenbare Leistungen exportieren"
   },
   "orgBillingSettings": {
     "address": {

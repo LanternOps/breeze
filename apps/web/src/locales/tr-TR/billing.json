@@ -2072,7 +2072,9 @@
       "total": "Toplam"
     },
     "title": "Faturalar",
-    "tryAgain": "Tekrar deneyin"
+    "tryAgain": "Tekrar deneyin",
+    "exportBillables": "Faturalandırılabilirleri dışa aktar",
+    "exportBillablesDialogTitle": "Faturalandırılabilirleri dışa aktar"
   },
   "orgBillingSettings": {
     "address": {

@@ -2072,7 +2072,9 @@
       "total": "Total"
     },
     "title": "Factures",
-    "tryAgain": "Réessayer"
+    "tryAgain": "Réessayer",
+    "exportBillables": "Exporter les éléments facturables",
+    "exportBillablesDialogTitle": "Exporter les éléments facturables"
   },
   "orgBillingSettings": {
     "address": {
