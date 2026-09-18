@@ -130,6 +130,14 @@ const TICK_JOB_ID = 'ai-agent-sweep-tick';
  *  why they are not two separate workers. */
 const SWEEP_WORKER_CONCURRENCY = 3;
 
+/**
+ * How far a schedule's `created_at` may sit in the FUTURE before the tick stops
+ * treating it as ordinary app/DB clock skew and says so at `warn` (#6201).
+ * An hour is far beyond any plausible skew and far short of a cron period, so
+ * a real bad row surfaces on the first tick while a normal one never does.
+ */
+const FUTURE_CREATED_AT_WARN_MS = 60 * 60 * 1000;
+
 export interface SweepOccurrenceJobData {
   scheduleId: string;
   occurrenceKey: string;
@@ -308,11 +316,46 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
       // rather than call `.getTime()` on the row value directly: a non-Date
       // would throw into the per-schedule catch below and wedge THIS schedule
       // out of every future tick, which is far worse than one early sweep.
+      // That fallback is LOGGED, not silent — an unreadable NOT NULL timestamp
+      // is a data-integrity signal, and dropping the floor restores exactly the
+      // behaviour this guard exists to prevent.
       const createdAtMs = new Date(baseline.createdAt).getTime();
-      if (Number.isFinite(createdAtMs) && occurrence.at.getTime() < createdAtMs) {
-        console.debug('[AiAgentSweepScheduler] occurrence predates the schedule — no catch-up', {
-          scheduleId: baseline.id, occurrenceKey: occurrence.key, createdAt: baseline.createdAt,
+      if (!Number.isFinite(createdAtMs)) {
+        console.warn('[AiAgentSweepScheduler] unreadable created_at — running WITHOUT the catch-up floor', {
+          scheduleId: baseline.id, createdAt: baseline.createdAt, occurrenceKey: occurrence.key,
         });
+      } else if (occurrence.at.getTime() < createdAtMs) {
+        // Routine case — the schedule is simply waiting for its first real
+        // slot. This repeats on every 5-minute tick until then (up to a full
+        // cron period), so it is `debug`: it is expected, not a fault.
+        //
+        // A `created_at` materially in the FUTURE is a different animal. The
+        // floor then suppresses EVERY occurrence until real time reaches it,
+        // because `latestCronOccurrence` only ever returns instants at or
+        // before `now` — so a row with a bogus or badly skewed timestamp goes
+        // quiet for as long as the skew lasts. Small skew between the app and
+        // the DB clock is normal and the suppression is correct there (the
+        // schedule really was just created), so the behaviour is unchanged
+        // either way; what changes is that the pathological case stops being
+        // invisible. An operator asking "why has this schedule never fired?"
+        // gets an answer at default log level instead of having to raise
+        // verbosity and wait for the next tick.
+        const skewMs = createdAtMs - now.getTime();
+        const detail = {
+          scheduleId: baseline.id,
+          occurrenceKey: occurrence.key,
+          occurrenceAt: occurrence.at.toISOString(),
+          createdAt: new Date(createdAtMs).toISOString(),
+          now: now.toISOString(),
+        };
+        if (skewMs > FUTURE_CREATED_AT_WARN_MS) {
+          console.warn(
+            '[AiAgentSweepScheduler] created_at is in the FUTURE — this schedule cannot fire until then',
+            { ...detail, createdAtSkewMs: skewMs },
+          );
+        } else {
+          console.debug('[AiAgentSweepScheduler] occurrence predates the schedule — no catch-up', detail);
+        }
         continue;
       }
 

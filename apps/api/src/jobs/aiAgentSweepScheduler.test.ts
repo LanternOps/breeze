@@ -308,6 +308,46 @@ describe('processSweepTick', () => {
       expect(db.update).toHaveBeenCalledTimes(1);
     });
 
+    it('warns, rather than going quiet, when created_at is far in the FUTURE', async () => {
+      // A bogus/badly-skewed timestamp suppresses every occurrence until real
+      // time reaches it, because `latestCronOccurrence` never returns an
+      // instant after `now`. The suppression itself is correct; being silent
+      // about it is not — "why has this schedule never fired?" must be
+      // answerable at default log level.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueSelect([baselineRow({
+        cron: '0 2 * * *',
+        timezone: 'America/Denver',
+        createdAt: new Date('2027-01-01T00:00:00Z'),
+      })]);
+
+      const result = await processSweepTick(new Date('2026-09-17T23:40:00Z'));
+
+      expect(result).toEqual({ scanned: 1, enqueued: 0 });
+      expect(addMock).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('created_at is in the FUTURE'),
+        expect.objectContaining({ scheduleId: SCHEDULE_ID }),
+      );
+    });
+
+    it('runs WITHOUT the floor, loudly, when created_at is unreadable', async () => {
+      // NOT NULL and Drizzle-typed, so this is a corrupt row. Falling through
+      // to the old behaviour beats wedging the schedule out of every future
+      // tick via the per-schedule catch — but it must not be silent.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueSelect([baselineRow({ createdAt: 'not-a-timestamp' })]);
+      queueUpdate([{ id: SCHEDULE_ID }]);
+
+      const result = await processSweepTick(NOW);
+
+      expect(result).toEqual({ scanned: 1, enqueued: 1 });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('unreadable created_at'),
+        expect.objectContaining({ scheduleId: SCHEDULE_ID }),
+      );
+    });
+
     it('still enqueues an occurrence in the SAME minute the schedule was created', async () => {
       // Created exactly on its own occurrence minute: that firing is the one
       // the operator just asked for, so the guard must not eat it.
