@@ -5,6 +5,7 @@ import {
   ProviderDomainConflictError,
   ProviderDomainRejectedError,
   ProviderManagementAuthError,
+  ProviderQuotaExhaustedError,
   type CreateProviderDomainInput,
   type EmailDomainProvider,
   type PartnerLaneMessage,
@@ -228,6 +229,11 @@ export function createResendDomainProvider(): EmailDomainProvider {
           throw new ProviderDomainConflictError(input.domain, error.message);
         }
         assertNotManagementAuthError('createDomain', error);
+        // The account ceiling, not a refusal of this name: `quota_exhausted`
+        // carries its own partner copy and alerts support (statusMail.ts).
+        if (lower.includes('domain limit') || lower.includes('maximum number of domains') || lower.includes('quota')) {
+          throw new ProviderQuotaExhaustedError(input.domain, `${error.name}: ${error.message}`);
+        }
         // ONLY a 4xx is the provider REFUSING this domain. A 5xx (or an error
         // with no status at all: a timeout or a reset) is the provider being
         // unavailable, and mapping that to `provider_rejected` would fail the

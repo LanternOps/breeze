@@ -4,8 +4,8 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { partnerSendingDomains, partners } from '../../db/schema';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { createAuditLogAsync } from '../auditService';
-import { captureException } from '../sentry';
-import { ProviderDomainConflictError, ProviderDomainRejectedError } from './provider';
+import { captureException, captureMessage } from '../sentry';
+import { ProviderDomainConflictError, ProviderDomainRejectedError, ProviderQuotaExhaustedError } from './provider';
 import type { EmailDomainProvider, ProviderDomain, SendingDomainStatus } from './provider';
 import { getEmailDomainProvider } from './providerRegistry';
 import { sendSendingDomainStatusEmail, type SendingDomainStatusEvent } from './statusMail';
@@ -100,15 +100,25 @@ const MAIL_EVENT: Partial<Record<SendingDomainStatus, SendingDomainStatusEvent>>
  * SENDING_DOMAIN_STATUS_REASONS. W02's adapters throw the two typed classes;
  * anything else is an unclassified provider refusal.
  */
-function statusReasonOf(err: unknown): SendingDomainStatusReason {
+/**
+ * The reason to commit a TERMINAL `failed`, or `null` when the error proves
+ * nothing about the domain and the attempt should simply be retried.
+ *
+ * Only a classified provider verdict is terminal. The old version returned
+ * `provider_rejected` for everything, so a transient network error told the
+ * partner "the provider refused this domain" and never tried again.
+ */
+function terminalStatusReasonOf(err: unknown): SendingDomainStatusReason | null {
   if (err instanceof ProviderDomainConflictError) return 'provider_conflict';
   if (err instanceof ProviderDomainRejectedError) return 'provider_rejected';
+  if (err instanceof ProviderQuotaExhaustedError) return 'quota_exhausted';
   // The classes may not survive a structured-clone round trip through BullMQ,
   // so match by name too — the same defence classifyM365SyncFailure uses.
   const name = (err as { name?: unknown } | null)?.name;
   if (name === 'ProviderDomainConflictError') return 'provider_conflict';
   if (name === 'ProviderDomainRejectedError') return 'provider_rejected';
-  return 'provider_rejected';
+  if (name === 'ProviderQuotaExhaustedError') return 'quota_exhausted';
+  return null;
 }
 
 /** Spec §5.2, keyed on whether SENDING is usable. An unknown state can never send. */
@@ -119,7 +129,14 @@ function mapProviderState(state: ProviderDomain['state']): SendingDomainStatus {
     case 'failed': return 'failed';
     case 'pending': return 'pending';
     default:
+      // `pending` keeps the row unable to send, which is the safe half. The
+      // other half is that nobody finds out: an unmapped provider state is a
+      // real status the partner can never see, and only reaches us here.
       console.warn(`[SendingDomains] unknown provider state ${String(state)} — treating as pending`);
+      captureMessage('email-domain provider reported an unmapped domain state', {
+        eventCode: 'sending_domain_provider_state_unknown',
+        level: 'warning',
+      });
       return 'pending';
   }
 }
@@ -269,7 +286,17 @@ async function provision(
       managed = found.createdAt instanceof Date && found.createdAt.getTime() > attemptedAt.getTime();
     }
   } catch (err) {
-    const reason = statusReasonOf(err);
+    const reason = terminalStatusReasonOf(err);
+    if (!reason) {
+      // TRANSIENT. `failed` is terminal: it stops the retry cadence and mails
+      // the partner that the provider refused their domain. Committing it for a
+      // 503, a timeout or an ECONNRESET permanently failed a perfectly good
+      // domain on the FIRST attempt and made BullMQ's `attempts: 5` dead code,
+      // because the job returned normally instead of throwing. Leave the row in
+      // `provisioning` and rethrow so the retry actually happens.
+      console.error(`[SendingDomains] provisioning ${row.domain} hit a transient provider failure — retrying:`, err instanceof Error ? err.message : err);
+      throw err;
+    }
     console.error(`[SendingDomains] provisioning ${row.domain} failed: ${reason}`);
     captureException(err instanceof Error ? err : new Error(String(err)));
     await commitTransition(row, 'failed', reason, {}, now, rng);

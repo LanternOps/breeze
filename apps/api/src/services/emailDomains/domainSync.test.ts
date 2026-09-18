@@ -73,7 +73,8 @@ vi.mock('./statusMail', () => ({ sendSendingDomainStatusEmail: statusMailMock })
 
 const { auditMock } = vi.hoisted(() => ({ auditMock: vi.fn(async () => undefined) }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: auditMock }));
-vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+const { captureMessageMock } = vi.hoisted(() => ({ captureMessageMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: vi.fn(), captureMessage: captureMessageMock }));
 
 import { FAILED_RETRY_WINDOW_MS, markStaticDomainVerified, nextCheckDelayMs, syncSendingDomain } from './domainSync';
 
@@ -315,12 +316,46 @@ describe('syncSendingDomain (spec §6.1)', () => {
     expect(statusMailMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'failed' }));
   });
 
-  it('falls back to provider_rejected for an unclassified provider error', async () => {
+  // Falling back to `pending` keeps the row unable to send, which is safe — but
+  // silently: an unmapped provider state is a real status partners can never
+  // see, and this warn is the only place it ever surfaces.
+  it('reports an unmapped provider state to Sentry rather than only warning', async () => {
+    setRow();
+    providerMock.findDomainByName.mockResolvedValue({
+      providerDomainId: 'pd-1', state: 'brand_new_resend_state' as never, records: [], createdAt: new Date(0),
+    });
+
+    await syncSendingDomain(DOMAIN_ID, { now: NOW });
+
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'sending_domain_provider_state_unknown' }),
+    );
+  });
+
+  it('maps a ProviderQuotaExhaustedError to status_reason quota_exhausted', async () => {
+    setRow();
+    providerMock.findDomainByName.mockResolvedValue(null);
+    providerMock.createDomain.mockRejectedValue(Object.assign(new Error('at limit'), { name: 'ProviderQuotaExhaustedError' }));
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).resolves.toBe('provision_failed');
+    expect(updates.at(-1)).toMatchObject({ status: 'failed', statusReason: 'quota_exhausted' });
+  });
+
+  // `failed` is TERMINAL: it ends the retry cadence and mails the partner that
+  // the provider refused their domain. Committing it for an unclassified error
+  // permanently failed a good domain on the FIRST attempt and made BullMQ's
+  // `attempts: 5` dead code, because the job returned normally instead of
+  // throwing. An unclassified error must leave the row alone and rethrow.
+  it('does NOT fail the domain on an unclassified provider error — it rethrows so BullMQ retries', async () => {
     setRow();
     providerMock.findDomainByName.mockResolvedValue(null);
     providerMock.createDomain.mockRejectedValue(new Error('ECONNRESET'));
-    await syncSendingDomain(DOMAIN_ID, { now: NOW });
-    expect(updates.at(-1)).toMatchObject({ status: 'failed', statusReason: 'provider_rejected' });
+
+    await expect(syncSendingDomain(DOMAIN_ID, { now: NOW })).rejects.toThrow('ECONNRESET');
+
+    expect(updates.some((u) => u.status === 'failed')).toBe(false);
+    expect(statusMailMock).not.toHaveBeenCalled();
   });
 
   // --- the `static` contract (W02 amendment 5) ------------------------------
