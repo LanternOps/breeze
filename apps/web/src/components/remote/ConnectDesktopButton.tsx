@@ -648,7 +648,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
             {t('connectDesktopButton.revoked.title')}
           </p>
           <p className="mt-1 text-xs text-red-700 dark:text-red-400">
-            {t(`connectDesktopButton.revoked.reasons.${revokedReasonKey}`)}
+            {t(/* i18n-dynamic */ `connectDesktopButton.revoked.reasons.${revokedReasonKey}`)}
           </p>
           {revokedReasonKey === 'mfa_required' && (
             <div className="mt-2.5">
