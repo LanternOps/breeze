@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAIL_PURPOSES, mailPurposePolicy, type MailPurpose } from './mailPurposes';
 import { fromWithDisplayName, platformFallbackFrom, resolveSender } from './senderResolution';
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
@@ -293,5 +293,52 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
     expect(nullPartner).toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'no_partner' });
     expect(lookup).not.toHaveBeenCalled();
     expect(laneConfigured).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The db tripwire, exercised against the REAL `partnerLaneLookup`.
+ *
+ * Every case above mocks `./partnerLaneLookup`, so the `../../db` tripwire can
+ * never fire there however badly the resolver regresses — the module that would
+ * touch the database is a stub. These cases unmock it, so the production lookup
+ * (and therefore `db`, `getCurrentDbAccessContext` and the partner-axis read) is
+ * genuinely in the graph, and each throwing export of the db mock becomes a live
+ * assertion that a PLATFORM-lane input never reaches any of them (spec §8.1).
+ */
+describe('resolveSender — the db tripwire against the real lookup', () => {
+  async function realResolveSender() {
+    vi.resetModules();
+    vi.doUnmock('./partnerLaneLookup');
+    const mod = await import('./senderResolution');
+    return mod.resolveSender;
+  }
+
+  afterEach(() => {
+    vi.doMock('./partnerLaneLookup', () => ({ lookupPartnerLaneIdentity: vi.fn() }));
+    vi.resetModules();
+  });
+
+  it('never touches the db module for a platform purpose, with a partner id supplied', async () => {
+    const resolve = await realResolveSender();
+    for (const purpose of PLATFORM_PURPOSES) {
+      await expect(resolve({ purpose, partnerId: 'p1', defaultFrom: DEFAULT_FROM }))
+        .resolves.toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'platform_purpose' });
+    }
+  });
+
+  it('never touches the db module for a partner purpose with no partner', async () => {
+    const resolve = await realResolveSender();
+    await expect(resolve({ purpose: 'quote.sent', partnerId: null, partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM }))
+      .resolves.toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'no_partner' });
+  });
+
+  // The control: with the lane ON and a partner supplied, the resolver DOES
+  // reach the real lookup, which touches db — so the tripwire fires. This is
+  // what proves the two cases above are not vacuous.
+  it('DOES reach the db module once the partner branch is entered (the control)', async () => {
+    const resolve = await realResolveSender();
+    await expect(resolve({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM }))
+      .rejects.toThrow(/platform-lane input/);
   });
 });
