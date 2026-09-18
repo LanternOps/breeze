@@ -40,6 +40,7 @@ import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
+import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { contractRoutes } from './routes/contracts';
@@ -922,6 +923,13 @@ api.route('/webhooks', stripeWebhookRoutes);
 // middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
 // there is no ambient auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', quickbooksWebhookRoutes);
+// Resend delivery webhook for partner sending domains (W06) — no session auth,
+// Svix-signature-verified, and inert with a 404 when EMAIL_DOMAINS_WEBHOOK_SECRET
+// is unset. partnerGuard passes through (no Authorization header); the route
+// reads the raw body itself via c.req.text(), so no body-consuming middleware may
+// sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: there is no ambient
+// auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', resendWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);

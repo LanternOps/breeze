@@ -45,9 +45,11 @@ import { captureException } from '../../services/sentry';
  * attributable event by construction.
  *
  * DB CONTEXT. There is no ambient auth transaction on a public route, so every
- * read and write opens its own `withSystemDbAccessContext`. `runOutsideDbContext`
- * is deliberately NOT used: it does not close an outer transaction, and there is
- * no outer transaction here to close.
+ * read and write opens its own `withSystemDbAccessContext`. The
+ * outer-context-escape helper is deliberately NOT used here: it does not close
+ * an outer transaction, and there is no outer transaction on this route to
+ * close. Its name is left unwritten on purpose — emailProviderMounting.test.ts
+ * scans this file for it, and a substring scan cannot tell a comment from a call.
  */
 
 export const resendWebhookRoutes = new Hono();
