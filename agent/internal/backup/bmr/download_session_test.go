@@ -538,6 +538,124 @@ func TestRecoverySessionConcurrentExpiryReauthenticatesOnce(t *testing.T) {
 	}
 }
 
+// TestRecoverySessionCancelDuringReauthBackoff: cancelling the recovery
+// while a re-authenticate backoff is pending returns the context error at
+// once — no further authenticate — and does NOT poison the session as lost.
+func TestRecoverySessionCancelDuringReauthBackoff(t *testing.T) {
+	clock := newFakeClock()
+	server := newSessionFakeServer(t, clock)
+	server.setAuthResponses(fakeAuthResponse{status: http.StatusServiceUnavailable})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	orig := retrySleep
+	retrySleep = func(ctx context.Context, d time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { retrySleep = orig })
+
+	desc := server.openSession(clock.Now().Add(-time.Second))
+	p := newRecoveryDownloadProvider(ctx, server.srv.URL, "brz_rec_test", desc)
+	p.now = clock.Now
+	p.lastAuthAt = clock.Now()
+
+	err := p.Download("snapshots/snap-1/f0", filepath.Join(t.TempDir(), "f0"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrRecoverySessionLost) || p.sessionLost() != nil {
+		t.Fatalf("cancellation must not mark the session lost (err=%v, lost=%v)", err, p.sessionLost())
+	}
+	if auth, _, _ := server.counts(); auth != 1 {
+		t.Fatalf("authenticate calls = %d, want 1", auth)
+	}
+}
+
+// TestRecoverySessionRefreshWithoutDescriptorIsRunLevel: a refreshed
+// bootstrap with no download descriptor leaves nothing to download with.
+func TestRecoverySessionRefreshWithoutDescriptorIsRunLevel(t *testing.T) {
+	clock := newFakeClock()
+	withClockSleep(t, clock)
+	var authCalls int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/backup/bmr/recover/authenticate":
+			mu.Lock()
+			authCalls++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"bootstrap": BootstrapResponse{
+				Version:      BootstrapResponseVersion,
+				Snapshot:     &AuthenticatedSnapshot{SnapshotID: "snap-1"},
+				TargetConfig: map[string]any{"provider": "local"},
+			}})
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":"Recovery session has expired. Re-authenticate to continue."}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	p := newRecoveryDownloadProvider(context.Background(), srv.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL: srv.URL + "/download", PathQueryParam: "path", PathPrefix: "snapshots/snap-1",
+	})
+	p.now = clock.Now
+	errs := downloadN(t, p, 3)
+	for i, err := range errs {
+		if !errors.Is(err, ErrRecoverySessionLost) {
+			t.Fatalf("download %d: err = %v, want ErrRecoverySessionLost", i, err)
+		}
+	}
+	if authCalls != 1 {
+		t.Fatalf("authenticate calls = %d, want 1", authCalls)
+	}
+}
+
+// TestRecoverySessionNoProactiveRefreshWithoutExpiry: a descriptor with no
+// (or an unparseable) expiresAt never triggers a proactive refresh — only a
+// real 401 does.
+func TestRecoverySessionNoProactiveRefreshWithoutExpiry(t *testing.T) {
+	for _, expiresAt := range []string{"", "not-a-time"} {
+		t.Run(fmt.Sprintf("expiresAt=%q", expiresAt), func(t *testing.T) {
+			clock := newFakeClock()
+			withClockSleep(t, clock)
+			server := newSessionFakeServer(t, clock)
+			server.sessionAlwaysValid = true
+			desc := server.openSession(clock.Now().Add(time.Hour))
+			desc.ExpiresAt = expiresAt
+			p := server.provider(clock, desc)
+
+			clock.Advance(3 * time.Hour)
+			requireAllNil(t, downloadN(t, p, 5))
+			if auth, _, _ := server.counts(); auth != 0 {
+				t.Fatalf("authenticate calls = %d, want 0", auth)
+			}
+		})
+	}
+}
+
+// TestApplySystemStateSurfacesRecoverySessionLost: the system-state manifest
+// is the run's first provider download after the snapshot manifest. A lost
+// session there is not "this snapshot has no system state" — it must come
+// back as an error, not the soft skip.
+func TestApplySystemStateSurfacesRecoverySessionLost(t *testing.T) {
+	provider := &breakerFakeProvider{
+		downloadErr: func(int) error {
+			return fmt.Errorf("%w: re-authenticate rejected", ErrRecoverySessionLost)
+		},
+	}
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: "snap-1"}, provider)
+	if !errors.Is(result.err, ErrRecoverySessionLost) {
+		t.Fatalf("result.err = %v, want ErrRecoverySessionLost", result.err)
+	}
+	for _, w := range result.warnings {
+		if strings.Contains(w, "no system state found") {
+			t.Fatalf("lost session reported as missing system state: %q", w)
+		}
+	}
+}
+
 // TestRestoreFilesAbortsImmediatelyOnRecoverySessionLost: a lost recovery
 // session is a run-level failure — every remaining file would fail the same
 // way — so restoreFiles must stop at the first one instead of logging

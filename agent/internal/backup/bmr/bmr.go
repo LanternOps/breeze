@@ -476,6 +476,11 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	defer os.Remove(tmpPath)
 
 	if dlErr := provider.Download(stateManifestKey, tmpPath); dlErr != nil {
+		if errors.Is(dlErr, ErrRecoverySessionLost) {
+			// Not "no state in this snapshot" — the helper can no longer
+			// download anything (#5635).
+			return systemStateResult{err: fmt.Errorf("bmr: download system state manifest: %w", dlErr)}
+		}
 		if cfg.ExpectSystemState {
 			// The bootstrap said this snapshot has system state (see
 			// hasSystemStateManifest, session.go) — a missing manifest here
@@ -600,6 +605,10 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			// complete, verified file.
 			_ = os.Remove(localPath)
 			verificationFailed = true
+			if errors.Is(dlErr, ErrRecoverySessionLost) {
+				// Every remaining artifact would fail the same way (#5635).
+				break
+			}
 			continue
 		}
 		if verifyErr := verifyArtifactIntegrity(localPath, artifact); verifyErr != nil {
