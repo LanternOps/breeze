@@ -48,7 +48,7 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 
 **Workflow for a new tenant-scoped table:**
 1. Pick a shape; add policies in the same migration that creates the table — never defer.
-   - **Every composite FK that references an `org_id` column (`(x, org_id) → parent(id, org_id)`) MUST be `DEFERRABLE INITIALLY IMMEDIATE`.** Org merge runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent and child `org_id` in separate statements; a non-deferrable one aborts the merge with 23503. Enforced by `orgLifecycleFoundations.integration.test.ts` ("merge contract"), which only runs under **Integration Tests** (shard 2) — a unit-green PR still goes red there (#4585 did).
+   - **Every composite FK that references an `org_id` column (`(x, org_id) → parent(id, org_id)`) MUST be `DEFERRABLE INITIALLY IMMEDIATE`.** Org merge runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent and child `org_id` in separate statements; a non-deferrable one aborts the merge with 23503. Enforced by `orgLifecycleFoundations.integration.test.ts` ("merge contract"), which only runs under **Integration Tests** (one of the 8 shards — which one shifted when the job went 4→8 shards, so don't assume a specific shard number) — a unit-green PR still goes red there (#4585 did).
 2. Migration must be idempotent (`IF NOT EXISTS` / `DO $$`). Never edit a shipped migration.
 3. Add to the relevant allowlist in `rls-coverage.integration.test.ts` in the same PR (shapes 2-6).
 4. **Register the table in every cascade list that applies (see below). RLS coverage does NOT imply cascade coverage — they are separate contracts, and this step is the one that gets missed.** Adding a **column** to an already-registered table is not exempt: see the export-policy row.
@@ -260,7 +260,7 @@ For test-writing conventions (Drizzle mock patterns, table-driven Go tests, vali
 - `test-api`, `test-web`, `test-agent` are **required** jobs on PRs
 - New test files are auto-discovered — no CI config changes needed
 - Go coverage is uploaded as artifact; no threshold enforced yet
-- Integration tests run in the **`integration-test`** job (4 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see the tenancy section above), not through a skipped integration run
+- Integration tests run in the **`integration-test`** job (8 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see the tenancy section above), not through a skipped integration run
 
 ### Running Tests Locally
 ```bash

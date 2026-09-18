@@ -13,11 +13,20 @@ import type { AuthContext } from '../../middleware/auth';
  * This is a site gate, not an existence check: a nonexistent deviceId is
  * denied for restricted callers but passes for unrestricted ones — device
  * existence is enforced in the service layer.
+ *
+ * Exact-device axis (#6086 finding 6): a device-bound AI agent run carries
+ * `auth.allowedDeviceIds`, and a device-LESS analysis run carries it with NO
+ * `allowedSiteIds` at all — so the site check alone let both shapes reach a
+ * SIBLING device's tickets/alerts. The device axis is checked FIRST and is
+ * independent of the site axis (never `if (allowedSiteIds && …)`, which
+ * silently no-ops for the device-less shape). It is a no-op for human
+ * callers, who never carry `allowedDeviceIds`.
  */
 export async function deviceInSiteScope(
-  auth: Pick<AuthContext, 'allowedSiteIds'>,
+  auth: Pick<AuthContext, 'allowedSiteIds' | 'allowedDeviceIds'>,
   deviceId: string,
 ): Promise<boolean> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) return false;
   if (!auth.allowedSiteIds) return true;
   const rows = await db
     .select({ siteId: devices.siteId })

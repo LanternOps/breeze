@@ -18,6 +18,7 @@ import {
   listUserRiskScores
 } from './userRiskScoring';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { filterToDeviceScope, runFrozenDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -112,7 +113,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
           ? input.issueType as 'crashes' | 'hangs' | 'hardware' | 'services' | 'uptime'
           : undefined;
 
-        const { total, rows } = await listReliabilityDevices({
+        const { total: fleetTotal, rows: fleetRows } = await listReliabilityDevices({
           orgIds,
           siteId: requestedSiteId,
           siteIds,
@@ -122,6 +123,19 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
           limit,
           offset: 0,
         });
+
+        // Exact-device axis: `listReliabilityDevices` takes no device filter and
+        // lives outside this module, so narrow its result here. The site axis
+        // above is NOT a substitute — a device-less analysis run carries
+        // `allowedDeviceIds` with no `allowedSiteIds`, so `siteIds` stays
+        // undefined and the read is fleet-wide (#6086 finding 8). `total` is the
+        // pre-narrowing org count, which would itself disclose sibling devices,
+        // so a restricted caller gets the narrowed count instead.
+        const frozenDeviceIds = runFrozenDeviceIds(auth);
+        const rows = frozenDeviceIds
+          ? filterToDeviceScope(auth, fleetRows, (row) => row.deviceId)
+          : fleetRows;
+        const total = frozenDeviceIds ? rows.length : fleetTotal;
 
         const avgScore = rows.length > 0
           ? Math.round(rows.reduce((sum, row) => sum + row.reliabilityScore, 0) / rows.length)

@@ -1,6 +1,10 @@
 package snmppoll
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +22,8 @@ func TestNormalizeClientConfig_Defaults(t *testing.T) {
 	if cfg.Port != 161 {
 		t.Errorf("Port = %d, want 161", cfg.Port)
 	}
-	if cfg.Version != gosnmp.Version2c {
-		t.Errorf("Version = %d, want Version2c (%d)", cfg.Version, gosnmp.Version2c)
+	if cfg.Version != Version2c {
+		t.Errorf("Version = %v, want Version2c (%v)", cfg.Version, Version2c)
 	}
 	if cfg.Timeout != 2*time.Second {
 		t.Errorf("Timeout = %v, want 2s", cfg.Timeout)
@@ -38,7 +42,7 @@ func TestNormalizeClientConfig_Defaults(t *testing.T) {
 func TestNormalizeClientConfig_PreservesExplicitValues(t *testing.T) {
 	cfg := normalizeClientConfig(SNMPClientConfig{
 		Port:           162,
-		Version:        gosnmp.Version2c,
+		Version:        Version2c,
 		Timeout:        5 * time.Second,
 		Retries:        3,
 		MaxRepetitions: 25,
@@ -48,7 +52,7 @@ func TestNormalizeClientConfig_PreservesExplicitValues(t *testing.T) {
 	if cfg.Port != 162 {
 		t.Errorf("Port = %d, want 162", cfg.Port)
 	}
-	if cfg.Version != gosnmp.Version2c {
+	if cfg.Version != Version2c {
 		t.Errorf("Version = %v, want Version2c", cfg.Version)
 	}
 	if cfg.Timeout != 5*time.Second {
@@ -65,20 +69,35 @@ func TestNormalizeClientConfig_PreservesExplicitValues(t *testing.T) {
 	}
 }
 
-func TestNormalizeClientConfig_Version1TreatedAsZeroValue(t *testing.T) {
-	// gosnmp.Version1 has integer value 0, which is the zero value for SnmpVersion.
-	// normalizeClientConfig treats zero-value version as unset and defaults to Version2c.
-	cfg := normalizeClientConfig(SNMPClientConfig{
-		Version: gosnmp.Version1,
-	})
-	if cfg.Version != gosnmp.Version2c {
-		t.Errorf("Version1 (zero value) should be normalized to Version2c, got %v", cfg.Version)
+func TestNormalizeClientConfig_Versions(t *testing.T) {
+	for _, tc := range []struct {
+		version SNMPVersion
+		want    gosnmp.SnmpVersion
+	}{
+		{Version1, gosnmp.Version1}, {Version2c, gosnmp.Version2c}, {Version3, gosnmp.Version3}, {"", gosnmp.Version2c},
+	} {
+		t.Run(string(tc.version), func(t *testing.T) {
+			cfg := normalizeClientConfig(SNMPClientConfig{Version: tc.version})
+			if tc.version != "" && cfg.Version != tc.version {
+				t.Fatalf("Version = %v, want %v", cfg.Version, tc.version)
+			}
+			got, err := cfg.Version.goSNMPVersion()
+			if err != nil || got != tc.want {
+				t.Fatalf("wire version = %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewClient_RejectsInvalidVersion(t *testing.T) {
+	if _, err := NewClient(SNMPClientConfig{Target: "192.0.2.1", Version: "bad"}); err == nil {
+		t.Fatal("invalid version must fail before connecting")
 	}
 }
 
 func TestNormalizeClientConfig_V2cEmptyCommunityDefaultsToPublic(t *testing.T) {
 	cfg := normalizeClientConfig(SNMPClientConfig{
-		Version: gosnmp.Version2c,
+		Version: Version2c,
 		Auth:    SNMPAuth{Community: ""},
 	})
 	if cfg.Auth.Community != "public" {
@@ -88,7 +107,7 @@ func TestNormalizeClientConfig_V2cEmptyCommunityDefaultsToPublic(t *testing.T) {
 
 func TestNormalizeClientConfig_V2cExplicitCommunityPreserved(t *testing.T) {
 	cfg := normalizeClientConfig(SNMPClientConfig{
-		Version: gosnmp.Version2c,
+		Version: Version2c,
 		Auth:    SNMPAuth{Community: "secret"},
 	})
 	if cfg.Auth.Community != "secret" {
@@ -98,7 +117,7 @@ func TestNormalizeClientConfig_V2cExplicitCommunityPreserved(t *testing.T) {
 
 func TestNormalizeClientConfig_V3DefaultAuthProtocols(t *testing.T) {
 	cfg := normalizeClientConfig(SNMPClientConfig{
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth: SNMPAuth{
 			Username: "admin",
 		},
@@ -113,7 +132,7 @@ func TestNormalizeClientConfig_V3DefaultAuthProtocols(t *testing.T) {
 
 func TestNormalizeClientConfig_V3PreservesExplicitProtocols(t *testing.T) {
 	cfg := normalizeClientConfig(SNMPClientConfig{
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth: SNMPAuth{
 			Username:     "admin",
 			AuthProtocol: gosnmp.SHA,
@@ -130,7 +149,7 @@ func TestNormalizeClientConfig_V3PreservesExplicitProtocols(t *testing.T) {
 
 func TestNormalizeClientConfig_V3DoesNotSetCommunity(t *testing.T) {
 	cfg := normalizeClientConfig(SNMPClientConfig{
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth: SNMPAuth{
 			Username: "admin",
 		},
@@ -317,7 +336,7 @@ func TestNewClient_EmptyTargetReturnsError(t *testing.T) {
 func TestNewClient_V3MissingUsernameReturnsError(t *testing.T) {
 	_, err := NewClient(SNMPClientConfig{
 		Target:  "192.168.1.1",
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth:    SNMPAuth{Username: ""},
 	})
 	if err == nil {
@@ -335,7 +354,7 @@ func TestNewClient_V3ConnectFailsForUnreachable(t *testing.T) {
 	}
 	client, err := NewClient(SNMPClientConfig{
 		Target:  "192.0.2.1", // TEST-NET, should not be routable
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth: SNMPAuth{
 			Username:       "testuser",
 			AuthPassphrase: "testpassphrase",
@@ -417,7 +436,7 @@ func TestSNMPClientConfig_AllFieldsRoundTrip(t *testing.T) {
 	cfg := SNMPClientConfig{
 		Target:         "10.0.0.1",
 		Port:           8161,
-		Version:        gosnmp.Version3,
+		Version:        Version3,
 		Timeout:        10 * time.Second,
 		Retries:        5,
 		MaxRepetitions: 50,
@@ -454,7 +473,7 @@ func TestSNMPClientConfig_AllFieldsRoundTrip(t *testing.T) {
 
 func TestNormalizeClientConfig_V3InfersSecurityLevel(t *testing.T) {
 	cfg := normalizeClientConfig(SNMPClientConfig{
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth: SNMPAuth{
 			Username:       "admin",
 			AuthPassphrase: "secret",
@@ -468,7 +487,7 @@ func TestNormalizeClientConfig_V3InfersSecurityLevel(t *testing.T) {
 
 func TestNormalizeClientConfig_V3ExplicitSecurityLevelPreserved(t *testing.T) {
 	cfg := normalizeClientConfig(SNMPClientConfig{
-		Version: gosnmp.Version3,
+		Version: Version3,
 		Auth: SNMPAuth{
 			Username:       "admin",
 			AuthPassphrase: "secret",
@@ -493,5 +512,116 @@ func TestWalkRejectsEmptyOID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "root OID is required") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// recordingSNMPConn captures the encoded request without opening a socket.
+type recordingSNMPConn struct {
+	net.Conn
+	packet *gosnmp.SnmpPacket
+}
+
+var errRecordedRequest = errors.New("recorded SNMP request")
+
+func (c *recordingSNMPConn) SetDeadline(time.Time) error { return nil }
+func (c *recordingSNMPConn) Write(b []byte) (int, error) {
+	var err error
+	decoder := &gosnmp.GoSNMP{}
+	c.packet, err = decoder.SnmpDecodePacket(b)
+	if err != nil {
+		return 0, err
+	}
+	return 0, errRecordedRequest
+}
+
+func TestWalks_SelectVersionTransport(t *testing.T) {
+	for _, version := range []gosnmp.SnmpVersion{gosnmp.Version1, gosnmp.Version2c} {
+		for _, method := range []string{"Walk", "BulkWalk", "WalkBounded"} {
+			t.Run(fmt.Sprintf("%v/%s", version, method), func(t *testing.T) {
+				conn := &recordingSNMPConn{}
+				gs := &gosnmp.GoSNMP{
+					Context:   context.Background(),
+					Version:   version,
+					Conn:      conn,
+					Community: "public",
+					Timeout:   2 * time.Second,
+					MaxOids:   gosnmp.MaxOids,
+				}
+				client := &SNMPClient{client: gs}
+				var err error
+				switch method {
+				case "Walk":
+					_, err = client.Walk("1.3.6")
+				case "BulkWalk":
+					_, err = client.BulkWalk("1.3.6")
+				case "WalkBounded":
+					err = client.WalkBounded("1.3.6", func(gosnmp.SnmpPDU) error { return nil })
+				}
+				if err == nil {
+					t.Fatal("expected transport error")
+				}
+				want := gosnmp.GetBulkRequest
+				if version == gosnmp.Version1 {
+					want = gosnmp.GetNextRequest
+				}
+				if conn.packet == nil {
+					t.Fatalf("no request sent: %v", err)
+				}
+				if conn.packet.PDUType != want {
+					t.Fatalf("PDU type = %v, want %v", conn.packet.PDUType, want)
+				}
+			})
+		}
+	}
+}
+
+func TestWalkBounded_V1CompletionAndCallback(t *testing.T) {
+	stop := errors.New("row limit")
+	for _, tc := range []struct {
+		name   string
+		status gosnmp.SNMPError
+		stop   bool
+	}{
+		{name: "end of MIB", status: gosnmp.NoSuchName},
+		{name: "agent refusal", status: gosnmp.GenErr},
+		{name: "callback stop", stop: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, values := 0, 0
+			getNext := func(oids []string) (*gosnmp.SnmpPacket, error) {
+				calls++
+				if calls == 1 {
+					return &gosnmp.SnmpPacket{Variables: []gosnmp.SnmpPDU{{Name: ".1.3.6.1", Type: gosnmp.Integer, Value: 7}}}, nil
+				}
+				if calls > 2 || oids[0] != "1.3.6.1" {
+					t.Fatalf("unexpected cursor: %+v", oids)
+				}
+				return &gosnmp.SnmpPacket{Error: tc.status, ErrorIndex: 1}, nil
+			}
+			err := walkNextPages("1.3.6", func(gosnmp.SnmpPDU) error {
+				values++
+				if tc.stop {
+					return stop
+				}
+				return nil
+			}, getNext)
+			if values != 1 {
+				t.Fatalf("values = %d, want 1; error = %v", values, err)
+			}
+			if tc.stop {
+				if !errors.Is(err, stop) || calls != 1 {
+					t.Fatalf("callback stop: calls=%d error=%v", calls, err)
+				}
+			} else if tc.status == gosnmp.NoSuchName {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var statusErr *SnmpStatusError
+				if !errors.As(err, &statusErr) || statusErr.Status != tc.status {
+					t.Fatalf("status error = %v", err)
+				}
+			}
+		})
 	}
 }

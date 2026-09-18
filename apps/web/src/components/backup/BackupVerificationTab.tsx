@@ -323,6 +323,10 @@ export default function BackupVerificationTab({
                 {verifications.map((v) => {
                   const cfg = statusConfig[v.status] || statusConfig.failed;
                   const Icon = cfg.icon;
+                  const reason =
+                    typeof v.details?.reason === 'string' && v.details.reason.trim()
+                      ? v.details.reason.trim()
+                      : null;
                   const duration = v.completedAt
                     ? Math.round(
                         (new Date(v.completedAt).getTime() - new Date(v.startedAt).getTime()) / 1000
@@ -343,6 +347,11 @@ export default function BackupVerificationTab({
                         {v.details && Boolean((v.details as Record<string, unknown>).simulated) && (
                           <span className="ml-1 inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground border border-border">
                             {t('backupVerificationTab.simulated')} </span>
+                        )}
+                        {v.status === 'failed' && reason && (
+                          <p className="mt-1 max-w-md text-xs text-muted-foreground">
+                            {reason}
+                          </p>
                         )}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">

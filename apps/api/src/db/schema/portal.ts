@@ -31,6 +31,7 @@ export const portalBranding = pgTable('portal_branding', {
   // with this on gets an "Equipment" page that duplicates Devices and can't
   // borrow anything. Off by default until the portal side ships.
   enableAssetCheckout: boolean('enable_asset_checkout').notNull().default(false),
+  enableDevices: boolean('enable_devices').notNull().default(false),
   enableSelfService: boolean('enable_self_service').notNull().default(true),
   enablePasswordReset: boolean('enable_password_reset').notNull().default(true),
   // Portal visibility Wave 1 (#4562): per-org gates for the customer portal

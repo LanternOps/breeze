@@ -152,7 +152,11 @@ describe('handleTicketEvent', () => {
     expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'u-2', type: 'ticket', link: '/tickets#T-2026-0042'
     }));
-    expect(sendEmailMock).toHaveBeenCalled();
+    // Spec §8.2: mail to the assignee (a TECHNICIAN) is platform-lane — staff
+    // mailboxes usually live on the very domain being sent from.
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
+      purpose: 'ticket.staff_notification'
+    }));
   });
 
   it('skips self-assignment notifications', async () => {
@@ -169,9 +173,12 @@ describe('handleTicketEvent', () => {
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
       actorUserId: 'u-1', eventId: 'evt-4', payload: { commentId: 'c-1', isPublic: true }
     });
+    // Spec §8.2: mail to the REQUESTER (a customer) is the partner's `support`
+    // stream, even though there is no partner lane until W04.
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'enduser@acme.example',
-      subject: expect.stringContaining('T-2026-0042')
+      subject: expect.stringContaining('T-2026-0042'),
+      purpose: 'ticket.customer_notification'
     }));
   });
 

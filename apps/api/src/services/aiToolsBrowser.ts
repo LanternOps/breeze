@@ -19,6 +19,7 @@ import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { aiDispatchDeviceCommand } from './aiDispatch';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -52,41 +53,49 @@ function resolveWritableToolOrgId(
   return { error: 'orgId is required for this operation' };
 }
 
-// Resolve the device IDs a site-restricted caller may read within their org,
-// narrowed by `auth.allowedSiteIds`. Returns null when the caller is NOT
-// site-restricted (no narrowing needed). Site is an app-layer concept only —
-// Postgres RLS does NOT defend it — so a site-restricted org user must not read
-// extension/violation rows for devices in other sites within the same org.
-// Mirrors the route-layer browserSecurity.ts helper (AuthContext flavour).
-async function resolveSiteAllowedDeviceIds(
-  orgId: string,
-  auth: AuthContext,
-): Promise<string[] | null> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
-  const orgDevices = await db
-    .select({ id: devices.id, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.orgId, orgId));
-  return orgDevices
-    .filter((d) => auth.canAccessSite!(d.siteId))
-    .map((d) => d.id);
-}
-
 // A site-restricted caller may only mutate policies that target sites entirely
 // within their allowlist. Org/group/device/tag targets are not site-bounded, so
 // a site-restricted caller cannot confirm scope over them and is denied.
-// Unrestricted callers (no `allowedSiteIds`) always pass. Mirrors the
-// route-layer browserSecurity.ts helper (AuthContext flavour).
+//
+// An EXACT-DEVICE caller (`allowedDeviceIds`, set on every device-bound agent
+// run) is denied outright: a browser policy targets sites/orgs/groups, never a
+// single device, so such a caller can never confirm scope over one. Callers
+// with NEITHER restriction always pass. Mirrors the route-layer
+// browserSecurity.ts helper (AuthContext flavour).
 export function policyWithinSiteWriteScope(
   auth: AuthContext,
   targetType: string,
   targetIds: string[] | null | undefined,
 ): boolean {
+  if (auth.allowedDeviceIds) return false;
   if (!auth.allowedSiteIds || !auth.canAccessSite) return true;
   if (targetType !== 'site') return false;
   const ids = targetIds ?? [];
   if (ids.length === 0) return false;
   return ids.every((id) => auth.canAccessSite!(id));
+}
+
+/**
+ * READ counterpart of `policyWithinSiteWriteScope` for the policy LIST branch.
+ *
+ * The write helper denies an exact-device caller outright, which is right for a
+ * mutation but would hide every policy from a device-bound run on read. The
+ * leak a list has to close is narrower: a DEVICE-targeted policy names sibling
+ * devices in `targetIds`, so listing one discloses devices outside the run's
+ * allowlist (#6086 finding 10). Org/site/group/tag targets are not
+ * device-attributable and stay visible; the site axis keeps its existing read
+ * behaviour (policies are org-keyed, and the write path guards mutations).
+ *
+ * Callers with no `allowedDeviceIds` are unaffected.
+ */
+export function policyWithinDeviceReadScope(
+  auth: AuthContext,
+  targetType: string,
+  targetIds: string[] | null | undefined,
+): boolean {
+  if (!auth.allowedDeviceIds) return true;
+  if (targetType !== 'device') return true;
+  return (targetIds ?? []).every((id) => auth.allowedDeviceIds!.includes(id));
 }
 
 export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
@@ -141,9 +150,17 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
       // their allowed sites (RLS does NOT enforce site). Narrow both the
       // extension and violation reads to that device set; short-circuit to empty
       // when the caller has no in-scope devices.
+      //
+      // The EXACT-DEVICE axis is pushed first and unconditionally: it needs no
+      // org lookup, and the site branch below is gated on `allowedSiteIds`,
+      // which a device-less analysis run never carries — that shape read every
+      // sibling device's extensions (#6086, same class as finding 10).
+      const extDeviceCond = deviceScopeCondition(auth, browserExtensions.deviceId);
+      if (extDeviceCond) conditions.push(extDeviceCond);
+
       const siteScopeOrgId = auth.orgId ?? (typeof input.orgId === 'string' ? input.orgId : null);
       let siteAllowedDeviceIds: string[] | null = null;
-      if (auth.allowedSiteIds && siteScopeOrgId) {
+      if ((auth.allowedSiteIds || auth.allowedDeviceIds) && siteScopeOrgId) {
         siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(siteScopeOrgId, auth);
         if (typeof input.deviceId === 'string' && !siteAllowedDeviceIds!.includes(input.deviceId)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
@@ -205,6 +222,8 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.deviceId === 'string') violationConditions.push(eq(browserPolicyViolations.deviceId, input.deviceId));
         // Same site-axis narrowing as the extension read above.
         if (siteAllowedDeviceIds) violationConditions.push(inArray(browserPolicyViolations.deviceId, siteAllowedDeviceIds));
+        const violationDeviceCond = deviceScopeCondition(auth, browserPolicyViolations.deviceId);
+        if (violationDeviceCond) violationConditions.push(violationDeviceCond);
 
         const rows = await db
           .select({
@@ -297,7 +316,12 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(browserPolicies.updatedAt))
           .limit(200);
 
-        return JSON.stringify({ policies });
+        // Exact-device axis: drop policies that name a device outside this
+        // caller's allowlist (no-op for an unrestricted caller).
+        const visible = policies.filter((policy) =>
+          policyWithinDeviceReadScope(auth, policy.targetType, policy.targetIds));
+
+        return JSON.stringify({ policies: visible });
       }
 
       if (action === 'create') {

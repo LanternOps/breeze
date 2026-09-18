@@ -399,6 +399,9 @@
       },
       "loading": "Berichte werden geladen...",
       "never": "Niemals",
+      "success": {
+        "generated": "Bericht „{{name}}“ erstellt."
+      },
       "visibleInPortal": "Im Kundenportal sichtbar",
       "newReport": "Neuer Bericht",
       "nextOccurrence": "Weiter: {{next}}",

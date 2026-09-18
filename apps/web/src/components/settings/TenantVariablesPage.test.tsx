@@ -37,6 +37,7 @@ const ORG_VAR = {
   description: 'Collector address',
   ownerScope: 'organization' as const,
   orgId: 'org-a',
+  orgName: 'Acme North',
   partnerId: null,
   version: 1,
   createdAt: '2026-08-11T00:00:00.000Z',
@@ -61,6 +62,9 @@ beforeEach(() => {
   scopeState.orgId = 'org-a';
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url === '/tenant-variables?scope=partner' && (!init || !init.method)) {
+      return makeJsonResponse({ data: [SECRET_VAR] });
+    }
     if (url === '/tenant-variables' && (!init || !init.method)) {
       return makeJsonResponse({ data: [ORG_VAR, SECRET_VAR] });
     }
@@ -78,6 +82,57 @@ beforeEach(() => {
 });
 
 describe('TenantVariablesPage', () => {
+  it('requests only partner-wide variables in All Organizations and explains where org rows live', async () => {
+    scopeState.orgId = null;
+    render(<TenantVariablesPage />);
+
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+    expect(fetchMock).toHaveBeenCalledWith('/tenant-variables?scope=partner');
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
+    expect(screen.getByTestId('tenant-variables-org-note').textContent).toBe(
+      'Organization-owned variables are listed under each organization.'
+    );
+    expect(screen.queryByTestId('tenant-variable-filter-scope-organization')).toBeNull();
+  });
+
+  it('keeps inherited rows with an org selected and labels its own rows with the org name', async () => {
+    render(<TenantVariablesPage />);
+
+    const row = await screen.findByTestId('tenant-variable-row-syslog_host');
+    expect(fetchMock).toHaveBeenCalledWith('/tenant-variables');
+    expect(row.textContent).toContain('Acme North');
+    expect(screen.getByTestId('tenant-variable-row-s1_site_token')).toBeTruthy();
+    expect(screen.queryByTestId('tenant-variables-org-note')).toBeNull();
+  });
+
+  it('does not apply an organization filter when switching to the partner-wide view', async () => {
+    const { rerender } = render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    fireEvent.click(screen.getByTestId('tenant-variable-filter-scope-organization'));
+
+    scopeState.orgId = null;
+    rerender(<TenantVariablesPage />);
+
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+    expect(fetchMock).toHaveBeenLastCalledWith('/tenant-variables?scope=partner');
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
+
+    scopeState.orgId = 'org-a';
+    rerender(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    expect(fetchMock).toHaveBeenLastCalledWith('/tenant-variables');
+  });
+
+  it('does not request partner scope for an organization-scoped caller', async () => {
+    scopeState.isPartnerScope = false;
+    scopeState.orgId = null;
+    render(<TenantVariablesPage />);
+
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    expect(fetchMock).toHaveBeenCalledWith('/tenant-variables');
+    expect(screen.queryByTestId('tenant-variables-org-note')).toBeNull();
+  });
+
   it('lists variables and badges the partner-wide row', async () => {
     render(<TenantVariablesPage />);
     expect(await screen.findByTestId('tenant-variable-row-syslog_host')).toBeTruthy();

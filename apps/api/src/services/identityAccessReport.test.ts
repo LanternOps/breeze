@@ -153,8 +153,10 @@ describe('generateIdentityAccessReport', () => {
     expect(res.rows).toEqual([]);
     expect(res.rowCount).toBe(0);
     expect(summaryOf(res).dataGaps?.join(' ')).toMatch(/org-wide/i);
-    // And nothing at all was read.
-    expect(db.select).not.toHaveBeenCalled();
+    // Nothing IDENTITY-shaped was read — only the org's own name, for display
+    // (#6100: the gap page must still name the customer it's about).
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(summaryOf(res).orgName).toBe('Acme Legal');
   });
 
   it('never leaks an identity row into the restricted result', async () => {
@@ -162,8 +164,31 @@ describe('generateIdentityAccessReport', () => {
     const res = await generateIdentityAccessReport(ORG_ID, {}, authority('restricted', [SITE_A]), PERIOD_SEP);
     const s = summaryOf(res);
     expect(s.identity?.usersTotal).toBeNull();
-    expect(s.adminSignins ?? null).toBeNull();
+    // adminDetail defaults to true, so this is the honest "unmeasured" empty
+    // array (#6100), not the "off" null — either way, no row leaked.
+    expect(s.adminSignins ?? []).toHaveLength(0);
     expect(JSON.stringify(s)).not.toContain(ADMIN_UPN);
+  });
+
+  it('populates orgName on the restricted-authority gap page even with adminDetail on', async () => {
+    queueHappyPath();
+    const res = await generateIdentityAccessReport(
+      ORG_ID, { adminDetail: true }, authority('restricted', [SITE_A]), PERIOD_SEP,
+    );
+    const s = summaryOf(res);
+    expect(s.orgName).toBe('Acme Legal');
+    // adminDetail was ON, so this is "not measured", never "switched off" —
+    // an empty array routes the PDF to the honest unmeasured sentence instead
+    // of the false "switched off for this report" one (#6100).
+    expect(s.adminSignins).toEqual([]);
+  });
+
+  it('keeps adminSignins null on the restricted-authority gap page when adminDetail is off', async () => {
+    queueHappyPath();
+    const res = await generateIdentityAccessReport(
+      ORG_ID, { adminDetail: false }, authority('restricted', [SITE_A]), PERIOD_SEP,
+    );
+    expect(summaryOf(res).adminSignins).toBeNull();
   });
 
   it('renders a data-gap page for an unlicensed tenant, never an empty table', async () => {
@@ -438,14 +463,30 @@ describe('generateIdentityAccessReport', () => {
     expect(s.coverage?.lastStatus).toBe('success');
   });
 
-  it('says so, and reads nothing, when M365 tenant sync is disabled entirely', async () => {
+  it('says so, and reads nothing IDENTITY-shaped, when M365 tenant sync is disabled entirely', async () => {
     syncEnabledMock.mockReturnValue(false);
     queueHappyPath();
     const res = await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP);
     const s = summaryOf(res);
     expect(s.signins?.total).toBeNull();
     expect(s.dataGaps?.join(' ')).toMatch(/not enabled|disabled/i);
-    expect(db.select).not.toHaveBeenCalled();
+    // Only the org's own name is read (#6100) — no identity/sign-in query.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(s.orgName).toBe('Acme Legal');
+  });
+
+  it('reports adminSignins as unmeasured (not "switched off") when sync is disabled but adminDetail is on', async () => {
+    syncEnabledMock.mockReturnValue(false);
+    queueHappyPath();
+    const res = await generateIdentityAccessReport(ORG_ID, { adminDetail: true }, authority(), PERIOD_SEP);
+    expect(summaryOf(res).adminSignins).toEqual([]);
+  });
+
+  it('keeps adminSignins null when sync is disabled and adminDetail is off', async () => {
+    syncEnabledMock.mockReturnValue(false);
+    queueHappyPath();
+    const res = await generateIdentityAccessReport(ORG_ID, { adminDetail: false }, authority(), PERIOD_SEP);
+    expect(summaryOf(res).adminSignins).toBeNull();
   });
 
   it('refuses a missing authority before the first query', async () => {

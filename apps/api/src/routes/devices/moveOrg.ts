@@ -272,7 +272,7 @@ moveOrgRoutes.post(
         // its org_id and trip sd_occ_ticket_org_fk (deliberately NOT deferred
         // by name above) as an opaque 23503. Cheap precondition, same 409 the
         // ticket-level move answers with.
-        await assertDeviceTicketsNotPinnedToDeliverable(tx, deviceId);
+        await assertDeviceTicketsNotPinnedToDeliverable(tx, deviceId, sourceOrgId);
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
 

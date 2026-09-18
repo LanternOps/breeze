@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.114.0',
+    date: '2026-09-17',
+    title: 'Four new evidence report types, honest network device polling, and clearer visibility controls',
+    highlights: [
+      'Four new evidence report types are available under Reports for compliance and QBR evidence: identity & access review, vulnerability management, endpoint management, and threat detection.',
+      'The network device page now shows what SNMP polling actually found, including failed polls, instead of hiding them. SNMPv1 devices poll correctly again, and one bad OID instance no longer blanks the whole poll.',
+      'The portal Devices page is now a per-organization visibility toggle, off by default, so customers only see it once you turn it on.',
+      'The org AI budget editor moved into Org settings, under a new AI tab.',
+      "Variables' All Organizations view now lists only partner-wide variables, with each row showing its owning organization.",
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.113.0',
     date: '2026-09-13',
     title: 'Remote desktop sessions that stay up, AI-authored scripts you approve on a card, and service deliverables in the customer portal',

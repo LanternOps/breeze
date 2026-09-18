@@ -45,7 +45,7 @@ const D = { id: 'd1', orgId: 'org1', name: 'Sign-in log review', cadence: 'month
 const AS_OF = new Date('2026-10-25T05:18:00Z');
 
 describe('runDeliverableSweep', () => {
-  beforeEach(() => { vi.clearAllMocks(); resultQueue.length = 0; capturedWhere.length = 0; contextLabels.length = 0; });
+  beforeEach(() => { vi.clearAllMocks(); missMock.mockReset().mockResolvedValue(0); resultQueue.length = 0; capturedWhere.length = 0; contextLabels.length = 0; });
 
   it('filters the eligible select on active, the effective window (today, UTC) and automation-eligible orgs', async () => {
     resultQueue.push([]);
@@ -95,6 +95,38 @@ describe('runDeliverableSweep', () => {
       expect(materializeMock).toHaveBeenCalledTimes(2);
       expect(captureExceptionMock).toHaveBeenCalledTimes(1);
       expect(err).toHaveBeenCalledWith(expect.stringContaining('[DeliverableWorker]'), 'deliverableId=d1', 'orgId=org1', 'boom');
+    } finally { err.mockRestore(); }
+  });
+
+  it.each([
+    { ...D, effectiveUntil: '2026-10-24' },
+    { ...D, active: false },
+  ])('closes overdue occurrences after a deliverable leaves its window: %j', async (closed) => {
+    resultQueue.push([], [closed]);
+    missMock.mockResolvedValueOnce(1);
+    const res = await runDeliverableSweep(AS_OF);
+    expect(missMock).toHaveBeenCalledWith(closed, '2026-10-25', { closing: true });
+    expect(res.missed).toBe(1);
+    expect(materializeMock).not.toHaveBeenCalled();
+    expect(openMock).not.toHaveBeenCalled();
+    const q = new PgDialect().sqlToQuery(capturedWhere[1] as SQL);
+    expect(q.sql).toContain('"active" =');
+    expect(q.sql).toContain(' or ');
+    expect(q.sql).toContain('"effective_until" <');
+    expect(q.sql).toContain('automation_eligible_org');
+    expect(q.params).toEqual(expect.arrayContaining([false, '2026-10-25']));
+  });
+
+  it('continues closing other deliverables and sweeping key dates after a closing failure', async () => {
+    resultQueue.push([], [D, { ...D, id: 'd2' }]);
+    missMock.mockRejectedValueOnce(new Error('closing failed')).mockResolvedValueOnce(1);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runDeliverableSweep(AS_OF);
+      expect(res).toMatchObject({ missed: 1, failed: 1 });
+      expect(missMock).toHaveBeenCalledTimes(2);
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      expect(keyDateMock).toHaveBeenCalledWith('2026-10-25');
     } finally { err.mockRestore(); }
   });
 

@@ -1134,6 +1134,10 @@
       "description": "Scegli quali informazioni sul servizio questo cliente può vedere nel portale.",
       "enableAll": "Abilita tutta la visibilità",
       "toggles": {
+        "enableDevices": {
+          "label": "Dispositivi",
+          "description": "Mostra la pagina Dispositivi. Anche il self-service consente di accedere a questa pagina."
+        },
         "enableDashboard": {
           "label": "Pannello di controllo",
           "description": "Mostra un riepilogo dello stato del servizio all'accesso."
@@ -2115,11 +2119,13 @@
           "title": "File prodotti da questa esecuzione",
           "download": "Scarica",
           "preview": "Anteprima",
-          "attachToTicket": "Allega a un ticket",
-          "attach": "Allega {{name}}",
+          "attachToTicket": "Allega come nota interna",
+          "attach": "Allega {{name}} come nota interna",
           "ticketIdPlaceholder": "ID ticket",
-          "attachedToTicket": "Allegato al ticket",
-          "attachFailed": "Impossibile allegare il file a quel ticket"
+          "attachedToTicket": "Allegato al ticket come nota interna",
+          "attachFailed": "Impossibile allegare il file a quel ticket",
+          "attachedButCommentFailed": "Il file è stato allegato, ma non è stato possibile aggiungere la nota al ticket",
+          "downloadExpired": "Questo file è scaduto e non è più disponibile per il download."
         },
         "workspace": {
           "title": "Cosa è stato eseguito nella sandbox",
@@ -4089,6 +4095,7 @@
     "languageLoadFailed": "Preferenza salvata, ma il caricamento della lingua non è riuscito — viene mostrato l'inglese. Controlla la connessione e riprova."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Registrazione del tempo predefinita (minuti)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "I minuti SLA e la tariffa oraria devono essere numeri.",
     "categoryUpdated": "Categoria aggiornata",
     "ticketing": "Ticketing",
@@ -5236,6 +5243,7 @@
     "confirmYourPassword": "Conferma la password"
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Le variabili appartenenti a un’organizzazione sono elencate nella rispettiva organizzazione.",
     "title": "Variabili",
     "description": "Definisci un valore una sola volta — un token di sito di un fornitore, l'URL di un repository interno — e richiamalo dagli script invece di scriverlo per ogni cliente.",
     "loading": "Caricamento delle variabili…",
