@@ -8,6 +8,7 @@ import { markStaticDomainVerified, syncSendingDomain } from '../services/emailDo
 import { recordProviderKeyProbe } from '../services/emailDomains/keyProbe';
 import { PartnerLaneSendFailure, ProviderManagementAuthError } from '../services/emailDomains/provider';
 import { getEmailDomainProvider } from '../services/emailDomains/providerRegistry';
+import { tryCountPartnerLaneSend } from '../services/emailDomains/sendCap';
 import { sendOpsAlert } from '../services/opsAlerts';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
@@ -288,6 +289,37 @@ export async function runTestSend(domainId: string, userId: string): Promise<'se
   const sendable = domain.status === 'verified' || domain.status === 'at_risk'
     || (domain.status === 'pending' && !provider.verifiesByDns);
   if (!sendable) return 'skipped';
+
+  // Spec §6.1: the test send counts against the daily partner-lane cap. W03
+  // left this to W04 (its amendment 7) because tryCountPartnerLaneSend ships
+  // here.
+  //
+  // AFTER the sendable guard, so a row that could never send does not burn a
+  // counter slot — a partner must not be able to exhaust their own cap by
+  // pressing "test" on a failed domain. BEFORE the provider call, because this
+  // is the only partner-lane send a human can fire on demand and it must not
+  // become an uncapped bypass. Being before the send also puts it before
+  // markStaticDomainVerified: a capped `static` test hands the relay nothing,
+  // and the relay's acceptance is the ONLY proof that Breeze may send as the
+  // domain (spec §5.1), so the row must stay `pending`.
+  //
+  // `refused`, not `skipped`: every skipped branch above writes nothing to the
+  // row, and this one records last_test_* so the partner can see why the button
+  // did nothing.
+  if (!(await tryCountPartnerLaneSend(domain.partnerId))) {
+    await withSystemDbAccessContext(
+      () => db.update(partnerSendingDomains)
+        .set({
+          lastTestAt: new Date(),
+          lastTestStatus: 'failed',
+          lastTestError: 'The daily send cap for this partner has been reached; try again after 00:00 UTC.',
+          updatedAt: sql`now()`,
+        })
+        .where(eq(partnerSendingDomains.id, domainId)),
+      'sendingDomainTestSendCapped',
+    );
+    return 'refused';
+  }
 
   const from = `${localPart}@${domain.domain}`;
   try {

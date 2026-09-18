@@ -98,6 +98,15 @@ vi.mock('../services/emailDomains/keyProbe', () => ({
   recordProviderKeyProbe: probeRecord, readProviderKeyProbe: probeRead,
 }));
 
+const { tryCountPartnerLaneSendMock } = vi.hoisted(() => ({
+  tryCountPartnerLaneSendMock: vi.fn(async () => true),
+}));
+vi.mock('../services/emailDomains/sendCap', () => ({
+  tryCountPartnerLaneSend: tryCountPartnerLaneSendMock,
+  recordPartnerLaneCapHit: vi.fn(),
+  partnerLaneCapKey: vi.fn(() => 'k'),
+}));
+
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
@@ -123,6 +132,7 @@ beforeEach(async () => {
   // `vi.clearAllMocks()` clears CALLS, not implementations, so every one-off
   // `mockRejectedValue` below would otherwise leak into the tests that follow
   // it (a rejected `send` made two later static cases read as 'refused').
+  tryCountPartnerLaneSendMock.mockResolvedValue(true);
   providerMock.listDomains.mockResolvedValue([]);
   providerMock.send.mockResolvedValue({ providerMessageId: 'm1' });
   providerMock.deleteDomain.mockResolvedValue(undefined);
@@ -455,6 +465,61 @@ describe('test send (spec §6.1)', () => {
     execRows.push([]);   // the users lookup is scoped to the domain's partner
     await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('skipped');
     expect(providerMock.send).not.toHaveBeenCalled();
+  });
+
+  // Spec §6.1: "It counts against the daily cap." W03 left the wiring to W04
+  // (its amendment 7); this is the assertion that it landed.
+  it('consumes a cap slot for the domain partner before sending', async () => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ localPart: 'help' }]);
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('sent');
+    expect(tryCountPartnerLaneSendMock).toHaveBeenCalledWith('p1');
+    expect(providerMock.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the cap refusal on the row and never reaches the provider', async () => {
+    tryCountPartnerLaneSendMock.mockResolvedValue(false);
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ localPart: 'help' }]);
+
+    // 'refused', not 'skipped': every skipped branch writes nothing to the row,
+    // and this one writes last_test_*.
+    await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('refused');
+    expect(providerMock.send).not.toHaveBeenCalled();
+    expect(updates.at(-1)).toMatchObject({
+      lastTestStatus: 'failed',
+      lastTestError: expect.stringContaining('daily send cap'),
+    });
+  });
+
+  // A row that could never send must not burn a slot: the counter is the abuse
+  // control, and a partner should not be able to exhaust their own cap by
+  // pressing "test" on a failed domain.
+  it('checks the cap AFTER the sendable guard', async () => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'failed' }]);
+    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ localPart: 'help' }]);
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('skipped');
+    expect(tryCountPartnerLaneSendMock).not.toHaveBeenCalled();
+  });
+
+  // The relay accepting the message is the ONLY proof Breeze can obtain that it
+  // may send as a `static` domain (spec §5.1). A capped send hands the relay
+  // nothing, so it must not verify the row.
+  it('a capped STATIC test send does not verify the domain', async () => {
+    tryCountPartnerLaneSendMock.mockResolvedValue(false);
+    providerMock.verifiesByDns = false;
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'pending' }]);
+    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([]);
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('refused');
+    expect(providerMock.send).not.toHaveBeenCalled();
+    expect(markStaticVerifiedMock).not.toHaveBeenCalled();
   });
 });
 
