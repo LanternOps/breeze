@@ -1621,7 +1621,8 @@
       "act": "Aktion",
       "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
       "actUnavailable": "Für diesen Agenten noch nicht verfügbar.",
-      "shadowUnavailableForKind": "Dieser Agent liest und schreibt nur Berichte — es gibt nichts zu beobachten."
+      "shadowUnavailableForKind": "Dieser Agent liest und schreibt nur Berichte — es gibt nichts zu beobachten.",
+      "shadowApprovalNotice": "Vorschläge landen im Genehmigungsposteingang; wer einen genehmigt, führt ihn tatsächlich aus — kein Testlauf."
     },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",

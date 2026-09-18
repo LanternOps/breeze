@@ -1621,7 +1621,8 @@
       "act": "Azione",
       "actConsequence": "Esegue le operazioni consentite senza un clic. Nessun ripristino automatico.",
       "actUnavailable": "Non ancora disponibile per questo agente.",
-      "shadowUnavailableForKind": "Questo agente legge e scrive solo report — non c'è nulla da osservare in modalità ombra."
+      "shadowUnavailableForKind": "Questo agente legge e scrive solo report — non c'è nulla da osservare in modalità ombra.",
+      "shadowApprovalNotice": "Le proposte arrivano in Approvazioni; approvarne una la esegue realmente, non è una simulazione."
     },
     "allOrgs": "Tutte le organizzazioni",
     "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",

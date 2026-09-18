@@ -105,6 +105,28 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
     }
   });
 
+  // #6202: shadow mode still mints real, executable approval cards — an
+  // operator misread "shadow" as "observe only" and approved three cards
+  // expecting a dry run. The card must say up front that approving runs it.
+  it('shows a shadow-mode approval notice only in shadow mode, not off/act', () => {
+    const { rerender } = render(
+      <ModeChoice mode="off" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+    );
+    expect(screen.queryByTestId('ai-agent-shadow-info')).toBeNull();
+
+    rerender(
+      <ModeChoice mode="shadow" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+    );
+    expect(screen.getByTestId('ai-agent-shadow-info')).toHaveTextContent(
+      'Proposals land in Approvals; approving one runs it for real, not a dry run.',
+    );
+
+    rerender(
+      <ModeChoice mode="act" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+    );
+    expect(screen.queryByTestId('ai-agent-shadow-info')).toBeNull();
+  });
+
   // Fleet Designer (W01) — the designer kind is read-only and produces no
   // intents, so `allowedModesForKind('designer')` excludes `shadow`: there is
   // nothing to shadow.

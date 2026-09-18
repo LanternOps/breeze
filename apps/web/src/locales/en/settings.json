@@ -1621,7 +1621,8 @@
       "act": "Act",
       "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
       "actUnavailable": "Not available for this agent yet.",
-      "shadowUnavailableForKind": "This agent only reads and writes reports — there is nothing to shadow."
+      "shadowUnavailableForKind": "This agent only reads and writes reports — there is nothing to shadow.",
+      "shadowApprovalNotice": "Proposals land in Approvals; approving one runs it for real, not a dry run."
     },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",

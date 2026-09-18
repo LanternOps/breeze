@@ -1621,7 +1621,8 @@
       "act": "Eylem",
       "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
       "actUnavailable": "Bu aracı için henüz kullanılamıyor.",
-      "shadowUnavailableForKind": "Bu aracı yalnızca rapor okur ve yazar — gölgede izlenecek hiçbir şey yok."
+      "shadowUnavailableForKind": "Bu aracı yalnızca rapor okur ve yazar — gölgede izlenecek hiçbir şey yok.",
+      "shadowApprovalNotice": "Öneriler Onaylar'a düşer; birini onaylamak onu gerçekten çalıştırır — deneme çalıştırması değildir."
     },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",

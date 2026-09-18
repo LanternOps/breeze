@@ -109,5 +109,6 @@
       "reported": "Signalée",
       "unknown": "Inconnu"
     }
-  }
+  },
+  "proposedByAgentExecuteNotice": "Approuver ceci l'exécute maintenant — ce n'est pas un essai, même en mode ombre."
 }

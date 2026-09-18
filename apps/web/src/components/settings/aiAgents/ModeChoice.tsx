@@ -247,6 +247,20 @@ export default function ModeChoice({
         })}
       </div>
 
+      {/* #6202: an operator read "shadow" as "observe only, nothing to act
+          on" and approved three cards expecting a dry run — shadow still
+          mints real, executable Tier-3 approval cards. Attached to the
+          choice (like the act warning below) rather than floated elsewhere,
+          since it is what selecting Shadow MEANS. */}
+      {mode === 'shadow' && (
+        <div
+          className="mt-2 rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm text-muted-foreground"
+          data-testid="ai-agent-shadow-info"
+        >
+          {t('aiAgentsPage.modeChoice.shadowApprovalNotice')}
+        </div>
+      )}
+
       {/* Attached to the choice, not floated below the rest of the fields:
           the warning and its acknowledgement are what the act card MEANS. */}
       {mode === 'act' && (

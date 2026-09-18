@@ -1621,7 +1621,8 @@
       "act": "Action",
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
       "actUnavailable": "Pas encore disponible pour cet agent.",
-      "shadowUnavailableForKind": "Cet agent ne fait que lire et écrire des rapports — il n'y a rien à observer en mode ombre."
+      "shadowUnavailableForKind": "Cet agent ne fait que lire et écrire des rapports — il n'y a rien à observer en mode ombre.",
+      "shadowApprovalNotice": "Les propositions arrivent dans Approbations; approuver l'une d'elles l'exécute pour de vrai, ce n'est pas un essai."
     },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
