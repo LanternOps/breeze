@@ -459,6 +459,12 @@ func (b *Broker) ClearBackupSession(session *Session) bool {
 	if bh.process != nil && session != nil && session.PID > 0 && bh.process.Pid == session.PID {
 		log.Info("reaping disconnected backup helper", "pid", bh.process.Pid, "sessionId", session.SessionID)
 		bh.reapDisconnectedLocked()
+	} else if bh.process != nil && session != nil {
+		// Admission binds the owning session to the tracked child, so this
+		// should not happen. The process is left for the respawn-time or
+		// shutdown reap; log it so an unreaped helper is traceable.
+		log.Warn("backup helper session pid does not match tracked process, deferring reap",
+			"trackedPid", bh.process.Pid, "sessionPid", session.PID, "sessionId", session.SessionID)
 	}
 	return true
 }

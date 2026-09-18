@@ -336,11 +336,12 @@ func TestSpawnBackupHelper_ReapsStaleProcessBeforeRespawn(t *testing.T) {
 	t.Cleanup(func() { backupHelperSpawnTimeout = orig })
 
 	tests := []struct {
-		name  string
-		start func(*testing.T) *exec.Cmd
+		name       string
+		start      func(*testing.T) *exec.Cmd
+		wantKilled bool
 	}{
 		{name: "predecessor exited on its own", start: startExitingReapTestHelper},
-		{name: "predecessor orphaned but alive", start: startReapTestHelper},
+		{name: "predecessor orphaned but alive", start: startReapTestHelper, wantKilled: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -363,6 +364,9 @@ func TestSpawnBackupHelper_ReapsStaleProcessBeforeRespawn(t *testing.T) {
 			_, _ = b.spawnBackupHelper(os.Args[0])
 
 			awaitReapOf(t, reaped, stale, "spawnBackupHelper respawn ("+tc.name+")")
+			if tc.wantKilled && stale.ProcessState.Success() {
+				t.Fatalf("expected the live predecessor to be killed, got a clean exit: %v", stale.ProcessState)
+			}
 		})
 	}
 }
