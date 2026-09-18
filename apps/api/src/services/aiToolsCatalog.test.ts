@@ -23,7 +23,6 @@ vi.mock('../db/schema', () => ({
     name: 'ci.name',
     itemType: 'ci.item_type',
     sku: 'ci.sku',
-    unitPrice: 'ci.unit_price',
     isBundle: 'ci.is_bundle',
     isActive: 'ci.is_active',
     partnerId: 'ci.partner_id',
@@ -141,7 +140,7 @@ describe('aiToolsCatalog: search_catalog', () => {
     expect(conds).toHaveLength(2);
   });
 
-  it('selects the per-currency price book as string values instead of the deprecated unitPrice mirror', async () => {
+  it('selects the per-currency price book as string values and never an item-level unitPrice', async () => {
     vi.mocked(db.select).mockReturnValue(makeChain([], {}) as any);
 
     await tools().get('search_catalog')!.handler({}, partnerAuth());
@@ -355,7 +354,7 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(parsed.item.attributes.category).toBe('docks');
   });
 
-  it('redacts costBasis/markupPercent/distributor.cost for org-scoped callers (defense-in-depth)', async () => {
+  it('gives an org-scoped caller NO item at all (was: a redacted one) — #6110 finding 1', async () => {
     const row = {
       id: ITEM_ID,
       partnerId: PARTNER_ID,
@@ -380,17 +379,20 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, orgAuth);
     const parsed = JSON.parse(out);
 
-    expect(parsed.item).not.toHaveProperty('costBasis');
-    expect(parsed.item).not.toHaveProperty('markupPercent');
-    expect(parsed.item.attributes.distributor).not.toHaveProperty('cost');
-    expect(parsed.item.attributes.distributor).not.toHaveProperty('raw');
-    // Cost currency alone is not secret; the deprecated price mirror is never exposed.
-    expect(parsed.item.costCurrency).toBe('USD');
-    expect(parsed.item).not.toHaveProperty('unitPrice');
-    expect(parsed.item.attributes.distributor.msrp).toBe(150);
+    // #6110 finding 1 STRENGTHENED this: an org-scoped caller no longer gets a
+    // redacted item, it gets no item at all — the tool now requires the same
+    // partner scope its route does (routes/catalog/catalog.ts:21). The
+    // allowlist projection stays in place underneath as defence in depth for
+    // the day a partner-scoped surface wants a narrower view.
+    expect(parsed).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(parsed).not.toHaveProperty('item');
+    expect(out).not.toContain('costBasis');
+    expect(out).not.toContain('markupPercent');
+    expect(out).not.toContain('unitPrice');
+    expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('redacts revenueAllocation from bundle components for org-scoped callers', async () => {
+  it('refuses an org-scoped caller before any bundle component is read — #6110 finding 1', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(makeChain([{ id: ITEM_ID, isBundle: true, attributes: {} }], {}) as any)
       .mockReturnValueOnce(makeChain([], {}) as any)
@@ -410,8 +412,27 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     } as any;
     const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, orgAuth);
     const parsed = JSON.parse(out);
-    expect(parsed.components).toEqual([
-      { id: 'comp-row', componentItemId: 'c1', quantity: '2', showOnInvoice: false },
+    // #6110 finding 1: refused outright, so no component list is produced and
+    // the revenue split cannot leak by any projection bug.
+    expect(parsed).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(parsed).not.toHaveProperty('components');
+    expect(out).not.toContain('revenueAllocation');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('a PARTNER-scoped caller still gets bundle components WITHOUT revenueAllocation', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeChain([{ id: ITEM_ID, isBundle: true, attributes: {} }], {}) as any)
+      .mockReturnValueOnce(makeChain([], {}) as any)
+      .mockReturnValueOnce(
+        makeChain(
+          [{ id: 'comp-row', componentItemId: 'c1', quantity: '2', showOnInvoice: false, revenueAllocation: '60.00' }],
+          {}
+        ) as any
+      );
+    const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, partnerAuth());
+    expect(JSON.parse(out).components).toEqual([
+      { id: 'comp-row', componentItemId: 'c1', quantity: '2', showOnInvoice: false, revenueAllocation: '60.00' },
     ]);
   });
 
@@ -490,5 +511,38 @@ describe('aiToolsCatalog: lookup_distributor_product', () => {
     vi.mocked(lookupEcExpressProducts).mockRejectedValue(new TdSynnexEcExpressError('No results for that SKU/part #', 'EC_NO_RESULTS'));
     const out = await tools().get('lookup_distributor_product')!.handler({ query: 'NOPE' }, partnerAuth());
     expect(JSON.parse(out)).toEqual({ error: 'No results for that SKU/part #', code: 'EC_NO_RESULTS' });
+  });
+});
+
+/**
+ * #6110 finding 1 — every route file under `routes/catalog/` is
+ * `requireScope('partner','system')` (catalog.ts:21, pricing.ts:20,
+ * bundles.ts:15, distributors.ts:51, enrich.ts:14). The catalog tools filtered
+ * on `auth.partnerId` alone, and an ORG-scoped token carries the OWNING
+ * partner's partnerId — so an org-scoped AI/MCP caller could read the whole
+ * partner price book, and `manage_catalog` could WRITE it. Same reasoning the
+ * lookup_distributor_product gate already spelled out.
+ */
+describe('catalog tools refuse organization scope (#6110 finding 1)', () => {
+  function orgAuth() {
+    return { user: { id: 'u1' }, partnerId: PARTNER_ID, scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] } as any;
+  }
+
+  it.each(['search_catalog', 'get_catalog_item', 'manage_catalog'] as const)(
+    '%s refuses an org-scoped caller carrying the owning partner id', async (name) => {
+      const out = await tools().get(name)!.handler(
+        { search: 'x', catalogId: ITEM_ID, action: 'archive_item' }, orgAuth(),
+      );
+      expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still admits a partner-scoped caller', async () => {
+    const capture: WhereCapture = {};
+    vi.mocked(db.select).mockReturnValue(makeChain([], capture) as any);
+    const out = await tools().get('search_catalog')!.handler({ search: 'x' }, partnerAuth());
+    expect(JSON.parse(out)).not.toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(db.select).toHaveBeenCalled();
   });
 });

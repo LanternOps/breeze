@@ -1,4 +1,8 @@
-import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, FleetDesignReportSummary } from '@breeze/shared';
+import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, FleetDesignReportSummary,
+  EndpointManagementSummary,
+  VulnerabilityManagementSummary,
+  IdentityAccessSummary,
+} from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
@@ -54,7 +58,16 @@ export async function exportReport(
     /** Stored run snapshot consumed by the designed cover/body renderers
      * (posture scorecard, executive summary, AI org narrative, Fleet
      * Design); the generic table path ignores it. */
-    summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary;
+    // #5784 W03: widened so the staff/browser export path passes the DESIGNED
+    // summary through to buildReportPdf's endpoint-management arm. Without it
+    // the summary is dropped and the PDF silently degrades to the generic
+    // row table.
+    // #5784 W06. Further widened so the same path passes the DESIGNED identity
+    // summary — and its caveats — through to buildReportPdf's identity arm. A
+    // summary that does not typecheck here gets dropped at the call site, and
+    // the PDF silently falls through to the generic renderer, keeping the
+    // sign-in rows while losing every limit printed alongside them.
+    summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary;
     /** Slim baseline from the previous completed run (report_runs.result.previous),
      * used to draw the scorecard trend chip; ignored by non-cover report types. */
     previous?: { generatedAt?: string | null; summary?: unknown };

@@ -67,10 +67,19 @@
       "on_ticket_resolve": "Livré à la résolution du ticket lié"
     },
     "autoEvidenceReport": "Joindre les exécutions de rapport comme justificatif",
+    "autoEvidenceNone": "Aucun",
+    "autoEvidenceHelp": "Le justificatif est généré le jour d'échéance et devient visible pour le client lorsque l'occurrence est livrée.",
+    "autoEvidenceEmpty": "Aucun type de rapport de justificatif géré n'est encore disponible.",
     "owner": "Responsable",
     "ticketCategory": "Catégorie de ticket",
     "portalVisible": "Afficher dans le portail client",
-    "sortOrder": "Ordre de tri"
+    "sortOrder": "Ordre de tri",
+    "instructions": "Instructions internes",
+    "instructionsHint": "Interne — jamais visible du client.",
+    "checklistTemplate": "Modèle de liste de contrôle",
+    "checklistTemplateNone": "Aucun",
+    "checklistTemplateAllOrgs": "Toutes les orgs",
+    "checklistTemplateManage": "Gérer les modèles de liste de contrôle"
   },
   "drawer": {
     "title": "Occurrences",
@@ -84,7 +93,10 @@
     "uploadEvidence": "Téléverser un fichier comme justificatif",
     "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, jusqu'à 10 Mo. Le fichier est classé dans la bibliothèque de documents de cette organisation.",
     "evidenceDocument": "Document justificatif",
-    "upload": "Téléverser"
+    "upload": "Téléverser",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Afficher la liste de contrôle",
+    "hideChecklist": "Masquer la liste de contrôle"
   },
   "evidence": {
     "reportRun": "Exécution de rapport",
@@ -177,7 +189,8 @@
       "leadDays": "Ouvrir ce nombre de jours avant l'échéance",
       "graceDays": "Marquer comme manqué ce nombre de jours après l'échéance",
       "artifactRequired": "Justificatif requis",
-      "completionMode": "Achèvement"
+      "completionMode": "Achèvement",
+      "autoEvidenceReportType": "Type de rapport de justificatif"
     },
     "ownerScope": {
       "legend": "Pour qui est cet ensemble ?",

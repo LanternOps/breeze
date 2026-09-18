@@ -168,3 +168,48 @@ describe('AI_AGENT_RUN_DTO_SCHEMA_VERSION', () => {
     expect(detail.schemaVersion).toBe(1);
   });
 });
+
+describe('AiAgentRunDetailDto — execution-plane surfaces (spec §5.8, §10)', () => {
+  it('carries compute cents, the artifact list and the workspace transcript', () => {
+    const detail: Pick<
+      AiAgentRunDetailDto,
+      'computeCents' | 'computeUsageEstimated' | 'artifacts' | 'workspace'
+    > = {
+      computeCents: 7,
+      computeUsageEstimated: false,
+      artifacts: [],
+      workspace: {
+        backend: 'fake',
+        region: 'eu',
+        status: 'destroyed',
+        bootstrapHash: 'sha256:abc', runtimeImage: 'analysis@sha256:abc',
+        createdAt: '2026-09-13T10:00:00.000Z',
+        readyAt: '2026-09-13T10:00:04.000Z',
+        destroyedAt: '2026-09-13T10:03:00.000Z',
+        cpuMs: 41_000,
+        wallMs: 176_000,
+        memAllocatedMb: 2048,
+        stagedBytes: 1_048_576,
+        artifactBytes: 40_112,
+        stepCount: 2,
+        steps: [
+          {
+            ordinal: 1,
+            language: 'python',
+            scriptArtifactHandle: '33333333-3333-4333-8333-333333333333',
+            exitCode: 0,
+            timedOut: false,
+            durationMs: 1_820,
+            stdoutArtifactHandle: null,
+          },
+        ],
+      },
+    };
+    expect(detail.workspace?.steps[0]?.language).toBe('python');
+    expect(detail.computeCents).toBe(7);
+  });
+
+  it('keeps the DTO schema version at 1 — every added field is additive and always present', () => {
+    expect(AI_AGENT_RUN_DTO_SCHEMA_VERSION).toBe(1);
+  });
+});

@@ -19,6 +19,7 @@ import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { aiDispatchDeviceCommand } from './aiDispatch';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -52,42 +53,108 @@ function resolveWritableToolOrgId(
   return { error: 'orgId is required for this operation' };
 }
 
-// Resolve the device IDs a site-restricted caller may read within their org,
-// narrowed by `auth.allowedSiteIds`. Returns null when the caller is NOT
-// site-restricted (no narrowing needed). Site is an app-layer concept only —
-// Postgres RLS does NOT defend it — so a site-restricted org user must not read
-// extension/violation rows for devices in other sites within the same org.
-// Mirrors the route-layer browserSecurity.ts helper (AuthContext flavour).
-async function resolveSiteAllowedDeviceIds(
-  orgId: string,
-  auth: AuthContext,
-): Promise<string[] | null> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
-  const orgDevices = await db
-    .select({ id: devices.id, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.orgId, orgId));
-  return orgDevices
-    .filter((d) => auth.canAccessSite!(d.siteId))
-    .map((d) => d.id);
-}
-
 // A site-restricted caller may only mutate policies that target sites entirely
 // within their allowlist. Org/group/device/tag targets are not site-bounded, so
 // a site-restricted caller cannot confirm scope over them and is denied.
-// Unrestricted callers (no `allowedSiteIds`) always pass. Mirrors the
-// route-layer browserSecurity.ts helper (AuthContext flavour).
+//
+// An EXACT-DEVICE caller (`allowedDeviceIds`, set on every device-bound agent
+// run) is denied outright: a browser policy targets sites/orgs/groups, never a
+// single device, so such a caller can never confirm scope over one. Callers
+// with NEITHER restriction always pass. Mirrors the route-layer
+// browserSecurity.ts helper (AuthContext flavour).
 export function policyWithinSiteWriteScope(
   auth: AuthContext,
   targetType: string,
   targetIds: string[] | null | undefined,
 ): boolean {
+  if (auth.allowedDeviceIds) return false;
   if (!auth.allowedSiteIds || !auth.canAccessSite) return true;
   if (targetType !== 'site') return false;
   const ids = targetIds ?? [];
   if (ids.length === 0) return false;
   return ids.every((id) => auth.canAccessSite!(id));
 }
+
+/**
+ * READ counterpart of `policyWithinSiteWriteScope` for the policy LIST branch.
+ *
+ * The write helper denies an exact-device caller outright, which is right for a
+ * mutation but would hide every policy from a device-bound run on read. The
+ * leak a list has to close is narrower: a DEVICE-targeted policy names sibling
+ * devices in `targetIds`, so listing one discloses devices outside the run's
+ * allowlist (#6086 finding 10). Org/site/group/tag targets are not
+ * device-attributable and stay visible; the site axis keeps its existing read
+ * behaviour (policies are org-keyed, and the write path guards mutations).
+ *
+ * Callers with no `allowedDeviceIds` are unaffected.
+ */
+export function policyWithinDeviceReadScope(
+  auth: AuthContext,
+  targetType: string,
+  targetIds: string[] | null | undefined,
+): boolean {
+  if (!auth.allowedDeviceIds) return true;
+  if (targetType !== 'device') return true;
+  return (targetIds ?? []).every((id) => auth.allowedDeviceIds!.includes(id));
+}
+
+/**
+ * SITE counterpart of `policyWithinDeviceReadScope` for the policy LIST branch
+ * (audit §1.1).
+ *
+ * `list` returned every org policy — including the `targetIds` naming sites the
+ * caller cannot reach and their extension allow/block lists — while
+ * create/update/apply were all site-gated. The write helper cannot be reused:
+ * it denies every non-`site` target type, which on read would hide the org-wide
+ * policies a site-restricted tech legitimately operates under.
+ *
+ * - `org`/`group`/`tag` targets are not site-attributable and stay visible.
+ * - a `site` policy is visible only when EVERY target site is in the allowlist
+ *   (a policy spanning an out-of-scope site discloses that site's id); an empty
+ *   target list is unattributable and fails closed.
+ * - a `device` policy is visible only when every target device is in the
+ *   caller's site-resolved device set (`siteAllowedDeviceIds` = the
+ *   intersection from `resolveSiteAllowedDeviceIds`). `null` (not resolved)
+ *   and an empty target list both fail closed, matching the `site` arm.
+ */
+export function policyWithinSiteReadScope(
+  auth: AuthContext,
+  targetType: string,
+  targetIds: string[] | null | undefined,
+  siteAllowedDeviceIds: string[] | null,
+): boolean {
+  if (!auth.allowedSiteIds) return true;
+  if (targetType === 'site') {
+    if (!auth.canAccessSite) return false;
+    const ids = targetIds ?? [];
+    if (ids.length === 0) return false;
+    return ids.every((id) => auth.canAccessSite!(id));
+  }
+  if (targetType === 'device') {
+    // Both arms fail closed on an unattributable policy (review #6110): `null`
+    // means the caller's device set could not be resolved, and an EMPTY target
+    // list satisfies `[].every(...)` vacuously. Either one used to make a
+    // device-targeted policy visible to a restricted caller while the `site`
+    // branch above denied the same shape.
+    if (siteAllowedDeviceIds === null) return false;
+    const ids = targetIds ?? [];
+    if (ids.length === 0) return false;
+    const allowed = new Set(siteAllowedDeviceIds);
+    return ids.every((id) => allowed.has(id));
+  }
+  return true;
+}
+
+/** Policies returned by `manage_browser_policy list`. */
+const BROWSER_POLICY_PAGE_LIMIT = 200;
+/**
+ * Wider scan for a narrowed caller, since both scope filters run after the SQL
+ * LIMIT. Bounded so a restricted caller cannot pull the whole table.
+ */
+const BROWSER_POLICY_SCAN_LIMIT = 1000;
+/** Says the page was narrowed, so an empty list is not read as "none exist". */
+const BROWSER_POLICY_SCOPE_PARTIAL_NOTE =
+  'Some browser policies were withheld because they target sites or devices outside your site access — this list may be incomplete.';
 
 export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -141,9 +208,17 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
       // their allowed sites (RLS does NOT enforce site). Narrow both the
       // extension and violation reads to that device set; short-circuit to empty
       // when the caller has no in-scope devices.
+      //
+      // The EXACT-DEVICE axis is pushed first and unconditionally: it needs no
+      // org lookup, and the site branch below is gated on `allowedSiteIds`,
+      // which a device-less analysis run never carries — that shape read every
+      // sibling device's extensions (#6086, same class as finding 10).
+      const extDeviceCond = deviceScopeCondition(auth, browserExtensions.deviceId);
+      if (extDeviceCond) conditions.push(extDeviceCond);
+
       const siteScopeOrgId = auth.orgId ?? (typeof input.orgId === 'string' ? input.orgId : null);
       let siteAllowedDeviceIds: string[] | null = null;
-      if (auth.allowedSiteIds && siteScopeOrgId) {
+      if ((auth.allowedSiteIds || auth.allowedDeviceIds) && siteScopeOrgId) {
         siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(siteScopeOrgId, auth);
         if (typeof input.deviceId === 'string' && !siteAllowedDeviceIds!.includes(input.deviceId)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
@@ -205,6 +280,8 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.deviceId === 'string') violationConditions.push(eq(browserPolicyViolations.deviceId, input.deviceId));
         // Same site-axis narrowing as the extension read above.
         if (siteAllowedDeviceIds) violationConditions.push(inArray(browserPolicyViolations.deviceId, siteAllowedDeviceIds));
+        const violationDeviceCond = deviceScopeCondition(auth, browserPolicyViolations.deviceId);
+        if (violationDeviceCond) violationConditions.push(violationDeviceCond);
 
         const rows = await db
           .select({
@@ -290,14 +367,41 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
           conditions.push(eq(browserPolicies.orgId, input.orgId));
         }
 
+        // Both scope filters land AFTER the SQL LIMIT, so a restricted caller
+        // whose most-recently-updated policies are all out of scope got a short
+        // or empty page while reachable older ones existed — and an empty page
+        // reads to the model as "this organization has no browser policies".
+        // Over-scan a wider, still-bounded page and slice after filtering.
+        const restricted = Boolean(auth.allowedSiteIds || auth.allowedDeviceIds);
         const policies = await db
           .select()
           .from(browserPolicies)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(browserPolicies.updatedAt))
-          .limit(200);
+          .limit(restricted ? BROWSER_POLICY_SCAN_LIMIT : BROWSER_POLICY_PAGE_LIMIT);
 
-        return JSON.stringify({ policies });
+        // Site axis: resolve the caller's device set ONLY when a device-targeted
+        // policy is actually present (one scan at most, none when unrestricted).
+        // A narrowed caller with no orgId gets `[]` (deny), never `null` — the
+        // two are not interchangeable downstream (review #6110).
+        const siteAllowedDeviceIds =
+          auth.allowedSiteIds && policies.some((p) => p.targetType === 'device')
+            ? (auth.orgId ? (await resolveSiteAllowedDeviceIds(auth.orgId, auth)) ?? [] : [])
+            : null;
+
+        // Exact-device axis: drop policies that name a device outside this
+        // caller's allowlist (no-op for an unrestricted caller). Site axis:
+        // drop policies targeted exclusively at sites/devices out of reach.
+        const filtered = policies.filter((policy) =>
+          policyWithinDeviceReadScope(auth, policy.targetType, policy.targetIds)
+          && policyWithinSiteReadScope(auth, policy.targetType, policy.targetIds, siteAllowedDeviceIds));
+        const visible = filtered.slice(0, BROWSER_POLICY_PAGE_LIMIT);
+        const narrowed = restricted && (filtered.length < policies.length || visible.length === 0);
+
+        return JSON.stringify({
+          policies: visible,
+          ...(narrowed ? { scopeNote: BROWSER_POLICY_SCOPE_PARTIAL_NOTE } : {}),
+        });
       }
 
       if (action === 'create') {
@@ -491,23 +595,13 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
         const queued: Array<{ id: string; deviceId: string }> = [];
         const queueFailures: Array<{ deviceId: string; error: string }> = [];
         for (const device of targetDevices) {
-          // `previouslyRejected: false` is load-bearing, not boilerplate. The
-          // insert this replaced wrote a pending row unconditionally, ONLINE OR
-          // NOT -- a browser policy is meant to land whenever the machine next
-          // checks in. `queueCommandForExecution` is the adapter for callers
-          // that HARD-REJECTED offline devices before #5128 (it passes
-          // previouslyRejected: true), so routing through it would make this
-          // tool start refusing offline devices the moment
-          // DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED is turned off. Going straight
-          // at `dispatchDeviceCommand` with `false` preserves the old
-          // always-queue behaviour under every flag setting.
+          // Persist browser policies for delivery on the next device check-in.
           const result = await aiDispatchDeviceCommand(auth, 'manage_browser_policy', {
             deviceId: device.id,
             type: 'apply_browser_policy',
             payload: browserPolicyPayload,
             userId: auth.user.id,
             expectedOrgId: policy.orgId,
-            previouslyRejected: false,
           });
           if (result.ok) {
             queued.push({ id: result.command.id, deviceId: result.command.deviceId });

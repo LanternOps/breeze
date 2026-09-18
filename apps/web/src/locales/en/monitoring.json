@@ -105,6 +105,9 @@
       "test": "Test failed",
       "generic": "Something went wrong"
     },
+    "saved": "Monitor saved",
+    "deleted": "Monitor deleted",
+    "detached": "Monitor detached",
     "loading": "Loading monitor…",
     "noAttachments": "Not deployed to any policy yet.",
     "testResult": {
@@ -246,8 +249,10 @@
     },
     "selectPolicy": "Configuration policy",
     "selectTarget": "Target",
+    "noOrgSelected": "Select an organization to deploy to.",
     "policyName": "Policy name",
     "attach": "Attach",
+    "attached": "Monitor attached",
     "cancel": "Cancel",
     "detachConfirm": "Detach from {{policy}}?",
     "errors": {

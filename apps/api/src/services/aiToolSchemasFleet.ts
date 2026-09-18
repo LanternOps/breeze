@@ -35,8 +35,11 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   manage_patches: z.object({
     action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
     patchId: uuid.optional(),
+    patchName: z.string().min(1).max(300).optional(),
     patchIds: z.array(uuid).max(50).optional(),
     deviceIds: z.array(uuid).max(50).optional(),
+    ringId: uuid.optional(),
+    allRings: z.boolean().optional(),
     source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
     severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
     status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
@@ -52,10 +55,14 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }).refine(
     (d) => {
-      const needsPatchId = ['approve', 'decline', 'defer', 'rollback'];
-      return !needsPatchId.includes(d.action) || !!d.patchId;
+      // rollback keeps a hard patchId requirement (it also needs deviceIds, a
+      // narrower and more deliberate action); approve/decline/defer accept a
+      // name/KB lookup in place of the UUID (#5585 — "decline by name").
+      if (d.action === 'rollback') return !!d.patchId;
+      const needsPatchId = ['approve', 'decline', 'defer'];
+      return !needsPatchId.includes(d.action) || !!d.patchId || !!d.patchName;
     },
-    { message: 'patchId is required for this action' },
+    { message: 'patchId (or patchName) is required for this action' },
   ).refine(
     (d) => d.action !== 'bulk_approve' || (Array.isArray(d.patchIds) && d.patchIds.length > 0),
     { message: 'patchIds is required for bulk_approve' },
@@ -68,6 +75,12 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
   ).refine(
     (d) => d.action !== 'rollback' || (Array.isArray(d.deviceIds) && d.deviceIds.length > 0),
     { message: 'deviceIds is required for rollback' },
+  ).refine(
+    (d) => !(d.allRings && d.ringId),
+    { message: 'ringId cannot be combined with allRings' },
+  ).refine(
+    (d) => !d.allRings || d.action === 'decline',
+    { message: 'allRings is only valid for the decline action' },
   ),
 
   manage_groups: z.object({

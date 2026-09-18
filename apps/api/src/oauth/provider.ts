@@ -28,7 +28,7 @@ import {
   oauthSessions,
   users,
 } from '../db/schema';
-import { eq, isNull, lt, sql, and as drizzleAnd } from 'drizzle-orm';
+import { eq, isNull, lt, or, sql, and as drizzleAnd } from 'drizzle-orm';
 import { ERROR_IDS, logOauthError } from './log';
 import { assertActiveTenantContext } from '../services/tenantStatus';
 
@@ -62,7 +62,12 @@ export const OAUTH_LIFECYCLE_ROW_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * a new client. Without GC, the table grows unbounded and abandoned client
  * IDs accumulate forever. We delete clients that:
  *   - were created more than DCR_STALE_CLIENT_TTL_MS ago (default 7 days),
- *   - have never been used (`last_used_at IS NULL`), AND
+ *   - have not been used since that same cutoff — either never
+ *     (`last_used_at IS NULL`) or not within the TTL
+ *     (`last_used_at < cutoff`). A client that was used once and then
+ *     abandoned is just as dead as one that was never used (#5610); the
+ *     no-live-credential guards below are what keep an in-use client alive,
+ *     and `touchClientLastUsed` re-stamps on every token issuance, AND
  *   - are not bound to a partner (`partner_id IS NULL`) — partner-bound
  *     clients represent a deliberate enterprise registration that should
  *     never be GC'd by time alone.
@@ -96,7 +101,10 @@ export async function cleanupStaleOauthClients(
     .where(
       drizzleAnd(
         lt(oauthClients.createdAt, cutoff),
-        isNull(oauthClients.lastUsedAt),
+        or(
+          isNull(oauthClients.lastUsedAt),
+          lt(oauthClients.lastUsedAt, cutoff),
+        ),
         isNull(oauthClients.partnerId),
         sql`NOT EXISTS (
           SELECT 1 FROM ${oauthClientPartnerGrants}

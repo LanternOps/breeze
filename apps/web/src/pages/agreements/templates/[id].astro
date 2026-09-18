@@ -1,0 +1,21 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import AgreementsShell from '../../../components/agreements/AgreementsShell';
+import TemplatesPage from '../../../components/agreements/TemplatesPage';
+import AgreementTemplateEditor from '../../../components/agreements/AgreementTemplateEditor';
+
+// `id` is a template UUID, or the literal `new` — which renders the LIST with its
+// create dialog open, because a template cannot be authored until it exists
+// (create returns the id the editor then loads). Mirrors pages/contracts/[id].astro.
+const id = Astro.params.id ?? 'new';
+const isNew = id === 'new';
+const titleKey = isNew ? 'titles.agreementTemplateNew' : 'titles.agreementTemplateDetail';
+---
+
+<DashboardLayout titleKey={titleKey}>
+  <AgreementsShell tab="templates" client:load>
+    {isNew
+      ? <TemplatesPage openCreate client:load />
+      : <AgreementTemplateEditor templateId={id} client:load />}
+  </AgreementsShell>
+</DashboardLayout>

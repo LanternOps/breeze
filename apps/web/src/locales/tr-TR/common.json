@@ -1,4 +1,13 @@
 {
+  "aiInitiator": {
+    "assistant": "Yapay zekâ asistanı",
+    "agent": "Yapay zekâ ajanı",
+    "originUnavailable": "Kaynak kullanılamıyor",
+    "openSession": "Görüşmeyi aç",
+    "openAgentRun": "Ajan çalıştırmasını aç",
+    "tool": "Araç: {{name}}",
+    "occurredAt": "{{time}} tarihinde gerçekleşti"
+  },
   "lists": {
     "separator": ", "
   },
@@ -34,6 +43,7 @@
     "quotes": "Alıntılar",
     "invoices": "Faturalar",
     "contracts": "Sözleşmeler",
+    "agreements": "Anlaşmalar",
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
     "deviceGroups": "Cihaz Grupları",
@@ -48,8 +58,9 @@
     "partner": "Ortak",
     "billing": "Faturalandırma",
     "organizations": "Organizasyonlar",
-    "aiUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
+    "aiUsage": "Yapay Zeka Kullanımı",
     "scriptAuthoring": "Betik yazımı",
+    "toolSources": "Araç Kaynakları",
     "aiAgents": "Yapay Zeka Aracıları",
     "aiAgentRuns": "Yapay Zeka Ajan Çalıştırmaları",
     "aiImpact": "Yapay Zeka Etkisi",
@@ -84,7 +95,9 @@
     "aiRisk": "Yapay Zeka Riski",
     "deviceBackup": "Cihaz Yedekleme",
     "sectionServiceDesk": "Servis masası",
-    "serviceManagement": "Servis yönetimi"
+    "serviceManagement": "Servis yönetimi",
+    "ticketing": "Bilet Sistemi",
+    "deliverableTemplates": "Teslimat Şablonları"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -945,7 +958,8 @@
         "fallbackTitle": "Monitör",
         "fields": {
           "interval": "Aralık (lar)",
-          "timeout": "Zaman Aşımı (s)"
+          "timeout": "Zaman Aşımı (s)",
+          "target": "Hedef URL"
         },
         "labels": {
           "lastChecked": "Son kontrol: {{time}}",
@@ -973,6 +987,20 @@
           "httpCheck": "HTTP Kontrolü",
           "icmpPing": "ICMP Ping'i",
           "tcpPort": "TCP Bağlantı Noktası"
+        },
+        "targetResetNote": "URL değiştirildiğinde TLS gözlemi sıfırlanır.",
+        "saved": "İzleyici güncellendi",
+        "certificate": {
+          "title": "Sertifika",
+          "issuer": "Veren kuruluş",
+          "expires": "Bitiş tarihi",
+          "observedHost": "Gözlemlenen ana makine",
+          "state": "Durum",
+          "states": {
+            "observed": "Gözlemlendi",
+            "handshakeFailed": "TLS el sıkışması başarısız",
+            "notTls": "TLS yok"
+          }
         }
       },
       "NetworkMonitorList": {
@@ -1823,7 +1851,9 @@
         "assetsDescription": "SNMP yoklamasının ve keşfedilen varlık başına ağ kontrollerinin birleşik görünümü.",
         "table": {
           "asset": "Varlık",
-          "overall": "Genel"
+          "overall": "Genel",
+          "reachability": "Erişilebilirlik",
+          "collection": "Veri toplama"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1875,7 +1905,29 @@
         "disabling": "Devre dışı bırakılıyor...",
         "yesDisable": "Evet, devre dışı bırak",
         "monitoringNotActive": "Bu varlık için izleme etkin değil.",
-        "saving": "Kaydediliyor..."
+        "saving": "Kaydediliyor...",
+        "openSettings": "Ayarlar…",
+        "reachability": {
+          "responding": "Yanıt veriyor",
+          "notResponding": "Yanıt vermiyor",
+          "unverified": "Doğrulanmamış",
+          "sources": {
+            "networkCheck": "ağ denetimi",
+            "probe": "şimdi denetle",
+            "scan": "tarama",
+            "unifi": "UniFi denetleyicisi",
+            "snmp": "SNMP yoklaması"
+          }
+        },
+        "collectionState": {
+          "collecting": "Veri toplanıyor",
+          "partial": "Kısmi",
+          "no_template": "Şablon yok",
+          "failing": "Başarısız",
+          "paused": "Duraklatıldı",
+          "never_polled": "Hiç sorgulanmadı",
+          "not_configured": "Yapılandırılmamış"
+        }
       },
       "MonitoringPage": {
         "tabs": {

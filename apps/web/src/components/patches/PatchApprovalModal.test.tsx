@@ -168,6 +168,130 @@ describe('PatchApprovalModal', () => {
     );
   });
 
+  // #5585: an already-approved row opens the modal via the row-level
+  // Unapprove action, which must default straight into 'decline' rather than
+  // the ordinary 'approve' default.
+  it('opens on the decline tab when initialAction is decline', async () => {
+    render(
+      <PatchApprovalModal
+        open
+        patch={PATCH}
+        ringId={null}
+        initialAction="decline"
+        onClose={() => {}}
+      />
+    );
+
+    expect(screen.getByTestId('patch-approval-action-decline')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('patch-approval-action-approve')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('declining does not require the scope-naming confirm dialog', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ id: 'patch-1', status: 'declined' }));
+
+    render(
+      <PatchApprovalModal
+        open
+        patch={PATCH}
+        ringId="ring-1"
+        initialAction="decline"
+        onClose={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Decline/i }).at(-1)!);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/patch-1/decline',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ note: '', ringId: 'ring-1' }),
+        })
+      )
+    );
+    expect(screen.queryByTestId('confirm-fleet-action')).toBeNull();
+  });
+
+  it('checking "clear all ring approvals" sends allRings and omits ringId', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ id: 'patch-1', status: 'declined', allRings: true }));
+
+    render(
+      <PatchApprovalModal
+        open
+        patch={PATCH}
+        ringId="ring-1"
+        initialAction="decline"
+        onClose={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText(/clear all ring approvals/i));
+    fireEvent.click(screen.getAllByRole('button', { name: /Decline/i }).at(-1)!);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/patches/patch-1/decline',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ note: '', allRings: true }),
+        })
+      )
+    );
+  });
+
+  it('does not show the "clear all ring approvals" checkbox for approve/defer', () => {
+    render(
+      <PatchApprovalModal
+        open
+        patch={PATCH}
+        ringId={null}
+        onClose={() => {}}
+      />
+    );
+
+    expect(screen.queryByLabelText(/clear all ring approvals/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Defer/i }));
+    expect(screen.queryByLabelText(/clear all ring approvals/i)).toBeNull();
+  });
+
+  it('resets the allRings checkbox when the modal reopens', () => {
+    const { rerender } = render(
+      <PatchApprovalModal
+        open
+        patch={PATCH}
+        ringId="ring-1"
+        initialAction="decline"
+        onClose={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText(/clear all ring approvals/i));
+    expect(screen.getByLabelText(/clear all ring approvals/i)).toBeChecked();
+
+    rerender(
+      <PatchApprovalModal
+        open={false}
+        patch={PATCH}
+        ringId="ring-1"
+        initialAction="decline"
+        onClose={() => {}}
+      />
+    );
+    rerender(
+      <PatchApprovalModal
+        open
+        patch={PATCH}
+        ringId="ring-1"
+        initialAction="decline"
+        onClose={() => {}}
+      />
+    );
+
+    expect(screen.getByLabelText(/clear all ring approvals/i)).not.toBeChecked();
+  });
+
   it('surfaces backend approval errors instead of a generic message', async () => {
     fetchMock.mockResolvedValueOnce(makeJsonResponse({ error: 'Ring access denied' }, false, 403));
 

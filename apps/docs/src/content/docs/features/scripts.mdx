@@ -88,6 +88,8 @@ Bundle format (v1):
 }
 ```
 
+Moving a component library from Datto RMM? [Migrating scripts from Datto RMM](/migration/scripts-from-datto/) maps input variables, site variables and UDF reads/writes onto parameters, variables and custom fields before you import.
+
 Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, `parameters` at 64&nbsp;KB (with a nesting depth of 8), and 20 tags per script.
 
 ### Creating a script
@@ -431,6 +433,8 @@ Each variable has:
 | **Secret** | Store the value write-once and masked. See [Secret variables](#secret-variables). |
 
 An organization-scoped variable overrides a partner-wide one with the same key, so you can set a sensible default for everyone and special-case individual customers.
+
+Switching the variables list to **All Organizations** lists partner-wide variables only, with a column naming the organization each row belongs to — org-scoped variables aren't shown there; open a specific organization to see or manage those.
 
 ### Using variables in a script
 

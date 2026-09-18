@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, asc, desc, type SQL, type Column } from 'drizzle-orm';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { patches, patchApprovals, devices, devicePatches } from '../../db/schema';
 import { listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
@@ -34,6 +35,12 @@ export const listRoutes = new Hono();
 listRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
+  // Same RBAC bar as every sibling patch READ (compliance.ts, approvals.ts):
+  // this route returns the patch inventory joined per-org, so scope alone is
+  // not the gate. DEVICES_READ is granted to every device-viewing role, which
+  // is exactly the population that can already see the compliance figures
+  // this list backs.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', listPatchesSchema),
   async (c) => {
     const auth = c.get('auth');

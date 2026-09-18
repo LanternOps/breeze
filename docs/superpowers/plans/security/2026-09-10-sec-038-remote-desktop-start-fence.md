@@ -94,7 +94,7 @@ Six waves, tracked as sub-issues of `LanternOps/breeze#5531`.
 | W03 | `#5534` | One terminal-intent contract for every terminal writer (pending→confirmed phase) | Not started |
 | W04 | `#5535` | Agent in-memory fence: high-water mark + tombstone on stop, refuse stale starts | Not started |
 | W05 | `#5536` | Durable fence store + helper IPC generation + resync on connect/lease renewal | Not started |
-| W06 | `#5537` | Capability gate `REMOTE_DESKTOP_FENCE_REQUIRED`, cutover, viewer/UI pending-teardown handling | Not started |
+| W06 | `#5537` | Capability gate `REMOTE_DESKTOP_FENCE_REQUIRED`, cutover, viewer/UI pending-teardown handling | In PR |
 
 ---
 
@@ -260,11 +260,11 @@ W05 does not merge on a Linux/macOS-only green. The Go tests must be cross-compi
 
 **Red-first tests:**
 
-- [ ] Gate off: an unfenced agent is admitted (so the release that introduces the gate is a no-op for the fleet).
-- [ ] Gate on: an unfenced agent is refused with the upgrade code.
-- [ ] `ConnectDesktopButton` / answer polling does not render connected while `termination_phase = 'pending'`.
-- [ ] Session history distinguishes pending teardown from confirmed end.
-- [ ] New UI strings land in all locales (`localeParity.test.ts` must stay green).
+- [x] Gate off: an unfenced agent is admitted (so the release that introduces the gate is a no-op for the fleet).
+- [x] Gate on: an unfenced agent is refused with the upgrade code.
+- [x] `ConnectDesktopButton` / answer polling does not render connected while `termination_phase = 'pending'`.
+- [x] Session history distinguishes pending teardown from confirmed end.
+- [x] New UI strings land in all locales (`localeParity.test.ts` must stay green).
 
 ---
 

@@ -141,4 +141,36 @@ describe('ActionMenu', () => {
     render(<ActionMenu label="Row actions" triggerTabIndex={-1} items={[{ id: 'a', label: 'First', onSelect: () => undefined }]} />);
     expect(screen.getByRole('button', { name: 'Row actions' })).toHaveAttribute('tabindex', '-1');
   });
+
+  it('renders the open menu outside any clipping ancestor (portal to body, fixed position)', () => {
+    render(
+      <div data-testid="clipper" style={{ overflow: 'auto', height: 40 }}>
+        <ActionMenu label="Row actions" items={[{ id: 'a', label: 'First', onSelect: () => undefined }]} />
+      </div>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Row actions' }));
+    const menu = screen.getByRole('menu');
+    expect(screen.getByTestId('clipper').contains(menu)).toBe(false);
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.style.position).toBe('fixed');
+  });
+
+  it('a mousedown inside the portalled menu is not an outside click', () => {
+    const { onArchive } = renderMenu();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    const item = screen.getByTestId('item-archive');
+    fireEvent.mouseDown(item);
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    fireEvent.click(item);
+    expect(onArchive).toHaveBeenCalledTimes(1);
+  });
+
+  it('Tab closes the menu and leaves focus on the trigger, so tabbing continues from the row', () => {
+    renderMenu();
+    const trigger = screen.getByRole('button', { name: 'More actions' });
+    fireEvent.click(trigger);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Tab' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(trigger);
+  });
 });

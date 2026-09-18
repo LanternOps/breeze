@@ -1,6 +1,7 @@
 import { showToast } from '../components/shared/Toast';
 import { extractApiError, isApiFailure } from './apiError';
 import { dispatchTrustDenied, isTrustDenial } from './trustProbation';
+import { i18n } from './i18n';
 
 export class ActionError extends Error {
   code?: string;
@@ -27,8 +28,9 @@ export interface RunActionOptions<T> {
   /** Maps a machine error token to user-facing copy. Called with `body.code`
    *  when present, otherwise with `body.error` — routes that only emit a bare
    *  `{ error: 'some_token' }` (e.g. the approvals decide route's
-   *  `step_up_required`) would otherwise toast the raw token verbatim. */
-  friendly?: (code: string) => string | undefined;
+   *  `step_up_required`) would otherwise toast the raw token verbatim.
+   *  The second argument includes parsed details for local copy cleanup. */
+  friendly?: (code: string, message: string) => string | undefined;
   onUnauthorized?: () => void;
   /**
    * Opt in to treating a 401 as a normal, toastable failure instead of "your
@@ -39,6 +41,38 @@ export interface RunActionOptions<T> {
    * below). Default false, so every pre-existing caller is unchanged.
    */
   treatUnauthorizedAsError?: boolean;
+}
+
+function isZodValidationFailure(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+
+  const body = data as Record<string, unknown>;
+
+  // Current shared zValidator contract:
+  // { error: string, details: { formErrors: [], fieldErrors: {} } }
+  const details = body.details;
+  if (details && typeof details === 'object' && !Array.isArray(details)) {
+    const flattened = details as Record<string, unknown>;
+    if (
+      Array.isArray(flattened.formErrors) &&
+      flattened.fieldErrors !== null &&
+      typeof flattened.fieldErrors === 'object' &&
+      !Array.isArray(flattened.fieldErrors)
+    ) {
+      return true;
+    }
+  }
+
+  // Legacy/raw ZodError shapes kept for older deployed APIs.
+  const error = body.error;
+  if (error && typeof error === 'object' && !Array.isArray(error)) {
+    const zodError = error as Record<string, unknown>;
+    if (zodError.name === 'ZodError' || Array.isArray(zodError.issues)) {
+      return true;
+    }
+  }
+
+  return Array.isArray(body.issues);
 }
 
 export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise<T> {
@@ -78,9 +112,45 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       ? (data as Record<string, unknown>).error
       : undefined);
     const friendlyKey = code ?? (typeof errorToken === 'string' ? errorToken : undefined);
+    // Additive i18n by error code (Phase-3 Task 3): when the API rides a `code`
+    // and we have an `errors:<CODE>` translation loaded, use it as the default
+    // message. Falls through to server prose when the key is absent. Placed
+    // BEFORE the `friendly` hook so a per-call friendly() still overrides it.
+    // i18n-dynamic: code is a runtime value, keyUsage can't scan it statically.
+    if (code && i18n.exists(`errors:${code}`)) {
+      message = i18n.t(/* i18n-dynamic */ `errors:${code}`);
+    }
+    let friendlyApplied = false;
     if (friendlyKey && opts.friendly) {
-      const friendly = opts.friendly(friendlyKey);
-      if (friendly) message = friendly;
+      const friendly = opts.friendly(friendlyKey, message);
+      if (friendly) {
+        message = friendly;
+        friendlyApplied = true;
+      }
+    }
+    // Validation envelope (Phase-3 Step 4 of #3859): on a Zod 400 with no `code` and
+    // no per-call friendly(), the message from extractApiError is the specific
+    // field text. Per #1976 that specific text must stay the high-contrast
+    // `message` (the user sees exactly which field failed); the translated
+    // VALIDATION_FAILED headline rides as the low-contrast `detail` second line.
+    // Only when there is no specific field text does the translated headline
+    // become the message itself. Scoped to 400-without-code as agreed on #5692.
+    let detail: string | undefined;
+    if (
+      response.status === 400 &&
+      isZodValidationFailure(data) &&
+      !code &&
+      !friendlyApplied &&
+      i18n.exists('errors:VALIDATION_FAILED')
+    ) {
+      const headline = i18n.t('errors:VALIDATION_FAILED');
+      const specific = message && message !== opts.errorFallback ? message : undefined;
+      if (specific) {
+        message = specific;
+        detail = headline;
+      } else {
+        message = headline;
+      }
     }
     if (response.status === 403 && isTrustDenial(data)) {
       // Best-effort UI handoff: if a mounted TrustProbationBanner picks this
@@ -89,9 +159,9 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       // it — the banner isn't mounted on this page — fall back to the
       // normal error toast so the failure is never silent.
       const handled = dispatchTrustDenied(data);
-      if (!handled) showToast({ message, type: 'error' });
+      if (!handled) showToast({ message, ...(detail !== undefined ? { detail } : {}), type: 'error' });
     } else {
-      showToast({ message, type: 'error' });
+      showToast({ message, ...(detail !== undefined ? { detail } : {}), type: 'error' });
     }
     throw new ActionError(message, response.status, code, data);
   }

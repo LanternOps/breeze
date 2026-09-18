@@ -1,0 +1,64 @@
+---
+title: AI Analysis Runs
+description: Inspect sandboxed AI agent analysis, findings and downloadable files.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+AI agents can export data, run code against it in an isolated workspace, and produce findings plus downloadable files. The run page records what happened and the files produced.
+
+<Aside type="caution" title="Background launches from chat are disabled">
+  Chat cannot start background analysis runs in this version. Delegating a user's request to an agent requires a separate authorization design that preserves the user's access restrictions. Preconfigured AI agent execution and historical run results remain available.
+</Aside>
+
+<Aside type="caution" title="This runs on rented compute, and it is off until you say otherwise">
+  Analysis code executes in a sandbox hosted in your organization's region — not on your devices, and not on your own servers. It is **off by default for every organization** and an administrator has to turn it on per organization under **Settings → Organization → Security**. Until then the capability is simply absent: nothing breaks, and nobody can start a run. Self-hosted Breeze does not have this feature at all.
+</Aside>
+
+## What the workspace can and cannot do
+
+The workspace is a per-run virtual machine that is destroyed when the run ends.
+
+| It can | It cannot |
+|---|---|
+| Read the data the run staged into it | Reach the internet, your devices, or the Breeze API — it has no network at all |
+| Run Python, Node and shell scripts the model writes | Hold any credential, token or key |
+| Write files you can download | Change anything on a machine, or survive the run |
+
+Anything the analysis wants *done* comes back as a **proposal**. Proposals are text: turning one into a real action is the same approval you already use, with the same tier gate and the same audit record. The sandbox is not a way around approvals — it cannot reach a device even if it tried.
+
+## Configured agent access
+
+An agent's site, device-group, and device-tag restrictions apply to manual runs as well as automatic triggers. Partner and organization filters combine by intersection; non-overlapping filters permit no access. Scope is checked again when a queued run starts and before each tool call.
+
+Agents with these restrictions currently require a single device target. Organization-wide runs are refused until their evidence and tools support the same restrictions. Scoped runs expose device lookup, device context, and device metric analysis tools; broader tools are refused until their scope handling is verified. Moving the device to another site during a run also stops further scoped tool calls.
+
+## Reading the run
+
+The run page is the audit surface. Besides the usual trigger and status, an analysis run shows:
+
+- **Files this run produced** — name, kind, size, a text preview when supported, and a download. Files always download as attachments; Breeze never renders them.
+- **What ran in the workspace** — every step in order, with the language, the exit code, how long it took, and links to the exact script and its output. This is how you check a finding rather than take it on faith.
+- **Compute** — the sandbox's own cost, tracked separately from the run's model/token cost.
+
+Files are kept for **30 days** and then deleted. A ticket or report you attached one to keeps the record; once a file expires, it shows as expired rather than as a broken link.
+
+## Attaching a file to a ticket
+
+Open the run, find the file, and choose **Attach to a ticket**. Breeze links the file to the ticket as an attachment and adds an internal comment — by reference, not by copy, so nothing is duplicated. The success message appears after both steps complete. Because it's a reference, the attachment expires along with the underlying file (see "Reading the run" above).
+
+A report run can attach the same file the same way, also by reference.
+
+## Turning it on
+
+<Steps>
+
+1. Your operator enables the feature for the deployment.
+
+2. An administrator turns on **Allow sandboxed AI analysis** for each organization that wants it, under **Settings → Organization → Security**.
+
+3. The organization's AI policy must include the **workspace** capability. Until it does, runs are refused with a message saying so.
+
+</Steps>
+
+Each organization has its own daily compute budget and per-run limits, enforced before a run starts — an analysis that would exceed them is refused rather than truncated halfway.

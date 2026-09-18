@@ -71,8 +71,10 @@ vi.mock('../services/agentCommandRelay', () => ({
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
+vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
+
 // Must import AFTER mock so the module-level destructure picks up our mock
-const { resolveBackupTargets, processCleanupExpiredSnapshots, __testOnly } = await import('./backupWorker');
+const { resolveBackupTargets, processCleanupExpiredSnapshots, EmptyBackupPathsError, __testOnly } = await import('./backupWorker');
 
 describe('resolveBackupTargets', () => {
   beforeEach(() => {
@@ -449,10 +451,63 @@ describe('resolveBackupTargets', () => {
     expect(result).toEqual([]);
   });
 
-  it('returns empty paths and no excludes field for file mode when not provided', async () => {
-    const result = await resolveBackupTargets('file', {}, 'device-id');
+  // #6001: this case used to assert `{ paths: [] }` was emitted. That payload
+  // could only ever produce the agent's "backup_run payload has no paths"
+  // bounce at 0s, so file mode now refuses at the server instead — the job is
+  // marked failed with an actionable reason before anything reaches a device.
+  it('refuses file mode with no paths rather than dispatching an empty list', async () => {
+    await expect(resolveBackupTargets('file', {}, 'device-id')).rejects.toThrow(
+      EmptyBackupPathsError
+    );
+    await expect(resolveBackupTargets('file', { paths: [] }, 'device-id')).rejects.toThrow(
+      EmptyBackupPathsError
+    );
+  });
+
+  it('refuses file mode whose paths are only blank strings', async () => {
+    // A whitespace-only entry is not a path — admitting it would hand the agent
+    // a list it discards, reproducing the same 0s failure the refusal exists to
+    // prevent.
+    await expect(
+      resolveBackupTargets('file', { paths: ['', '   '] }, 'device-id')
+    ).rejects.toThrow(EmptyBackupPathsError);
+  });
+
+  it('warns when normalization drops SOME path entries rather than dropping them silently', async () => {
+    // A selection that lost entries is not the selection the tech configured.
+    // The job still succeeds on what is left (refusing the whole run would be
+    // worse), so the log line is the only trail explaining why one folder
+    // stopped being backed up.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await resolveBackupTargets(
+        'file',
+        { paths: ['C:\\Users', '', null as unknown as string, '   '] },
+        'device-id'
+      );
+      expect(result[0]!.payload).toEqual({ paths: ['C:\\Users'] });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('Dropped 3 unusable path entries');
+      expect(warn.mock.calls[0]![0]).toContain('device-id');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not warn when every configured path is usable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await resolveBackupTargets('file', { paths: ['/data', '/etc'] }, 'device-id');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('trims surrounding whitespace off dispatched paths', async () => {
+    const result = await resolveBackupTargets('file', { paths: ['  C:\\Users  '] }, 'device-id');
     expect(result).toEqual([
-      { commandType: 'backup_run', payload: { paths: [] } },
+      { commandType: 'backup_run', payload: { paths: ['C:\\Users'] } },
     ]);
   });
 });
@@ -719,7 +774,7 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
   // Route every db.select() call by the shape of its column-selector argument
   // (all these queries hit different tables/columns, real schema refs — not
   // stringly-typed, so we key off which fields were requested).
-  function wireSelects() {
+  function wireSelects(currentOrgId = 'org-1') {
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
       let rows: unknown[];
@@ -727,6 +782,8 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
         rows = [CONFIG_ROW]; // config load: db.select() with no arg
       } else if (keys.length === 1 && keys[0] === 'status') {
         rows = []; // isBackupJobCancelled: never cancelled
+      } else if (keys.length === 1 && keys[0] === 'orgId') {
+        rows = [{ orgId: currentOrgId }];
       } else if (keys.length === 1 && keys[0] === 'agentId') {
         rows = [{ agentId: 'agent-1' }]; // device -> agent lookup
       } else if (keys.includes('featureLinkId')) {
@@ -783,6 +840,14 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
     expect(result).toEqual({ dispatched: false });
     expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(updateLog.some((u) => u.payload.errorLog === 'Agent not connected')).toBe(true);
+  });
+
+  it('refuses dispatch after a device moves org and records the failure reason', async () => {
+    wireSelects('org-2');
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(result).toEqual({ dispatched: false });
+    expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
   });
 
   it('dispatches normally (sentCount incremented) when the outcome is sent', async () => {
@@ -863,6 +928,7 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
   function wireSelectsWithCandidate(candidateRows: unknown[], retirementRows: unknown[] = []) {
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
       let rows: unknown[] = [];
       if (keys.length === 0) rows = [CONFIG_ROW];
       else if (keys.length === 1 && keys[0] === 'status') rows = [];
@@ -962,6 +1028,7 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
     // shape router.
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
       if (keys.length === 0) return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([CONFIG_ROW]) }) }) };
       if (keys.length === 1 && keys[0] === 'status') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) };
       if (keys.length === 1 && keys[0] === 'agentId') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ agentId: 'agent-1' }]) }) }) };
@@ -988,6 +1055,7 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
   function wireSelects(configRow: Record<string, unknown> = CONFIG_ROW_GEN3) {
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
       let rows: unknown[];
       if (keys.length === 0) {
         rows = [configRow];

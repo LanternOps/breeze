@@ -40,3 +40,4 @@ Closes #
 - [ ] I have reviewed my own changes
 - [ ] I have tested on the relevant platforms
 - [ ] No secrets, credentials, or personal data included
+- [ ] If this PR touches `pages/settings/**` or a `*Settings*` component: states the setting's home, level, resolver, and the count of places it's configured before/after (CLAUDE.md "Settings — one concept, one home", rule 9).

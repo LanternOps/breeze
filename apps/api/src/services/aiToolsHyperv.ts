@@ -14,7 +14,7 @@ import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import {
   resolveBackupWriteCommandDestination,
@@ -116,8 +116,14 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to host devices in the caller's allowed sites.
       const vmsOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && vmsOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(vmsOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = vmsOrgId
+          ? await resolveSiteAllowedDeviceIds(vmsOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ vms: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ vms: [], showing: 0 });
         conditions.push(inArray(hypervVms.deviceId, allowed));
@@ -417,7 +423,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Load the snapshot under org AND site scope (source device site gated),
       // so a site-restricted caller cannot import a cross-site snapshot onto a

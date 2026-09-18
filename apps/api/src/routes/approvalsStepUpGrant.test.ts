@@ -99,6 +99,13 @@ vi.mock('../services/authenticatorPolicy', () => ({
 vi.mock('../services/actionIntents/intentApprovers', () => ({
   resolveIntentApprovers: vi.fn(async () => ['00000000-0000-0000-0000-000000000001']),
   isAgentIntentDecideAuthorized: vi.fn(async () => true),
+  // Org-wide governance classifier (audit §1.1). Real semantics, so the
+  // site-ceiling branch in the decide core is exercised the way production
+  // reaches it: false for every intent these suites raise.
+  isOrgWideGovernanceIntent: vi.fn(
+    (toolName: string, args: Record<string, unknown> | null | undefined) =>
+      toolName === 'manage_ai_agents' && args?.action === 'authorize_supervised_key',
+  ),
 }));
 
 vi.mock('../services/permissions', () => ({

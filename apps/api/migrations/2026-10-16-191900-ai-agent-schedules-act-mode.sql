@@ -1,0 +1,16 @@
+-- Sweep act mode (#4442 W04) — spec §3.2 condition 3.
+--
+-- Deliberately NULLABLE and three-valued rather than NOT NULL DEFAULT false.
+-- A false default would materialise on every EXISTING org override row, and
+-- effectiveSchedule's `baseline && (override ?? true)` shape would then make a
+-- partner-wide arming invisible to exactly the orgs that have an override —
+-- silently, with no error. Semantics:
+--   baseline:  true = armed;      anything else = not armed
+--   override:  false = disarmed;  anything else = inherit
+-- effective = baseline.act_mode IS TRUE AND override.act_mode IS DISTINCT FROM false
+-- Fail-closed in both directions, so there is nothing to backfill and this
+-- file carries no DML (and therefore needs no breeze.scope elevation).
+--
+-- The one-owner CHECK, the dual-axis RLS policy and the partner-wide SELECT
+-- branch on this table are unchanged (2026-09-23-ai-agents-scheduled-sweeps.sql).
+ALTER TABLE ai_agent_schedules ADD COLUMN IF NOT EXISTS act_mode boolean;

@@ -155,7 +155,7 @@ vi.mock('drizzle-orm', () => ({
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { buildAuthContextForIntent, originPrincipalFor } from './actorContext';
+import { buildApproverAuthContextForIntent, buildAuthContextForIntent, originPrincipalFor } from './actorContext';
 import { IntentScopeLostError } from './intentTargetScope';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 
@@ -983,5 +983,90 @@ describe('buildAuthContextForIntent — AI origin reconstruction (#5022 W01)', (
     );
 
     expect(result?.aiOrigin).toBeUndefined();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #4177 (W04): the APPROVER's context for a user-owned release
+// (manage_tickets:log_time_entry). Partner-scoped, user_session principal,
+// and fail-closed unless the approver resolves on the partner axis of the
+// intent's own partner — time_entries is a partner-axis table.
+// -----------------------------------------------------------------------------
+describe('buildApproverAuthContextForIntent (#4177, W04)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+    dbState.selectApiKeysResults.length = 0;
+  });
+
+  const approver = { ...activeUser, id: 'approver-1', email: 'tech@example.com', name: 'Tess Tech' };
+  const agentIntent = () => baseIntent({
+    partnerId: 'partner-1',
+    requestedByUserId: null,
+    requestingAgentRunId: 'run-1',
+    originPrincipalKind: 'ai_agent',
+    originPrincipalId: 'agent-1',
+    actionName: 'manage_tickets',
+    arguments: { action: 'log_time_entry' },
+    decidedByUserId: 'approver-1',
+  } as Partial<ActionIntent>);
+
+  it('builds a PARTNER-scoped user_session context for a partner-axis approver', async () => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: null, roleId: 'role-1', scope: 'partner', orgAccess: 'all',
+    });
+
+    const result = await buildApproverAuthContextForIntent(agentIntent(), 'approver-1');
+
+    expect(result).not.toBeNull();
+    expect(result!.principal).toEqual({ kind: 'user_session' });
+    expect(result!.user.id).toBe('approver-1');
+    expect(result!.scope).toBe('partner');
+    expect(result!.partnerId).toBe('partner-1');
+    expect(result!.orgId).toBe('org-1');
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
+    expect(result!.token).toMatchObject({ sub: 'approver-1', scope: 'partner', partnerId: 'partner-1', roleId: 'role-1' });
+    expect(permState.getUserPermissions).toHaveBeenCalledWith('approver-1', { partnerId: 'partner-1', orgId: 'org-1' });
+  });
+
+  it('returns null for an org-axis approver — never widens an org member to partner scope', async () => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: null, orgId: 'org-1', roleId: 'role-1', scope: 'organization',
+    });
+    expect(await buildApproverAuthContextForIntent(agentIntent(), 'approver-1')).toBeNull();
+  });
+
+  it('returns null when the approver resolves on a DIFFERENT partner than the intent', async () => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-other', orgId: null, roleId: 'role-1', scope: 'partner', orgAccess: 'all',
+    });
+    expect(await buildApproverAuthContextForIntent(agentIntent(), 'approver-1')).toBeNull();
+  });
+
+  it('returns null when the approver is no longer active', async () => {
+    dbState.selectUsersResults.push([{ ...approver, status: 'disabled' }]);
+    expect(await buildApproverAuthContextForIntent(agentIntent(), 'approver-1')).toBeNull();
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('returns null when a selected-org partner approver no longer covers intent.orgId', async () => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: null, roleId: 'role-1', scope: 'partner', orgAccess: 'selected', allowedOrgIds: ['org-99'],
+    });
+    expect(await buildApproverAuthContextForIntent(agentIntent(), 'approver-1')).toBeNull();
+  });
+
+  it('the ordinary user-owned builder is unchanged: still org-scoped, still the recorded origin principal', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: 'org-1', roleId: 'role-1', scope: 'partner', orgAccess: 'all',
+    });
+    const result = await buildAuthContextForIntent(baseIntent({ partnerId: 'partner-1', originPrincipalKind: 'user_session' } as Partial<ActionIntent>));
+    expect(result!.scope).toBe('organization');
+    expect(result!.principal).toEqual({ kind: 'user_session' });
   });
 });

@@ -179,6 +179,35 @@ describe('ApprovalsInbox', () => {
     expect(row).not.toHaveTextContent('Requested by');
   });
 
+  // #6202: shadow mode still mints real, executable approval cards — the
+  // card itself (not just the agent form) must say approving runs it now.
+  // The card has no access to the run's mode (shadow vs act) at render
+  // time, so the notice is generic to every `origin: 'ai_agent'' row.
+  it('tells the approver that approving an agent-proposed card executes it now', async () => {
+    fetchMock.mockResolvedValue(
+      response({
+        approvals: [
+          {
+            ...pendingApproval,
+            id: 'approval-agent',
+            intentId: 'intent-agent',
+            origin: 'ai_agent',
+            agentName: 'Triage',
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+
+    render(<ApprovalsInbox />);
+
+    const row = await screen.findByTestId('approval-row-approval-agent');
+    expect(
+      screen.getByTestId('approval-agent-execute-notice-approval-agent'),
+    ).toHaveTextContent('Approving this runs it now — not a dry run, even in shadow mode.');
+    expect(row).toHaveTextContent('Approving this runs it now — not a dry run, even in shadow mode.');
+  });
+
   it('falls back to the requesting client label when the agent name is missing', async () => {
     fetchMock.mockResolvedValue(
       response({
@@ -208,6 +237,9 @@ describe('ApprovalsInbox', () => {
     expect(row).toHaveTextContent('Requested by Helpdesk Copilot');
     expect(
       screen.queryByTestId('approval-agent-badge-approval-1'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('approval-agent-execute-notice-approval-1'),
     ).not.toBeInTheDocument();
   });
 
@@ -378,6 +410,27 @@ describe('ApprovalsInbox', () => {
 
     const error = await screen.findByTestId('approval-error-approval-1');
     expect(error).toHaveTextContent(/could not be submitted/i);
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  // Review finding #2: a decide-time 403 `site_ceiling` (the approver holds
+  // approvals:decide but is site/exact-device restricted, and the intent is
+  // an org-wide-governance grant) used to fall through to the generic
+  // "could not be submitted... Try again" copy — actively wrong for a
+  // refusal no retry can ever clear.
+  it('shows a non-retryable, specific inline message for a 403 site_ceiling refusal', async () => {
+    intentApprovalsMock.decide.mockRejectedValue(
+      new ActionError('Forbidden', 403, undefined, { error: 'site_ceiling' }),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    const error = await screen.findByTestId('approval-error-approval-1');
+    expect(error).not.toHaveTextContent(/could not be submitted/i);
+    expect(error).not.toHaveTextContent('site_ceiling');
+    expect(error).toHaveTextContent(/organization-wide/i);
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
@@ -886,7 +939,10 @@ describe('ApprovalsInbox — "Approve and always allow"', () => {
     opKey,
     namespace: 'policy_key',
     state,
-    window: { executed: 12, verified: 9, failed: 0, recurred: 0, firstVerifiedAt: '2026-08-01T00:00:00.000Z' },
+    window: {
+      executed: 12, verified: 9, sweepVerified: 9, sweepExecuted: 9, failed: 0, recurred: 0,
+      firstVerifiedAt: '2026-08-01T00:00:00.000Z',
+    },
     blockedReason: state === 'eligible' ? null : 'below_threshold',
     promotedAt: null,
     demotedAt: null,
@@ -1565,5 +1621,100 @@ describe('ApprovalsInbox — client-side expiry refusal at click time (finding #
 
     expect(screen.getByTestId(`approval-group-error-${GROUP_KEY}`)).toHaveTextContent('expired');
     expect(batchCalls()).toHaveLength(0);
+  });
+});
+
+// Sweep G2-4: the AI run trace (RunDetailPage) links to
+// `/approvals#intent-<uuid>` — the inbox must scroll to and highlight the
+// named card, or (if it already left the pending set) show a dismissible
+// notice instead of silently landing on an unrelated list.
+describe('ApprovalsInbox — #intent-<id> deep link (sweep G2-4)', () => {
+  let realScrollIntoView: typeof Element.prototype.scrollIntoView;
+
+  beforeEach(() => {
+    // jsdom has no layout and so no `scrollIntoView` implementation.
+    realScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    window.location.hash = '';
+    Element.prototype.scrollIntoView = realScrollIntoView;
+  });
+
+  it('scrolls to and highlights the card named by the hash', async () => {
+    const intentId = '55555555-5555-4555-8555-555555555555';
+    routeFetch([{ ...pendingApproval, id: 'approval-1', intentId }]);
+    window.location.hash = `#intent-${intentId}`;
+
+    render(<ApprovalsInbox />);
+    const row = await screen.findByTestId('approval-row-approval-1');
+
+    expect(row).toHaveAttribute('id', `intent-${intentId}`);
+    expect(row.className).toMatch(/ring-2/);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      block: 'center',
+    });
+  });
+
+  it('shows a dismissible notice when the hashed intent is not in the pending list', async () => {
+    const intentId = '66666666-6666-4666-8666-666666666666';
+    routeFetch([pendingApproval]); // intentId is 'intent-1', not the hashed one
+    window.location.hash = `#intent-${intentId}`;
+
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    expect(screen.getByTestId('approval-intent-gone-notice')).toHaveTextContent(
+      'That approval is no longer pending.',
+    );
+
+    fireEvent.click(screen.getByTestId('approval-intent-gone-dismiss'));
+    expect(screen.queryByTestId('approval-intent-gone-notice')).not.toBeInTheDocument();
+  });
+
+  it('ignores a hash that does not name an intent', async () => {
+    routeFetch([pendingApproval]);
+    window.location.hash = '#something-else';
+
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    expect(screen.queryByTestId('approval-intent-gone-notice')).not.toBeInTheDocument();
+  });
+});
+
+// Sweep G2-10: a 7-day approval window rendered "Expires in 10079 min" — roll
+// it up so the card reads in the largest sensible unit.
+describe('ApprovalsInbox — expiry roll-up (sweep G2-10)', () => {
+  it('rolls a multi-day window up to days instead of raw minutes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    routeFetch([{ ...pendingApproval, expiresAt: '2026-08-30T12:00:00.000Z' }]); // 7 days out
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+
+    expect(screen.getByTestId('approval-expiry-approval-1')).toHaveTextContent('Expires in 7 days');
+  });
+
+  it('rolls a multi-hour window up to hours instead of raw minutes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    routeFetch([{ ...pendingApproval, expiresAt: '2026-08-23T17:30:00.000Z' }]); // 5.5 hours out
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+
+    expect(screen.getByTestId('approval-expiry-approval-1')).toHaveTextContent('Expires in 5 h');
+  });
+
+  it('still shows minutes just under the hour roll-up threshold', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    routeFetch([{ ...pendingApproval, expiresAt: '2026-08-23T13:29:00.000Z' }]); // 89 minutes out
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+
+    expect(screen.getByTestId('approval-expiry-approval-1')).toHaveTextContent('Expires in 89 min');
   });
 });

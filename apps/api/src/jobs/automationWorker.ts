@@ -574,6 +574,23 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
       severity: normalizeTriggerSeverity(payload.severity),
       ruleId: typeof payload.ruleId === 'string' ? payload.ruleId : null,
     };
+  } else if (typeof payload.deviceId === 'string') {
+    // Event targets must not fall back to the static fleet-wide conditions.
+    // Recheck current ownership: the device/org may have moved since publication.
+    const [device] = await db
+      .select({ orgId: devices.orgId, partnerId: organizations.partnerId })
+      .from(devices)
+      .innerJoin(organizations, eq(devices.orgId, organizations.id))
+      .where(eq(devices.id, payload.deviceId))
+      .limit(1);
+    const belongsToOwner = device && (automation.orgId
+      ? device.orgId === automation.orgId
+      : automation.partnerId && device.partnerId === automation.partnerId);
+    if (!belongsToOwner) {
+      console.warn(`[AutomationWorker] Skipping automation ${automation.id}: event_device_outside_automation_scope (device ${payload.deviceId})`);
+      return { skipped: 'event_device_outside_automation_scope' };
+    }
+    boundDeviceIds = [payload.deviceId];
   }
 
   const { run, targetDeviceIds } = await createAutomationRunRecord({

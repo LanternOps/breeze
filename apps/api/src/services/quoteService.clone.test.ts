@@ -49,12 +49,26 @@ vi.mock('../db', () => {
   };
 });
 
+// Tax resolution moved into the shared taxRateResolver service (settings
+// consolidation W02-API): quoteService.resolveQuoteTaxRate is a thin wrapper,
+// so its db.select calls are no longer visible to this file's db mock.
+vi.mock('./taxRateResolver', () => ({
+  resolveOrgTaxRate: vi.fn(async () => null),
+  OrgNotVisibleForTaxError: class OrgNotVisibleForTaxError extends Error {
+    constructor(public readonly orgId: string) {
+      super(`not visible: ${orgId}`);
+      this.name = 'OrgNotVisibleForTaxError';
+    }
+  },
+}));
+
 vi.mock('./quoteNumbers', () => ({
   allocateQuoteCounter: vi.fn().mockResolvedValue(42),
   formatQuoteNumber: vi.fn().mockReturnValue('Q-2026-000042'),
 }));
 
 import { cloneQuote } from './quoteService';
+import { resolveOrgTaxRate } from './taxRateResolver';
 
 const actor = { userId: 'user-1', partnerId: 'partner-1', accessibleOrgIds: ['org-1'] };
 // For retarget tests: may clone INTO org-2 (source stays org-1).
@@ -85,6 +99,7 @@ describe('cloneQuote', () => {
     state.insertedValues.length = 0;
     state.transactionCalls = 0;
     vi.clearAllMocks();
+    vi.mocked(resolveOrgTaxRate).mockResolvedValue(null);
   });
 
   it('copies quote content and remaps aggregate IDs into a fresh draft', async () => {
@@ -150,11 +165,10 @@ describe('cloneQuote', () => {
       [], // getQuote: listQuoteOrders — order lines
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
       [{ id: 'org-2', currencyCode: 'USD' }], // target org same-partner membership check (currency matches the source stamp)
-      // resolveQuoteTaxRate for the NEW org: 8% org rate, no partner default
-      [{ taxExempt: false, taxRate: '0.08000' }],
-      [{ defaultTaxRate: null }],
       [{ currencyCode: 'USD' }], // org SHARE barrier inside the clone tx (#3778)
     );
+    // resolveQuoteTaxRate for the NEW org: 8% (shared resolver, mocked)
+    vi.mocked(resolveOrgTaxRate).mockResolvedValue('0.08000');
 
     const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2', title: 'Beta rollout' });
 
@@ -321,11 +335,10 @@ describe('cloneQuote', () => {
       [{ id: 'org-2', currencyCode: 'USD' }], // target org same-partner membership check (currency matches the source stamp)
       [{ templateId: 'tpl-1', status: 'published' }], // version published
       [{ status: 'active', orgId: null, partnerId: 'partner-1' }], // PARTNER-WIDE template — visible to every org of the partner
-      // resolveQuoteTaxRate for the new org
-      [{ taxExempt: false, taxRate: '0.08000' }],
-      [{ defaultTaxRate: null }],
       [{ currencyCode: 'USD' }], // org SHARE barrier inside the clone tx (#3778)
     );
+    // resolveQuoteTaxRate for the new org (shared resolver, mocked)
+    vi.mocked(resolveOrgTaxRate).mockResolvedValue('0.08000');
 
     const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2' });
 

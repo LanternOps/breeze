@@ -1,5 +1,5 @@
 import { Job, Worker } from 'bullmq';
-import type { AiAgentRecipients } from '@breeze/shared';
+import { parseSweepTriggerKey, type AiAgentRecipients } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
@@ -26,7 +26,8 @@ import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
-import { createIntentFixWatchRow } from '../services/aiAgents/fixWatch';
+import { createIntentFixWatchRow, createSweepFixWatchRow } from '../services/aiAgents/fixWatch';
+import { isActEligibleSweepKind } from '../services/aiAgents/sweepSubjectProbe';
 import {
   demoteSupervisedKey,
   notifyDemotion,
@@ -35,11 +36,14 @@ import {
 import { enqueueFixWatchPhase1 } from './fixWatchWorker';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { buildApproverAuthContextForIntent } from '../services/actionIntents/actorContext';
+import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
+import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
@@ -382,6 +386,21 @@ interface IntentEvidenceAnchor {
   sourceId: string;
   runId: string;
   /**
+   * #5751 W02 (#5753) — the sweep arm's inputs, read off the INTENT row the
+   * caller already holds (W01's `trigger_kind`/`trigger_key`, plus P2-2's
+   * `scope_device_id`). Carried on the anchor rather than re-read so
+   * `watchReleasedIntent` keeps needing no query of its own.
+   *
+   * `scopeDeviceId` is the device a subject watch probes. It is the INTENT's,
+   * never the run's: a sweep run is device-less by construction, and this
+   * column tombstones to NULL when the device is deleted or moved org — at
+   * which point there is no subject device left and the C4 fallback is the
+   * correct answer.
+   */
+  triggerKind: string | null;
+  triggerKey: string | null;
+  scopeDeviceId: string | null;
+  /**
    * The ORG agent row a key was actually revoked from by the auto-demote that
    * rode this evidence write (P2-5 Task 6), or null when nothing was revoked
    * — a successful outcome, a key held only by the partner ceiling, or an org
@@ -467,6 +486,9 @@ async function recordIntentTerminalEvidence(
         opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
         sourceId: intentEvidenceSourceId(intent.id),
         runId,
+        triggerKind: intent.triggerKind ?? null,
+        triggerKey: intent.triggerKey ?? null,
+        scopeDeviceId: intent.scopeDeviceId ?? null,
         demotedOrgAgentId: null,
       };
 
@@ -545,12 +567,21 @@ async function recordIntentTerminalEvidence(
  * Three outcomes, and the difference between them is the whole point:
  *  - a watch row exists → return its id; the watch will grade this operation
  *    `verified` or `recurred` (Task 6), so nothing is credited now;
- *  - no watch is POSSIBLE (the run has no triggering alert, or that alert is
- *    no longer readable in this org) → credit `verified` on the same source
- *    id, in the same transaction. C4: an operation no watch will ever look at
- *    must not sit un-gradeable forever;
+ *  - no watch is POSSIBLE (the run has no triggering alert AND the intent
+ *    names no probeable sweep subject, or that alert is no longer readable in
+ *    this org) → credit `verified` on the same source id, in the same
+ *    transaction. C4: an operation no watch will ever look at must not sit
+ *    un-gradeable forever;
  *  - the attempt FAILED → credit nothing. An operation whose verification
  *    lane was lost is not "verified", and the ledger is immutable.
+ *
+ * #5751 W02 (#5753) NARROWED the middle branch. Its premise — "no watch is
+ * possible" — stopped being true for sweep-minted intents: a sweep run has no
+ * triggering alert, but a sweep FINDING has a subject, and a subject can be
+ * re-probed. Until the sweep arm below existed, every sweep-minted intent fell
+ * straight through to the `verified` credit, which made P2-5's graduation
+ * ladder a click-counter for the whole sweep lane (spec §1.1). The fallback is
+ * narrowed, NOT removed — it still stands for everything else.
  */
 async function watchReleasedIntent(
   intent: ActionIntent,
@@ -573,6 +604,40 @@ async function watchReleasedIntent(
           tx,
         );
         if (watchId) return watchId;
+      }
+
+      // #5751 W02 (#5753) — the sweep arm, deliberately BETWEEN the alert arm
+      // and the unconditional credit, so the fallback is narrowed rather than
+      // deleted. All four conditions are required and each has a real failure
+      // it excludes: a non-sweep trigger (nothing to probe), a tombstoned
+      // scope device (the target is gone, and the run has no device of its
+      // own to substitute), an unparseable or subject-less key (a half-record
+      // cannot be probed), and a kind with no registered probe (a watch that
+      // could only ever answer `unknown` would strand the operation — which is
+      // precisely what C4 exists to prevent).
+      const subject = anchor.triggerKind === 'sweep_finding'
+        ? parseSweepTriggerKey(anchor.triggerKey)
+        : null;
+      if (subject && anchor.scopeDeviceId && isActEligibleSweepKind(subject.kind)) {
+        const watchId = await createSweepFixWatchRow(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: anchor.runId,
+            agentId: anchor.agentId,
+            deviceId: anchor.scopeDeviceId,
+            subjectKind: subject.kind,
+            subjectKey: subject.subjectKey,
+            opKey: anchor.opKey,
+          },
+          tx,
+        );
+        if (watchId) return watchId;
+        // Creation failed for a sweep intent: credit NOTHING and return null.
+        // Falling through would write the very `verified` row this wave exists
+        // to prevent — a LOST verification lane is not a verification, and the
+        // ledger is immutable, so there is no undoing it later.
+        return null;
       }
 
       await insertOpEvidence(
@@ -706,6 +771,54 @@ export async function terminalizeIntent(
  * (digest/tier/actor/org) never touched execution, so they leave
  * `executedAt` null.
  */
+/**
+ * #4177 (W04): tool:action pairs whose released effect creates a row that a
+ * REAL user must own (a `users` FK), so an agent-originated intent cannot be
+ * executed under the rebuilt agent auth — `auth.user.id` there is an
+ * `aiAgents.id`, attribution only, never a users row, and the write is a
+ * guaranteed 23503 at approval time, in front of the technician.
+ *
+ * The approver IS the owner: they read the proposal and accepted the work as
+ * theirs. So the worker executes these as `decided_by_user_id` (see
+ * `resolveUserOwnedReleaseAuth`). An explicit allowlist, not a heuristic —
+ * do not generalise speculatively; add a pair only with its own release
+ * test and a handler that checks `context.approverRelease`.
+ */
+/**
+ * #6200 added the three `services/aiToolsFleet.ts` writers with the same
+ * shape as `log_time_entry`: agent-mintable as an action intent (a tier-3
+ * entry in `aiGuardrails.ts`'s `TIER3_SUPERVISED_ACTIONS` /
+ * `TIER3_FOUR_EYES_ACTIONS`) AND storing `auth.user.id` in a `users` FK
+ * column. Under the rebuilt agent auth that id is an `aiAgents.id`, so the
+ * insert was a guaranteed 23503 the technician saw as `execution_error`
+ * seconds after their own WebAuthn approval, with nothing done — observed
+ * three times on US prod for `install` (2026-09-18).
+ *
+ * `services/aiToolsFleet.userOwnedRelease.contract.test.ts` pins this set
+ * against the source, so a newly agent-mintable `auth.user.id` write into a
+ * users FK cannot be added to that file without landing here too.
+ */
+const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
+  'manage_tickets:log_time_entry',
+  // deployments.created_by (db/schema/deployments.ts) — tier 3 supervised.
+  'manage_deployments:create',
+  // patch_jobs.created_by (db/schema/patches.ts) — tier 3 supervised. The
+  // prod failure in #6200.
+  'manage_patches:install',
+  // patch_rollbacks.initiated_by (db/schema/patches.ts) — tier 3 four_eyes.
+  // Same FK, same 23503; only the approval scope differs, and the approver
+  // substitution is scope-independent.
+  'manage_patches:rollback',
+]);
+
+function userOwnedReleaseKey(intent: ActionIntent): string | null {
+  if (!intent.requestingAgentRunId) return null;
+  const args = intent.arguments as Record<string, unknown> | null;
+  const action = typeof args?.action === 'string' ? args.action : null;
+  const key = `${intent.actionName}:${action ?? ''}`;
+  return USER_OWNED_RELEASE_ACTIONS.has(key) ? key : null;
+}
+
 async function failIntent(
   intent: ActionIntent,
   errorCode: string,
@@ -935,7 +1048,51 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     await failIntent(intent, revalidation.errorCode, { details: revalidation.details });
     return;
   }
-  const { auth } = revalidation;
+  let { auth } = revalidation;
+
+  // #4177 (W04): a user-owned release action executes as the APPROVER, never
+  // the agent (see USER_OWNED_RELEASE_ACTIONS). Fail loudly rather than
+  // substitute a sentinel — a time entry with no real owner is an invoice
+  // line no one can defend. Both stops are terminal (`failed`), like every
+  // other structural revalidation stop: a row with no approver is not going
+  // to grow one on retry.
+  let approverRelease: { approverUserId: string } | undefined;
+  const userOwnedKey = userOwnedReleaseKey(intent);
+  if (userOwnedKey) {
+    if (!intent.decidedByUserId) {
+      await failIntent(intent, 'approver_required', {
+        details: {
+          reason: `${userOwnedKey} requires decided_by_user_id to own the created row; the intent has none`,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
+    const approverAuth = await buildApproverAuthContextForIntent(intent, intent.decidedByUserId);
+    if (!approverAuth) {
+      await failIntent(intent, 'actor_invalid', {
+        details: {
+          reason: 'the approving user is no longer active or can no longer reach the intent org',
+          decidedByUserId: intent.decidedByUserId,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
+    // The approver must hold the tool's own RBAC (time_entries:write for
+    // log_time_entry) — the structural agent authority check above vouched
+    // for the AGENT, not for the human the row will be written under. Same
+    // check revalidateRelease applies to every user-owned intent.
+    const permissionDenial = await checkToolPermission(intent.actionName, intent.arguments, approverAuth);
+    if (permissionDenial) {
+      await failIntent(intent, 'rbac_denied', {
+        details: { reason: permissionDenial, decidedByUserId: intent.decidedByUserId, actionName: intent.actionName },
+      });
+      return;
+    }
+    auth = approverAuth;
+    approverRelease = { approverUserId: intent.decidedByUserId };
+  }
 
   // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1,
   // services/actionIntents/effectDigest.ts) — the TOCTOU gap argumentDigest
@@ -1105,6 +1262,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
 
   let carrier: SecretToolResult | null = null;
   let rawResult: string;
+  // Tool catalog W01 PR B (#5216): the AUTHORITATIVE failure signal for an
+  // external (BYO MCP) call, straight from `executeTenantToolDetailed`.
+  // `isReturnedToolError` below is a shape heuristic written against Breeze's
+  // own compact tool bodies — it keys on a JSON object carrying `error` and
+  // none of `success`/`data`/`configured`. Third-party MCP bodies are not
+  // ours to shape: `{"error": null, "result": {...}}` would read as a failure,
+  // and an error body over the 64 KiB store cap would be suppressed by the
+  // `!truncated` guard and recorded as a COMPLETION. Neither can happen when
+  // the executor already told us. Stays null for every core tool.
+  let externalIsError: boolean | null = null;
   try {
     if (secretAction) {
       carrier = await withToolTimeout(
@@ -1116,7 +1283,28 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
       rawResult = carrier.llmText;
     } else {
-      const invoke = isHeadlessGoogleTool(intent.actionName)
+      // Tool catalog W01 PR B (#5216): an EXTERNAL (BYO MCP) tool is
+      // dispatched through the tenant executor with the descriptor
+      // revalidation reloaded under the rebuilt actor — never `executeTool`,
+      // which knows nothing about `<slug>__<name>` names. The executor
+      // already re-applies the owner predicate + kill switch at call time
+      // and returns `JSON.stringify({ error })` on failure, which the
+      // `tool_returned_error` classification below reads as a failed release.
+      const tenantTool = revalidation.tenantTool;
+      const invoke = tenantTool
+        ? async () => {
+            const outcome = await executeTenantToolDetailed(tenantTool, intent.arguments, auth, {
+              surface: 'chat',
+              orgId: intent.orgId,
+              actor: { kind: 'user', id: auth.user.id },
+            });
+            externalIsError = outcome.isError;
+            // Same string shape `executeTenantTool` produces, so the stored
+            // result body is unchanged — only the CLASSIFICATION now comes
+            // from `isError` instead of being re-derived from this string.
+            return outcome.isError ? JSON.stringify({ error: outcome.text }) : outcome.text;
+          }
+        : isHeadlessGoogleTool(intent.actionName)
         ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
         : isHeadlessM365Tool(intent.actionName)
         ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
@@ -1156,6 +1344,11 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
                 ...verifiedContext,
                 actionIntentId: intent.id,
                 releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia ?? null },
+                // #4177: present ONLY for a user-owned release (above); the
+                // handler asserts the auth it got is this approver and stamps
+                // `source: 'ai_suggested'`. Spread so the no-swap case keeps
+                // the exact bag shape the existing suite pins.
+                ...(approverRelease ? { approverRelease } : {}),
               },
             });
       rawResult = await withToolTimeout(
@@ -1209,7 +1402,11 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // checks rawResult === carrier.llmText: an error carrier's llmText keeps the
   // errorString() JSON shape ({error, message}), so the existing detection
   // still applies unchanged.
-  if (!truncated && isReturnedToolError(rawResult)) {
+  // `externalIsError` (when set) OVERRIDES both the heuristic and the
+  // truncation guard — see its declaration. A truncated external error body is
+  // still a failed release; it just stores `{truncated:true}` as its evidence.
+  const returnedToolError = externalIsError ?? (!truncated && isReturnedToolError(rawResult));
+  if (returnedToolError) {
     try {
       assertNoPlaintextSecret(intent.actionName, storedResult);
     } catch (err) {

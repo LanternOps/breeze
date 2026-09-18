@@ -126,6 +126,10 @@ function setAuth(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function rows(value: unknown[]) {
+  return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(value) }) }) } as any;
+}
+
 function makeApp() {
   const app = new Hono();
   app.route('/monitors', monitorRoutes);
@@ -139,7 +143,10 @@ describe('monitors routes', () => {
   let app: Hono;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
     setAuth();
     app = makeApp();
   });
@@ -229,6 +236,10 @@ describe('monitors routes', () => {
           }),
         } as any);
 
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rows([monitor]))
+        .mockReturnValueOnce(rows([{ siteId: 'site-001' }]))
+        .mockReturnValueOnce(rows([{ agentId: 'site-agent-1' }]));
       const res = await app.request(`/monitors/${MONITOR_ID}/test`, {
         method: 'POST',
       });
@@ -267,6 +278,7 @@ describe('monitors routes', () => {
         }),
       } as any);
 
+      vi.mocked(db.select).mockReturnValueOnce(rows([monitor])).mockReturnValueOnce(rows([{ agentId: 'agent-1' }]));
       const res = await app.request(`/monitors/${MONITOR_ID}/test`, {
         method: 'POST',
       });
@@ -275,6 +287,91 @@ describe('monitors routes', () => {
       const body = await res.json();
       expect(body.data.status).toBe('queued');
       expect(vi.mocked(sendCommandToAgent)).toHaveBeenCalled();
+    });
+
+    it('does not dispatch when the pinned executor is no longer eligible before dispatch', async () => {
+      const monitor = { id: MONITOR_ID, orgId: ORG_ID, assetId: ASSET_ID };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rows([monitor]))
+        .mockReturnValueOnce(rows([{ siteId: 'site-a' }]))
+        .mockReturnValueOnce(rows([{ agentId: 'agent-a' }]))
+        .mockReturnValueOnce(rows([monitor]))
+        .mockReturnValueOnce(rows([{ siteId: 'site-a' }]))
+        .mockReturnValueOnce(rows([]));
+      const res = await app.request(`/monitors/${MONITOR_ID}/test`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.status).toBe('failed');
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('does not dispatch after the asset moves to a disallowed site', async () => {
+      const scoped = new Hono();
+      scoped.use('*', async (c, next) => {
+        c.set('permissions' as never, { allowedSiteIds: ['site-a'] } as never);
+        await next();
+      });
+      scoped.route('/monitors', monitorRoutes);
+      const monitor = { id: MONITOR_ID, orgId: ORG_ID, assetId: ASSET_ID };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rows([monitor]))
+        .mockReturnValueOnce(rows([{ siteId: 'site-a' }]))
+        .mockReturnValueOnce(rows([{ siteId: 'site-a' }]))
+        .mockReturnValueOnce(rows([{ agentId: 'agent-a' }]))
+        .mockReturnValueOnce(rows([monitor]))
+        .mockReturnValueOnce(rows([{ siteId: 'site-b' }]));
+      const res = await scoped.request(`/monitors/${MONITOR_ID}/test`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('does not dispatch when transport disconnects after selection', async () => {
+      const monitor = { id: MONITOR_ID, orgId: ORG_ID, assetId: null };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rows([monitor]))
+        .mockReturnValueOnce(rows([{ agentId: 'agent-a' }]))
+        .mockReturnValueOnce(rows([monitor]))
+        .mockReturnValueOnce(rows([{ agentId: 'agent-a' }]));
+      vi.mocked(isAgentConnected).mockReturnValueOnce(true).mockReturnValueOnce(false);
+      const res = await app.request(`/monitors/${MONITOR_ID}/test`, { method: 'POST' });
+      expect((await res.json()).data.status).toBe('failed');
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('rechecks monitor authorization before dispatch', async () => {
+      const monitor = { id: MONITOR_ID, orgId: ORG_ID, assetId: null };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rows([monitor]))
+        .mockReturnValueOnce(rows([{ agentId: 'agent-a' }]))
+        .mockReturnValueOnce(rows([]));
+      const res = await app.request(`/monitors/${MONITOR_ID}/test`, { method: 'POST' });
+      expect(res.status).toBe(404);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('returns unavailable without fallback when no eligible agent exists in the site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rows([{ id: MONITOR_ID, orgId: ORG_ID, assetId: ASSET_ID }]))
+        .mockReturnValueOnce(rows([{ siteId: 'site-a' }]))
+        .mockReturnValueOnce(rows([]));
+      const res = await app.request(`/monitors/${MONITOR_ID}/test`, { method: 'POST' });
+      expect((await res.json()).data.status).toBe('failed');
+      expect(db.select).toHaveBeenCalledTimes(3);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('denies a disallowed site before selecting an executor', async () => {
+      const scoped = new Hono();
+      scoped.use('*', async (c, next) => {
+        c.set('permissions' as never, { allowedSiteIds: ['site-b'] } as never);
+        await next();
+      });
+      scoped.route('/monitors', monitorRoutes);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rows([{ id: MONITOR_ID, orgId: ORG_ID, assetId: ASSET_ID }]))
+        .mockReturnValueOnce(rows([{ siteId: 'site-a' }]));
+      const res = await scoped.request(`/monitors/${MONITOR_ID}/test`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
     });
 
     it('returns failed when no online agent is available', async () => {

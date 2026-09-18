@@ -105,14 +105,22 @@ BEGIN
   -- entry and /dashboard page only exist for this org because it is set here.
   -- enable_self_service stays false on purpose: portal-visibility.spec.ts
   -- asserts the Devices nav entry is absent, which is the fail-open flag's
-  -- only negative case.
+  -- only negative case. (Note for portal-lifecycle.spec.ts: this means the
+  -- lifecycle plan table's device row link cannot be click-through-tested
+  -- end to end against this org without breaking that negative case — the
+  -- spec asserts the link's href instead. A second self-service-enabled org
+  -- fixture would be needed for full click-through coverage.)
+  -- enable_lifecycle is this wave's own flag (2026-10-16-181500), read
+  -- alongside enable_reports by /reports/lifecycle's narrower mount.
   INSERT INTO portal_branding (
     org_id,
     enable_dashboard,
     enable_reports,
+    enable_lifecycle,
     enable_self_service
   ) VALUES (
     v_org_id,
+    true,
     true,
     true,
     false
@@ -120,6 +128,7 @@ BEGIN
   ON CONFLICT (org_id) DO UPDATE
     SET enable_dashboard = EXCLUDED.enable_dashboard,
         enable_reports = EXCLUDED.enable_reports,
+        enable_lifecycle = EXCLUDED.enable_lifecycle,
         enable_self_service = EXCLUDED.enable_self_service,
         updated_at = NOW();
 
@@ -186,6 +195,29 @@ BEGIN
         NOW(),
         'user',
         true
+      ),
+      (
+        v_org_id,
+        'Customer portal — Hardware lifecycle',
+        'hardware_lifecycle',
+        '{}'::jsonb,
+        'one_time',
+        'pdf',
+        v_user_id,
+        1,
+        'unrestricted',
+        NULL,
+        v_user_id,
+        encode(
+          sha256(convert_to(
+            '{"version":1,"kind":"unrestricted","orgId":"' || v_org_id::text || '"}',
+            'UTF8'
+          )),
+          'hex'
+        ),
+        NOW(),
+        'user',
+        true
       )
     ON CONFLICT (org_id, type) WHERE portal_self_service = true
     DO UPDATE SET
@@ -204,13 +236,17 @@ BEGIN
 
   -- ───────────────────────────────────────────────────────────────────
   -- Devices
+  -- Purchase dates give portal-lifecycle.spec.ts a lifecycle-plan-eligible
+  -- row for each device (the report computes replaceBy from purchase_date +
+  -- the default replace-age; nothing else in the e2e suite reads these).
   -- ───────────────────────────────────────────────────────────────────
-  INSERT INTO devices (id, org_id, site_id, agent_id, hostname, display_name, os_type, os_version, architecture, agent_version, status, last_seen_at)
+  INSERT INTO devices (id, org_id, site_id, agent_id, hostname, display_name, os_type, os_version, architecture, agent_version, status, last_seen_at, purchase_date, purchase_date_source)
   VALUES
-    (v_macos_device_id,   v_org_id, v_site_id, 'e2e-macos-agent',   'e2e-macos.local',   'E2E macOS Test Device',   'macos',   '14.5',         'arm64', '0.63.0', 'online', NOW()),
-    (v_windows_device_id, v_org_id, v_site_id, 'e2e-windows-agent', 'e2e-windows.local', 'E2E Windows Test Device', 'windows', '11.0.22631',   'amd64', '0.63.0', 'online', NOW())
+    (v_macos_device_id,   v_org_id, v_site_id, 'e2e-macos-agent',   'e2e-macos.local',   'E2E macOS Test Device',   'macos',   '14.5',         'arm64', '0.63.0', 'online', NOW(), '2019-04-01', 'manual'),
+    (v_windows_device_id, v_org_id, v_site_id, 'e2e-windows-agent', 'e2e-windows.local', 'E2E Windows Test Device', 'windows', '11.0.22631',   'amd64', '0.63.0', 'online', NOW(), '2023-01-15', 'vendor')
   ON CONFLICT (id) DO UPDATE
-    SET status = 'online', last_seen_at = NOW(), updated_at = NOW();
+    SET status = 'online', last_seen_at = NOW(), updated_at = NOW(),
+        purchase_date = EXCLUDED.purchase_date, purchase_date_source = EXCLUDED.purchase_date_source;
 
   -- ───────────────────────────────────────────────────────────────────
   -- Device groups

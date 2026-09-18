@@ -152,6 +152,7 @@ describe('org-merge walk order honors the canonical ticket child-table lock orde
       'ticket_parts',
       'ticket_outbox',
       'ticket_email_links',
+      'ticket_checklist_items',
       'ticket_attachments',
       'ticket_alert_links',
       'users',
@@ -162,11 +163,11 @@ describe('org-merge walk order honors the canonical ticket child-table lock orde
     expect(fixed[0]).toBe('organizations');
     expect(fixed[1]).toBe('tickets');
     expect(fixed[2]).toBe('unrelated_table');
-    expect(fixed[9]).toBe('users');
+    expect(fixed[10]).toBe('users');
 
-    // The six ticket-child slots (indices 3-8) now read out in canonical
+    // The seven ticket-child slots (indices 3-9) now read out in canonical
     // relative order.
-    expect(fixed.slice(3, 9)).toEqual(canonical);
+    expect(fixed.slice(3, 10)).toEqual(canonical);
 
     // Same multiset of tables — nothing added, nothing dropped.
     expect([...fixed].sort()).toEqual([...walkOrder].sort());

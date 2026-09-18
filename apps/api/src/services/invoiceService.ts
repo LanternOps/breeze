@@ -5,7 +5,7 @@ import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
-  accountingEntityMappings, accountingConnections
+  accountingEntityMappings, accountingConnections, portalBranding
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
@@ -16,6 +16,7 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
+import { resolveInvoiceFooter } from './invoicePdf';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -251,7 +252,7 @@ export async function addCatalogLine(invoiceId: string, catalogItemId: string, q
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
     // Price book in the invoice's currency (org override → catalog_item_prices),
-    // never the deprecated catalog_items.unit_price mirror, never converted.
+    // never another currency's row, never converted.
     const resolved = await resolveInvoicePrice(tx, catalogItemId, inv, actor);
     const [item] = await tx.select({ name: catalogItems.name, description: catalogItems.description, isBundle: catalogItems.isBundle }).from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
     if (item?.isBundle) throw new InvoiceServiceError('Use addBundleLine for bundles', 400, 'INVALID_STATE');
@@ -1300,6 +1301,12 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     //    before the guarded write.
     const [org] = await db.select().from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
     const [partner] = await db.select().from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
+    // Portal-branding footer for the invoice's org — the last resort of the
+    // shared footer chain (resolveInvoiceFooter, invoicePdf.ts). Read here,
+    // after all locks, alongside the org/partner snapshot reads: a pure
+    // additional SELECT on a read-only table, no new lock class.
+    const [issueBranding] = await db.select({ footerText: portalBranding.footerText })
+      .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
     const taxRate = resolveEffectiveTaxRate({ taxExempt: org?.taxExempt ?? false, orgRate: org?.taxRate ?? null, partnerRate: partner?.defaultTaxRate ?? null });
     const issueDate = new Date();
     const dueDate = new Date(issueDate.getTime() + (partner?.invoiceTermsDays ?? 30) * 86400000);
@@ -1335,7 +1342,15 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       billToTaxExempt: org?.taxExempt ?? false,
       // `terms` is the small footer line (from partner.invoiceFooter); `termsAndConditions`
       // is the labeled Terms & Conditions block (from partner.billingTermsAndConditions).
-      terms: partner?.invoiceFooter ?? null,
+      // Resolved through the SHARED chain (settings audit rule 5, finding 22)
+      // so issue time sees the portal-branding fallback the render path always
+      // had. `invoiceTerms: null` because a draft's `terms` is not yet
+      // stamped — this call is what establishes it.
+      terms: resolveInvoiceFooter({
+        invoiceTerms: null,
+        partnerFooter: partner?.invoiceFooter ?? null,
+        brandingFooter: issueBranding?.footerText ?? null,
+      }),
       sellerSnapshot: buildSellerSnapshot(partner),
       termsAndConditions: inv.termsAndConditions ?? partner?.billingTermsAndConditions ?? null,
       // Render-locale snapshot (#3777): stamped ONCE at issue from the partner's

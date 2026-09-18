@@ -60,10 +60,14 @@ type Client struct {
 	scopes     []string
 	stopChan   chan struct{}
 	desktopMgr *helperDesktopManager
-	executor   *executor.Executor
-	pendingMu  sync.Mutex
-	pending    map[string]chan *ipc.Envelope
-	sasReqSeq  atomic.Uint64
+	// desktopFence is the helper half of the SEC-038 start fence: seeded from
+	// the service on connect, maintained from the starts and stops this helper
+	// sees. Zero value ready to use.
+	desktopFence helperDesktopFence
+	executor     *executor.Executor
+	pendingMu    sync.Mutex
+	pending      map[string]chan *ipc.Envelope
+	sasReqSeq    atomic.Uint64
 
 	// authenticatedAt is set when the broker accepts the helper. Zero when
 	// the client has never completed auth on this Run(). Reset on each Run().
@@ -439,6 +443,13 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypeTrayUpdate:
 			safeGo("tray_update", func() { c.handleTrayUpdate(env) })
+
+		case ipc.TypeDesktopFenceSync:
+			// Applied INLINE, not on a goroutine: the service waits for this
+			// reply before it sends any generation-bearing start, so the reply
+			// is the readiness barrier. Dispatching it concurrently with the
+			// start that follows would defeat that.
+			c.handleDesktopFenceSync(env)
 
 		case ipc.TypeDesktopStart:
 			safeGo("desktop_start", func() { c.handleDesktopStart(env) })
@@ -1173,6 +1184,18 @@ func (c *Client) handleDesktopStart(env *ipc.Envelope) {
 		return
 	}
 
+	// SEC-038 start fence, checked before ANY side effect: a superseded or
+	// post-terminal start must not reach capture even in the helper.
+	if d := c.desktopFence.admitStart(req.SessionID, req.StartGeneration); !d.admitted {
+		log.Warn("refusing desktop_start at the helper start fence",
+			"sessionId", req.SessionID, "generation", req.StartGeneration, "reason", d.reason)
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopStart,
+			fmt.Sprintf("desktop_start refused by the helper start fence: %s", d.reason)); sendErr != nil {
+			log.Warn("failed to send desktop_start error", "error", sendErr)
+		}
+		return
+	}
+
 	log.Info("starting desktop session via IPC",
 		"sessionId", req.SessionID,
 		"displayIndex", req.DisplayIndex,
@@ -1229,11 +1252,45 @@ func (c *Client) handleDesktopStop(env *ipc.Envelope) {
 	}
 
 	log.Info("stopping desktop session via IPC", "sessionId", req.SessionID)
+	// The tombstone goes in FIRST and unconditionally — including for a
+	// session this helper never started. A stop can overtake the start it was
+	// meant to cancel; before this, an unknown-session stop was a no-op here
+	// and the late start then ran.
+	c.desktopFence.noteStop(req.SessionID, req.TerminalGeneration)
 	c.desktopMgr.stopSession(req.SessionID)
 
 	// Reply to unblock SendCommand on the broker side
 	if err := c.conn.SendTyped(env.ID, ipc.TypeDesktopStop, map[string]any{"stopped": true}); err != nil {
 		log.Warn("failed to send desktop_stop response", "error", err)
+	}
+}
+
+// handleDesktopFenceSync seeds this helper with the service's start fence and
+// acknowledges. The service waits for that acknowledgement before sending any
+// generation-bearing start, so a freshly connected helper can never admit a
+// start using less knowledge than the service already has.
+func (c *Client) handleDesktopFenceSync(env *ipc.Envelope) {
+	var sync ipc.DesktopFenceSync
+	if err := json.Unmarshal(env.Payload, &sync); err != nil {
+		log.Warn("invalid desktop_fence_sync payload", "error", err)
+		if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopFenceSync, "invalid payload"); sendErr != nil {
+			log.Warn("failed to send desktop_fence_sync error", "error", sendErr)
+		}
+		return
+	}
+	for id := range sync.Sessions {
+		if !helperDesktopSessionIDPattern.MatchString(id) {
+			log.Warn("dropping desktop_fence_sync with an invalid session id", "sessionId", id)
+			if sendErr := c.conn.SendError(env.ID, ipc.TypeDesktopFenceSync, "invalid sessionId"); sendErr != nil {
+				log.Warn("failed to send desktop_fence_sync error", "error", sendErr)
+			}
+			return
+		}
+	}
+	c.desktopFence.applySync(sync)
+	log.Info("desktop start fence synced from the service", "sessions", len(sync.Sessions))
+	if err := c.conn.SendTyped(env.ID, ipc.TypeDesktopFenceSync, map[string]any{"synced": len(sync.Sessions)}); err != nil {
+		log.Warn("failed to send desktop_fence_sync response", "error", err)
 	}
 }
 

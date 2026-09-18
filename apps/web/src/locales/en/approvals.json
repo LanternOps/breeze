@@ -10,6 +10,7 @@
   },
   "requestedBy": "Requested by {{client}}",
   "proposedByAgent": "Proposed by {{agent}} (AI agent)",
+  "proposedByAgentExecuteNotice": "Approving this runs it now — not a dry run, even in shadow mode.",
   "targetDevice": "Target device: {{hostname}}",
   "batch": {
     "approveAll": "Approve all ({{count}})",
@@ -49,8 +50,12 @@
   "deciding": "Submitting…",
   "expiresIn": "Expires in {{minutes}} min",
   "expiresSoon": "Expires in under a minute",
+  "expiresInHours": "Expires in {{hours}} h",
+  "expiresInDays": "Expires in {{days}} days",
   "expired": "Expired",
   "unknownOrganization": "Unknown organization",
+  "intentNoLongerPending": "That approval is no longer pending.",
+  "dismiss": "Dismiss",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "Approved {{action}} for {{org}}",
   "pagination": {
@@ -62,6 +67,7 @@
   "errors": {
     "noApproverDevice": "Register an approver device in your profile, then try again.",
     "notSoleApprover": "Another eligible approver must decide this request.",
+    "siteCeiling": "This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.",
     "verificationFailed": "Verification was canceled or failed. Try again.",
     "alreadyDecided": "This request was already decided.",
     "expired": "This request expired before it could be decided.",
@@ -85,6 +91,25 @@
     "errors": {
       "approvedPromoteFailed": "Approved, but the pre-authorization request could not be sent. Try again from the agent's settings.",
       "policyDecideDisabled": "Approved. Pre-authorization could not be requested because it is turned off for this deployment."
+    }
+  },
+  "recent": {
+    "title": "Recent",
+    "subtitle": "Already decided or finished",
+    "loading": "Loading recent approvals…",
+    "error": "Unable to load recent approvals.",
+    "retry": "Retry",
+    "empty": "Nothing has finished recently.",
+    "status": {
+      "failed": "Failed",
+      "rejected": "Rejected",
+      "expired": "Expired",
+      "cancelled": "Cancelled",
+      "completed": "Completed",
+      "denied": "Denied",
+      "approved": "Approved",
+      "reported": "Reported",
+      "unknown": "Unknown"
     }
   }
 }

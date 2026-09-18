@@ -20,7 +20,7 @@
 
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
-import { and, desc, eq, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { contractDocuments, contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
 import { contracts } from '../db/schema/contracts';
@@ -322,6 +322,9 @@ export class ContractDocumentServiceError extends Error {
 
 export type ContractDocumentRow = typeof contractDocuments.$inferSelect;
 
+/** Spec §6: the Signed agreements list's link-state filter. */
+export type SignedAgreementLinkFilter = 'all' | 'linked' | 'unlinked';
+
 /** A `GET /contract-documents` list row: the raw document plus the joined
  *  display fields the web layer needs (template name/version, signer, quote
  *  number) so it never has to round-trip pdf_data or make N follow-up calls. */
@@ -342,23 +345,30 @@ export interface ContractDocumentListRow {
   createdAt: Date;
 }
 
-/** List documents visible to `auth`, optionally narrowed to one contract or
- *  to unattached-only (contract_id IS NULL). `contractId` takes priority over
+/** List documents visible to `auth`, optionally narrowed to one contract, to one
+ *  organization, or by link state. `contractId` takes priority over `linked` /
  *  `unattached` if both are somehow passed — the caller's org-access
  *  condition (Shape-1 direct org_id) is ANDed in regardless, so a contractId
  *  belonging to an org outside the caller's access simply yields an empty
  *  list rather than leaking rows via app-layer filtering alone (RLS agrees). */
 export async function listContractDocuments(
   auth: AuthContext,
-  opts: { contractId?: string; unattached?: boolean } = {},
+  opts: { contractId?: string; orgId?: string; unattached?: boolean; linked?: SignedAgreementLinkFilter } = {},
 ): Promise<ContractDocumentListRow[]> {
   const conditions: SQL[] = [];
   const accessCond = auth.orgCondition(contractDocuments.orgId);
   if (accessCond) conditions.push(accessCond);
+  // orgId NARROWS within what the caller may already read — ANDed on top of
+  // orgCondition, never in place of it, so it can only ever subtract rows.
+  if (opts.orgId) conditions.push(eq(contractDocuments.orgId, opts.orgId));
   if (opts.contractId) {
     conditions.push(eq(contractDocuments.contractId, opts.contractId));
-  } else if (opts.unattached) {
-    conditions.push(isNull(contractDocuments.contractId));
+  } else {
+    // Explicit `linked` wins; `unattached` is its legacy spelling; the service's
+    // own default matches the route's so a direct service caller behaves the same.
+    const linked = opts.linked ?? (opts.unattached === false ? 'all' : 'unlinked');
+    if (linked === 'unlinked') conditions.push(isNull(contractDocuments.contractId));
+    else if (linked === 'linked') conditions.push(isNotNull(contractDocuments.contractId));
   }
 
   return db

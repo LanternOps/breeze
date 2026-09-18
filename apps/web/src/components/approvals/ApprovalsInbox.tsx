@@ -16,6 +16,7 @@ import {
   decideIntentApprovalBatch,
   isNoApproverDeviceError,
   isNotSoleApprover,
+  isSiteCeiling,
   isStepUpRequired,
   type BatchRowResult,
 } from '@/lib/intentApprovals';
@@ -26,6 +27,7 @@ import { ActionError, runAction } from '@/lib/runAction';
 import { formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import ScriptProposalApprovalCard from '../ai/ScriptProposalApprovalCard';
+import RecentApprovals from './RecentApprovals';
 import { badgeClass } from '../aiAgents/statusBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { EmptyState } from '../shared/EmptyState';
@@ -76,6 +78,10 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 type DecisionErrorKind =
   | 'noApproverDevice'
   | 'notSoleApprover'
+  // Review finding #2: decide-time 403 `site_ceiling` — the org-wide-
+  // governance ceiling twin of `notSoleApprover`. Terminal for this viewer;
+  // never falls back to the generic `decisionFailed` "Try again" copy.
+  | 'siteCeiling'
   | 'verificationFailed'
   | 'alreadyDecided'
   | 'expired'
@@ -186,6 +192,7 @@ function alwaysAllowTargetFor(
 function classifyDecideError(err: unknown): DecisionErrorKind | null {
   if (isNoApproverDeviceError(err) || isStepUpRequired(err)) return 'noApproverDevice';
   if (isNotSoleApprover(err)) return 'notSoleApprover';
+  if (isSiteCeiling(err)) return 'siteCeiling';
   if (err instanceof CeremonyError) return 'verificationFailed';
   if (err instanceof ActionError && err.status === 401) {
     const token = (err.body as { error?: unknown } | null | undefined)?.error;
@@ -206,6 +213,7 @@ function rowErrorKind(result: BatchRowResult): DecisionErrorKind {
   const token = result.body?.error;
   if (token === 'step_up_required') return 'noApproverDevice';
   if (token === 'not_sole_approver') return 'notSoleApprover';
+  if (token === 'site_ceiling') return 'siteCeiling';
   if (token === 'assertion_failed' || token === 'reauth_required') {
     return 'verificationFailed';
   }
@@ -230,10 +238,36 @@ function proposalIdFromHash(hash: string): string | undefined {
   return m ? m[1]! : undefined;
 }
 
+/**
+ * Sweep G2-4 (#4192 follow-up): the AI run trace (`RunDetailPage`) links to
+ * `/approvals#intent-<uuid>` for its "View approval" affordance. Same
+ * hash-not-query-param convention as `proposalIdFromHash` above.
+ */
+function intentIdFromHash(hash: string): string | undefined {
+  const m = /^#?intent-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(hash);
+  return m ? m[1]! : undefined;
+}
+
+/** How long a hash-linked card stays ring-highlighted after landing — mirrors
+ *  `HIGHLIGHT_DURATION_MS` in the portal `DeviceList` `/devices#<id>` pattern
+ *  this follows. */
+const INTENT_HIGHLIGHT_DURATION_MS = 3000;
+
 export default function ApprovalsInbox() {
   // SSR-safe (#2421): starts null, adopts the hash post-mount, follows
   // hashchange — never read in a useState initializer.
   const [hashProposalId] = useHashState<string | null>(null, proposalIdFromHash);
+  // Sweep G2-4: same SSR-safe pattern for `#intent-<uuid>` deep links. Handled
+  // once the first load lands — see the effect below — not read in a
+  // useState initializer.
+  const [hashIntentId] = useHashState<string | null>(null, intentIdFromHash);
+  const [highlightedIntentId, setHighlightedIntentId] = useState<string | null>(null);
+  const [intentGoneNotice, setIntentGoneNotice] = useState(false);
+  // Guards the hash-intent handling to run exactly once, after the first load
+  // — without it, every 30s poll refresh (which changes the `approvals`
+  // array reference) would re-trigger the scroll/highlight or the notice for
+  // the rest of the page's life.
+  const hashIntentHandledRef = useRef(false);
   const { t } = useTranslation('approvals');
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [loading, setLoading] = useState(true);
@@ -471,6 +505,30 @@ export default function ApprovalsInbox() {
     return () => window.clearInterval(interval);
   }, []);
 
+  // Sweep G2-4: once the first (non-silent) load lands, resolve the
+  // `#intent-<uuid>` hash against the loaded rows. A match scrolls to and
+  // ring-highlights its card; anything else (already decided, expired and
+  // removed, never existed) surfaces a dismissible notice instead of a
+  // confusing no-op deep link.
+  useEffect(() => {
+    if (loading || hashIntentHandledRef.current || !hashIntentId) return;
+    hashIntentHandledRef.current = true;
+    const match = approvals.find((approval) => approval.intentId === hashIntentId);
+    if (!match) {
+      setIntentGoneNotice(true);
+      return;
+    }
+    setHighlightedIntentId(hashIntentId);
+    // jsdom has no layout and so no `scrollIntoView` implementation —
+    // optional-call it (matches TimezoneSelect/DeviceFilesystemTab).
+    document.getElementById(`intent-${hashIntentId}`)?.scrollIntoView?.({
+      behavior: 'smooth',
+      block: 'center',
+    });
+    const timer = setTimeout(() => setHighlightedIntentId(null), INTENT_HIGHLIGHT_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [loading, hashIntentId, approvals]);
+
   // Drains `graduationQueueRef` ALWAYS_ALLOW_ORG_BATCH_SIZE orgs at a time.
   // Deliberately NOT scoped to any one effect's cleanup: a poll refresh, a WS
   // nudge, or a post-decide silent reload each hand the eligibility effect
@@ -598,12 +656,20 @@ export default function ApprovalsInbox() {
   /** Relative expiry for a row, evaluated against the ticking `now` state
    *  (critique #3) rather than a fresh `Date.now()` read — a card whose
    *  window closed since the last 30s poll shows as expired the moment the
-   *  next EXPIRY_TICK_MS tick lands, not only once the poll catches up. */
+   *  next EXPIRY_TICK_MS tick lands, not only once the poll catches up.
+   *
+   *  Sweep G2-10: a multi-day approval window (Partner-Wide policies can run
+   *  up to 7 days) used to read "Expires in 10079 min" — rolled up to the
+   *  largest sensible unit: minutes below 90, hours below 48h, days above. */
   const expiryLabel = (expiresAt: string): string => {
     const remainingMs = new Date(expiresAt).getTime() - now;
     if (!Number.isFinite(remainingMs) || remainingMs <= 0) return t('expired');
     if (remainingMs < 60_000) return t('expiresSoon');
-    return t('expiresIn', { minutes: Math.floor(remainingMs / 60_000) });
+    const remainingMinutes = remainingMs / 60_000;
+    if (remainingMinutes < 90) return t('expiresIn', { minutes: Math.floor(remainingMinutes) });
+    const remainingHours = remainingMs / 3_600_000;
+    if (remainingHours < 48) return t('expiresInHours', { hours: Math.floor(remainingHours) });
+    return t('expiresInDays', { days: Math.floor(remainingMs / 86_400_000) });
   };
 
   const openDenyForm = (id: string) => {
@@ -947,10 +1013,17 @@ export default function ApprovalsInbox() {
       approval.actionToolName === 'run_script' && typeof approval.actionArguments?.proposalId === 'string'
         ? (approval.actionArguments.proposalId as string)
         : null;
+    // Sweep G2-4: the anchor a `#intent-<uuid>` deep link (RunDetailPage's
+    // "View approval" trace link) targets, and the transient ring-highlight
+    // once it's scrolled into view.
+    const isHighlighted = approval.intentId !== null && approval.intentId === highlightedIntentId;
     return (
       <article
         key={approval.id}
-        className={`border-b px-5 py-5 last:border-b-0 ${expired ? 'opacity-60' : ''}`}
+        id={approval.intentId ? `intent-${approval.intentId}` : undefined}
+        className={`border-b px-5 py-5 last:border-b-0 ${expired ? 'opacity-60' : ''} ${
+          isHighlighted ? 'ring-2 ring-primary ring-inset' : ''
+        }`}
         data-testid={`approval-row-${approval.id}`}
       >
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -1002,6 +1075,19 @@ export default function ApprovalsInbox() {
                 {expiryLabel(approval.expiresAt)}
               </span>
             </p>
+            {approval.origin === 'ai_agent' && (
+              // #6202: an operator read "shadow" as "observe only" and
+              // approved cards expecting a dry run. This row has no access to
+              // the proposing run's mode (shadow vs act), so the wording is
+              // generic to any agent-proposed intent rather than claiming a
+              // specific mode.
+              <p
+                className="mt-1 text-sm font-medium text-warning-strong"
+                data-testid={`approval-agent-execute-notice-${approval.id}`}
+              >
+                {t('proposedByAgentExecuteNotice')}
+              </p>
+            )}
             {approval.targetDevice && (
               // Under a group header every card names the same tool and
               // action, so the hostname is the ONLY thing that tells the
@@ -1193,6 +1279,27 @@ export default function ApprovalsInbox() {
         title={t('title')}
         description={t('description')}
       />
+
+      {intentGoneNotice && (
+        // Sweep G2-4: the `#intent-<uuid>` hash named a row that is no longer
+        // in the pending set (already decided elsewhere, or expired) — tell
+        // the approver instead of silently landing on an unrelated list.
+        <div
+          className="flex items-center justify-between gap-3 rounded-xl border bg-muted/40 px-4 py-3 text-sm text-muted-foreground"
+          data-testid="approval-intent-gone-notice"
+        >
+          <span>{t('intentNoLongerPending')}</span>
+          <button
+            type="button"
+            onClick={() => setIntentGoneNotice(false)}
+            className="rounded p-1 text-muted-foreground hover:text-foreground"
+            data-testid="approval-intent-gone-dismiss"
+            aria-label={t('dismiss')}
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
 
       {hashProposalId && (
         // The deep-linked proposal, read-only: decisions still happen on the
@@ -1558,6 +1665,12 @@ export default function ApprovalsInbox() {
           )}
         </div>
       )}
+
+      {/* #6022: terminal intents (failed / rejected / expired / cancelled)
+          previously had no UI home — the inbox listed pending rows only, so a
+          guardrail refusal after approval was invisible. Read-only, collapsed
+          by default, and fetched only when opened: pending stays first. */}
+      <RecentApprovals />
 
       <ConfirmDialog
         open={alwaysAllowTarget !== null}
