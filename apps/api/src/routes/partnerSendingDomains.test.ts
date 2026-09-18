@@ -1,3 +1,4 @@
+import { findProviderImports } from '../services/emailDomains/providerImportScan';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
@@ -339,13 +340,38 @@ describe('routes', () => {
 });
 
 describe('no route calls the provider', () => {
-  it('does not import providerRegistry or any adapter, in either import form', async () => {
+  it('does not import providerRegistry or any adapter, in any import form', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const src = fs.readFileSync(path.join(__dirname, 'partnerSendingDomains.ts'), 'utf8');
-    expect(src).not.toMatch(/^import (?!type ).*from ['"].*emailDomains\/providerRegistry['"]/m);
-    expect(src).not.toMatch(/import\(['"].*emailDomains\/providerRegistry['"]\)/);
-    expect(src).not.toMatch(/^import (?!type ).*from ['"].*emailDomains\/adapters\//m);
-    expect(src).not.toMatch(/import\(['"].*emailDomains\/adapters\//);
+    const routePath = path.join(__dirname, 'partnerSendingDomains.ts');
+    const source = fs.readFileSync(routePath, 'utf8');
+    expect(findProviderImports({ path: routePath, source })).toEqual([]);
+  });
+
+  const PLANTED = {
+    'single-line static': `import { getEmailDomainProvider } from '../services/emailDomains/providerRegistry';`,
+    // The form the old single-line `^import .* from` anchor silently missed.
+    'multi-line static': [
+      'import {',
+      '  getEmailDomainProvider,',
+      "} from '../services/emailDomains/providerRegistry';",
+    ].join('\n'),
+    'adapter import': `import { createResendDomainProvider } from '../services/emailDomains/adapters/resend';`,
+    'dynamic import': `const p = await import('../services/emailDomains/providerRegistry');`,
+    'require': `const p = require('../services/emailDomains/providerRegistry');`,
+  };
+
+  // CONTROL. A scan whose matcher never fires reads exactly like a clean file,
+  // and that is how the old single-line anchor sat green while a wrapped import
+  // would have walked straight past it.
+  it.each(Object.entries(PLANTED))('flags a planted violation: %s', (_label, snippet) => {
+    const source = `import { Hono } from 'hono';\n${snippet}\nexport const routes = new Hono();\n`;
+    expect(findProviderImports({ path: 'planted.ts', source })).not.toEqual([]);
+  });
+
+  it('allows a type-only import of the same module', () => {
+    const source = `import type { EmailDomainProvider } from '../services/emailDomains/providerRegistry';\n`
+      + `import { type Foo } from '../services/emailDomains/adapters/resend';\n`;
+    expect(findProviderImports({ path: 'types.ts', source })).toEqual([]);
   });
 });
