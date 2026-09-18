@@ -568,7 +568,13 @@ describe('MonitorEditor (#5289)', () => {
     resolveScripts(json({ data: [{ id: '11111111-2222-4333-8444-555555555555', name: 'Disk cleanup' }] }));
     await waitFor(() => expect(screen.getByRole('option', { name: 'Disk cleanup' })).toBeInTheDocument());
 
-    expect(screen.getByTestId('condition-field-scriptId')).toHaveValue('11111111-2222-4333-8444-555555555555');
+    // Assert inside its own `waitFor` — the option appearing and the select's
+    // `value` prop re-syncing both happen off the same `setScripts` state
+    // update but are two separate observations of the DOM, so give React a
+    // tick to settle rather than asserting immediately after the first one.
+    await waitFor(() =>
+      expect(screen.getByTestId('condition-field-scriptId')).toHaveValue('11111111-2222-4333-8444-555555555555'),
+    );
 
     // Saving WITHOUT touching the field must still submit the real scriptId —
     // this is what actually determines whether the monitor alerts (#6207's
