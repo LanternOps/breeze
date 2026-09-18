@@ -1,6 +1,7 @@
 import { parse as parseTld } from 'tldts';
 import { isHosted } from '../../config/env';
 import { isConsumerEmailDomain } from '../consumerEmailDomains';
+import { getEmailDomainsConfig } from './config';
 
 /**
  * API-only sending-domain policy (spec §4.1, "The API additionally rejects").
@@ -59,13 +60,6 @@ function isSelfOrSubdomainOf(domain: string, parent: string): boolean {
   return domain === parent || domain.endsWith(`.${parent}`);
 }
 
-export function parseDomainDenylist(raw: string | undefined): string[] {
-  return (raw ?? '')
-    .split(',')
-    .map((entry) => entry.trim().toLowerCase().replace(/\.+$/, ''))
-    .filter((entry) => entry.length > 0);
-}
-
 export function assertSendingDomainAllowed(domain: string): void {
   const target = domain.trim().toLowerCase();
 
@@ -102,7 +96,7 @@ export function assertSendingDomainAllowed(domain: string): void {
   }
 
   // 4. The operator's own denylist.
-  for (const denied of parseDomainDenylist(process.env.EMAIL_DOMAINS_DENYLIST)) {
+  for (const denied of getEmailDomainsConfig().denylist) {
     if (isSelfOrSubdomainOf(target, denied)) throw new SendingDomainPolicyError('denylisted');
   }
 }

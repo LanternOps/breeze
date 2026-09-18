@@ -808,6 +808,23 @@ const envObjectSchema = z
     MAILGUN_API_KEY: z.string().optional(),
     MAILGUN_DOMAIN: z.string().optional(),
 
+    // -- Partner sending domains (spec 2026-09-17) ---------------------------
+    // ALL optional, and none is ever required by an upgrade. Declared as plain
+    // strings (not z.enum): compose maps optional vars as ${VAR:-}, so an unset
+    // variable arrives as "" and a bare enum would refuse boot on every
+    // deployment that upgrades. Value checks live in the superRefine, where ""
+    // and unset both mean "the feature is off".
+    EMAIL_DOMAINS_PROVIDER: z.string().optional(),
+    EMAIL_DOMAINS_STATIC_ALLOWED: z.string().optional(),
+    EMAIL_DOMAINS_RESEND_API_KEY: z.string().optional(),
+    EMAIL_DOMAINS_RESEND_SENDING_KEY: z.string().optional(),
+    EMAIL_DOMAINS_REGION: z.string().optional(),
+    EMAIL_DOMAINS_MAX_PER_PARTNER: z.string().optional(),
+    EMAIL_DOMAINS_DAILY_SEND_CAP: z.string().optional(),
+    EMAIL_DOMAINS_PARTNER_ALLOWLIST: z.string().optional(),
+    EMAIL_DOMAINS_DENYLIST: z.string().optional(),
+    EMAIL_DOMAINS_WEBHOOK_SECRET: z.string().optional(),
+
     // Cloudflare mTLS — when CLOUDFLARE_API_TOKEN is set, zone id is required.
     CLOUDFLARE_API_TOKEN: z.string().optional(),
     CLOUDFLARE_ZONE_ID: z.string().optional(),
@@ -1711,6 +1728,27 @@ const envSchema = envObjectSchema
         ctx,
       );
 
+      // Partner sending domains. KEYED ON EMAIL_DOMAINS_PROVIDER ONLY — never
+      // on EMAIL_PROVIDER. A requireIf(EMAIL_PROVIDER === 'resend', …) here
+      // would refuse boot on every Resend self-host that upgrades, which is the
+      // exact promise spec §11 makes.
+      const emailDomainsProviderProd = (data.EMAIL_DOMAINS_PROVIDER ?? '').trim().toLowerCase();
+      requireIf(
+        emailDomainsProviderProd === 'resend',
+        'EMAIL_DOMAINS_RESEND_API_KEY',
+        data.EMAIL_DOMAINS_RESEND_API_KEY,
+        'EMAIL_DOMAINS_PROVIDER=resend (a full_access key; a sending-only key cannot manage domains)',
+        ctx,
+      );
+      if (emailDomainsProviderProd === 'fake') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message:
+            'EMAIL_DOMAINS_PROVIDER=fake is refused in production. The fake provider verifies domains deterministically and sends nothing real; it exists for unit, integration, E2E and wt-stack runs only. Use `resend`, `static`, or leave it unset.',
+        });
+      }
+
       // Cloudflare mTLS (CLOUDFLARE_API_TOKEN as indicator)
       const cfMtlsEnabled = Boolean(data.CLOUDFLARE_API_TOKEN?.trim());
       requireIf(
@@ -2163,6 +2201,48 @@ const envSchema = envObjectSchema
             message:
               `${key} is required when any APNS_* variable is set. Native APNs push needs APNS_AUTH_KEY (the .p8 PEM), APNS_KEY_ID, APNS_TEAM_ID and APNS_BUNDLE_ID together; APNS_ENVIRONMENT is optional (defaults to production).`,
           });
+        }
+      }
+    }
+
+    // --- Partner sending domains: deployment-mode rules (spec §2.1, §11) ----
+    // Outside the isProduction block on purpose: a hosted staging instance must
+    // refuse `static` and identical keys exactly as production does, and an
+    // unrecognised provider value is a misconfiguration in any NODE_ENV.
+    const emailDomainsProvider = (data.EMAIL_DOMAINS_PROVIDER ?? '').trim().toLowerCase();
+    if (emailDomainsProvider !== '') {
+      const hostedInstance = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+      if (!['resend', 'static', 'fake'].includes(emailDomainsProvider)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message: `EMAIL_DOMAINS_PROVIDER must be one of resend, static, fake — got ${JSON.stringify(emailDomainsProvider)}. Leave it unset to keep custom sending domains off (the default).`,
+        });
+      }
+      if (emailDomainsProvider === 'static' && hostedInstance) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message:
+            'EMAIL_DOMAINS_PROVIDER=static is refused when IS_HOSTED=true. The static adapter is an OPERATOR ATTESTATION that the instance mail relay may send as the listed domains; on hosted there is no such operator and no DNS proof, so a partner could claim a domain it does not own. Use `resend` on hosted.',
+        });
+      }
+      if (emailDomainsProvider === 'resend') {
+        const platformKey = (data.RESEND_API_KEY ?? '').trim();
+        const partnerKey = (data.EMAIL_DOMAINS_RESEND_API_KEY ?? '').trim();
+        if (platformKey && partnerKey && platformKey === partnerKey) {
+          if (hostedInstance) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['EMAIL_DOMAINS_RESEND_API_KEY'],
+              message:
+                'EMAIL_DOMAINS_RESEND_API_KEY must differ from RESEND_API_KEY when IS_HOSTED=true. Resend enforces bounce and spam limits ACCOUNT-WIDE, so a partner domain sharing the platform account can pause password-reset and security mail for every tenant. Create a second Resend team for the partner lane.',
+            });
+          } else {
+            console.info(
+              '[config] EMAIL_DOMAINS_RESEND_API_KEY matches RESEND_API_KEY — partner-domain mail will share this account\'s sending reputation with platform mail (password resets, security notices). That is supported self-hosted; a second Resend account isolates them.',
+            );
+          }
         }
       }
     }
