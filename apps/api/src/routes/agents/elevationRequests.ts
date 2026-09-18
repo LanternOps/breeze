@@ -372,7 +372,7 @@ elevationRequestsRoutes.post(
 
       // ------------------------------------------------------------------
       // Decisioning (#1163). Both evaluators run inside the request's
-      // org-scoped withDbAccessContext (opened by agentAuthMiddleware), so
+      // org-scoped withDbAccessContext (opened by THIS handler since #6130), so
       // policy/rule lookups are RLS-scoped to the device's org. Any error
       // fails SAFE to 'pending' — an evaluator outage must never become an
       // auto-approval, and degrading a blocklist deny to a pending row is

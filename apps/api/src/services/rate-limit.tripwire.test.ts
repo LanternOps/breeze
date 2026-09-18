@@ -55,6 +55,19 @@ describe('rateLimiter #1105 tripwire (#6130)', () => {
     expect(assertSpy).toHaveBeenCalledWith('rateLimiter(login)');
   });
 
+  it('degrades to `unknown` for an unexpected key shape rather than leaking the raw key', async () => {
+    // The bucket split is the only thing standing between an unexpected key
+    // shape and a raw identifier in a log line / Sentry message, so both
+    // no-separator and leading-separator keys must land on `unknown`.
+    const redis = makeRedis();
+    await rateLimiter(redis, 'noseparatorkey-user-1', 5, 300);
+    expect(assertSpy).toHaveBeenCalledWith('rateLimiter(unknown)');
+
+    assertSpy.mockClear();
+    await rateLimiter(redis, ':leading-separator', 5, 300);
+    expect(assertSpy).toHaveBeenCalledWith('rateLimiter(unknown)');
+  });
+
   it('fires even on the fail-closed path where Redis is unavailable', async () => {
     const result = await rateLimiter(null, 'eventlog:rate:device:device-1', 10, 60);
 

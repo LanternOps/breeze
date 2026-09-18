@@ -15,6 +15,8 @@ import * as dbModule from '../db';
  * is the whole point of the guard. Same tolerance `createInstrumentedQueue`
  * applies to a partially-doubled BullMQ Queue.
  */
+let missingGuardWarned = false;
+
 function assertOutsideHeldDbContextSafe(operation: string): void {
   let assertFn: ((op: string) => void) | undefined;
   try {
@@ -24,7 +26,26 @@ function assertOutsideHeldDbContextSafe(operation: string): void {
     // Partially-mocked `../db` in a unit test — nothing to assert against.
     return;
   }
-  if (typeof assertFn === 'function') assertFn(operation);
+  if (typeof assertFn !== 'function') {
+    // The cast above erases the type, so a rename or removal of the export
+    // would otherwise disable the tripwire for every rateLimiter call site
+    // with no compile error and no runtime signal. Warn once per process so
+    // the breakage is at least visible in logs.
+    if (!missingGuardWarned) {
+      missingGuardWarned = true;
+      console.warn(
+        '[rate-limit] #1105 tripwire unavailable: db.assertOutsideHeldDbContext is not a function '
+        + '— held-context detection is OFF for every rateLimiter call site.',
+      );
+    }
+    return;
+  }
+  assertFn(operation);
+}
+
+/** Test-only: reset the once-per-process warn latch. */
+export function __resetMissingGuardWarnForTests(): void {
+  missingGuardWarned = false;
 }
 
 /**
