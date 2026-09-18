@@ -33,7 +33,7 @@ vi.mock('../../services/recoveryAuthorizationSubject', () => ({
   authorizeQueuedRecoveryWork: (...args: unknown[]) => authorizeQueuedRecoveryWorkMock(...args),
 }));
 
-import { recomputeRecoveryReadinessForDevice, runBackupVerification, runScheduledBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary } from './verificationService';
+import { recomputeRecoveryReadinessForDevice, runBackupVerification, runScheduledBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary, toVerificationListItem } from './verificationService';
 import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { createAuditLogAsync } from '../../services/auditService';
@@ -682,5 +682,32 @@ describe('timeoutStaleVerifications', () => {
 
     const updated = backupVerifications.find((v) => v.id === verificationId);
     expect(updated?.status).toBe('pending');
+  });
+});
+
+describe('toVerificationListItem', () => {
+  const base = { id: 'v1', status: 'failed' } as any;
+
+  it('exposes only a bounded failure reason for failed rows', () => {
+    const out = toVerificationListItem({
+      ...base,
+      details: { reason: 'Verification timed out after 30 minutes', files: ['/secret/path'], commandId: 'c1' },
+    });
+    expect(out.details).toEqual({ reason: 'Verification timed out after 30 minutes' });
+  });
+
+  it('caps reason length', () => {
+    const out = toVerificationListItem({ ...base, details: { reason: 'x'.repeat(1000) } });
+    expect((out.details?.reason as string).length).toBeLessThanOrEqual(200);
+  });
+
+  it('drops reason for non-failed rows and non-string reasons', () => {
+    expect(toVerificationListItem({ ...base, status: 'passed', details: { reason: 'nope' } }).details).toBeNull();
+    expect(toVerificationListItem({ ...base, details: { reason: { a: 1 } } }).details).toBeNull();
+  });
+
+  it('keeps the simulated marker alongside the reason', () => {
+    const out = toVerificationListItem({ ...base, details: { simulated: true, reason: 'boom', other: 1 } });
+    expect(out.details).toEqual({ simulated: true, reason: 'boom' });
   });
 });
