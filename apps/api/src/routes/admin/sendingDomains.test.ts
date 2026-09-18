@@ -91,6 +91,14 @@ describe('admin sending domains', () => {
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action, resourceId: DOMAIN_ID }));
   });
 
+  it('the admin route suspends with the default platform_suspended reason', async () => {
+    mocks.suspend.mockResolvedValue(undefined);
+    const res = await buildApp().request(`/admin/sending-domains/${DOMAIN_ID}/suspend`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    // One argument: the route must not start passing abuse_auto.
+    expect(mocks.suspend).toHaveBeenCalledWith(DOMAIN_ID);
+  });
+
   it('403s a mutation without MFA', async () => {
     mocks.mfaAllowed.value = false;
     const res = await buildApp().request(`/admin/sending-domains/${DOMAIN_ID}/suspend`, { method: 'POST' });

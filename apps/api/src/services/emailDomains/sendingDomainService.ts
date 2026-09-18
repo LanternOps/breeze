@@ -473,9 +473,27 @@ async function setAdminStatus(domainId: string, patch: Partial<typeof partnerSen
   await enqueueSyncDomain(domainId);
 }
 
-/** The kill switch (spec §9.1). Sending stops on the next send, because resolution reads the row. */
-export async function suspendSendingDomain(domainId: string): Promise<void> {
-  await setAdminStatus(domainId, { status: 'suspended', statusReason: 'platform_suspended', nextCheckAt: new Date() });
+/**
+ * The kill switch (spec §9.1). Sending stops on the next send, because
+ * resolution reads the row.
+ *
+ * `statusReason` defaults to `platform_suspended` — the admin route's meaning
+ * and W03's original behaviour, so that call site is unchanged. W06's
+ * automatic suspension passes `abuse_auto` (spec §9.3). The status reason is
+ * the ONLY difference between the two: both stop sending, both keep the
+ * provider domain, and neither can be undone by the partner.
+ *
+ * This function deliberately does NOT write an audit row or send the status
+ * notice. The admin route already writes its own `writeRouteAudit` with the
+ * human actor, and the automatic path writes a system audit row and mails from
+ * services/emailDomains/autoSuspend.ts, which is the only caller that has the
+ * partner id, the domain name and `created_by` in hand.
+ */
+export async function suspendSendingDomain(
+  domainId: string,
+  statusReason: 'platform_suspended' | 'abuse_auto' = 'platform_suspended',
+): Promise<void> {
+  await setAdminStatus(domainId, { status: 'suspended', statusReason, nextCheckAt: new Date() });
 }
 
 export async function unsuspendSendingDomain(domainId: string): Promise<void> {
