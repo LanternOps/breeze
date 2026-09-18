@@ -2,29 +2,32 @@ package discovery
 
 import (
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gosnmp/gosnmp"
 )
 
+var publicV2c = []SNMPCredential{{Version: "v2c", Community: "public"}}
+
 func TestDiscoverSNMPEmptyTargets(t *testing.T) {
-	results := DiscoverSNMP(nil, []string{"public"}, time.Second, 4)
+	results := DiscoverSNMP(nil, publicV2c, time.Second, 4)
 	if len(results) != 0 {
 		t.Fatalf("DiscoverSNMP(nil) should return empty, got %d entries", len(results))
 	}
 }
 
 func TestDiscoverSNMPEmptySlice(t *testing.T) {
-	results := DiscoverSNMP([]net.IP{}, []string{"public"}, time.Second, 4)
+	results := DiscoverSNMP([]net.IP{}, publicV2c, time.Second, 4)
 	if len(results) != 0 {
 		t.Fatalf("DiscoverSNMP([]) should return empty, got %d entries", len(results))
 	}
 }
 
 func TestDiscoverSNMPDefaultValues(t *testing.T) {
-	// Verify that zero timeout, zero workers, and nil communities don't panic.
-	// The function will try to connect to a non-routable IP and fail gracefully.
+	// Zero timeout and zero workers must not panic. With no credentials the
+	// probe must NOT invent "public" (issue #6234) — it returns empty.
 	targets := []net.IP{net.ParseIP("192.0.2.1")}
 	results := DiscoverSNMP(targets, nil, 0, 0)
 	// No results expected since 192.0.2.1 is non-routable (TEST-NET-1)
@@ -33,49 +36,42 @@ func TestDiscoverSNMPDefaultValues(t *testing.T) {
 	}
 }
 
-func TestQuerySNMPEmptyCommunities(t *testing.T) {
-	// querySNMP with no communities should return nil
-	result := querySNMP("192.0.2.1", nil, time.Second)
-	if result != nil {
-		t.Fatal("querySNMP with nil communities should return nil")
+func TestQuerySNMPEmptyCredentials(t *testing.T) {
+	info, outcomes := querySNMP("192.0.2.1", nil, time.Second)
+	if info != nil || len(outcomes) != 0 {
+		t.Fatalf("querySNMP with no credentials should return nil/nil, got %v/%v", info, outcomes)
 	}
 }
 
-func TestQuerySNMPBlankCommunity(t *testing.T) {
-	result := querySNMP("192.0.2.1", []string{"", "  "}, 100*time.Millisecond)
-	if result != nil {
-		t.Fatal("querySNMP with blank communities should return nil")
+func TestQuerySNMPUnusableCredentialsSkipped(t *testing.T) {
+	creds := []SNMPCredential{{Version: "v2c"}, {Version: "v3"}}
+	info, outcomes := querySNMP("192.0.2.1", creds, 100*time.Millisecond)
+	if info != nil || len(outcomes) != 0 {
+		t.Fatalf("unusable credentials must be skipped without a probe, got %v/%v", info, outcomes)
 	}
 }
 
-func TestQuerySNMPV3Prefix(t *testing.T) {
-	// v3: prefix should trigger SNMPv3 path. It will fail to connect but
-	// should not panic.
-	result := querySNMP("192.0.2.1", []string{"v3:testuser"}, 100*time.Millisecond)
-	// Will return nil since 192.0.2.1 is non-routable
-	if result != nil {
+// A v3 credential against a non-routable target must fail through the v3 path
+// (no panic, no v2c substitution) and report a classified outcome.
+func TestQuerySNMPV3UnreachableReportsOutcome(t *testing.T) {
+	creds := []SNMPCredential{{Version: "v3", Username: "testuser", AuthProtocol: "sha", AuthPassphrase: "x", PrivProtocol: "aes", PrivPassphrase: "y"}}
+	info, outcomes := querySNMP("192.0.2.1", creds, 100*time.Millisecond)
+	if info != nil {
 		t.Fatal("expected nil for non-routable target with v3")
 	}
-}
-
-func TestQuerySNMPV3EmptyUsername(t *testing.T) {
-	// v3: with empty username should return nil from querySNMPv3
-	result := querySNMP("192.0.2.1", []string{"v3:"}, 100*time.Millisecond)
-	if result != nil {
-		t.Fatal("v3 with empty username should return nil")
+	if len(outcomes) != 1 {
+		t.Fatalf("expected one outcome, got %+v", outcomes)
 	}
-}
-
-func TestQuerySNMPV3CaseInsensitive(t *testing.T) {
-	// V3: prefix (uppercase) should also trigger v3 path
-	result := querySNMP("192.0.2.1", []string{"V3:testuser"}, 100*time.Millisecond)
-	if result != nil {
-		t.Fatal("expected nil for non-routable target with V3")
+	if outcomes[0].class == "ok" || outcomes[0].err == nil {
+		t.Fatalf("outcome must carry a failure, got %+v", outcomes[0])
+	}
+	if !strings.Contains(outcomes[0].credential, "v3 user=testuser") {
+		t.Fatalf("outcome credential description wrong: %q", outcomes[0].credential)
 	}
 }
 
 func TestCollectFdbForDevice_NoCredsReturnsEmpty(t *testing.T) {
-	// An unreachable target with no usable community must degrade to an empty
+	// An unreachable target with no usable credential must degrade to an empty
 	// slice (graceful per-device degradation) without panicking — there is no
 	// live SNMP server in CI.
 	entries := collectFdbForDevice("203.0.113.250", nil, 50*time.Millisecond)
@@ -83,10 +79,10 @@ func TestCollectFdbForDevice_NoCredsReturnsEmpty(t *testing.T) {
 		t.Fatalf("collectFdbForDevice on unreachable target should return empty, got %d entries", len(entries))
 	}
 
-	// Blank community list must also degrade cleanly.
-	entries = collectFdbForDevice("203.0.113.250", []string{"", "  "}, 50*time.Millisecond)
+	// Unusable credentials must also degrade cleanly.
+	entries = collectFdbForDevice("203.0.113.250", []SNMPCredential{{Version: "v2c"}, {Version: "v3"}}, 50*time.Millisecond)
 	if len(entries) != 0 {
-		t.Fatalf("collectFdbForDevice with blank communities should return empty, got %d entries", len(entries))
+		t.Fatalf("collectFdbForDevice with unusable credentials should return empty, got %d entries", len(entries))
 	}
 }
 
