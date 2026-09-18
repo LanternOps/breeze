@@ -3,7 +3,7 @@
  * correctness, and the delivery webhook end-to-end with NO ambient DB context
  * (spec §9.3, §14; CLAUDE.md "Tenant Isolation" step 6).
  *
- * The shipped policy (2026-10-20-100100-partner-sending-daily-stats.sql) is:
+ * The shipped policy (2026-10-20-130000-partner-sending-daily-stats.sql) is:
  *   partner_sending_daily_stats_partner_access  FOR ALL
  *     system OR breeze_has_partner_access(partner_id)
  *
