@@ -2,6 +2,7 @@ import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { getJwtClaims } from '../../lib/authScope';
 import CatalogItemsTab from './CatalogItemsTab';
+import CatalogDefaultsCard from './CatalogDefaultsCard';
 
 export default function CatalogSettingsPage() {
   const { t } = useTranslation('settings');
@@ -34,6 +35,7 @@ export default function CatalogSettingsPage() {
         <p className="mt-1 text-sm text-muted-foreground">
           {t('catalogSettingsPage.manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon')}</p>
       </div>
+      <CatalogDefaultsCard />
       <CatalogItemsTab />
     </div>
   );

@@ -5597,5 +5597,14 @@
   "ticketingHubPage": {
     "heading": "Ticketing Settings",
     "description": "Statuses, SLAs, categories, intake forms, email, templates and time capture — applied across all of your organizations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Catalog defaults",
+    "description": "Used to pre-fill catalog imports and the quote editor's auto-fill — these never affect price resolution directly.",
+    "loading": "Loading catalog defaults...",
+    "loadError": "Failed to load catalog defaults.",
+    "saveError": "Failed to save catalog defaults",
+    "saveSuccess": "Catalog defaults saved",
+    "saveButton": "Save"
   }
 }

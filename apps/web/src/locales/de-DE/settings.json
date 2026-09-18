@@ -5597,5 +5597,14 @@
   "ticketingHubPage": {
     "heading": "Ticketing-Einstellungen",
     "description": "Status, SLAs, Kategorien, Erfassungsformulare, E-Mail, Vorlagen und Zeiterfassung — für alle Organisationen."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog-Standardwerte",
+    "description": "Wird verwendet, um Katalogimporte und die automatische Angebotsausfüllung vorzubefüllen — diese wirken sich nicht direkt auf die Preisermittlung aus.",
+    "loading": "Katalog-Standardwerte werden geladen...",
+    "loadError": "Katalog-Standardwerte konnten nicht geladen werden.",
+    "saveError": "Katalog-Standardwerte konnten nicht gespeichert werden",
+    "saveSuccess": "Katalog-Standardwerte gespeichert",
+    "saveButton": "Speichern"
   }
 }

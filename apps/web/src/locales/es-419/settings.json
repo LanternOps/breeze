@@ -5597,5 +5597,14 @@
   "ticketingHubPage": {
     "heading": "Configuración de tickets",
     "description": "Estados, SLA, categorías, formularios de admisión, correo electrónico, plantillas y registro de tiempo, aplicados a todas tus organizaciones."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valores predeterminados del catálogo",
+    "description": "Se usan para prellenar las importaciones del catálogo y el autocompletado del editor de cotizaciones; no afectan directamente la resolución de precios.",
+    "loading": "Cargando valores predeterminados del catálogo...",
+    "loadError": "No se pudieron cargar los valores predeterminados del catálogo.",
+    "saveError": "No se pudieron guardar los valores predeterminados del catálogo",
+    "saveSuccess": "Valores predeterminados del catálogo guardados",
+    "saveButton": "Guardar"
   }
 }

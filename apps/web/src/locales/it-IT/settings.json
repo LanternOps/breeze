@@ -5597,5 +5597,14 @@
   "ticketingHubPage": {
     "heading": "Impostazioni ticket",
     "description": "Stati, SLA, categorie, moduli di apertura, email, modelli e rilevazione del tempo, applicati a tutte le tue organizzazioni."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valori predefiniti del catalogo",
+    "description": "Usati per precompilare le importazioni del catalogo e il riempimento automatico dell'editor dei preventivi — non incidono direttamente sulla risoluzione del prezzo.",
+    "loading": "Caricamento dei valori predefiniti del catalogo...",
+    "loadError": "Impossibile caricare i valori predefiniti del catalogo.",
+    "saveError": "Impossibile salvare i valori predefiniti del catalogo",
+    "saveSuccess": "Valori predefiniti del catalogo salvati",
+    "saveButton": "Salva"
   }
 }

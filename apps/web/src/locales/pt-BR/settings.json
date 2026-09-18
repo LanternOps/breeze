@@ -5597,5 +5597,14 @@
   "ticketingHubPage": {
     "heading": "Configurações de tickets",
     "description": "Status, SLAs, categorias, formulários de abertura, e-mail, modelos e registro de tempo, aplicados a todas as suas organizações."
+  },
+  "catalogDefaultsCard": {
+    "title": "Padrões do catálogo",
+    "description": "Usados para pré-preencher importações do catálogo e o preenchimento automático do editor de orçamentos — não afetam diretamente a resolução de preços.",
+    "loading": "Carregando padrões do catálogo...",
+    "loadError": "Falha ao carregar os padrões do catálogo.",
+    "saveError": "Falha ao salvar os padrões do catálogo",
+    "saveSuccess": "Padrões do catálogo salvos",
+    "saveButton": "Salvar"
   }
 }

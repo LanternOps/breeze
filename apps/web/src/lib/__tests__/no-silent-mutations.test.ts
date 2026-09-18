@@ -138,6 +138,7 @@ const TARGET_GLOBS = [
   'src/components/clientAi/SessionsTab.tsx',
   'src/components/clientAi/TemplatesTab.tsx',
   'src/components/settings/CatalogItemsTab.tsx',
+  'src/components/settings/CatalogDefaultsCard.tsx',
   'src/components/billing/InvoicesPage.tsx',
   'src/components/billing/InvoiceEditor.tsx',
   'src/components/billing/InvoiceDetail.tsx',
@@ -672,7 +673,10 @@ describe('no silent mutations in targeted set', () => {
     // truth W04 (#5992) adds the network asset single writer: 140 → 141.
     // Network device page truth W05 adds the probe hook: 141 → 142.
     // #4050 adds settings/ProfilePage.tsx (account security): 142 → 143.
-    expect(absoluteFiles.length).toBe(143);
+    // W01 settings consolidation (#6224): PartnerBillingSettings.tsx ->
+    // PartnerBillingSettingsPage.tsx (net 0) then + CatalogDefaultsCard.tsx:
+    // 143 → 144.
+    expect(absoluteFiles.length).toBe(144);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

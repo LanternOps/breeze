@@ -5597,5 +5597,14 @@
   "ticketingHubPage": {
     "heading": "Bilet Ayarları",
     "description": "Tüm organizasyonlarınıza uygulanan durumlar, SLA'lar, kategoriler, giriş formları, e-posta, şablonlar ve zaman kaydı."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog varsayılanları",
+    "description": "Katalog içe aktarmalarını ve teklif düzenleyicisinin otomatik doldurmasını önceden doldurmak için kullanılır — fiyat çözümlemesini doğrudan etkilemez.",
+    "loading": "Katalog varsayılanları yükleniyor...",
+    "loadError": "Katalog varsayılanları yüklenemedi.",
+    "saveError": "Katalog varsayılanları kaydedilemedi",
+    "saveSuccess": "Katalog varsayılanları kaydedildi",
+    "saveButton": "Kaydet"
   }
 }

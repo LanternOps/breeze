@@ -5597,5 +5597,14 @@
   "ticketingHubPage": {
     "heading": "Paramètres de billetterie",
     "description": "Statuts, ERS, catégories, formulaires d'admission, courriel, modèles et saisie du temps, appliqués à toutes vos organisations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valeurs par défaut du catalogue",
+    "description": "Utilisées pour préremplir les importations du catalogue et le remplissage automatique de l'éditeur de soumissions — sans effet direct sur la résolution des prix.",
+    "loading": "Chargement des valeurs par défaut du catalogue...",
+    "loadError": "Échec du chargement des valeurs par défaut du catalogue.",
+    "saveError": "Échec de l'enregistrement des valeurs par défaut du catalogue",
+    "saveSuccess": "Valeurs par défaut du catalogue enregistrées",
+    "saveButton": "Enregistrer"
   }
 }
