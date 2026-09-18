@@ -15,8 +15,14 @@ import { getEmailDomainProvider } from './providerRegistry';
  * receiving two copies is worse than a retry the caller can decide on.
  */
 
-/** At most one ops alert per hour for a paused/rate-limited lane (spec §13). */
-const LANE_ALERT_KEY = 'email-domains:lane-unavailable-alert';
+/**
+ * At most one ops alert per hour for a paused/rate-limited lane (spec §13),
+ * PER PARTNER. A single global key would let the first partner to hit a paused
+ * lane silence the alert for every other partner for the whole hour — on a
+ * busy instance that is most of them, and the ones you would most want to hear
+ * about are the ones that lose the race.
+ */
+const LANE_ALERT_KEY_PREFIX = 'email-domains:lane-unavailable-alert';
 const LANE_ALERT_WINDOW_SECONDS = 3600;
 
 export interface PartnerLaneSendInput {
@@ -38,11 +44,12 @@ export type PartnerLaneSendOutcome =
  * When Redis cannot answer we ALERT — an ops alert we cannot deduplicate is a
  * nuisance; a paused sending account nobody hears about is an outage.
  */
-async function claimLaneAlertSlot(): Promise<boolean> {
+async function claimLaneAlertSlot(partnerId: string): Promise<boolean> {
   try {
     const redis = getRedis();
     if (!redis) return true;
-    return (await redis.set(LANE_ALERT_KEY, '1', 'EX', LANE_ALERT_WINDOW_SECONDS, 'NX')) === 'OK';
+    const key = `${LANE_ALERT_KEY_PREFIX}:${partnerId}`;
+    return (await redis.set(key, '1', 'EX', LANE_ALERT_WINDOW_SECONDS, 'NX')) === 'OK';
   } catch {
     return true;
   }
@@ -86,12 +93,23 @@ export async function sendOnPartnerLane(input: PartnerLaneSendInput): Promise<Pa
     // left. Rethrow without falling back.
     if (!(err instanceof PartnerLaneSendFailure)) throw err;
     const { kind } = err.error;
-    if (kind === 'message_rejected' || kind === 'ambiguous') throw err;
-
     // W02's review round widened `lane_unavailable` to carry an optional
     // `detail` too, so this reads the field off the union rather than the
     // variant — it is correct whether or not that change is in the tree yet.
     const detail = 'detail' in err.error && typeof err.error.detail === 'string' ? err.error.detail : '';
+
+    if (kind === 'message_rejected' || kind === 'ambiguous') {
+      // These rethrow, so nothing further in this module records them — and
+      // without a line here an operator sees only the caller's generic send
+      // failure, with no way to tell a bad recipient from a lane that might
+      // have delivered. The message is NOT re-sent (§8.4), so this log is the
+      // only trace that the partner lane was even involved.
+      console.warn('[emailDomains/partnerLaneSend] partner lane did not deliver; rethrowing without falling back', {
+        partnerId: input.partnerId, domainId: input.domainId, purpose: input.purpose, kind, detail: detail || undefined,
+      });
+      throw err;
+    }
+
     const lastSendError = detail ? `${kind}: ${detail}` : kind;
     console.warn('[emailDomains/partnerLaneSend] partner lane refused the message; falling back to the platform lane', {
       partnerId: input.partnerId, domainId: input.domainId, purpose: input.purpose, kind, detail: detail || undefined,
@@ -110,7 +128,7 @@ export async function sendOnPartnerLane(input: PartnerLaneSendInput): Promise<Pa
         });
       });
 
-    if (kind === 'lane_unavailable' && await claimLaneAlertSlot()) {
+    if (kind === 'lane_unavailable' && await claimLaneAlertSlot(input.partnerId)) {
       await sendOpsAlert({
         title: 'Partner sending lane unavailable',
         body: `The partner-lane provider refused a send (429, paused account, or quota). Messages are falling back to EMAIL_FROM meanwhile. partner=${input.partnerId} domain=${input.domainId}${detail ? ` detail=${detail}` : ''}`,

@@ -215,6 +215,29 @@ describe('classifyPlatformTransportError prefers structured fields (W04)', () =>
     });
   }
 
+  // UNKNOWN 5xx WAS A LOST EMAIL. Before this, any SMTP 5xx the table did not
+  // name fell through to `ambiguous`, which §8.4 forbids retrying on the other
+  // lane — so a permanent sender-side refusal with an unfamiliar code was
+  // thrown away rather than sent from EMAIL_FROM. 5xx is PERMANENT by
+  // definition (RFC 5321 §4.2.1), so the relay definitively did not send it and
+  // the platform-lane fallback is safe; 4xx is a transient deferral and stays
+  // ambiguous.
+  it.each([
+    ['530 auth required', 530, 'domain_unusable'],
+    ['535 bad credentials', 535, 'domain_unusable'],
+    ['501 syntax', 501, 'domain_unusable'],
+    ['521 does not accept mail', 521, 'domain_unusable'],
+    ['421 service unavailable', 421, 'ambiguous'],
+    ['450 mailbox busy', 450, 'ambiguous'],
+  ])('classifies an unmapped SMTP %s as %s', (_label, code, kind) => {
+    expect(classifyPlatformTransportError(transportError('opaque', { transport: 'smtp', smtpResponseCode: code })).kind).toBe(kind);
+  });
+
+  it('still maps 552/554 to message_rejected, not to the new 5xx default', () => {
+    expect(classifyPlatformTransportError(transportError('opaque', { transport: 'smtp', smtpResponseCode: 552 })).kind).toBe('message_rejected');
+    expect(classifyPlatformTransportError(transportError('opaque', { transport: 'smtp', smtpResponseCode: 554 })).kind).toBe('message_rejected');
+  });
+
   it('lets sender-refusal TEXT win over a status code that says otherwise', () => {
     // A 400 from Resend whose body says the domain is unverified must still
     // fall back rather than be treated as a bad message.

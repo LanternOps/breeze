@@ -116,8 +116,18 @@ export function classifyPlatformTransportError(err: unknown): PartnerLaneSendErr
     ? structured.smtpResponseCode
     : (typeof error?.responseCode === 'number' ? error.responseCode : null);
   if (smtpCode !== null) {
-    if (smtpCode === 550 || smtpCode === 551 || smtpCode === 553) return { kind: 'domain_unusable' };
+    // The two message-level permanents, named first so the 5xx default below
+    // cannot swallow them: these are about the MESSAGE, and re-sending the same
+    // message from EMAIL_FROM would just be refused again.
     if (smtpCode === 552 || smtpCode === 554) return { kind: 'message_rejected', detail: message };
+    // Everything else in 5xx is a PERMANENT failure (RFC 5321 §4.2.1), so the
+    // relay definitively did not send this message and the platform-lane
+    // fallback is safe — and is the only outcome that does not lose the mail.
+    // Before this branch existed, an unfamiliar 5xx (530/535 auth, 501 syntax,
+    // 521 "does not accept mail") fell through to `ambiguous`, which §8.4
+    // forbids retrying on the other lane: a permanent sender-side refusal was
+    // thrown away instead of being sent from EMAIL_FROM.
+    if (smtpCode >= 500 && smtpCode < 600) return { kind: 'domain_unusable' };
     // 4xx is a transient SMTP deferral: the relay may accept the same message
     // minutes later, so we must NOT declare it definitively unsent.
     return { kind: 'ambiguous', detail: message };

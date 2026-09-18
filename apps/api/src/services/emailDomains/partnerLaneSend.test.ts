@@ -18,6 +18,7 @@ import { sendOnPartnerLane, type PartnerLaneSendInput } from './partnerLaneSend'
 
 const PARTNER = '11111111-1111-1111-1111-111111111111';
 const DOMAIN_ID = '22222222-2222-2222-2222-222222222222';
+const OTHER_PARTNER = '33333333-3333-3333-3333-333333333333';
 
 const sendMock = vi.fn();
 
@@ -134,6 +135,24 @@ describe('sendOnPartnerLane — definitive failures fall back (spec §8.4)', () 
     getRedisMock.mockReturnValue({ set: vi.fn(async () => null) });
     await sendOnPartnerLane(input());
     expect(sendOpsAlertMock).not.toHaveBeenCalled();
+  });
+
+  // The dedupe slot is PER PARTNER. A single global key means the first partner
+  // to hit a paused lane silences the alert for every other partner for an
+  // hour — on a busy instance that is most of them.
+  it('deduplicates per partner, not globally', async () => {
+    const set = vi.fn(async (key: string) => (key.includes(PARTNER) ? 'OK' : 'OK'));
+    getRedisMock.mockReturnValue({ set });
+    sendMock.mockRejectedValue(new PartnerLaneSendFailure({ kind: 'lane_unavailable' }));
+
+    await sendOnPartnerLane(input());
+    await sendOnPartnerLane(input({ partnerId: OTHER_PARTNER }));
+
+    expect(sendOpsAlertMock).toHaveBeenCalledTimes(2);
+    const keys = set.mock.calls.map((c) => c[0] as string);
+    expect(keys[0]).toContain(PARTNER);
+    expect(keys[1]).toContain(OTHER_PARTNER);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 
   it('does NOT raise an ops alert for domain_unusable', async () => {

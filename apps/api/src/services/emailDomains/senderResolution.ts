@@ -146,6 +146,14 @@ export async function resolveSender(input: ResolveSenderInput): Promise<Resolved
   // Condition 4, LAST so an ineligible partner never burns a counter slot. A
   // Redis outage also lands here (sendCap.ts): the message still goes out, on
   // the platform lane, and the cap is never silently lifted.
+  //
+  // DELIBERATE: the slot is consumed HERE, before the send, so a message that
+  // then falls back to the platform lane (domain_unusable / lane_unavailable,
+  // §8.4) has still spent one. That is the safe direction for an abuse control
+  // — a partner with a broken domain cannot exceed the cap by retrying, which
+  // is exactly the state in which a runaway loop is most likely. The cost is
+  // that the counter slightly over-counts during an outage; the alternative
+  // (count on success) would make the cap unbounded precisely when it matters.
   if (!(await tryCountPartnerLaneSend(input.partnerId))) {
     return { lane: 'platform', from, reason: 'over_cap' };
   }
