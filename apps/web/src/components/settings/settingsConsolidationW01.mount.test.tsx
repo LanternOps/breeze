@@ -34,13 +34,14 @@ const PARTNER_SHAPE = {
 const jsonResponse = (payload: unknown): Response =>
   ({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-const fetchMock = vi.fn((path: string) => {
+const fetchMock = vi.fn((...args: unknown[]) => {
+  const path = args[0] as string;
   if (path.startsWith('/orgs/partners/me')) return Promise.resolve(jsonResponse(PARTNER_SHAPE));
   return Promise.resolve(jsonResponse({ data: [] }));
 });
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
-  fetchWithAuth: (...args: [string, ...unknown[]]) => fetchMock(...args),
+  fetchWithAuth: (...args: unknown[]) => fetchMock(...args),
 }));
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: Object.assign(
