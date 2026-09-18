@@ -14,6 +14,7 @@ import { isRedisAvailable } from '../services/redis';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { encryptSnmpSecret, isMaskedSnmpSecret, maskSnmpSecret } from '../services/snmpSecrets';
 import { enqueueSnmpPoll } from '../jobs/snmpWorker';
+import { captureException } from '../services/sentry';
 
 import {
   resolveOrgIdForAuth as resolveOrgId,
@@ -701,15 +702,22 @@ monitoringRoutes.put(
     // #6209 — a template change (or first-time SNMP setup) shouldn't sit
     // waiting for the scheduler's next due tick (up to a full
     // pollingInterval, longer under backoff). Enqueue an immediate poll so
-    // the new OID set shows up within seconds. Fire-and-forget, matching
-    // writeRouteAudit above: unawaited so the Redis round-trip never extends
+    // the new OID set shows up within seconds. Fire-and-forget like
+    // writeRouteAudit above (unawaited so the Redis round-trip never extends
     // the request's held withDbAccessContext transaction, and its actual
-    // execution naturally lands after that transaction commits (see
+    // execution naturally lands after that transaction commits — see
     // groups.ts's dynamic-group-evaluation comment for why a detached
-    // promise resumes post-commit here).
+    // promise resumes post-commit here) — but NOT the same safety net:
+    // writeRouteAudit's failure path retries with backoff and reports to
+    // Sentry on exhaustion (auditService.ts); a missed immediate poll has no
+    // such retry, only this console.error + captureException, because the
+    // worst case is a device polling on its next scheduled tick instead of
+    // immediately — low enough stakes that logging is enough, but real
+    // failures (e.g. Redis misconfigured) still need to surface somewhere.
     if (!existing || existing.templateId !== upserted.templateId) {
       void enqueueSnmpPoll(upserted.id, asset.orgId).catch((err) => {
         console.error(`[monitoring] Failed to enqueue immediate poll for snmp device ${upserted.id}:`, err);
+        captureException(err);
       });
     }
 
@@ -826,6 +834,7 @@ monitoringRoutes.patch(
     if (changedFields.includes('templateId') && existing.templateId !== updated.templateId) {
       void enqueueSnmpPoll(updated.id, asset.orgId).catch((err) => {
         console.error(`[monitoring] Failed to enqueue immediate poll for snmp device ${updated.id}:`, err);
+        captureException(err);
       });
     }
 

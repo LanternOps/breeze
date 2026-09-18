@@ -133,8 +133,13 @@ vi.mock('../jobs/snmpWorker', () => ({
   enqueueSnmpPoll: vi.fn().mockResolvedValue('job-1'),
 }));
 
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
 import { suggestTemplate } from '../services/snmpTemplateSuggest';
 import { enqueueSnmpPoll } from '../jobs/snmpWorker';
+import { captureException } from '../services/sentry';
 
 import { monitoringRoutes } from './monitoring';
 import { db } from '../db';
@@ -1218,6 +1223,61 @@ describe('monitoring routes', () => {
 
       expect(res.status).toBe(200);
       expect(enqueueSnmpPoll).not.toHaveBeenCalled();
+    });
+
+    it('PATCH: enqueues an immediate poll when an explicit templateId: null clears an existing template', async () => {
+      // No template-access select: templateId is falsy (null), so
+      // validateSnmpTemplateAccess's `if (body.templateId && ...)` guard
+      // never fires — mockPatchChain(existing, false) matches that.
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-2222-2222-2222-222222222222', isActive: true });
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: null, pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await patch({ templateId: null });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).toHaveBeenCalledTimes(1);
+      expect(enqueueSnmpPoll).toHaveBeenCalledWith(SNMP_DEVICE_ID, ORG_ID);
+    });
+
+    it('PUT: enqueues an immediate poll when an explicit templateId: null clears an existing template', async () => {
+      mockPutChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-2222-2222-2222-222222222222', community: 'enc:v1:old', isActive: true });
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:old', username: null, templateId: null, pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: '********', templateId: null });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).toHaveBeenCalledTimes(1);
+      expect(enqueueSnmpPoll).toHaveBeenCalledWith(SNMP_DEVICE_ID, ORG_ID);
+    });
+
+    it('PUT: a rejected enqueueSnmpPoll does not fail the request or leak an unhandled rejection', async () => {
+      mockPutChain(null, true);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:mock', username: null, templateId: 'aaaaaaaa-1111-1111-1111-111111111111', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+      const enqueueError = new Error('redis unavailable');
+      vi.mocked(enqueueSnmpPoll).mockRejectedValueOnce(enqueueError);
+
+      const res = await put({ snmpVersion: 'v2c', community: 'public', templateId: 'aaaaaaaa-1111-1111-1111-111111111111' });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).toHaveBeenCalledTimes(1);
+      // Let the fire-and-forget rejection settle before the test ends, so an
+      // unswallowed rejection would surface as an unhandled rejection here
+      // rather than escaping into a later, unrelated test.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(captureException).toHaveBeenCalledWith(enqueueError);
     });
   });
 });
