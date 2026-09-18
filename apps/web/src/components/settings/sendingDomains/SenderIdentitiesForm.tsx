@@ -76,7 +76,7 @@ function StreamRow({ stream, targets, existing, inbound, busy, onSave, onClear }
     const parsedLocal = senderLocalPartSchema.safeParse(localPart);
     if (!parsedLocal.success) {
       const reserved = parsedLocal.error.issues.some((issue) => issue.message === 'local_part_reserved');
-      setError(t(reserved
+      setError(t(/* i18n-dynamic */ reserved
         ? 'partnerSendingDomains.identityLocalPartReserved'
         : 'partnerSendingDomains.identityLocalPartInvalid'));
       return;
