@@ -198,10 +198,10 @@ func collectDeviceAdjacencyForHost(ip string, communities []string, timeout time
 		}
 		cfg := snmppoll.SNMPClientConfig{Target: ip, Timeout: timeout}
 		if strings.HasPrefix(strings.ToLower(community), "v3:") {
-			cfg.Version = gosnmp.Version3
+			cfg.Version = snmppoll.Version3
 			cfg.Auth = snmppoll.SNMPAuth{Username: strings.TrimPrefix(community, "v3:")}
 		} else {
-			cfg.Version = gosnmp.Version2c
+			cfg.Version = snmppoll.Version2c
 			cfg.Auth = snmppoll.SNMPAuth{Community: community}
 		}
 		client, err := snmppoll.NewClient(cfg)

@@ -107,6 +107,22 @@ describe('buildPortalNavItems — Equipment (/assets) gating', () => {
   );
 });
 
+describe('buildPortalNavItems — Devices visibility (#4933)', () => {
+  it.each([
+    { enableDevices: true, enableSelfService: false },
+    { enableDevices: false, enableSelfService: true },
+  ])('shows Devices when either access flag is enabled (%j)', (branding) => {
+    expect(buildPortalNavItems(branding).map((item) => item.href)).toContain('/devices');
+  });
+
+  it('hides Devices when visibility and self-service are both disabled', () => {
+    expect(buildPortalNavItems({
+      enableDevices: false,
+      enableSelfService: false,
+    }).map((item) => item.href)).not.toContain('/devices');
+  });
+});
+
 describe('buildPortalNavItems — W04 service and documents', () => {
   it('fails CLOSED for the W04 surfaces — absent or false hides them', () => {
     for (const branding of [{}, { enableService: false, enableDocuments: false }]) {

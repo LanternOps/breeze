@@ -1134,6 +1134,10 @@
       "description": "Elija qué información de servicio puede ver este cliente en el portal.",
       "enableAll": "Habilitar toda la visibilidad",
       "toggles": {
+        "enableDevices": {
+          "label": "Dispositivos",
+          "description": "Mostrar la página de dispositivos. El autoservicio también permite acceder a esta página."
+        },
         "enableDashboard": {
           "label": "Panel",
           "description": "Muestra un resumen del estado del servicio al iniciar sesión."
@@ -2115,11 +2119,13 @@
           "title": "Archivos generados por esta ejecución",
           "download": "Descargar",
           "preview": "Vista previa",
-          "attachToTicket": "Adjuntar a un ticket",
-          "attach": "Adjuntar {{name}}",
+          "attachToTicket": "Adjuntar como nota interna",
+          "attach": "Adjuntar {{name}} como nota interna",
           "ticketIdPlaceholder": "ID del ticket",
-          "attachedToTicket": "Adjuntado al ticket",
-          "attachFailed": "No se pudo adjuntar el archivo a ese ticket"
+          "attachedToTicket": "Adjuntado al ticket como nota interna",
+          "attachFailed": "No se pudo adjuntar el archivo a ese ticket",
+          "attachedButCommentFailed": "Se adjuntó el archivo, pero no se pudo agregar la nota al ticket",
+          "downloadExpired": "Este archivo ha vencido y ya no se puede descargar."
         },
         "workspace": {
           "title": "Lo que se ejecutó en el entorno aislado",
@@ -4041,6 +4047,7 @@
     "languageLoadFailed": "La preferencia se guardó, pero el idioma no se pudo cargar: se muestra inglés. Compruebe su conexión y vuelva a intentarlo."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Registro de tiempo predeterminado (minutos)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA los minutos y la tarifa por hora deben ser números.",
     "categoryUpdated": "Categoría actualizada",
     "ticketing": "Gestión de tickets",
@@ -5236,6 +5243,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Falló la búsqueda del Archivo de precios TD SYNNEX (respuesta no válida)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Las variables de cada organización se muestran dentro de esa organización.",
     "title": "Variables",
     "description": "Define un valor una sola vez —un token de sitio de un proveedor, la URL de un repositorio interno— y refiérelo desde los scripts en lugar de escribirlo en cada cliente.",
     "loading": "Cargando variables…",

@@ -39,7 +39,9 @@ function serializeSnmpDevice(device: typeof snmpDevices.$inferSelect) {
     pollingInterval: device.pollingInterval,
     isActive: device.isActive,
     lastPolled: device.lastPolled?.toISOString?.() ?? (device.lastPolled ? new Date(device.lastPolled as any).toISOString() : null),
-    lastStatus: device.lastStatus
+    lastStatus: device.lastStatus,
+    lastError: device.lastError ?? null,
+    lastErrorAt: device.lastErrorAt?.toISOString() ?? null
   };
 }
 
@@ -119,6 +121,8 @@ monitoringRoutes.get(
         isActive: snmpDevices.isActive,
         lastPolled: snmpDevices.lastPolled,
         lastStatus: snmpDevices.lastStatus,
+        lastError: snmpDevices.lastError,
+        lastErrorAt: snmpDevices.lastErrorAt,
         createdAt: snmpDevices.createdAt
       })
       .from(snmpDevices)
@@ -240,7 +244,9 @@ monitoringRoutes.get(
             port: snmp!.port,
             isActive: snmp!.isActive,
             lastPolled: snmp!.lastPolled?.toISOString?.() ?? (snmp!.lastPolled ? new Date(snmp!.lastPolled as any).toISOString() : null),
-            lastStatus: snmp!.lastStatus ?? null
+            lastStatus: snmp!.lastStatus ?? null,
+            lastError: snmp!.lastError ?? null,
+            lastErrorAt: snmp!.lastErrorAt?.toISOString() ?? null
           } : {
             configured: false,
             deviceId: null,
@@ -250,7 +256,9 @@ monitoringRoutes.get(
             port: null,
             isActive: false,
             lastPolled: null,
-            lastStatus: null
+            lastStatus: null,
+            lastError: null,
+            lastErrorAt: null
           },
           network: {
             configured: networkConfigured,

@@ -254,6 +254,15 @@ export function mergeAgentPolicies(
       siteIds: intersectOptional(partner.triggers.siteIds, org.triggers.siteIds),
       deviceGroupIds: intersectOptional(partner.triggers.deviceGroupIds, org.triggers.deviceGroupIds),
       deviceTags: intersectOptional(partner.triggers.deviceTags, org.triggers.deviceTags),
+      anomalyTypes: intersectOptional(partner.triggers.anomalyTypes, org.triggers.anomalyTypes),
+      metricNames: intersectOptional(partner.triggers.metricNames, org.triggers.metricNames),
+      // `minAnomalyScore` is a FLOOR ("fire only at or above this"), so `max`
+      // IS the tighten-only rule — the same direction as the intersections.
+      minAnomalyScore: partner.triggers.minAnomalyScore === undefined
+        ? org.triggers.minAnomalyScore
+        : org.triggers.minAnomalyScore === undefined
+          ? partner.triggers.minAnomalyScore
+          : Math.max(partner.triggers.minAnomalyScore, org.triggers.minAnomalyScore),
       // Wave 6 PR 3 (#3828, Task 4) — same tighten-only intersection as the
       // other narrowing lists above. Unenforced by the admission subscriber
       // this PR (`AiAgentTriggers.ticketCategories`'s docstring), but merged

@@ -50,7 +50,6 @@ vi.mock('../../services/email', async (importOriginal) => {
     ...actual,
     getEmailService: () => ({
       sendEmail: sendEmailMock,
-      fromWithDisplayName: (name: string) => `"${name}" <no-reply@test.example>`,
     }),
   };
 });

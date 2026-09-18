@@ -2285,6 +2285,47 @@ describe('RunDetailPage — patch plan', () => {
     expect(link.getAttribute('href')).toContain('intent-abc123');
   });
 
+  it.each([
+    ['rejected', 'Rejected'],
+    ['approved', 'Approved'],
+    ['expired', 'Expired'],
+    ['failed', 'Failed'],
+    ['drifted', 'drifted'],
+    ['cancelled', 'Cancelled'],
+    ['executing', 'Executing'],
+    ['completed', 'Completed'],
+  ])('shows the linked intent live status %s without an inbox link', async (status, label) => {
+    mockEndpoints({ detail: {
+      ...PATCH_RUN,
+      patch: MINTED,
+      intents: [
+        { ...RUN_DETAIL.intents[0], status: 'pending_approval' },
+        { ...RUN_DETAIL.intents[0], id: 'intent-abc123', status },
+      ],
+    } });
+    render(<RunDetailPage runId="run-1" />);
+
+    const intent = await screen.findByTestId('ai-agent-run-patch-item-0-intent');
+    expect(intent).toHaveTextContent(label);
+    expect(intent.tagName).not.toBe('A');
+    expect(intent).not.toHaveAttribute('href');
+    expect(intent).not.toHaveTextContent('open card');
+    expect(screen.getByTestId('run-detail-intents')).toHaveTextContent(label);
+  });
+
+  it('keeps the open-card link for a pending linked intent', async () => {
+    mockEndpoints({ detail: {
+      ...PATCH_RUN,
+      patch: MINTED,
+      intents: [{ ...RUN_DETAIL.intents[0], id: 'intent-abc123', status: 'pending_approval' }],
+    } });
+    render(<RunDetailPage runId="run-1" />);
+
+    const intent = await screen.findByTestId('ai-agent-run-patch-item-0-intent');
+    expect(intent).toHaveTextContent('Awaiting approval — open card');
+    expect(intent).toHaveAttribute('href', '/approvals#intent-intent-abc123');
+  });
+
   it('renders the dropped patches and their ineligibility reasons, not the raw patch id', async () => {
     const DROPPED = {
       ...PATCH,

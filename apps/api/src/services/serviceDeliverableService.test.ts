@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Param, SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Controllable Drizzle chain mock (same pattern as contractService.test.ts):
 // every builder method returns the same chain; an awaited query consumes the
@@ -872,6 +873,23 @@ describe('serviceDeliverableService', () => {
   });
 
   describe('markDueOccurrencesMissedForDeliverable (spec §5.3 step 4)', () => {
+    it('closing mode retires scheduled/open/awaiting_evidence rows past grace and preserves tickets (#5609)', async () => {
+      queueResult([{ id: 'o1' }]);
+      expect(await markDueOccurrencesMissedForDeliverable(SD, '2026-10-25', { closing: true })).toBe(1);
+      expect(lastSet()).toMatchObject({ status: 'missed' });
+      expect(lastSet()).not.toHaveProperty('ticketId');
+      const params = updateWhereParams();
+      // Grace still applies: a paused (active=false) deliverable can be resumed,
+      // so closing must not stamp `missed` earlier than the normal sweep would.
+      expect(params).toEqual(expect.arrayContaining(['d1', 'scheduled', 'open', 'awaiting_evidence', '2026-10-11']));
+      expect(params).not.toContain('2026-10-25');
+      for (const status of ['delivered', 'waived', 'missed']) expect(params).not.toContain(status);
+      const q = new PgDialect().sqlToQuery(chain.where.mock.calls.at(-1)?.[0] as SQL);
+      expect(q.sql).toContain('"due_at" <');
+      expect(q.sql).not.toContain('"due_at" <=');
+      expect(chain.update.mock.calls).toHaveLength(1);
+    });
+
     it('moves open / awaiting_evidence rows past grace to missed and never touches the ticket', async () => {
       queueResult([{ id: 'o1' }, { id: 'o2' }]);
       expect(await markDueOccurrencesMissedForDeliverable(SD, '2026-10-25')).toBe(2);

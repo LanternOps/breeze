@@ -440,6 +440,10 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 }
 
 func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+	return execBackupVerifyContext(context.Background(), payload, mgr, vaultState)
+}
+
+func execBackupVerifyContext(ctx context.Context, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
 	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
@@ -453,11 +457,15 @@ func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultS
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid verify payload: " + err.Error())
 	}
-	result, err := backup.VerifyIntegrity(restoreProvider, p.SnapshotID)
+	result, err := backup.VerifyIntegrityContext(ctx, restoreProvider, p.SnapshotID)
 	return marshalResult(result, err)
 }
 
 func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
+	return execBackupTestRestoreContext(context.Background(), payload, mgr, vaultState)
+}
+
+func execBackupTestRestoreContext(ctx context.Context, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
 	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
 	if err != nil {
 		return fail(err.Error())
@@ -471,7 +479,7 @@ func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, v
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid test restore payload: " + err.Error())
 	}
-	result, err := backup.TestRestore(restoreProvider, p.SnapshotID, backupRestoreWorkRoot(), nil)
+	result, err := backup.TestRestoreContext(ctx, restoreProvider, p.SnapshotID, backupRestoreWorkRoot(), nil)
 	return marshalResult(result, err)
 }
 

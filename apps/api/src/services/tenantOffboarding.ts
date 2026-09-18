@@ -28,6 +28,7 @@ import { enqueueTenantErasure } from '../jobs/tenantErasure';
 import { getOrgMergeQueue } from '../jobs/orgMerge';
 import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
 import { getEmailService } from './email';
+import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { escapeHtml, renderLayout } from './emailLayout';
 
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
@@ -1024,6 +1025,15 @@ export async function finalizePartnerOffboarding(
     .returning({ id: partners.id });
   if (flipped.length === 0) return null;
 
+  // Release provider-side sending domains (spec §3.5). Placed AFTER the status
+  // CAS so a lost race — another sweep already flipped this partner — cannot
+  // release domains for a partner that is no longer offboarding. This function
+  // already runs inside runOutsideDbContext(() => withSystemDbAccessContext(…))
+  // from sweepOffboardingTenants, and withSystemDbAccessContext JOINS an
+  // existing context rather than nesting, so no second pooled connection is
+  // taken. Makes no provider call.
+  await releaseSendingDomainsForPartner(partnerId);
+
   const orgRows = await db
     .select({ id: organizations.id })
     .from(organizations)
@@ -1826,6 +1836,7 @@ export async function sweepOffboardingTenants(
                 + `<strong>${safePurgeAt}</strong>.</p>`
                 + '<p>Restore the organization before then to cancel the purge.</p>',
             }),
+            purpose: 'account.purge_warning',
           });
         } catch (sendErr) {
           // Claim-before-send keeps replicas from sending duplicates. If the

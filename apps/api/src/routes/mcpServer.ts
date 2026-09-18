@@ -2356,7 +2356,10 @@ async function handleResourcesRead(
       // Site axis (app-layer only): a site-restricted caller must not resolve a
       // device outside their allowed sites — treat as not-found. siteId is in
       // SAFE_DEVICE_RESOURCE_FIELDS so the projection already carries it.
-      if (!device || deviceSiteDenied(auth, device.siteId)) {
+      // `device.id` is load-bearing: an exact-device caller (`allowedDeviceIds`,
+      // a resource-scoped agent run) is denied by a site alone, so omitting it
+      // would deny the caller its OWN device.
+      if (!device || deviceSiteDenied(auth, device.siteId, device.id)) {
         return jsonRpcError(id, -32602, `Device not found: ${deviceId}`);
       }
 

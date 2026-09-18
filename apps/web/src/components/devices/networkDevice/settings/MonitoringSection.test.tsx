@@ -35,7 +35,13 @@ type Wiring = {
 function wire({ snmpDevice = null, monitors = [], suggestStatus = 404, suggestBody = null, detailStatus = 200, templatesStatus = 200, writeStatus = 200 }: Wiring = {}) {
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     if (init?.method) return Promise.resolve(res({ success: writeStatus < 400, error: writeStatus === 409 ? 'Conflict' : undefined }, writeStatus));
-    if (url.startsWith('/monitoring/templates/suggest')) return Promise.resolve(res(suggestBody, suggestStatus));
+    if (url.startsWith('/monitoring/templates/suggest')) {
+      // suggestBody is the inner `suggestion` value; the route always wraps it in an envelope.
+      const body = suggestStatus === 200
+        ? { sysObjectId: '1.3.6.1.4.1.253.1', assetType: 'printer', suggestion: suggestBody ?? null }
+        : suggestBody;
+      return Promise.resolve(res(body, suggestStatus));
+    }
     if (url.startsWith('/monitoring/assets/')) {
       if (detailStatus >= 400) return Promise.resolve(res({ error: 'Monitoring service unavailable' }, detailStatus));
       return Promise.resolve(res({ enabled: Boolean(snmpDevice), snmpDevice, networkMonitors: { totalCount: monitors.length, activeCount: monitors.filter((monitor) => (monitor as { isActive: boolean }).isActive).length }, recentMetrics: [] }));
@@ -134,9 +140,19 @@ describe('MonitoringSection — template suggestion is feature-detected (W03)', 
     wire({ suggestStatus: 200, suggestBody: { templateId: 't-1', templateName: 'Xerox Printer', reason: 'Detected Xerox printer' } });
     render(<MonitoringSection {...props} />);
 
-    expect(await screen.findByTestId('network-settings-snmp-suggestion')).toHaveTextContent('Detected Xerox printer');
+    const suggestionEl = await screen.findByTestId('network-settings-snmp-suggestion');
+    expect(suggestionEl).toHaveTextContent('Xerox Printer');
+    expect(suggestionEl).toHaveTextContent('Detected Xerox printer');
     fireEvent.click(screen.getByTestId('network-settings-snmp-suggestion-apply'));
     expect(screen.getByTestId('network-settings-snmp-template')).toHaveValue('t-1');
+  });
+
+  it('renders no suggestion line when the API envelope carries a null suggestion', async () => {
+    wire({ suggestStatus: 200, suggestBody: null });
+    render(<MonitoringSection {...props} />);
+
+    await screen.findByTestId('network-settings-snmp-template');
+    expect(screen.queryByTestId('network-settings-snmp-suggestion')).not.toBeInTheDocument();
   });
 });
 

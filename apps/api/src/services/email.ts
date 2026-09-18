@@ -7,6 +7,8 @@ import {
   renderButton,
   renderLayout,
 } from './emailLayout';
+import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
+import { resolveSender } from './emailDomains/senderResolution';
 
 export interface EmailAttachment {
   filename: string;
@@ -14,13 +16,12 @@ export interface EmailAttachment {
   contentType?: string;
 }
 
-export interface SendEmailParams {
+export interface SendEmailBase {
   to: string | string[];
   cc?: string | string[];
   subject: string;
   html: string;
   text?: string;
-  from?: string;
   replyTo?: string | string[];
   // Custom RFC headers for threading + loop-prevention (Phase 4):
   // Message-ID, In-Reply-To, References, Auto-Submitted. Flat map; each
@@ -28,6 +29,31 @@ export interface SendEmailParams {
   headers?: Record<string, string>;
   attachments?: EmailAttachment[];
 }
+
+/**
+ * A message whose sender has already been decided. The ONLY shape that reaches
+ * a transport. `services/emailDomains/**` uses it for the `static` and `fake`
+ * adapters and the test send, which hand a custom From to the platform
+ * transport (plan index amendment 2).
+ */
+export interface RawEmailMessage extends SendEmailBase {
+  from: string;
+}
+
+/**
+ * Every send declares WHAT IT IS; `services/emailDomains/mailPurposes.ts`
+ * decides who it is from. There is no raw `from`: an unclassified send does
+ * not compile (spec G5), and a spoofed envelope address is unrepresentable.
+ *
+ * A partner-lane purpose MUST state its partner — `null` is allowed and means
+ * "the platform sender", for call sites that cannot always resolve one. It has
+ * to come from a row the call site already read or from the verified auth
+ * context, never from request input (spec §8.1).
+ */
+export type SendEmailParams = SendEmailBase & (
+  | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never }
+  | { purpose: PartnerLaneMailPurpose; partnerId: string | null; partnerName?: string | null }
+);
 
 export interface InvoiceEmailParams {
   invoiceNumber: string;
@@ -54,12 +80,21 @@ export interface InvoiceEmailParams {
   payEnabled?: boolean;
 }
 
-export interface PasswordResetEmailParams {
+/**
+ * Two audiences share this template: an MSP staff account (platform lane —
+ * account recovery must never depend on a partner's DNS, spec §8.2) and a
+ * customer's portal login (partner lane, `support` stream). The purpose is
+ * therefore a caller decision, and it drags `partnerId` with it.
+ */
+export type PasswordResetEmailParams = {
   to: string | string[];
   name?: string;
   resetUrl: string;
   supportEmail?: string;
-}
+} & (
+  | { purpose: 'auth.password_reset' }
+  | { purpose: 'portal.password_reset'; partnerId: string | null }
+);
 
 export interface PortalInviteEmailParams {
   to: string | string[];
@@ -68,6 +103,12 @@ export interface PortalInviteEmailParams {
   inviterName?: string;
   message?: string;
   supportEmail?: string;
+  /**
+   * The partner that owns the org this invite belongs to — the `support`
+   * stream's sender once W04 lands. Must come from a row the call site already
+   * read or from the verified auth context, never from request input (§8.1).
+   */
+  partnerId: string | null;
 }
 
 export interface VerificationEmailParams {
@@ -75,6 +116,12 @@ export interface VerificationEmailParams {
   name?: string;
   verificationUrl: string;
   supportEmail?: string;
+  /**
+   * `auth.email_verification` for signup and resend; `auth.email_change_verify`
+   * for the link sent to a NEW address during an email change. Both are
+   * platform purposes — same lane, different delivery-event tag (§9.3).
+   */
+  purpose: 'auth.email_verification' | 'auth.email_change_verify';
 }
 
 export interface InviteEmailParams {
@@ -222,24 +269,38 @@ export class EmailService {
     });
   }
 
-  /**
-   * The default sender with a custom display name — keeps the envelope address
-   * (so SPF/DKIM alignment is untouched) while showing e.g.
-   * `"Acme MSP via Breeze" <no-reply@2breeze.app>` in the customer's inbox.
-   * The display name is stripped of header-breaking characters; falls back to
-   * the plain default sender when nothing usable survives.
-   */
-  fromWithDisplayName(displayName: string): string {
-    const match = this.defaultFrom.match(/<([^<>\s]+@[^<>\s]+)>/);
-    const address = (match?.[1] ?? this.defaultFrom).trim();
-    const safe = displayName.replace(/[\r\n"<>\\]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!safe || !address.includes('@')) return this.defaultFrom;
-    return `"${safe}" <${address}>`;
+  async sendEmail(params: SendEmailParams): Promise<void> {
+    const { to, cc, subject, html, text, replyTo, headers, attachments } = params;
+
+    const resolved = await resolveSender({
+      purpose: params.purpose,
+      partnerId: params.partnerId ?? null,
+      partnerName: params.partnerName ?? null,
+      defaultFrom: this.defaultFrom,
+    });
+
+    await this.deliverRaw({
+      to,
+      cc,
+      subject,
+      html,
+      text,
+      replyTo,
+      headers,
+      attachments,
+      from: resolved.from,
+    });
   }
 
-  async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = params;
-    const sender = from ?? this.defaultFrom;
+  /**
+   * @internal The one raw entry point: it takes an explicit From and asks no
+   * questions. Only `services/emailDomains/**` may call it (enforced by
+   * `email.deliverRawScope.test.ts`) — product code calls `sendEmail` and
+   * declares a purpose, or the classification G5 depends on leaks away.
+   */
+  async deliverRaw(message: RawEmailMessage): Promise<void> {
+    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = message;
+    const sender = from;
 
     if (this.provider === 'resend') {
       if (!this.resend) {
@@ -272,6 +333,9 @@ export class EmailService {
         throw new Error('Mailgun config is not initialized');
       }
 
+      // `cc` is deliberately NOT forwarded: sendViaMailgun supports it, this
+      // call has never passed it, and W01 is byte-identical by construction.
+      // Fixing it is its own issue (plan index amendment 6).
       await sendViaMailgun(this.mailgunConfig, {
         from: sender,
         to,
@@ -319,11 +383,23 @@ export class EmailService {
 
   async sendPasswordReset(params: PasswordResetEmailParams): Promise<void> {
     const template = buildPasswordResetTemplate(params);
+    if (params.purpose === 'portal.password_reset') {
+      await this.sendEmail({
+        to: params.to,
+        subject: template.subject,
+        html: template.html,
+        text: template.text,
+        purpose: 'portal.password_reset',
+        partnerId: params.partnerId
+      });
+      return;
+    }
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.password_reset'
     });
   }
 
@@ -333,7 +409,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: params.purpose
     });
   }
 
@@ -343,7 +420,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.staff_invite'
     });
   }
 
@@ -353,7 +431,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'staff.alert_notification'
     });
   }
 
@@ -363,7 +442,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.account_locked'
     });
   }
 
@@ -373,7 +453,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.email_changed'
     });
   }
 
@@ -383,7 +464,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.signup_existing_account'
     });
   }
 
@@ -393,7 +475,9 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'portal.invite',
+      partnerId: params.partnerId
     });
   }
 }
@@ -729,7 +813,7 @@ async function mailgunFetch(config: MailgunProviderConfig, init: RequestInit): P
 
 async function sendViaMailgun(
   config: MailgunProviderConfig,
-  params: SendEmailParams & { from: string }
+  params: RawEmailMessage
 ): Promise<void> {
   const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
   const recipients = Array.isArray(params.to) ? params.to : [params.to];

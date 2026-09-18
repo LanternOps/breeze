@@ -263,16 +263,11 @@ async function tightenPortalReportStatementTimeout(): Promise<void> {
 }
 
 /**
- * The org's `enable_lifecycle` and `enable_self_service` visibility flags in
- * one row read, inside the ambient organization-scoped RLS transaction the
- * portal auth middleware already opened. Fail closed exactly like
- * `createPortalFeatureGateStrict`: a missing portal_branding row, or anything
- * that is not literally `true`, is `false` for either flag.
- *
- * Both flags live on the same `portal_branding` row, so `latestPortalHardwareLifecycleRun`
- * (which needs both — see #5880) reads them together rather than issuing a
- * second query; `portalLifecycleEnabled` below is a thin boolean view onto
- * this for its other callers, which only ever needed the one flag.
+ * Read lifecycle visibility and Devices access in the ambient org-scoped RLS
+ * transaction. Lifecycle visibility requires an explicit true; device links
+ * require either enable_devices or enable_self_service to be explicitly true.
+ * The legacy enableSelfService result field carries this combined link grant.
+ * Missing branding values fail closed.
  */
 async function portalBrandingLifecycleFlags(
   orgId: string,
@@ -281,6 +276,7 @@ async function portalBrandingLifecycleFlags(
     .select({
       enableLifecycle: portalBranding.enableLifecycle,
       enableSelfService: portalBranding.enableSelfService,
+      enableDevices: portalBranding.enableDevices,
     })
     .from(portalBranding)
     .where(eq(portalBranding.orgId, orgId))
@@ -288,7 +284,7 @@ async function portalBrandingLifecycleFlags(
 
   return {
     enableLifecycle: row?.enableLifecycle === true,
-    enableSelfService: row?.enableSelfService === true,
+    enableSelfService: row?.enableSelfService === true || row?.enableDevices === true,
   };
 }
 
@@ -671,11 +667,8 @@ export type HardwareLifecyclePortalLatestDto = {
   run: { id: string; generatedAt: string };
   summary: HardwareLifecycleSummary | null;
   contact: { name: string | null; email: string } | null;
-  // The org's `enable_self_service` flag (#5880): the portal page needs this
-  // to decide whether a device row's Computer cell may link to
-  // /portal/devices — that route itself redirects home when self-service is
-  // off, so linking there unconditionally silently dumps the customer on
-  // Proposals instead.
+  // Legacy field name: device deep-links are enabled by either the Devices
+  // visibility flag or self-service, matching the Devices page's access grants.
   enableSelfService: boolean;
 };
 

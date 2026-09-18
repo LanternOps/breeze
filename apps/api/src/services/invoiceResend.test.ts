@@ -84,10 +84,7 @@ describe('resendInvoiceEmail', () => {
     dbResults.length = 0;
     updateSetMock.mockReset();
     sendEmailMock.mockReset().mockResolvedValue(undefined);
-    getEmailServiceMock.mockReturnValue({
-      sendEmail: sendEmailMock,
-      fromWithDisplayName: (name: string) => `${name} <no-reply@breeze.test>`,
-    });
+    getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
   });
 
   it('emails the org billing contact and reports the recipients', async () => {
@@ -98,7 +95,12 @@ describe('resendInvoiceEmail', () => {
     const envelope = sendEmailMock.mock.calls[0]![0];
     expect(envelope.to).toEqual(['ap@acme.test']);
     expect(envelope.replyTo).toBe('billing@lantern.test');
-    expect(envelope.from).toBe('Lantern MSP via Breeze <no-reply@breeze.test>');
+    // As above: the rendered From moved into EmailService (pinned by
+    // email.golden.test.ts); this site supplies the purpose and the partner.
+    expect(envelope.purpose).toBe('invoice.sent');
+    expect(envelope.partnerId).toBe('p1');
+    expect(envelope.partnerName).toBe('Lantern MSP');
+    expect(envelope).not.toHaveProperty('from');
     expect(envelope.attachments?.[0]?.filename).toBe('INV-2026-0007.pdf');
   });
 

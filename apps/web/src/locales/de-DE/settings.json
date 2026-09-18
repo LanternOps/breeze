@@ -1134,6 +1134,10 @@
       "description": "Wählen Sie aus, welche Servicedaten dieser Kunde im Portal sehen kann.",
       "enableAll": "Alle Sichtbarkeiten aktivieren",
       "toggles": {
+        "enableDevices": {
+          "label": "Geräte",
+          "description": "Die Geräteseite anzeigen. Self-Service gewährt ebenfalls Zugriff auf diese Seite."
+        },
         "enableDashboard": {
           "label": "Übersicht",
           "description": "Zeigt beim Anmelden eine Übersicht des Servicestatus an."
@@ -2115,11 +2119,13 @@
           "title": "Von diesem Lauf erzeugte Dateien",
           "download": "Herunterladen",
           "preview": "Vorschau",
-          "attachToTicket": "An ein Ticket anhängen",
-          "attach": "{{name}} anhängen",
+          "attachToTicket": "Als interne Notiz anhängen",
+          "attach": "{{name}} als interne Notiz anhängen",
           "ticketIdPlaceholder": "Ticket-ID",
-          "attachedToTicket": "An das Ticket angehängt",
-          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden"
+          "attachedToTicket": "Als interne Notiz an das Ticket angehängt",
+          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden",
+          "attachedButCommentFailed": "Die Datei wurde angehängt, aber die Notiz konnte nicht zum Ticket hinzugefügt werden",
+          "downloadExpired": "Diese Datei ist abgelaufen und kann nicht mehr heruntergeladen werden."
         },
         "workspace": {
           "title": "Was in der Sandbox ausgeführt wurde",
@@ -4041,6 +4047,7 @@
     "languageLoadFailed": "Präferenz gespeichert, aber die Sprache konnte nicht geladen werden – Englisch wird angezeigt. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Standard-Zeiteintrag (Minuten)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA Minuten und Stundensatz müssen Zahlen sein.",
     "categoryUpdated": "Kategorie aktualisiert",
     "ticketing": "Ticketverkauf",
@@ -5236,6 +5243,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Suche in der TD SYNNEX Preisdatei fehlgeschlagen (ungültige Antwort)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organisationsspezifische Variablen werden unter der jeweiligen Organisation aufgeführt.",
     "title": "Variablen",
     "description": "Definieren Sie einen Wert einmal – ein Anbieter-Site-Token, eine interne Repository-URL – und verweisen Sie in Skripten darauf, statt ihn pro Kunde fest einzutragen.",
     "loading": "Variablen werden geladen …",

@@ -21,6 +21,7 @@ export * from './automationActions';
 
 export * from './reliability';
 export * from './businessEmail';
+export * from './sendingDomains';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
 export * from './currency';

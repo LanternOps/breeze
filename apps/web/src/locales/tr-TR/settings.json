@@ -1134,6 +1134,10 @@
       "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
       "enableAll": "Tüm görünürlüğü etkinleştir",
       "toggles": {
+        "enableDevices": {
+          "label": "Cihazlar",
+          "description": "Cihazlar sayfasını göster. Self servis de bu sayfaya erişim sağlar."
+        },
         "enableDashboard": {
           "label": "Pano",
           "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."
@@ -2115,11 +2119,13 @@
           "title": "Bu çalıştırmanın oluşturduğu dosyalar",
           "download": "İndir",
           "preview": "Önizleme",
-          "attachToTicket": "Bilete ekle",
-          "attach": "{{name}} dosyasını ekle",
+          "attachToTicket": "Dahili not olarak ekle",
+          "attach": "{{name}} dosyasını dahili not olarak ekle",
           "ticketIdPlaceholder": "Bilet No",
-          "attachedToTicket": "Bilete eklendi",
-          "attachFailed": "Dosya bu bilete eklenemedi"
+          "attachedToTicket": "Bilete dahili not olarak eklendi",
+          "attachFailed": "Dosya bu bilete eklenemedi",
+          "attachedButCommentFailed": "Dosya eklendi, ancak bilete not eklenemedi",
+          "downloadExpired": "Bu dosyanın süresi doldu ve artık indirilemiyor."
         },
         "workspace": {
           "title": "Korumalı alanda ne çalıştı",
@@ -4094,6 +4100,7 @@
     "languageLoadFailed": "Tercih kaydedildi, ancak dil yüklenemedi; İngilizce gösteriliyor. Bağlantınızı kontrol edip tekrar deneyin."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Varsayılan süre kaydı (dakika)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA dakika ve saatlik ücret rakam olmalıdır.",
     "categoryUpdated": "Kategori güncellendi",
     "ticketing": "Biletleme",
@@ -5236,6 +5243,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Kuruluşa ait değişkenler ilgili kuruluşun altında listelenir.",
     "title": "Değişkenler",
     "description": "Bir satıcı site belirteci, dahili bir depo URL'si gibi bir değeri bir kez tanımlayın ve bunu müşteri başına sabit kodlamak yerine komut dosyalarından referans alın.",
     "loading": "Değişkenler yükleniyor…",

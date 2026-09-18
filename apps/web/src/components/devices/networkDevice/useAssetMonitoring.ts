@@ -21,6 +21,8 @@ export type SnmpDeviceSummary = {
   isActive: boolean;
   lastPolled: string | null;
   lastStatus: string | null;
+  lastError?: string | null;
+  lastErrorAt?: string | null;
 };
 
 export type NetworkCheckSummary = {

@@ -84,13 +84,16 @@ export interface ChatRunProgressEntry {
 }
 
 /**
- * A workspace `analysis` run launched from this conversation (execution-plane
- * spec §5.5). Seeded by the `workspace_launch_analysis` tool result, advanced
- * by `run_progress`/`run_result` while a turn is open, and reconciled by
- * `AiRunCard`'s poll of `GET /ai/agents/runs/:runId` — which is the source of
- * truth, because the SSE stream only exists during a turn and the run outlives
- * it. Keyed by run id, not by tool-use id: a run survives the turn that started
- * it and can be referred to again later in the conversation.
+ * A workspace `analysis` run associated with this conversation
+ * (execution-plane spec §5.5), advanced by `run_progress`/`run_result` while a
+ * turn is open, and reconciled by `AiRunCard`'s poll of
+ * `GET /ai/agents/runs/:runId` — which is the source of truth, because the
+ * SSE stream only exists during a turn and the run outlives it. Keyed by run
+ * id, not by tool-use id: a run survives the turn that started it and can be
+ * referred to again later in the conversation. Chat-initiated launch is
+ * currently disabled (#6086 — no tool seeds this from within a turn), but the
+ * shape and the reconciliation contract are retained for when delegated
+ * authorization lands.
  */
 export interface ChatRunState {
   runId: string;
@@ -184,9 +187,7 @@ export function processStreamEvent(
         // executionId, and the awaited tool is by construction the one whose
         // result has not yet arrived.
         const awaited = s.pendingApproval;
-        const toolUse = awaited
-          ? s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId)
-          : undefined;
+        const toolUse = s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId);
         // Parallel calls to the same tool: the awaited one is the LATEST
         // tool_use of that name (approval_required is published from the
         // pre-tool hook, i.e. right after its tool_use_start), so an earlier
@@ -197,7 +198,9 @@ export function processStreamEvent(
         const resolvesPending =
           !!awaited && !!toolUse && toolUse.toolName === awaited.toolName && latestOfName?.toolUseId === toolUse.toolUseId;
         return {
-          messages: [...s.messages, resultMsg],
+          // Specialized result cards (including analysis runs) need the tool
+          // name even when the tool did not require approval.
+          messages: [...s.messages, { ...resultMsg, toolName: toolUse?.toolName }],
           ...(resolvesPending ? { pendingApproval: null } : {}),
         };
       });
