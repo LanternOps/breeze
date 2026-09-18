@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   )),
   audit: vi.fn(),
   listAll: vi.fn(),
+  listAllWithMetrics: vi.fn(),
   suspend: vi.fn(),
   unsuspend: vi.fn(),
   forceRelease: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../../services/emailDomains/sendingDomainService', () => {
   return {
     SendingDomainServiceError,
     listAllSendingDomains: mocks.listAll,
+    listAllSendingDomainsWithMetrics: mocks.listAllWithMetrics,
     suspendSendingDomain: mocks.suspend,
     unsuspendSendingDomain: mocks.unsuspend,
     forceReleaseSendingDomain: mocks.forceRelease,
@@ -50,6 +52,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.mfaAllowed.value = true;
   mocks.listAll.mockResolvedValue([]);
+  mocks.listAllWithMetrics.mockResolvedValue([]);
 });
 
 describe('admin sending domains', () => {
@@ -67,16 +70,31 @@ describe('admin sending domains', () => {
   });
 
   it('lists across partners with the partner name attached', async () => {
-    mocks.listAll.mockResolvedValue([{ id: DOMAIN_ID, domain: 'mail.acme.test', partnerId: 'p1', partnerName: 'Acme MSP' }]);
+    mocks.listAllWithMetrics.mockResolvedValue([{ id: DOMAIN_ID, domain: 'mail.acme.test', partnerId: 'p1', partnerName: 'Acme MSP' }]);
     const res = await buildApp().request('/admin/sending-domains');
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ data: [{ partnerName: 'Acme MSP' }] });
   });
 
+  it('lists across partners with the 7-day metrics attached', async () => {
+    mocks.listAllWithMetrics.mockResolvedValue([{
+      id: DOMAIN_ID, partnerId: 'p1', partnerName: 'Acme MSP', domain: 'mail.acme.test',
+      provider: 'resend', status: 'verified', statusReason: null, dnsRecords: [],
+      verifiedAt: null, lastCheckedAt: null, lastTestAt: null, lastTestStatus: null,
+      lastTestError: null, lastSendError: null, lastSendErrorAt: null,
+      providerManaged: true, createdAt: '2026-08-01T00:00:00.000Z',
+      metrics: { windowDays: 7, messages: 100, delivered: 90, bounced: 8, complained: 1, failed: 2, suppressed: 0, bounceRate: 0.08 },
+    }]);
+    const res = await buildApp().request('/admin/sending-domains');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<{ metrics: { bounceRate: number } }> };
+    expect(body.data[0]!.metrics.bounceRate).toBeCloseTo(0.08, 5);
+  });
+
   it('caps the list size rather than trusting the query string', async () => {
     await buildApp().request('/admin/sending-domains?limit=100000');
-    expect(mocks.listAll).toHaveBeenCalledWith({ limit: expect.any(Number) });
-    expect(mocks.listAll.mock.calls[0]![0].limit).toBeLessThanOrEqual(200);
+    expect(mocks.listAllWithMetrics).toHaveBeenCalledWith({ limit: expect.any(Number) });
+    expect(mocks.listAllWithMetrics.mock.calls[0]![0].limit).toBeLessThanOrEqual(200);
   });
 
   it.each([

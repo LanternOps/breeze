@@ -4,7 +4,7 @@ import { zValidator } from '../../lib/validation';
 import { requireMfa } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
-  SendingDomainServiceError, forceReleaseSendingDomain, listAllSendingDomains,
+  SendingDomainServiceError, forceReleaseSendingDomain, listAllSendingDomainsWithMetrics,
   suspendSendingDomain, unsuspendSendingDomain,
 } from '../../services/emailDomains/sendingDomainService';
 
@@ -44,7 +44,7 @@ function fail(c: Context, err: unknown): Response {
 
 adminSendingDomainsRoutes.get('/', zValidator('query', listQuerySchema), async (c) => {
   const { limit } = c.req.valid('query');
-  const data = await listAllSendingDomains({ limit: Math.min(limit ?? DEFAULT_LIST, MAX_LIST) });
+  const data = await listAllSendingDomainsWithMetrics({ limit: Math.min(limit ?? DEFAULT_LIST, MAX_LIST) });
   return c.json({ data });
 });
 

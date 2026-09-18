@@ -27,6 +27,7 @@ vi.mock('../services/emailDomains/config', () => ({ isPartnerLaneConfigured: () 
 vi.mock('../services/emailDomains/sendingDomainService', () => ({
   SendingDomainServiceError: class extends Error {},
   listAllSendingDomains: vi.fn(async () => []),
+  listAllSendingDomainsWithMetrics: vi.fn(async () => []),
   suspendSendingDomain: vi.fn(),
   unsuspendSendingDomain: vi.fn(),
   forceReleaseSendingDomain: vi.fn(),

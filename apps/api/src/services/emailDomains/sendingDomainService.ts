@@ -18,6 +18,7 @@ import { evaluateCapabilityContinuationForState } from '../partnerTrust';
 import { rateLimiter } from '../rate-limit';
 import { getRedis } from '../redis';
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
+import { STATS_WINDOW_DAYS, loadAllPartnerSendingWindowStats } from './deliveryStats';
 import { SendingDomainPolicyError, assertSendingDomainAllowed } from './domainPolicy';
 import { readProviderKeyProbe } from './keyProbe';
 import { getEmailDomainProvider } from './providerRegistry';
@@ -461,6 +462,62 @@ export async function listAllSendingDomains(opts: { limit: number }): Promise<Ar
       .limit(opts.limit);
     return rows.map((r) => ({ ...toDomainDto(r.domain), partnerId: r.domain.partnerId, partnerName: r.partnerName }));
   }, 'sendingDomainsAdminList'));
+}
+
+export interface SendingPartnerMetricsDto {
+  windowDays: number;
+  /** GREATEST(sent, delivered + bounced + failed) — see deliveryStats.ts. */
+  messages: number;
+  delivered: number;
+  bounced: number;
+  complained: number;
+  failed: number;
+  suppressed: number;
+  /** 0..1. */
+  bounceRate: number;
+}
+
+const ZERO_METRICS: SendingPartnerMetricsDto = Object.freeze({
+  windowDays: STATS_WINDOW_DAYS,
+  messages: 0, delivered: 0, bounced: 0, complained: 0, failed: 0, suppressed: 0, bounceRate: 0,
+});
+
+/**
+ * The platform-admin list with each partner's 7-day deliverability attached
+ * (spec §9.3).
+ *
+ * TWO queries total, whatever the page size: the domain list, then ONE grouped
+ * rollup over partner_sending_daily_stats for the whole fleet, joined in memory
+ * by partner id. Fetching per partner would be an N+1 on a page that exists to
+ * be scanned, and two domains of the same partner would fetch the same window
+ * twice.
+ */
+export async function listAllSendingDomainsWithMetrics(
+  opts: { limit: number },
+): Promise<Array<SendingDomainDto & { partnerId: string; partnerName: string; metrics: SendingPartnerMetricsDto }>> {
+  const [domains, windowStats] = await Promise.all([
+    listAllSendingDomains(opts),
+    loadAllPartnerSendingWindowStats(),
+  ]);
+  const byPartner = new Map(windowStats.map((s) => [s.partnerId, s]));
+  return domains.map((domain) => {
+    const stats = byPartner.get(domain.partnerId);
+    return {
+      ...domain,
+      metrics: stats
+        ? {
+            windowDays: STATS_WINDOW_DAYS,
+            messages: stats.messages,
+            delivered: stats.delivered,
+            bounced: stats.bounced,
+            complained: stats.complained,
+            failed: stats.failed,
+            suppressed: stats.suppressed,
+            bounceRate: stats.bounceRate,
+          }
+        : { ...ZERO_METRICS },
+    };
+  });
 }
 
 async function setAdminStatus(domainId: string, patch: Partial<typeof partnerSendingDomains.$inferInsert>): Promise<void> {
