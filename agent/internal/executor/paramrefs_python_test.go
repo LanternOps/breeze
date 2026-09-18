@@ -122,6 +122,64 @@ func TestRenderPythonStringLiterals(t *testing.T) {
 			params: map[string]string{"p": "v"},
 			want:   `print(f"{a[0]} v")`,
 		},
+
+		// A brace inside a STRING nested in a replacement field is string data
+		// to Python, so it must not change the field depth. Counting it closed
+		// the field early and demoted the placeholder that follows to string
+		// data, escaping the value into an expression slot.
+		{
+			name:        "nested string brace does not close the replacement field",
+			script:      `print(f"{d['}'] and {{p}}}")`,
+			params:      map[string]string{"p": `__import__("os").system("id")`},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			name:        "nested string brace in a tuple does not close the field",
+			script:      `print(f"{ ('}' , {{p}}) }")`,
+			params:      map[string]string{"p": `__import__("os").system("id")`},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			// Python 3.12+ allows the outer quote character inside a nested
+			// string, so the scanner may not assume it ends the literal.
+			name:        "nested string reusing the outer quote does not close the field",
+			script:      `print(f"{d["}"] and {{p}}}")`,
+			params:      map[string]string{"p": `__import__("os").system("id")`},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			name:        "nested triple-quoted string does not close the field",
+			script:      `print(f"{d['''}'''] and {{p}}}")`,
+			params:      map[string]string{"p": `__import__("os").system("id")`},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			name:        "a placeholder inside a nested string is still a field",
+			script:      `print(f"{ len('{{p}}') }")`,
+			params:      map[string]string{"p": "v"},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			name:        "escaped quote inside a nested string does not end it",
+			script:      `print(f"{d['a\'}'] and {{p}}}")`,
+			params:      map[string]string{"p": `__import__("os").system("id")`},
+			wantErr:     true,
+			errContains: "replacement field",
+		},
+		{
+			// Positive control: once the field really closes, the placeholder
+			// after it is string data again even though the field held a string
+			// with braces in it.
+			name:   "string data after a field holding a braced nested string",
+			script: `print(f"{d['{x}']} {{p}}")`,
+			params: map[string]string{"p": "v"},
+			want:   `print(f"{d['{x}']} v")`,
+		},
 	})
 }
 

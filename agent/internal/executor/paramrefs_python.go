@@ -167,6 +167,16 @@ func scanPythonString(r *scanner) error {
 				// `{{` / `}}` are escaped braces, not a field.
 				r.copyN(2)
 				continue
+			case field > 0 && (r.cur() == '\'' || r.cur() == '"'):
+				// A STRING nested in a replacement field is expression data:
+				// its braces are not field delimiters. Counting them let a
+				// `'}'` close the field early, so a placeholder after it was
+				// treated as string data and its value was escaped into an
+				// expression slot instead of being rejected.
+				if err := scanPythonNestedString(r); err != nil {
+					return err
+				}
+				continue
 			case r.cur() == '{':
 				field++
 				r.copyByte()
@@ -192,6 +202,43 @@ func scanPythonString(r *scanner) error {
 			return nil
 		}
 		r.copyByte()
+	}
+	return nil
+}
+
+// scanPythonNestedString copies a string literal nested inside an f-string
+// replacement field, so that nothing in it — a brace, or the outer literal's
+// own quote character, which Python 3.12+ allows here — is read as f-string
+// syntax. A placeholder inside it is still inside the replacement field, so it
+// is rejected for the same reason one directly in the expression is.
+func scanPythonNestedString(r *scanner) error {
+	quote := r.cur()
+	run := string(quote)
+	if strings.HasPrefix(r.src[r.i:], strings.Repeat(run, 3)) {
+		run = strings.Repeat(run, 3)
+	}
+	r.copyN(len(run))
+	for !r.done() {
+		if key, width, ok := r.placeholder(); ok {
+			if _, known := r.value(key); known {
+				return renderErr(key, "an f-string replacement field, which Python evaluates as an expression",
+					pythonHint(key))
+			}
+			r.skipLiteral(width)
+			continue
+		}
+		switch {
+		case r.cur() == '\\':
+			r.copyN(2)
+		case r.hasPrefix(run):
+			r.copyN(len(run))
+			return nil
+		case len(run) == 1 && r.cur() == '\n':
+			// Unterminated single-line literal; let Python report it.
+			return nil
+		default:
+			r.copyByte()
+		}
 	}
 	return nil
 }

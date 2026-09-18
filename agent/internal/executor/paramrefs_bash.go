@@ -473,6 +473,12 @@ func (r *bashRenderer) stepBracket(f *bashFrame) error {
 		r.push(&bashFrame{kind: bfCode, subst: true})
 	case r.hasPrefix("${"):
 		return r.scanParamExpansion()
+	case r.cur() == '`':
+		// `[[ ]]` performs command substitution on its operands, so a backtick
+		// opens a code frame here too — with its own command word, so `eval` and
+		// an array subscript inside it are caught.
+		r.copyByte()
+		r.push(&bashFrame{kind: bfCode, backtick: true})
 	default:
 		r.copyByte()
 	}

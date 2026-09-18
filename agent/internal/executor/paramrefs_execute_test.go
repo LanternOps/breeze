@@ -2,6 +2,7 @@ package executor
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,18 @@ import (
 	"strings"
 	"testing"
 )
+
+// pythonChrPayload builds an `os.system(<cmd>)` call out of chr() arithmetic
+// only: no quote, backslash or brace, so the escaping the renderer applies to
+// f-string string data leaves the payload executable. A canary test whose
+// payload dies on a SyntaxError would pass for the wrong reason.
+func pythonChrPayload(cmd string) string {
+	parts := make([]string, 0, len(cmd))
+	for i := 0; i < len(cmd); i++ {
+		parts = append(parts, fmt.Sprintf("chr(%d)", cmd[i]))
+	}
+	return "__import__(chr(111)+chr(115)).system(" + strings.Join(parts, "+") + ")"
+}
 
 // trimEOL strips only the interpreter's trailing newline, so leading and
 // trailing spaces inside a parameter value are still asserted.
@@ -427,6 +440,59 @@ func TestExecuteRendererBypassCanaries(t *testing.T) {
 			value: func(c string) string {
 				return `__import__(chr(111)+chr(115)).system("touch ` + c + `")`
 			},
+		},
+		{
+			name:       "bash backtick inside an unquoted heredoc",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "cat <<EOF\n`eval {{i}}`\nEOF\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash backtick eval with a quoted argument in a heredoc",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "cat <<EOF\n`eval \"{{i}}\"`\nEOF\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash backtick subscript inside an unquoted heredoc",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "cat <<EOF\n`a[{{i}}]=1`\nEOF\n" },
+			value:      func(c string) string { return "z[$(touch " + c + ")]" },
+		},
+		{
+			name:       "bash backtick declare -i inside an unquoted heredoc",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "cat <<EOF\n`declare -i q={{i}}`\nEOF\n" },
+			value:      func(c string) string { return "z[$(touch " + c + ")]" },
+		},
+		{
+			name:       "bash backtick inside a conditional expression",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "if [[ -n `eval {{i}}` ]]; then :; fi\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash backtick subscript inside a conditional expression",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "[[ -n `a[{{i}}]=1` ]]\n" },
+			value:      func(c string) string { return "z[$(touch " + c + ")]" },
+		},
+		{
+			// The nested `'}'` string is field data to Python, so the field is
+			// still open where the placeholder lands. The payload is built from
+			// chr() arithmetic so that the escaping the renderer applies to
+			// string data leaves it executable — the canary is only absent
+			// because the render refuses.
+			name:       "python f-string field hidden behind a nested string",
+			scriptType: ScriptTypePython,
+			script:     func(string) string { return "d={'}':1}\nprint(f\"{d['}'] and {{i}}}\")\n" },
+			value:      func(c string) string { return pythonChrPayload("touch " + c) },
+		},
+		{
+			name:       "python f-string field with a nested string in a tuple",
+			scriptType: ScriptTypePython,
+			script:     func(string) string { return "print(f\"{ ('}' , {{i}}) }\")\n" },
+			value:      func(c string) string { return pythonChrPayload("touch " + c) },
 		},
 	}
 	for _, tt := range tests {
