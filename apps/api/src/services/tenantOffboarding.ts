@@ -1826,6 +1826,7 @@ export async function sweepOffboardingTenants(
                 + `<strong>${safePurgeAt}</strong>.</p>`
                 + '<p>Restore the organization before then to cancel the purge.</p>',
             }),
+            purpose: 'account.purge_warning',
           });
         } catch (sendErr) {
           // Claim-before-send keeps replicas from sending duplicates. If the

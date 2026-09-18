@@ -1317,6 +1317,7 @@ export async function googleEmailReportHandler(
       to,
       subject: `Google Workspace security drift — ${ctx.conn.customerDomain}`,
       html: renderDriftHtml(ctx.conn.customerDomain, drift),
+      purpose: 'staff.workspace_drift_report',
     });
     return `Emailed the Google Workspace security-drift report for ${ctx.conn.customerDomain} to ${to} (${users.length} users scanned, stale threshold ${staleDays}d).`;
   } catch (err) {
