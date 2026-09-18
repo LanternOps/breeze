@@ -68,7 +68,9 @@ beforeEach(() => {
 
 afterEach(() => {
   if (originalOffsetWidth) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffsetWidth);
+  else delete (HTMLElement.prototype as any).offsetWidth;
   if (originalClientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalClientWidth);
+  else delete (HTMLElement.prototype as any).clientWidth;
   window.location.hash = '';
 });
 
@@ -101,11 +103,11 @@ describe('DeviceDetails tab layout', () => {
     ]);
   });
 
-  it('badges Monitoring/Compliance inside "More" and sums them on the trigger, without promoting them', async () => {
+  it('badges Monitoring/Compliance inside "More" and marks the trigger with a dot, without promoting them', async () => {
     counts = { alerts: 0, anomalies: 0, tickets: 0, operatorTasks: 0, monitoring: 1, compliance: 3 };
     render(<DeviceDetails device={device} />);
 
-    await waitFor(() => expect(screen.getByTestId('overflow-tabs-hidden-count')).toHaveTextContent('4'));
+    await waitFor(() => expect(screen.getByTestId('overflow-tabs-hidden-dot')).toBeInTheDocument());
     expect(screen.queryByRole('tab', { name: /compliance/i })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /more/i }));
     expect(screen.getByRole('menuitem', { name: /compliance/i })).toHaveTextContent('Compliance3');
@@ -117,6 +119,6 @@ describe('DeviceDetails tab layout', () => {
     render(<DeviceDetails device={device} />);
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/tab-counts')));
     expect(screen.getByRole('tab', { name: /overview/i })).toBeInTheDocument();
-    expect(screen.queryByTestId('overflow-tabs-hidden-count')).toBeNull();
+    expect(screen.queryByTestId('overflow-tabs-hidden-dot')).toBeNull();
   });
 });

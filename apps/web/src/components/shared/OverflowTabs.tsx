@@ -22,16 +22,27 @@ export type OverflowTab = {
   count?: number;
 };
 
+// "Needs attention" count. Deliberately the warning token, not `primary`:
+// primary is the selection colour on this strip (active underline, active
+// menu item), and a count that shares it reads as "selected", not "look here".
 function CountBadge({ count, testId }: { count?: number; testId?: string }) {
   if (!count || count <= 0) return null;
   return (
     <span
       data-testid={testId}
-      className="ml-0.5 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-primary"
+      className="ml-0.5 inline-flex min-w-5 items-center justify-center rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold leading-none tabular-nums text-warning-strong"
     >
       {count > 99 ? '99+' : count}
     </span>
   );
+}
+
+// Dot on the "More" trigger: something hidden inside needs attention. A dot,
+// not a number — a sum of tickets + failing monitors + compliance rules is
+// not a quantity anyone can act on; the real counts sit on the items inside.
+function HiddenDot({ show, testId }: { show: boolean; testId: string }) {
+  if (!show) return null;
+  return <span data-testid={testId} aria-hidden="true" className="ml-0.5 h-1.5 w-1.5 rounded-full bg-warning-strong" />;
 }
 
 // Stable id for a visible tab button, also used as the tab panel's
@@ -72,6 +83,14 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   const [measured, setMeasured] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuItemRefs = useRef<HTMLButtonElement[]>([]);
+  // Real width of the "More" trigger once it has rendered; the fallback is
+  // only used on the very first measure before it exists. The old fixed
+  // 120px reserve cost a whole tab of row width against a ~65px trigger.
+  const moreWidthRef = useRef<number>(0);
+  const [menuMaxHeight, setMenuMaxHeight] = useState<number | undefined>(undefined);
 
   // Re-measure whenever the primary set changes (a tab promoted out of
   // "More", a count badge appearing) — the cached widths would otherwise be
@@ -105,8 +124,8 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
     const container = containerRef.current;
     if (!container || tabWidths.current.length === 0) return;
     const availableWidth = container.clientWidth;
-    const gap = 16;
-    const moreButtonWidth = 120;
+    const gap = 12;
+    const moreButtonWidth = moreWidthRef.current || 80;
 
     let totalAll = 0;
     for (let i = 0; i < tabWidths.current.length; i++) {
@@ -144,23 +163,57 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
     return () => ro.disconnect();
   }, [measured, computeVisible]);
 
+  const closeMenu = useCallback((returnFocus: boolean) => {
+    setMoreOpen(false);
+    if (returnFocus) moreButtonRef.current?.focus();
+  }, []);
+
+  const openMenu = useCallback(() => {
+    const trigger = moreButtonRef.current;
+    if (trigger) {
+      moreWidthRef.current = trigger.offsetWidth || moreWidthRef.current;
+      // Constrain to the space actually below the trigger; `70vh` measured
+      // from the viewport top left the panel's box hanging off the bottom.
+      const bottom = trigger.getBoundingClientRect().bottom;
+      setMenuMaxHeight(Math.max(160, window.innerHeight - bottom - 16));
+    }
+    setMoreOpen(true);
+  }, []);
+
   useEffect(() => {
     if (!moreOpen) return;
     const handleClick = (e: MouseEvent) => {
       if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
-        setMoreOpen(false);
+        closeMenu(false);
       }
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
-  }, [moreOpen]);
+  }, [moreOpen, closeMenu]);
 
   // Secondary tabs are pinned into "More"; primaries spill in after them
   // when the row is too narrow. Before measurement every primary is rendered
   // (invisibly) so its width can be read.
   const visibleTabs = measured ? primaryTabs.slice(0, visibleCount) : primaryTabs;
-  const overflowTabs = measured ? [...primaryTabs.slice(visibleCount), ...secondaryTabs] : secondaryTabs;
-  const hiddenCount = overflowTabs.reduce((sum, t) => sum + (t.id !== activeTab ? (t.count ?? 0) : 0), 0);
+  // Overflow is ordered group-first (groups in the order they first appear in
+  // `tabs`, ungrouped first), so a primary that spilled for width lands in
+  // its own section of "More" instead of forming a stray run at the top that
+  // repeats the group headers below it.
+  const overflowIds = new Set([...primaryTabs.slice(measured ? visibleCount : primaryTabs.length), ...secondaryTabs].map(t => t.id));
+  const groupOrder = new Map<string, number>();
+  for (const tab of tabs) {
+    if (tab.group && !groupOrder.has(tab.group)) groupOrder.set(tab.group, groupOrder.size);
+  }
+  const overflowTabs = tabs
+    .filter(t => overflowIds.has(t.id))
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => {
+      const ga = a.t.group ? groupOrder.get(a.t.group)! : -1;
+      const gb = b.t.group ? groupOrder.get(b.t.group)! : -1;
+      return ga - gb || a.i - b.i;
+    })
+    .map(({ t }) => t);
+  const hiddenNeedsAttention = overflowTabs.some(t => t.id !== activeTab && (t.count ?? 0) > 0);
   const activeInOverflow = overflowTabs.some(t => t.id === activeTab);
   const activeOverflowTab = overflowTabs.find(t => t.id === activeTab);
   // Roving tabindex normally lands on whichever visible tab is active. When
@@ -169,6 +222,52 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   // tablist would land nowhere reachable. Fall back to the first visible tab
   // in that case so the tablist always has exactly one stop in the Tab order.
   const rovingTabId = visibleTabs.some(t => t.id === activeTab) ? activeTab : visibleTabs[0]?.id;
+
+  // APG menu pattern: opening moves focus to the active item (or the first),
+  // arrows wrap, Home/End jump, Escape closes and hands focus back.
+  useEffect(() => {
+    if (!moreOpen) return;
+    const items = menuItemRefs.current.filter(Boolean);
+    const activeIndex = overflowTabs.findIndex(t => t.id === activeTab);
+    (items[activeIndex >= 0 ? activeIndex : 0] ?? items[0])?.focus();
+  }, [moreOpen]); // run on open only — the item list is stable while open
+
+  const handleMenuKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLElement>) => {
+      const items = menuItemRefs.current.filter(Boolean);
+      if (items.length === 0) return;
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      let next: number | null = null;
+      switch (event.key) {
+        case 'ArrowDown': next = (current + 1) % items.length; break;
+        case 'ArrowUp': next = (current - 1 + items.length) % items.length; break;
+        case 'Home': next = 0; break;
+        case 'End': next = items.length - 1; break;
+        case 'Escape':
+          event.preventDefault();
+          closeMenu(true);
+          return;
+        case 'Tab':
+          closeMenu(false);
+          return;
+        default:
+          return;
+      }
+      event.preventDefault();
+      items[next]?.focus();
+    },
+    [closeMenu],
+  );
+
+  // Measure the trigger whenever it is on screen so the next width pass uses
+  // its real size rather than the bootstrap fallback.
+  useLayoutEffect(() => {
+    const w = moreButtonRef.current?.offsetWidth;
+    if (w && w !== moreWidthRef.current) {
+      moreWidthRef.current = w;
+      computeVisible();
+    }
+  });
 
   // Roving tabindex across the VISIBLE tabs only (ARIA tabs pattern, "automatic
   // activation" variant): arrowing changes both focus and selection, matching
@@ -205,7 +304,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
       <nav
         ref={navRef as React.RefObject<HTMLElement>}
         role="tablist"
-        className={`-mb-px flex items-center gap-4 ${measured ? '' : 'invisible'}`}
+        className={`-mb-px flex items-center gap-3 ${measured ? '' : 'invisible'}`}
       >
         {visibleTabs.map((tab, index) => {
           const isActive = activeTab === tab.id;
@@ -229,7 +328,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
               >
                 {tab.icon}
                 {tab.label}
-                <CountBadge count={tab.count} />
+                <CountBadge count={tab.count} testId={testIdPrefix ? `${testIdPrefix}${tab.id}-count` : undefined} />
                 {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
               </button>
             </span>
@@ -238,6 +337,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
         {overflowTabs.length > 0 && (
           <div ref={moreRef} className="relative">
             <button
+              ref={moreButtonRef}
               type="button"
               // The closed menu unmounts its items. Its trigger displays the
               // active tab's label, so it owns that label id until reopened.
@@ -245,7 +345,11 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
               data-testid={testIdPrefix ? `${testIdPrefix}more` : undefined}
               aria-haspopup="menu"
               aria-expanded={moreOpen}
-              onClick={() => setMoreOpen(!moreOpen)}
+              onClick={() => (moreOpen ? closeMenu(false) : openMenu())}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown' && !moreOpen) { e.preventDefault(); openMenu(); }
+                if (e.key === 'Escape' && moreOpen) { e.preventDefault(); closeMenu(true); }
+              }}
               className={`${tabClass(activeInOverflow)} focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring`}
             >
               {activeInOverflow && activeOverflowTab ? (
@@ -253,31 +357,38 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
               ) : (
                 <>{t('shared.more')}</>
               )}
-              {!activeInOverflow && (
-                <CountBadge count={hiddenCount} testId={`${testIdPrefix ?? ''}overflow-tabs-hidden-count`} />
-              )}
+              <HiddenDot show={hiddenNeedsAttention} testId={`${testIdPrefix ?? ''}overflow-tabs-hidden-dot`} />
               <ChevronDown aria-hidden="true" className={`h-3.5 w-3.5 transition ${moreOpen ? 'rotate-180' : ''}`} />
             </button>
             {moreOpen && (
-              <div role="menu" className="absolute right-0 top-full z-20 mt-1 max-h-[70vh] min-w-[220px] overflow-y-auto rounded-md border bg-card py-1 shadow-lg">
+              <div
+                ref={menuRef}
+                role="menu"
+                aria-label={t('shared.more')}
+                onKeyDown={handleMenuKeyDown}
+                style={menuMaxHeight ? { maxHeight: `${menuMaxHeight}px` } : undefined}
+                className="absolute right-0 top-full z-20 mt-1 min-w-[240px] overflow-y-auto rounded-md border bg-card py-1 shadow-lg"
+              >
                 {overflowTabs.map((tab, index) => (
                   <span key={tab.id} className="contents">
                   {tab.group && tab.group !== overflowTabs[index - 1]?.group && (
                     <div
                       data-overflow-group={tab.group}
-                      className={`px-4 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 ${index > 0 ? 'mt-1 border-t' : ''}`}
+                      className={`px-4 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground ${index > 0 ? 'mt-1 border-t' : ''}`}
                     >
                       {tab.group}
                     </div>
                   )}
                   <button
                     id={overflowTabId(tab.id, testIdPrefix)}
+                    ref={(el) => { if (el) menuItemRefs.current[index] = el; else delete menuItemRefs.current[index]; }}
                     type="button"
                     role="menuitem"
+                    tabIndex={-1}
                     title={tab.title}
                     data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
-                    onClick={() => { onTabChange(tab.id); setMoreOpen(false); }}
-                    className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
+                    onClick={() => { onTabChange(tab.id); closeMenu(true); }}
+                    className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
                       activeTab === tab.id
                         ? 'bg-primary/10 text-primary'
                         : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -285,7 +396,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
                   >
                     {tab.icon}
                     {tab.label}
-                    <CountBadge count={tab.count} />
+                    <CountBadge count={tab.count} testId={testIdPrefix ? `${testIdPrefix}${tab.id}-count` : undefined} />
                     {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
                   </button>
                   </span>
