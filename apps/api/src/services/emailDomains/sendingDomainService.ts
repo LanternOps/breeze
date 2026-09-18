@@ -6,7 +6,7 @@ import {
   type SendingDomainsCapabilityDto, type SendingDomainsListResponse,
 } from '@breeze/shared';
 import type { PartnerMailStream } from './mailPurposes';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import {
   emailProviderDomainReleases, partnerInboundDomains, partnerSenderIdentities,
@@ -425,7 +425,7 @@ export async function deleteSenderIdentity(input: { partnerId: string; stream: P
 // ---------------------------------------------------------------------------
 
 export async function listAllSendingDomains(opts: { limit: number }): Promise<Array<SendingDomainDto & { partnerId: string; partnerName: string }>> {
-  return withSystemDbAccessContext(async () => {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = await db
       .select({ domain: partnerSendingDomains, partnerName: partners.name })
       .from(partnerSendingDomains)
@@ -433,15 +433,15 @@ export async function listAllSendingDomains(opts: { limit: number }): Promise<Ar
       .orderBy(desc(partnerSendingDomains.statusChangedAt))
       .limit(opts.limit);
     return rows.map((r) => ({ ...toDomainDto(r.domain), partnerId: r.domain.partnerId, partnerName: r.partnerName }));
-  }, 'sendingDomainsAdminList');
+  }, 'sendingDomainsAdminList'));
 }
 
 async function setAdminStatus(domainId: string, patch: Partial<typeof partnerSendingDomains.$inferInsert>): Promise<void> {
-  const updated = await withSystemDbAccessContext(() => db
+  const updated = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
     .update(partnerSendingDomains)
     .set({ ...patch, statusChangedAt: new Date(), updatedAt: sql`now()` })
     .where(eq(partnerSendingDomains.id, domainId))
-    .returning(), 'sendingDomainsAdminStatus');
+    .returning(), 'sendingDomainsAdminStatus'));
   if (updated.length === 0) throw new SendingDomainServiceError('not_found', 'Sending domain not found.', 404);
   await enqueueSyncDomain(domainId);
 }
@@ -452,11 +452,11 @@ export async function suspendSendingDomain(domainId: string): Promise<void> {
 }
 
 export async function unsuspendSendingDomain(domainId: string): Promise<void> {
-  const [row] = await withSystemDbAccessContext(() => db
+  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
     .select({ providerDomainId: partnerSendingDomains.providerDomainId })
     .from(partnerSendingDomains)
     .where(eq(partnerSendingDomains.id, domainId))
-    .limit(1), 'sendingDomainsAdminUnsuspendLoad');
+    .limit(1), 'sendingDomainsAdminUnsuspendLoad'));
   if (!row) throw new SendingDomainServiceError('not_found', 'Sending domain not found.', 404);
   // Back to the state the worker can advance from: a row that never got a
   // provider object must re-provision; one that has it only needs a poll.
@@ -476,7 +476,7 @@ export async function unsuspendSendingDomain(domainId: string): Promise<void> {
  * Breeze and deleting it could take down the operator's primary sender.
  */
 export async function forceReleaseSendingDomain(domainId: string): Promise<void> {
-  await withSystemDbAccessContext(async () => {
+  await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [row] = await db
       .select()
       .from(partnerSendingDomains)
@@ -503,5 +503,5 @@ export async function forceReleaseSendingDomain(domainId: string): Promise<void>
       .set({ providerDomainId: null, updatedAt: sql`now()` })
       .where(eq(partnerSendingDomains.id, domainId));
     await db.delete(partnerSendingDomains).where(eq(partnerSendingDomains.id, domainId));
-  }, 'sendingDomainsForceRelease');
+  }, 'sendingDomainsForceRelease'));
 }

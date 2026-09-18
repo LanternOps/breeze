@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { rows, inserts, updates, insertReturns } = vi.hoisted(() => ({
+const { rows, inserts, updates, insertReturns, contextCalls } = vi.hoisted(() => ({
+  contextCalls: [] as string[],
   rows: [] as unknown[][],
   inserts: [] as Record<string, unknown>[],
   updates: [] as Record<string, unknown>[],
@@ -32,8 +33,11 @@ vi.mock('../../db', () => {
       })),
       delete: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
     },
-    withSystemDbAccessContext: (fn: () => unknown) => fn(),
-    runOutsideDbContext: (fn: () => unknown) => fn(),
+    // NOT bare pass-throughs for the admin paths: the whole point of item 2 is
+    // that `withSystemDbAccessContext` is a NO-OP when a request already opened
+    // a partner-scoped context, so the escape has to be observable here.
+    withSystemDbAccessContext: (fn: () => unknown) => { contextCalls.push('system'); return fn(); },
+    runOutsideDbContext: (fn: () => unknown) => { contextCalls.push('outside'); return fn(); },
     getCurrentDbAccessContext: () => undefined,
   };
 });
@@ -90,7 +94,7 @@ vi.mock('../../jobs/sendingDomainsWorker', () => ({ enqueueSyncDomain: enqueueSy
 import {
   DOMAIN_UNAVAILABLE_MESSAGE, SendingDomainServiceError, createSendingDomain, deleteSenderIdentity,
   forceReleaseSendingDomain, getSendingDomainsCapability, listSendingDomains, requestDomainCheck,
-  requestDomainRemoval, suspendSendingDomain, unsuspendSendingDomain, upsertSenderIdentity,
+  listAllSendingDomains, requestDomainRemoval, suspendSendingDomain, unsuspendSendingDomain, upsertSenderIdentity,
 } from './sendingDomainService';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -107,7 +111,7 @@ async function codeOf(fn: () => Promise<unknown>): Promise<string> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  rows.length = 0; inserts.length = 0; updates.length = 0; insertReturns.length = 0;
+  rows.length = 0; inserts.length = 0; updates.length = 0; insertReturns.length = 0; contextCalls.length = 0;
   laneConfigured.value = true; maxPerPartner.value = 3; allowlist.value = [];
   providerMock.verifiesByDns = true;
   getProviderMock.mockReturnValue(providerMock as unknown);
@@ -457,5 +461,34 @@ describe('platform admin actions (spec §9.1 kill switch)', () => {
   it('404s an unknown domain', async () => {
     rows.push([]);
     expect(await codeOf(() => forceReleaseSendingDomain(DOMAIN_ID))).toBe('not_found');
+  });
+
+  // `withSystemDbAccessContext` RETAINS an existing context (db/index.ts) — it
+  // returns fn() unchanged when a store is already open — so a bare call from a
+  // request handler keeps the ADMIN'S OWN partner scope and the kill switch
+  // silently only ever sees that partner's rows. Every cross-partner admin path
+  // must close the ambient context first, as routes/admin/trust.ts:154 does.
+  it.each([
+    ['listAllSendingDomains', async () => { rows.push([]); await listAllSendingDomains({ limit: 10 }); }],
+    ['suspendSendingDomain', async () => { rows.push([{ id: DOMAIN_ID, status: 'suspended' }]); await suspendSendingDomain(DOMAIN_ID); }],
+    ['unsuspendSendingDomain', async () => {
+      rows.push([{ id: DOMAIN_ID, providerDomainId: 'pd-1' }]);
+      rows.push([{ id: DOMAIN_ID, status: 'pending' }]);
+      await unsuspendSendingDomain(DOMAIN_ID);
+    }],
+    ['forceReleaseSendingDomain', async () => {
+      rows.push([{ id: DOMAIN_ID, partnerId: PARTNER_ID, domain: 'mail.acme.test', provider: 'fake', providerDomainId: 'pd-1', providerRegion: null, providerManaged: false }]);
+      await forceReleaseSendingDomain(DOMAIN_ID);
+    }],
+  ])('%s escapes the ambient request context before electing system scope', async (_name, run) => {
+    contextCalls.length = 0;
+    await run();
+    expect(contextCalls.length).toBeGreaterThan(0);
+    // Every system election on an admin path is wrapped, never bare.
+    for (let i = 0; i < contextCalls.length; i += 1) {
+      if (contextCalls[i] === 'system') {
+        expect(contextCalls[i - 1], 'system scope elected without leaving the request context first').toBe('outside');
+      }
+    }
   });
 });

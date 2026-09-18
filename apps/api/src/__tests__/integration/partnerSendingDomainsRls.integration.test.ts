@@ -29,6 +29,7 @@ import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
 import { runSendingDomainsSweep } from '../../jobs/sendingDomainsWorker';
 import { syncSendingDomain } from '../../services/emailDomains/domainSync';
+import { listAllSendingDomains, suspendSendingDomain } from '../../services/emailDomains/sendingDomainService';
 import { resetEmailDomainProviderForTests } from '../../services/emailDomains/providerRegistry';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -619,5 +620,32 @@ describe('W03 — provider release guard and sweep claim (breeze_app role)', () 
     );
     expect(partnerAView.every((r) => typeof r.id === 'string')).toBe(true);
     expect(partnerAView.length).toBe(1);
+  });
+
+  // `withSystemDbAccessContext` RETAINS an already-open context rather than
+  // replacing it, so a platform-admin action invoked from inside the request's
+  // own partner-scoped transaction would silently stay scoped to the ADMIN'S
+  // partner: the kill switch would report 'not_found' for every other partner's
+  // domain. The service escapes with `runOutsideDbContext` first; this is the
+  // only test that can prove it against real RLS.
+  it('platform-admin actions reach ANOTHER partner from inside a partner-scoped request context', async () => {
+    const [bRow] = await seedDomain(f.partnerB, { domain: uniqueDomain('admin-cross') });
+
+    await withDbAccessContext(partnerContext(f.partnerA, [f.orgA]), async () => {
+      const listed = await listAllSendingDomains({ limit: 200 });
+      expect(
+        listed.some((d) => d.id === bRow!.id),
+        "admin list run under partner A's context did not see partner B's domain",
+      ).toBe(true);
+
+      await expect(suspendSendingDomain(bRow!.id)).resolves.toBeUndefined();
+    });
+
+    const [after] = await withDbAccessContext(SYSTEM_CTX, () => db
+      .select({ status: partnerSendingDomains.status, statusReason: partnerSendingDomains.statusReason })
+      .from(partnerSendingDomains)
+      .where(eq(partnerSendingDomains.id, bRow!.id)));
+    expect(after?.status).toBe('suspended');
+    expect(after?.statusReason).toBe('platform_suspended');
   });
 });
