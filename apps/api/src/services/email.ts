@@ -7,6 +7,8 @@ import {
   renderButton,
   renderLayout,
 } from './emailLayout';
+import type { MailPurpose } from './emailDomains/mailPurposes';
+import { resolveSender } from './emailDomains/senderResolution';
 
 export interface EmailAttachment {
   filename: string;
@@ -14,19 +16,42 @@ export interface EmailAttachment {
   contentType?: string;
 }
 
-export interface SendEmailParams {
+export interface SendEmailBase {
   to: string | string[];
   cc?: string | string[];
   subject: string;
   html: string;
   text?: string;
-  from?: string;
   replyTo?: string | string[];
   // Custom RFC headers for threading + loop-prevention (Phase 4):
   // Message-ID, In-Reply-To, References, Auto-Submitted. Flat map; each
   // provider maps it natively (Resend/SMTP `headers`, Mailgun `h:` fields).
   headers?: Record<string, string>;
   attachments?: EmailAttachment[];
+}
+
+/**
+ * A message whose sender has already been decided. The ONLY shape that reaches
+ * a transport. `services/emailDomains/**` uses it for the `static` and `fake`
+ * adapters and the test send, which hand a custom From to the platform
+ * transport (plan index amendment 2).
+ */
+export interface RawEmailMessage extends SendEmailBase {
+  from: string;
+}
+
+/**
+ * TRANSITIONAL (W01 Task 3 → Task 8). `purpose` is optional and the raw `from`
+ * is still accepted so the 27 call sites can migrate in reviewable cohorts
+ * without the repo going red. Task 8 removes `from` and makes `purpose`
+ * required through the discriminated union in the plan index, which is what
+ * makes an unclassified send a compile error (spec G5).
+ */
+export interface SendEmailParams extends SendEmailBase {
+  from?: string;
+  purpose?: MailPurpose;
+  partnerId?: string | null;
+  partnerName?: string | null;
 }
 
 export interface InvoiceEmailParams {
@@ -239,7 +264,41 @@ export class EmailService {
 
   async sendEmail(params: SendEmailParams): Promise<void> {
     const { to, cc, subject, html, text, from, replyTo, headers, attachments } = params;
-    const sender = from ?? this.defaultFrom;
+
+    // A migrated call site names a purpose and the registry decides the
+    // sender; an unmigrated one still passes `from` and is untouched. Both
+    // land on exactly today's address — see platformFallbackFrom.
+    const resolved = params.purpose
+      ? await resolveSender({
+        purpose: params.purpose,
+        partnerId: params.partnerId ?? null,
+        partnerName: params.partnerName ?? null,
+        defaultFrom: this.defaultFrom,
+      })
+      : null;
+
+    await this.deliverRaw({
+      to,
+      cc,
+      subject,
+      html,
+      text,
+      replyTo,
+      headers,
+      attachments,
+      from: from ?? resolved?.from ?? this.defaultFrom,
+    });
+  }
+
+  /**
+   * @internal The one raw entry point: it takes an explicit From and asks no
+   * questions. Only `services/emailDomains/**` may call it (enforced by
+   * `email.deliverRawScope.test.ts`) — product code calls `sendEmail` and
+   * declares a purpose, or the classification G5 depends on leaks away.
+   */
+  async deliverRaw(message: RawEmailMessage): Promise<void> {
+    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = message;
+    const sender = from;
 
     if (this.provider === 'resend') {
       if (!this.resend) {
@@ -272,6 +331,9 @@ export class EmailService {
         throw new Error('Mailgun config is not initialized');
       }
 
+      // `cc` is deliberately NOT forwarded: sendViaMailgun supports it, this
+      // call has never passed it, and W01 is byte-identical by construction.
+      // Fixing it is its own issue (plan index amendment 6).
       await sendViaMailgun(this.mailgunConfig, {
         from: sender,
         to,
@@ -729,7 +791,7 @@ async function mailgunFetch(config: MailgunProviderConfig, init: RequestInit): P
 
 async function sendViaMailgun(
   config: MailgunProviderConfig,
-  params: SendEmailParams & { from: string }
+  params: RawEmailMessage
 ): Promise<void> {
   const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
   const recipients = Array.isArray(params.to) ? params.to : [params.to];
