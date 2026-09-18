@@ -132,6 +132,7 @@ import {
   enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete,
 } from '../jobs/accountingSyncWorker';
 import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
+import { requestInvoiceSessionRevocation } from './stripeSessionRevocation';
 
 const requestPaymentPushMock = vi.mocked(requestPaymentPush);
 const requestPaymentDeleteMock = vi.mocked(requestPaymentDelete);
@@ -239,12 +240,13 @@ describe('invoiceService guards', () => {
   });
 
   // recordPayment runs in ONE transaction (B10). In-tx query order:
+  //   0. status pre-check read (unlocked, #5611) → invoice row
   //   1. invoices lock select (FOR UPDATE) → invoice row
   //   2. invoice_payments sum select → prior payments (balance = total − sum)
   //   3. payment insert returning → payment row
   //   4-6. recomputeInvoiceStatus(tx): invoice re-read, payments re-read, update
   //   7. final invoice re-read (returned to the caller)
-  // Guard rejections consume only entries 1-2. The mock rows must carry `total`
+  // Guard rejections consume only entries 0-2. The mock rows must carry `total`
   // + `currencyCode` — the header's balance column is no longer read.
 
   it('recordPayment rejects payment on a draft (INVALID_STATE 409)', async () => {
@@ -255,7 +257,22 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
   });
 
+  // #5611 item 2: the SEC-150 revocation (phases 1-2) used to run BEFORE the
+  // draft/void status check, so a mistaken recordPayment on a draft or a void
+  // invoice irreversibly expired its live pay links and THEN 409'd. The status is
+  // now pre-checked on an unlocked read before any revocation intent is written;
+  // the in-transaction check on the locked row stays authoritative.
+  it.each(['draft', 'void'])('recordPayment on a %s invoice 409s WITHOUT touching Stripe sessions', async (status) => {
+    queueResult([{ id: 'i1', status, orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '0.00' }]); // pre-check read
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await expect(
+      svc.recordPayment('i1', { amount: 10, method: 'check', receivedAt: '2026-06-14' }, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+    expect(requestInvoiceSessionRevocation).not.toHaveBeenCalled();
+  });
+
   it('recordPayment rejects an overpayment against the in-tx balance (OVERPAYMENT 400)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '80.00' }]); // pre-check read (#5611)
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '80.00' }]); // lock select
     queueResult([{ amount: '30.00' }]); // prior payments → balance 50.00, NOT the header column
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
@@ -265,6 +282,7 @@ describe('invoiceService guards', () => {
   });
 
   it('recordPayment rejects exact-cents overpayment at +0.01 (OVERPAYMENT 400)', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '50.00' }]); // pre-check read (#5611)
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', total: '50.00' }]); // lock select
     queueResult([]); // no prior payments → balance 50.00
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
@@ -290,6 +308,7 @@ describe('invoiceService guards', () => {
       paidAt: null,
       markedOverdueAt: null,
     };
+    queueResult([invoice]); // pre-check read (#5611)
     queueResult([invoice]); // lock select
     queueResult([]); // no prior payments → balance 2000 (representable JPY)
 
@@ -317,6 +336,7 @@ describe('invoiceService guards', () => {
       paidAt: null,
       markedOverdueAt: null,
     };
+    queueResult([invoice]); // pre-check read (#5611)
     queueResult([invoice]); // lock select (guards + balance base)
     queueResult([]); // no prior payments → in-tx balance 1000.50 (non-representable)
     queueResult([{ id: 'pay1', amount: '1000.50', method: 'cash', reference: null, recordedBy: actor.userId }]); // payment insert
@@ -334,6 +354,10 @@ describe('invoiceService guards', () => {
     queueResult([{
       id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
       currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // pre-check read (#5611)
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
     }]); // lock select
     queueResult([]); // no prior payments → in-tx balance 1000.50
     await expect(recordPayment(invoiceId, { amount: '500.50', method: 'cash', receivedAt: new Date() } as any, actor))
@@ -344,6 +368,10 @@ describe('invoiceService guards', () => {
     // JPY balance 1000.50: paying 500 (perfectly representable) would leave
     // '500.50' — a residue no later payment could clear. Only the exact payoff
     // may land on a non-representable balance.
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // pre-check read (#5611)
     queueResult([{
       id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
       currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
@@ -358,6 +386,10 @@ describe('invoiceService guards', () => {
     // payment of the exact payoff exists in invoice_payments. The re-derived
     // balance is 0.00 — representable — so this second exact-payoff attempt
     // must fall through to the overpay check, NOT ride the legacy escape hatch.
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]); // pre-check read (#5611)
     queueResult([{
       id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
       currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
@@ -1850,6 +1882,7 @@ describe('recordPayment -> QuickBooks push hook', () => {
 
   /** The reads recordPayment issues inside its one transaction, in order. */
   function queueRecordPayment() {
+    queueResult([invoice]);                                                    // pre-check read (#5611)
     queueResult([invoice]);                                                    // invoice FOR UPDATE
     queueResult([]);                                                           // prior payments (balance 100.00)
     queueResult([{ id: 'pay1', amount: '10.00', method: 'check', reference: null, recordedBy: 'u1' }]); // insert returning

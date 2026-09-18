@@ -213,6 +213,15 @@ export async function expireOneSession(row: OpenSessionRow): Promise<ProviderOut
           ? { kind: 'charged', providerCode: 'already_paid' }
           // A complete-but-unpaid session cannot be paid again; card-only
           // sessions never settle asynchronously.
+          //
+          // CONTRACT (#5611): this `revoked` mapping is only safe because BOTH
+          // session producers pin `payment_method_types: ['card']` —
+          // `services/invoiceCheckout.ts` (createInvoicePayLink) and
+          // `routes/portal/invoices.ts` (POST /invoices/:id/pay). A delayed
+          // method (bank debit, bank transfer) completes `unpaid` and settles
+          // LATER, so it would have to map to `charged` (repair) instead. Widen
+          // the method list at either producer and this branch must change with
+          // it; both producers carry the mirror of this note.
           : { kind: 'revoked', providerCode: 'already_complete_unpaid' };
       }
       return classified;
@@ -544,17 +553,26 @@ function isOperatorAbandoned(state: string, reason: string | null): boolean {
 /**
  * Producer gate. A session must never be minted for an invoice whose existing
  * sessions are mid-revocation — that is precisely the window the intent exists
- * to close. Read-only, safe under any scope that can see the mapping rows.
+ * to close.
+ *
+ * Elects system scope ITSELF (`runInSystemScope`, see the note above it) like
+ * every other entry point in this module, so callers invoke it bare. The read is
+ * filtered to the invoice's own mapping rows, so a request-scoped read happens
+ * to see the same rows today — but a bare `withSystemDbAccessContext` inside a
+ * request keeps the REQUEST's scope, and the moment this read widens (a
+ * partner-axis join, a sibling-invoice check) that would silently return zero
+ * rows and let the producer through (#5611).
  */
 export async function assertNoPendingRevocation(invoiceId: string): Promise<void> {
-  const [pending] = await db.select({ id: invoiceStripePayments.id })
-    .from(invoiceStripePayments)
-    .where(and(
-      eq(invoiceStripePayments.invoiceId, invoiceId),
-      eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
-      eq(invoiceStripePayments.revocationState, 'revocation_requested'),
-    ))
-    .limit(1);
+  const [pending] = await runInSystemScope(() =>
+    db.select({ id: invoiceStripePayments.id })
+      .from(invoiceStripePayments)
+      .where(and(
+        eq(invoiceStripePayments.invoiceId, invoiceId),
+        eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
+        eq(invoiceStripePayments.revocationState, 'revocation_requested'),
+      ))
+      .limit(1));
   if (!pending) return;
   if (stripeSessionRevocationMode() === 'observe') {
     console.warn('[stripeSessionRevocation] observe mode — minting a session while a revocation is pending', { invoiceId });
@@ -574,8 +592,15 @@ export async function abandonInvoiceSessionRevocation(input: {
   invoiceId: string;
   reason: string;
   actorUserId: string | null;
+  /**
+   * IP / user-agent of the operator's request, for the audit row. This function
+   * is the ONE audit writer for an abandon (#5611 — the route used to write a
+   * second row on top of this one), so the request context travels in here
+   * rather than being written separately by the caller.
+   */
+  request?: { ip?: string; userAgent?: string };
 }): Promise<{ abandoned: number; orgId: string | null }> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  return runInSystemScope(async () => {
     const now = new Date();
     const rows = await db.update(invoiceStripePayments)
       .set({
@@ -601,20 +626,26 @@ export async function abandonInvoiceSessionRevocation(input: {
       ))
       .returning({ id: invoiceStripePayments.id, orgId: invoiceStripePayments.orgId });
 
-    if (rows.length > 0) {
-      await writeAuditEventAsync(requestLikeFromSnapshot({}), {
-        orgId: rows[0]!.orgId,
-        action: 'invoice.stripe_session_abandoned',
-        resourceType: 'invoice',
-        resourceId: input.invoiceId,
-        actorType: input.actorUserId ? 'user' : 'system',
-        actorId: input.actorUserId,
-        result: 'success',
-        details: { reason: input.reason, sessionCount: rows.length },
-      });
-    }
-    return { abandoned: rows.length, orgId: rows[0]?.orgId ?? null };
-  }));
+    // The operator's DECISION is the auditable event, not the row count: an
+    // abandon that found nothing left to abandon still records who accepted
+    // residual exposure and why. The org comes from the invoice when no mapping
+    // row supplied it.
+    const orgId = rows[0]?.orgId
+      ?? (await db.select({ orgId: invoices.orgId }).from(invoices)
+        .where(eq(invoices.id, input.invoiceId)).limit(1))[0]?.orgId
+      ?? null;
+    await writeAuditEventAsync(requestLikeFromSnapshot(input.request ?? {}), {
+      orgId,
+      action: 'invoice.stripe_session_abandoned',
+      resourceType: 'invoice',
+      resourceId: input.invoiceId,
+      actorType: input.actorUserId ? 'user' : 'system',
+      actorId: input.actorUserId,
+      result: 'success',
+      details: { reason: input.reason, sessionCount: rows.length },
+    });
+    return { abandoned: rows.length, orgId };
+  });
 }
 
 /**

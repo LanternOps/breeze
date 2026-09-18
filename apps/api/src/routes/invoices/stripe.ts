@@ -10,7 +10,7 @@ import { createInvoicePayLink } from '../../services/invoiceCheckout';
 import { requireOrgAccess, requireSiteAccess } from '../../services/invoiceService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { abandonInvoiceSessionRevocation } from '../../services/stripeSessionRevocation';
-import { writeRouteAudit } from '../../services/auditEvents';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { invoiceActorFrom, handleServiceError } from './invoices';
 
 export const invoiceStripeRoutes = new Hono();
@@ -67,16 +67,12 @@ invoiceStripeRoutes.post(
       requireOrgAccess(actor, inv.orgId);
       requireSiteAccess(actor, inv.siteId);
 
+      // The service writes the (single) audit row — #5611: this route used to
+      // write a second `invoice.stripe_session_abandoned` on top of it. The
+      // request snapshot travels in so that one row keeps the IP / UA.
       const result = await abandonInvoiceSessionRevocation({
         invoiceId: inv.id, reason, actorUserId: actor.userId,
-      });
-      writeRouteAudit(c, {
-        orgId: inv.orgId,
-        action: 'invoice.stripe_session_abandoned',
-        resourceType: 'invoice',
-        resourceId: inv.id,
-        result: 'success',
-        details: { reason, sessionCount: result.abandoned },
+        request: { ip: getTrustedClientIpOrUndefined(c), userAgent: c.req.header('user-agent') },
       });
       return c.json({ data: { abandoned: result.abandoned } });
     } catch (err) { return handleServiceError(c, err); }
