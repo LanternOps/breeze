@@ -85,7 +85,12 @@ export function defaultSubject(
 ): string {
   const vars = { ...(ctx.vars ?? {}) };
   const ticketSubject = ctx.ticketSubject ?? vars.ticket_subject ?? '';
-  let ticketNumber = ctx.internalNumber ?? vars.ticket_number ?? '';
+  // Autoresponse HTML uses "your request" when there is no number. That must
+  // not leak into the subject as "[your request] …" — omit the prefix instead.
+  let ticketNumber = ctx.internalNumber ?? '';
+  if (!ticketNumber && id !== 'ticket_autoresponse') {
+    ticketNumber = vars.ticket_number ?? '';
+  }
   if (!ticketNumber && (id === 'ticket_comment_notification' || id === 'ticket_resolved')) {
     ticketNumber = 'your ticket';
   }

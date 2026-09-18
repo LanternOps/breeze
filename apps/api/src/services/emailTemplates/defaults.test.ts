@@ -44,6 +44,11 @@ describe('email template defaults', () => {
   it('omits the ticket-number prefix on autoresponse when the number is missing', () => {
     expect(defaultSubject('ticket_autoresponse', { ticketSubject: 'Printer' }))
       .toBe('We received your request: Printer');
+    expect(defaultSubject('ticket_autoresponse', {
+      internalNumber: null,
+      ticketSubject: 'Printer',
+      vars: { ticket_number: 'your request' },
+    })).toBe('We received your request: Printer');
   });
 
   it('collapses an empty org name in the portal invite subject', () => {
