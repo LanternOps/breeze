@@ -179,7 +179,7 @@ describe('EmailTemplateEditor', () => {
           heading: null,
           buttonLabel: null,
           html:
-            '<p style="color:red"><a href="javascript:alert(1)">x</a></p><base href="https://evil.example"><form action="https://evil.example"><input name="q"></form>',
+            '<p style="color:red"><a href="javascript:alert(1)">x</a><a href="java\tscript:alert(1)">y</a><a href="java\nscript:alert(1)">z</a><a href="java\rscript:alert(1)">w</a></p><base href="https://evil.example"><form action="https://evil.example"><input name="q"></form>',
         }}
         onBack={vi.fn()}
         onSaved={vi.fn()}
@@ -188,6 +188,7 @@ describe('EmailTemplateEditor', () => {
 
     const html = screen.getByTestId('email-template-preview').innerHTML;
     expect(html).not.toMatch(/javascript:/i);
+    expect(html).not.toMatch(/java[\x00-\x20]+script:/i);
     expect(html).not.toMatch(/\sstyle=/i);
     expect(html).not.toMatch(/<base/i);
     expect(html).not.toMatch(/<form/i);
