@@ -26,17 +26,19 @@ vi.mock('bullmq', () => ({
   },
 }));
 
-const { execRows, updates, deletes } = vi.hoisted(() => ({
+const { execRows, updates, deletes, selectWheres } = vi.hoisted(() => ({
   execRows: [] as unknown[][],
   updates: [] as Record<string, unknown>[],
   deletes: [] as unknown[],
+  selectWheres: [] as unknown[],
 }));
 vi.mock('../db', () => ({
   db: {
     execute: vi.fn(async () => ({ rows: execRows.shift() ?? [] })),
     select: vi.fn(() => {
       const chain: Record<string, unknown> = {};
-      for (const m of ['from', 'where', 'limit', 'innerJoin']) chain[m] = vi.fn(() => chain);
+      for (const m of ['from', 'limit', 'innerJoin']) chain[m] = vi.fn(() => chain);
+      chain.where = vi.fn((w: unknown) => { selectWheres.push(w); return chain; });
       (chain as { then: unknown }).then = (r: (v: unknown) => unknown) =>
         Promise.resolve(execRows.shift() ?? []).then(r);
       return chain;
@@ -99,7 +101,7 @@ vi.mock('../services/emailDomains/keyProbe', () => ({
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
-import { ProviderManagementAuthError } from '../services/emailDomains/provider';
+import { PartnerLaneSendFailure, ProviderManagementAuthError } from '../services/emailDomains/provider';
 import {
   SENDING_DOMAINS_QUEUE, enqueueSyncDomain, enqueueTestSend,
   initializeSendingDomainsWorker, runDailyMaintenance, runSendingDomainsSweep, runTestSend,
@@ -112,7 +114,7 @@ const USER_ID = '44444444-4444-4444-8444-444444444444';
 beforeEach(async () => {
   await shutdownSendingDomainsWorker();
   vi.clearAllMocks();
-  execRows.length = 0; updates.length = 0; deletes.length = 0;
+  execRows.length = 0; updates.length = 0; deletes.length = 0; selectWheres.length = 0;
   laneConfigured.value = true;
   hostedFlag.value = false;
   providerMock.verifiesByDns = true;
@@ -144,6 +146,29 @@ function sqlTextOf(query: any): string {
       return '';
     })
     .join(' ');
+}
+
+/**
+ * True when `where` contains a Drizzle COLUMN of this physical name. Scanning
+ * for the name anywhere would also match a bound string value, which is how a
+ * deep-search assertion goes vacuous; this only accepts an object that carries
+ * both a `name` and a `columnType`, i.e. an actual column reference.
+ */
+function whereMentionsColumn(where: unknown, columnName: string): boolean {
+  const seen = new Set<unknown>();
+  const walk = (node: unknown): boolean => {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return false;
+    seen.add(node);
+    const rec = node as Record<string, unknown>;
+    if (rec.name === columnName && typeof rec.columnType === 'string') return true;
+    // NEVER follow `table`: every column carries a back-reference to its table,
+    // which carries EVERY column — so a naive walk from `eq(users.id, …)`
+    // reaches email_verified_at and the assertion passes with the guard
+    // deleted. Verified by mutation: without this, dropping isNotNull() from
+    // the query still read green.
+    return Object.entries(rec).filter(([k]) => k !== 'table').some(([, v]) => walk(v));
+  };
+  return walk(where);
 }
 
 describe('worker registration', () => {
@@ -334,16 +359,61 @@ describe('test send (spec §6.1)', () => {
     expect(providerMock.send).toHaveBeenCalledWith(expect.objectContaining({ from: 'test@mail.acme.test' }));
   });
 
-  it('records the refusal verbatim and does not verify anything', async () => {
+  // Only a RELAY REFUSAL is a verdict about the domain. `domain_unusable` and
+  // `message_rejected` are; `ambiguous` and `lane_unavailable` are not.
+  it.each([
+    ['domain_unusable'],
+    ['message_rejected'],
+  ])('records a %s refusal verbatim and does not verify anything', async (kind) => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
     execRows.push([{ email: 'tech@acme.test' }]);
     execRows.push([]);
-    providerMock.send.mockRejectedValue(new Error('550 5.7.60 sender not allowed'));
+    providerMock.send.mockRejectedValue(
+      new PartnerLaneSendFailure({ kind, detail: '550 5.7.60 sender not allowed' } as never),
+    );
 
     await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('refused');
 
-    expect(updates.at(-1)).toMatchObject({ lastTestStatus: 'failed', lastTestError: '550 5.7.60 sender not allowed' });
+    expect(updates.at(-1)).toMatchObject({ lastTestStatus: 'failed', lastTestError: expect.stringContaining(kind) });
     expect(markStaticVerifiedMock).not.toHaveBeenCalled();
+  });
+
+  // Recording these as `failed` told the partner "your domain could not send"
+  // for a blip on OUR side, and swallowed the error so the job's retry never
+  // engaged. They must rethrow and leave last_test_* untouched.
+  it.each([
+    ['an ambiguous lane failure', new PartnerLaneSendFailure({ kind: 'ambiguous', detail: 'timeout' } as never)],
+    ['a lane_unavailable failure', new PartnerLaneSendFailure({ kind: 'lane_unavailable', detail: 'no key' } as never)],
+    ['a non-PartnerLaneSendFailure exception', new Error('ECONNRESET')],
+  ])('rethrows %s instead of recording a failed test', async (_label, err) => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([]);
+    providerMock.send.mockRejectedValue(err);
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID)).rejects.toThrow();
+
+    expect(updates.some((u) => u.lastTestStatus === 'failed')).toBe(false);
+  });
+
+  // Spec §7: the test goes to the calling user's own VERIFIED address. Without
+  // this the test send is a free relay to any address a partner adds to their
+  // own account, from a domain nobody has proven they control.
+  it('requires the recipient to have a verified email address', async () => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([]);                       // the guarded lookup finds nobody
+    execRows.push([]);
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('skipped');
+    expect(providerMock.send).not.toHaveBeenCalled();
+
+    // …and prove the guard is IN the query, not merely that the stub returned
+    // nothing: without the emailVerifiedAt term the row above would have been
+    // returned by a real database.
+    expect(
+      selectWheres.some((w) => whereMentionsColumn(w, 'email_verified_at')),
+      'the recipient lookup does not constrain email_verified_at',
+    ).toBe(true);
   });
 
   it('skips a domain that is not sendable, and a static PENDING one is sendable', async () => {

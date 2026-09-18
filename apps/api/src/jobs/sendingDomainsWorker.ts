@@ -1,12 +1,12 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import { isHosted } from '../config/env';
 import { db, withSystemDbAccessContext } from '../db';
 import { emailProviderDomainReleases, partnerSenderIdentities, partnerSendingDomains, users } from '../db/schema';
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from '../services/emailDomains/config';
 import { markStaticDomainVerified, syncSendingDomain } from '../services/emailDomains/domainSync';
 import { recordProviderKeyProbe } from '../services/emailDomains/keyProbe';
-import { ProviderManagementAuthError } from '../services/emailDomains/provider';
+import { PartnerLaneSendFailure, ProviderManagementAuthError } from '../services/emailDomains/provider';
 import { getEmailDomainProvider } from '../services/emailDomains/providerRegistry';
 import { sendOpsAlert } from '../services/opsAlerts';
 import { getBullMQConnection } from '../services/redis';
@@ -254,7 +254,17 @@ export async function runTestSend(domainId: string, userId: string): Promise<'se
     const recipient = await db
       .select({ email: users.email })
       .from(users)
-      .where(and(eq(users.id, userId), eq(users.partnerId, domain.partnerId), eq(users.status, 'active')))
+      // `emailVerifiedAt IS NOT NULL` is load-bearing, not hygiene: spec §7 says
+      // the test goes to "the calling user's own VERIFIED address". Without it a
+      // partner can add an arbitrary unverified address to their own account and
+      // use the test send as a free relay to it from a domain nobody has proven
+      // they control.
+      .where(and(
+        eq(users.id, userId),
+        eq(users.partnerId, domain.partnerId),
+        eq(users.status, 'active'),
+        isNotNull(users.emailVerifiedAt),
+      ))
       .limit(1);
     const support = await db
       .select({ localPart: partnerSenderIdentities.localPart })
@@ -267,7 +277,12 @@ export async function runTestSend(domainId: string, userId: string): Promise<'se
     return { domain, to: recipient[0]?.email ?? null, localPart: support[0]?.localPart ?? 'test' };
   }, 'sendingDomainTestSendLoad');
 
-  if (!context || !context.to) return 'skipped';
+  if (!context || !context.to) {
+    // The recipient query already excludes an unverified/inactive/foreign user,
+    // so the only honest thing to report is "nothing was sent", with a reason.
+    console.warn(`[SendingDomains] test send skipped for ${domainId}: no active, email-verified recipient for user ${userId}`);
+    return 'skipped';
+  }
   const { domain, to, localPart } = context;
 
   const sendable = domain.status === 'verified' || domain.status === 'at_risk'
@@ -291,6 +306,18 @@ export async function runTestSend(domainId: string, userId: string): Promise<'se
       },
     });
   } catch (err) {
+    // ONLY a classified RELAY REFUSAL is a verdict about this domain. An
+    // `ambiguous` failure (timeout, 5xx, reset) or a `lane_unavailable` one says
+    // nothing — recording it as `last_test_status = 'failed'` showed the partner
+    // "your domain could not send" for a blip on our side, AND swallowed the
+    // error so enqueueTestSend's retry never engaged. Rethrow those instead and
+    // leave last_test_* exactly as it was.
+    const refusal = err instanceof PartnerLaneSendFailure
+      && (err.error.kind === 'domain_unusable' || err.error.kind === 'message_rejected');
+    if (!refusal) {
+      console.warn(`[SendingDomains] test send for ${domainId} failed transiently — retrying:`, err instanceof Error ? err.message : err);
+      throw err;
+    }
     const message = err instanceof Error ? err.message : String(err);
     await withSystemDbAccessContext(
       () => db.update(partnerSendingDomains)
