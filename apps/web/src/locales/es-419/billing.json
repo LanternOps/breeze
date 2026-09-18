@@ -2211,7 +2211,19 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Valores predeterminados",
     "documents": "Documentos",
-    "connections": "Conexiones",
-    "connectionsComingSoon": "Las conexiones se están configurando en un paso posterior de esta ola."
+    "connections": "Conexiones"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Contabilidad",
+      "description": "Stripe y QuickBooks se conectan en Integraciones — adminístralos allí.",
+      "cta": "Administrar conexiones contables →"
+    },
+    "catalog": {
+      "title": "Catálogo y distribuidores",
+      "description": "El catálogo de productos y las conexiones de distribuidores (Pax8, TD SYNNEX) están en dos lugares — cambia entre ellos aquí.",
+      "catalogCta": "Abrir catálogo de productos →",
+      "distributorsCta": "Abrir distribuidores →"
+    }
   }
 }

@@ -34,6 +34,12 @@ export default function CatalogSettingsPage() {
         <h1 className="text-xl font-semibold">{t('catalogSettingsPage.productCatalog')}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {t('catalogSettingsPage.manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon')}</p>
+        <a
+          href="/integrations#distributors" data-testid="catalog-distributors-link"
+          className="text-sm font-medium text-primary hover:underline"
+        >
+          {t('catalogSettingsPage.distributorsLink')}
+        </a>
       </div>
       <CatalogDefaultsCard />
       <CatalogItemsTab />

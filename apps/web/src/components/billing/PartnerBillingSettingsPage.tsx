@@ -9,8 +9,7 @@ import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { useHashTab } from '../../lib/useHashState';
 import BillingDefaultsTab from './BillingDefaultsTab';
 import BillingDocumentsTab from './BillingDocumentsTab';
-// `BillingConnectionsTab` is wired in by Task 11 (M6) — until then this tab
-// renders an inline placeholder so this file is independently buildable.
+import BillingConnectionsTab from './BillingConnectionsTab';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 // `rates` is NOT in BILLING_TABS: it is a reserved slot in the TABS config
@@ -207,13 +206,7 @@ export default function PartnerBillingSettingsPage() {
           terms={terms} setTerms={setTerms}
         />
       )}
-      {/* Task 11 (M6) replaces this placeholder with the real <BillingConnectionsTab />
-          import once that file exists — see the note above the imports. */}
-      {activeTab === 'connections' && (
-        <div data-testid="billing-connections-tab-placeholder" className="text-sm text-muted-foreground">
-          {t('partnerBillingSettingsTabs.connectionsComingSoon')}
-        </div>
-      )}
+      {activeTab === 'connections' && <BillingConnectionsTab />}
 
       <div className="flex justify-end">
         <button

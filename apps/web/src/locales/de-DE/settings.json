@@ -3405,7 +3405,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Produktkatalog",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Der Produktkatalog ist nur für Partnerkonten verfügbar.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Verwalten Sie Hardware, Software und Serviceartikel, die in Angeboten, Verträgen und Rechnungen verwendet werden. Verbinden Sie Distributoren (Pax8, TD SYNNEX) unter Integrationen → Distributoren."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Verwalten Sie Hardware, Software und Serviceartikel, die in Angeboten, Verträgen und Rechnungen verwendet werden. Verbinden Sie Distributoren (Pax8, TD SYNNEX) unter Integrationen → Distributoren.",
+    "distributorsLink": "Distributorverbindungen verwalten →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Aktuelles Passwort ist erforderlich",

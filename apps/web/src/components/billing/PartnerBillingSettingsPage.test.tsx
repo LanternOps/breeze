@@ -56,11 +56,12 @@ describe('PartnerBillingSettingsPage', () => {
     expect(screen.queryByTestId('partner-billing-ai-style')).not.toBeInTheDocument();
   });
 
-  it('the Connections tab renders a placeholder until Task 11 wires in the real component (M4)', async () => {
+  it('the Connections tab renders the real BillingConnectionsTab, not a placeholder (M6)', async () => {
     fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
     renderPage();
     await userEvent.click(await screen.findByTestId('billing-settings-tab-connections'));
-    expect(await screen.findByTestId('billing-connections-tab-placeholder')).toBeInTheDocument();
+    expect(await screen.findByTestId('billing-connections-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('billing-connections-tab-placeholder')).not.toBeInTheDocument();
   });
 
   it('loads and shows the seller company name', async () => {

@@ -2211,7 +2211,19 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Varsayılanlar",
     "documents": "Belgeler",
-    "connections": "Bağlantılar",
-    "connectionsComingSoon": "Bağlantılar bu dalganın sonraki bir adımında kuruluyor."
+    "connections": "Bağlantılar"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Muhasebe",
+      "description": "Stripe ve QuickBooks, Entegrasyonlar altında bağlanır — onları orada yönetin.",
+      "cta": "Muhasebe bağlantılarını yönet →"
+    },
+    "catalog": {
+      "title": "Katalog ve distribütörler",
+      "description": "Ürün Kataloğu ve distribütör bağlantıları (Pax8, TD SYNNEX) iki yerde bulunur — buradan geçiş yapın.",
+      "catalogCta": "Ürün Kataloğunu aç →",
+      "distributorsCta": "Distribütörleri aç →"
+    }
   }
 }

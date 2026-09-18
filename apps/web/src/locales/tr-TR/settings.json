@@ -3405,7 +3405,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın.",
+    "distributorsLink": "Distribütör bağlantılarını yönet →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Geçerli şifre gerekli",

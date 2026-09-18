@@ -3400,7 +3400,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Catalogo prodotti",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Il catalogo prodotti è disponibile solo per gli account partner.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gestisci articoli hardware, software e servizi usati in preventivi, contratti e fatture. Connetti i distributori (Pax8, TD SYNNEX) in Integrazioni -> Distributori."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gestisci articoli hardware, software e servizi usati in preventivi, contratti e fatture. Connetti i distributori (Pax8, TD SYNNEX) in Integrazioni -> Distributori.",
+    "distributorsLink": "Gestisci connessioni distributori →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "La password attuale è obbligatoria",
