@@ -24,6 +24,7 @@ import {
   loadAllPartnerSendingWindowStats,
   loadPartnerSendingWindowStats,
 } from '../../services/emailDomains/deliveryStats';
+import { loadSendingDomainAggregates } from '../../services/abuseSignals/sendingDomains';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
 
@@ -51,6 +52,12 @@ vi.mock('../../jobs/sendingDomainsWorker', () => ({
 }));
 vi.mock('../../services/rate-limit', () => ({
   rateLimiter: async () => ({ allowed: true, remaining: 100, resetAt: new Date() }),
+}));
+// The abuse loader's cap-hit contribution comes from Redis, which the stub
+// above does not model; the SQL half is what this suite exists to exercise.
+vi.mock('../../services/emailDomains/capHits', () => ({
+  CAP_HIT_WINDOW_DAYS: 7,
+  loadCapHitWindow: async () => new Map<string, number>(),
 }));
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -306,5 +313,69 @@ describe('the delivery webhook end-to-end, with NO ambient DB context', () => {
       db.select().from(partnerSendingDailyStats)
         .where(inArray(partnerSendingDailyStats.partnerId, [f.partnerA, f.partnerB])));
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe('loadSendingDomainAggregates — the abuse loader against real Postgres', () => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  beforeEach(async () => { f = await fixture(); });
+
+  // The loader is a hand-written CTE chain that no mocked database can
+  // exercise: a typo in a join or a window bound reads as a permanently clean
+  // fleet, which is the silent-failure direction for an abuse detector.
+  it('aggregates per partner and excludes a day just outside the 7-day window', async () => {
+    await withDbAccessContext(SYSTEM_CTX, () => db.execute(sql`
+      insert into partner_sending_daily_stats (partner_id, day, sent, delivered, bounced, complained, failed)
+      values
+        -- partner A: inside the window, twice, so the sums have to add up
+        (${f.partnerA}::uuid, ${TODAY}::date,                   100, 80, 15, 2, 5),
+        (${f.partnerA}::uuid, (${TODAY}::date - 6),             100, 90,  8, 1, 2),
+        -- partner A: day 7 back is OUTSIDE an inclusive 7-day window
+        (${f.partnerA}::uuid, (${TODAY}::date - 7),             999,  0, 999, 99, 0),
+        -- partner B: its own row, to prove the grouping is per partner
+        (${f.partnerB}::uuid, ${TODAY}::date,                    10, 10,  0, 0, 0)
+    `));
+
+    const { aggregates, scannedPartnerIds } = await withDbAccessContext(
+      SYSTEM_CTX,
+      () => loadSendingDomainAggregates(new Date()),
+    );
+
+    const a = aggregates.find((row) => row.partnerId === f.partnerA);
+    expect(a, 'partner A must appear in the aggregates').toBeDefined();
+    // 100 + 100 only — the day-7 row must not be counted.
+    expect(a!.windowSent).toBe(200);
+    expect(a!.windowDelivered).toBe(170);
+    expect(a!.windowBounced).toBe(23);
+    expect(a!.windowComplained).toBe(3);
+    expect(a!.windowFailed).toBe(7);
+    expect(a!.windowMessages).toBe(200);        // GREATEST(200, 170 + 23 + 7)
+    expect(a!.windowBounceRate).toBeCloseTo(23 / 200, 10);
+
+    const b = aggregates.find((row) => row.partnerId === f.partnerB);
+    expect(b!.windowSent).toBe(10);
+    expect(b!.windowBounced).toBe(0);
+    expect(b!.windowBounceRate).toBe(0);
+
+    expect(scannedPartnerIds).toEqual(expect.arrayContaining([f.partnerA, f.partnerB]));
+  });
+
+  it('carries a freshly added domain and a failed verification through to the aggregate', async () => {
+    const domain = `abuse-${Date.now()}.test`;
+    await withDbAccessContext(SYSTEM_CTX, () => db.insert(partnerSendingDomains).values({
+      partnerId: f.partnerA, domain, provider: 'fake',
+      status: 'failed', statusReason: 'dns_not_detected', checkAttempts: 9,
+    }));
+
+    const { aggregates } = await withDbAccessContext(
+      SYSTEM_CTX,
+      () => loadSendingDomainAggregates(new Date()),
+    );
+
+    const a = aggregates.find((row) => row.partnerId === f.partnerA);
+    expect(a!.recentDomains.map((d) => d.domain)).toContain(domain);
+    expect(a!.failedVerifications.map((v) => v.domain)).toContain(domain);
+    expect(a!.failedVerifications.find((v) => v.domain === domain)!.checkAttempts).toBe(9);
+    expect(a!.partnerName).toBeTruthy();
   });
 });
