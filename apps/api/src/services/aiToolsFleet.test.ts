@@ -1175,3 +1175,78 @@ describe('exported builders for export_dataset reuse', () => {
     expect(typeof mod.aiLiveReportAuthority).toBe('function');
   });
 });
+
+describe('user-owned release attribution (#6200)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_patches')!;
+
+  const approverId = 'approver-1';
+  const approverAuth = {
+    user: { id: approverId, email: 'approver@test.com', name: 'Approver' },
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+
+  const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+
+  function mockOwnedDeviceLookup(rows: Array<{ id: string; siteId: string | null }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows),
+      }),
+    } as never);
+  }
+
+  afterEach(() => {
+    vi.mocked(db.insert).mockClear();
+    vi.mocked(db.select).mockClear();
+  });
+
+  // Proves the value actually came from auth.user.id of the APPROVER (not a
+  // static/mismatched id): the insert must carry approverId, the same id
+  // passed on approverAuth.user.id and echoed by context.approverRelease.
+  it("manage_patches:install with a matching approverRelease.approverUserId inserts patch_jobs.createdBy from the approver's auth.user.id", async () => {
+    mockOwnedDeviceLookup([{ id: deviceId, siteId: null }]);
+    const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]) }));
+    vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
+
+    const result = JSON.parse(await tool.handler(
+      { action: 'install', patchIds: [patchId], deviceIds: [deviceId] },
+      approverAuth,
+      { approverRelease: { approverUserId: approverId } } as any,
+    ));
+
+    expect(result.success).toBe(true);
+    expect(insertValuesSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ createdBy: approverId }),
+    );
+  });
+
+  it('manage_patches:install with a mismatched approverRelease.approverUserId refuses and performs no insert', async () => {
+    const result = JSON.parse(await tool.handler(
+      { action: 'install', patchIds: [patchId], deviceIds: [deviceId] },
+      approverAuth,
+      { approverRelease: { approverUserId: 'someone-else' } } as any,
+    ));
+
+    expect(result.error).toBe('approver_auth_mismatch');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('manage_patches:rollback with a mismatched approverRelease.approverUserId refuses and performs no insert', async () => {
+    const result = JSON.parse(await tool.handler(
+      { action: 'rollback', patchId, deviceIds: [deviceId] },
+      approverAuth,
+      { approverRelease: { approverUserId: 'someone-else' } } as any,
+    ));
+
+    expect(result.error).toBe('approver_auth_mismatch');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+});
