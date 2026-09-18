@@ -99,6 +99,7 @@ vi.mock('../services/emailDomains/keyProbe', () => ({
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
+import { ProviderManagementAuthError } from '../services/emailDomains/provider';
 import {
   SENDING_DOMAINS_QUEUE, enqueueSyncDomain, enqueueTestSend,
   initializeSendingDomainsWorker, runDailyMaintenance, runSendingDomainsSweep, runTestSend,
@@ -183,10 +184,19 @@ describe('worker registration', () => {
   });
 
   it('probes the management key exactly once on start and records send_only on a permission error', async () => {
-    providerMock.listDomains.mockRejectedValue(Object.assign(new Error('restricted'), { statusCode: 401 }));
+    // The adapter, not the worker, decides that a 401/restricted_api_key is a
+    // key refusal — the worker keys off the TYPE so a slow provider at boot
+    // cannot be mistaken for one.
+    providerMock.listDomains.mockRejectedValue(new ProviderManagementAuthError('listDomains', 'restricted_api_key'));
     await initializeSendingDomainsWorker();
     expect(providerMock.listDomains).toHaveBeenCalledTimes(1);
     expect(probeRecord).toHaveBeenCalledWith('send_only');
+  });
+
+  it('leaves the verdict alone when the boot probe cannot reach the provider', async () => {
+    providerMock.listDomains.mockRejectedValue(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }));
+    await initializeSendingDomainsWorker();
+    expect(probeRecord).not.toHaveBeenCalled();
   });
 
   it('records ok when the key can list domains', async () => {
@@ -434,6 +444,46 @@ describe('daily maintenance', () => {
 
     expect(result.drift).toBe(1);
     expect(opsAlertMock).toHaveBeenCalled();
+  });
+
+  // A `send_only` verdict degrades `provider_key_send_only` for EVERY partner
+  // until the 25h TTL expires: no partner can add a domain. The old code wrote
+  // it for ANY throw from a try that also wrapped a DB read and sendOpsAlert,
+  // so one network blip or Postgres hiccup locked the whole platform out.
+  it('records send_only ONLY for a classified management-key refusal', async () => {
+    hostedFlag.value = true;
+    providerMock.listDomains.mockRejectedValue(new ProviderManagementAuthError('listDomains', 'restricted_api_key'));
+    await runDailyMaintenance(new Date('2026-09-17T12:00:00Z'));
+    expect(probeRecord).toHaveBeenCalledWith('send_only');
+  });
+
+  it('leaves the probe verdict UNTOUCHED when listDomains fails transiently', async () => {
+    hostedFlag.value = true;
+    providerMock.listDomains.mockRejectedValue(Object.assign(new Error('ECONNRESET'), { code: 'ECONNRESET' }));
+    await runDailyMaintenance(new Date('2026-09-17T12:00:00Z'));
+    expect(probeRecord).not.toHaveBeenCalled();
+    expect(opsAlertMock).not.toHaveBeenCalled();
+  });
+
+  it('records ok on a successful list', async () => {
+    hostedFlag.value = true;
+    providerMock.listDomains.mockResolvedValue([]);
+    execRows.push([]);
+    await runDailyMaintenance(new Date('2026-09-17T12:00:00Z'));
+    expect(probeRecord).toHaveBeenCalledWith('ok');
+    expect(probeRecord).not.toHaveBeenCalledWith('send_only');
+  });
+
+  // The DB read and the ops alert moved OUT of the listDomains try. A failure
+  // in either must surface (BullMQ retries the job), never be relabelled as a
+  // key permission verdict.
+  it('does not turn a DB failure during the drift read into a send_only verdict', async () => {
+    hostedFlag.value = true;
+    providerMock.listDomains.mockResolvedValue([{ providerDomainId: 'pd-x', domain: 'ghost.test' }]);
+    const { db } = await import('../db');
+    vi.mocked(db.execute).mockRejectedValueOnce(new Error('connection terminated'));
+    await expect(runDailyMaintenance(new Date('2026-09-17T12:00:00Z'))).rejects.toThrow(/connection terminated/);
+    expect(probeRecord).not.toHaveBeenCalledWith('send_only');
   });
 
   it('re-checks every live static row so a delisted domain stops being used', async () => {

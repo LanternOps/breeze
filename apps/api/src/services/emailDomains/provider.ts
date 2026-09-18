@@ -82,6 +82,20 @@ export class ProviderDomainConflictError extends Error {
   }
 }
 
+/**
+ * The provider refused the MANAGEMENT key itself (401/403, or a named
+ * restricted/invalid/missing key error). This is the one failure that proves
+ * the key cannot manage domains; every other failure — timeout, 5xx, DNS — is
+ * transient and must NOT be read as a permission verdict, or one network blip
+ * locks every partner out of add-domain for the probe's TTL.
+ */
+export class ProviderManagementAuthError extends Error {
+  constructor(readonly operation: string, message?: string) {
+    super(message ?? `provider refused the management key on ${operation}`);
+    this.name = 'ProviderManagementAuthError';
+  }
+}
+
 /** The provider refused the request outright. → `failed`/`provider_rejected`. */
 export class ProviderDomainRejectedError extends Error {
   constructor(readonly domain: string, message?: string) {

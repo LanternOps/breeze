@@ -6,6 +6,7 @@ import { emailProviderDomainReleases, partnerSenderIdentities, partnerSendingDom
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from '../services/emailDomains/config';
 import { markStaticDomainVerified, syncSendingDomain } from '../services/emailDomains/domainSync';
 import { recordProviderKeyProbe } from '../services/emailDomains/keyProbe';
+import { ProviderManagementAuthError } from '../services/emailDomains/provider';
 import { getEmailDomainProvider } from '../services/emailDomains/providerRegistry';
 import { sendOpsAlert } from '../services/opsAlerts';
 import { getBullMQConnection } from '../services/redis';
@@ -332,8 +333,25 @@ export async function runDailyMaintenance(now: Date = new Date()): Promise<{ dri
     // provider domain with no local row and no outbox row is a real leak. On
     // self-hosted the account is the operator's own and holds domains Breeze
     // knows nothing about, which would make this pure noise.
+    // ONLY `listDomains()` is inside this try, and ONLY a classified key
+    // refusal writes `send_only`. Wrapping the DB read and the ops alert too —
+    // and recording `send_only` for whatever they threw — meant a single
+    // Postgres blip or a failed alert delivery reported the management key as
+    // send-only, which degrades `provider_key_send_only` for EVERY partner
+    // until the probe's 25 h TTL expires or the next daily run clears it.
+    let remote: Array<{ providerDomainId: string; domain: string }> | null = null;
     try {
-      const remote = await provider.listDomains();
+      remote = await provider.listDomains();
+    } catch (err) {
+      if (err instanceof ProviderManagementAuthError) {
+        await recordProviderKeyProbe('send_only');
+      }
+      // Anything else proves nothing about the key: leave the previous verdict
+      // standing (an absent/expired key already reads as "unknown").
+      console.warn('[SendingDomains] drift report could not list domains:', err instanceof Error ? err.message : err);
+    }
+
+    if (remote) {
       await recordProviderKeyProbe('ok');
       const known = await withSystemDbAccessContext(async () => {
         const result = await db.execute<{ provider_domain_id: string }>(sql`
@@ -375,9 +393,6 @@ export async function runDailyMaintenance(now: Date = new Date()): Promise<{ dri
           body: unknown.map((d) => `${d.domain} (${d.providerDomainId})`).join('\n'),
         });
       }
-    } catch (err) {
-      await recordProviderKeyProbe('send_only');
-      console.warn('[SendingDomains] drift report could not list domains:', err instanceof Error ? err.message : err);
     }
   }
 
@@ -476,8 +491,16 @@ async function probeManagementKey(): Promise<void> {
     await provider.listDomains();
     await recordProviderKeyProbe('ok');
   } catch (err) {
-    console.warn('[SendingDomains] management key probe failed — treating the key as send-only:', err instanceof Error ? err.message : err);
-    await recordProviderKeyProbe('send_only');
+    if (err instanceof ProviderManagementAuthError) {
+      console.warn('[SendingDomains] management key cannot manage domains — recording send-only:', err.message);
+      await recordProviderKeyProbe('send_only');
+      return;
+    }
+    // A timeout, a 5xx or a socket reset at BOOT says nothing about the key.
+    // Recording `send_only` here used to lock every partner out of add-domain
+    // for the probe's TTL because the provider happened to be slow while the
+    // worker started.
+    console.warn('[SendingDomains] management key probe could not reach the provider — verdict unchanged:', err instanceof Error ? err.message : err);
   }
 }
 
