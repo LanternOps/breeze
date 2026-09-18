@@ -346,11 +346,25 @@ A manually-added asset is a real discovered-asset row (`source: manual`) — it 
 
 Clicking a network-discovered device in the unified **Devices** list opens a dedicated detail page (`/devices/network/:id`) instead of a popup. The page has breadcrumbs back to **Devices** and a working back button, so you can navigate in and out without losing your place.
 
-The page has two tabs — **Overview** (identity, IP/MAC, manufacturer/model, SNMP data, ping, open ports) and **Monitoring** (SNMP/network monitoring status, linked device, discovery metadata). The selected tab is reflected in the URL hash (e.g. `#monitoring`), so you can bookmark or share a link directly to a specific tab.
+The page has two tabs — **Overview** (identity, IP/MAC, manufacturer/model, SNMP data, ping, open ports) and **Monitoring** (poll configuration, OIDs, and history). The selected tab is reflected in the URL hash (e.g. `#monitoring`), so you can bookmark or share a link directly to a specific tab.
 
 From the **Overview** tab you can override the auto-detected device type using the **Asset Type** dropdown. If a device's type was set manually, a **Reset to auto-detected** link appears so you can revert to the type the scan originally detected.
 
-From the **Monitoring** tab you can see the asset's link state and **Unlink** it from its enrolled Breeze device. Unlinking is **durable** regardless of how the link was made: future scans will not silently re-link the asset — auto-linking is suppressed for it until you deliberately re-link. The network device detail page is also where you link (or re-link) an asset to an enrolled device manually.
+**Reachability header.** The header always shows a reachability badge, never a bare "Online" — it names both the state and where that state came from: **Responding**, **Not responding**, or **Unverified**, followed by the source (**Network check**, **Probe**, **Scan**, **UniFi**, or **SNMP**) and how long ago, e.g. "Responding · Network check 2m ago." If nothing has ever reported on the device, it shows **"Nothing has reported on this device."** A **Check now** button triggers an on-demand probe.
+
+**Health and Reachability cards.** The **Reachability** card breaks the headline status down by source, with its own detail line per check type. A stat strip below it shows **Reachability**, **Last poll**, and a device-type-specific slot (for example **Lowest supply** for a printer, or **Ports up** for a switch). A **Device health** or **Printer health** card (depending on the detected device type) surfaces the metrics most relevant to that device type, with a **View all N OIDs** link into the full collection and a **Choose a template** prompt if no SNMP template is assigned yet.
+
+**Monitoring tab.** The Monitoring tab shows a poll configuration summary, an OID table, and metric history charts. Each row in the OID table reports its own state: **Collecting**, **Unsupported**, **Stale**, or **Never polled**. A failed poll always says why — for example, an OID the device doesn't support reports the exact code it returned; a table value that needs a newer agent says so explicitly ("update the agent on the bridging device"); a walk that hit its row limit is marked **Partial**. The poll configuration summary itself reports overall collection status as **Polling**, **Failing**, **No template**, **No agent in site**, **Asset moved**, **Never polled**, or **Paused**.
+
+**Template suggestion.** When Breeze recognizes a device's identity (from its SNMP `sysObjectID`), the Overview and Monitoring tabs show a suggested SNMP template with the reason it was suggested (e.g. "Suggested: Xerox Printer — matched by device identity"). Click **Use suggestion** to apply it. If no template is assigned at all, a warning explains that nothing is being polled until one is set.
+
+All asset-level settings — identity, monitoring configuration, and the manual link to an enrolled Breeze device — are consolidated in a single **Settings** modal, opened from the button in the page header.
+
+<Aside type="note">
+  SNMPv1 devices are polled using SNMP version 1 rather than being treated as v2c.
+</Aside>
+
+From the Settings modal's **Link** section you can see the asset's link state and **Unlink** it from its enrolled Breeze device. Unlinking is **durable** regardless of how the link was made: future scans will not silently re-link the asset — auto-linking is suppressed for it until you deliberately re-link. The network device detail page is also where you link (or re-link) an asset to an enrolled device manually.
 
 ### Asset-to-Device Linking
 

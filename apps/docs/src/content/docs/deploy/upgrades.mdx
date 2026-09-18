@@ -108,6 +108,23 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### v0.114.0 — evidence reports, network device page, account board
+
+**`catalog_items.unit_price` is dropped.** Catalog sell prices have lived in
+`catalog_item_prices` (per-organization price book) since the multi-currency
+work landed; `unit_price` on `catalog_items` was a write-only leftover column
+that nothing read. The API and catalog UI are unaffected — the `unitPrice`
+field on create/update requests is still accepted as an input alias mapped
+into the price book. If you have custom SQL, a BI tool, or a script reading
+`catalog_items.unit_price` directly, it will break; point it at
+`catalog_item_prices` (via `catalog_item_org_pricing`) instead.
+
+<Aside type="caution">
+  Rolling back to a pre-v0.114.0 image after upgrading is not clean — the
+  dropped column does not come back on its own. **Back up your database before
+  upgrading** if you might need to roll back.
+</Aside>
+
 ### v0.113.0 — remote desktop stability, AI-authored scripts, service deliverables
 
 **No breaking API changes.** Two settings deserve a decision before you pull:

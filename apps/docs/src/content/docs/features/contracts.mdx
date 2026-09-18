@@ -178,6 +178,8 @@ The **Service** tab also keeps the organization's **key dates** — insurance re
 
 Define a service tier once and apply it to any customer. Under **Settings → Deliverable Templates**, create a **template set** — owned by **All organizations (partner-wide)** or **This organization only** — and add the deliverables it contains. From an organization's **Service** tab, **Apply template set** creates every deliverable in the set for that organization (optionally tied to a contract, with an effective-from date and an owner) and reports what it created and what it skipped because it was already present. Managing partner-wide sets requires full partner organization access.
 
+A template item's evidence source can also be set to one of the automated [evidence reports](/features/reports/#scheduled-auto-evidence) (identity & access review, vulnerability management, endpoint management review, threat detection review). Every organization the template applies to then gets a period-correct evidence artifact generated automatically for that deliverable, instead of a technician needing to run and attach a report by hand each period.
+
 <Aside type="note" title="Tickets only when Service Management is on">
   The daily sweep records every occurrence and reminder regardless, but only opens tickets when the organization's Service Management is on. If an owner or ticket category can no longer be used, the ticket is opened without it rather than stalling the sweep.
 </Aside>

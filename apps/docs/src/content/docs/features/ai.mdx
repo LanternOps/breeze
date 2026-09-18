@@ -396,10 +396,10 @@ Alerts are delivered to active users with the `billing:manage` permission, wheth
 
 The threshold ladder is configured in two places:
 
-- **Organisation**: **Settings → AI Usage** on the org's own budget configuration.
+- **Organisation**: **Org settings → AI** (v0.114.0+; previously on the AI Usage page). The **AI Usage** page itself is now usage-only, and shows a read-only **Effective budget** panel with each field's value and where it came from (Set by partner, Set by organization, or Default).
 - **Partner**: the **AI Budgets** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
 
-A partner-set value locks the field on the organisation page, so the org can see it but can't override it.
+A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets tab.
 
 Either field takes two kinds of input: leave it empty to inherit (the org inherits the partner value, or the 50/80/95 default when the partner sets nothing), or type an explicit ladder of up to five whole percentages, such as `60, 90`. Turning pre-cap warnings off entirely requires storing an empty list, which the UI cannot produce; do that through `PUT /ai/budget` with `"alertThresholdPercents": []`. The 100% cap-reached alert still fires regardless.
 
