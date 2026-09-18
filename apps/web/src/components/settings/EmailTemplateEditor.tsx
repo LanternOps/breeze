@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  canonicalizeHrefForSchemeCheck,
   emailTemplateFieldDefaults,
   emailTemplateHasCta,
   emailTemplateLabel,
+  isBlankEmailTemplateHtml,
   renderTemplate,
   varsForEmailTemplate,
   type EmailTemplateId,
@@ -57,17 +59,14 @@ const PREVIEW_DISCARD_TAGS = new Set([
 ]);
 
 function isSafePreviewHref(href: string): boolean {
-  const trimmed = href.replace(/[\x00-\x20]/g, '');
+  const trimmed = canonicalizeHrefForSchemeCheck(href);
   if (trimmed.startsWith('//')) return false;
   const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
   if (!scheme) return true;
   return scheme.toLowerCase() === 'http' || scheme.toLowerCase() === 'https';
 }
 
-function isBlankHtml(html: string): boolean {
-  const trimmed = html.trim();
-  return trimmed === '' || trimmed === '<p></p>' || trimmed === '<p><br></p>';
-}
+
 
 function shownFields(templateId: EmailTemplateId, stored: EmailTemplateOverride | undefined) {
   const defaults = emailTemplateFieldDefaults(templateId);
@@ -75,7 +74,7 @@ function shownFields(templateId: EmailTemplateId, stored: EmailTemplateOverride 
     if (value == null) return fallback;
     const trimmed = value.trim();
     if (!trimmed) return fallback;
-    if (html && isBlankHtml(trimmed)) return fallback;
+    if (html && isBlankEmailTemplateHtml(trimmed)) return fallback;
     return value;
   };
   return {
@@ -95,7 +94,7 @@ function storedFromForm(
   const nullIfDefault = (value: string, fallback: string, html = false) => {
     const trimmed = value.trim();
     if (!trimmed) return null;
-    if (html && isBlankHtml(trimmed)) return null;
+    if (html && isBlankEmailTemplateHtml(trimmed)) return null;
     if (trimmed === fallback.trim()) return null;
     return value;
   };

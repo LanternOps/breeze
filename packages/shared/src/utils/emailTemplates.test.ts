@@ -5,6 +5,7 @@ import {
   emailTemplateLabel,
   emailTemplateHasCta,
   emailTemplateFieldDefaults,
+  isBlankEmailTemplateHtml,
 } from './emailTemplates';
 
 describe('email template catalog', () => {
@@ -165,6 +166,15 @@ describe('emailTemplateFieldDefaults', () => {
   it('has no button label for templates without a CTA', () => {
     expect(emailTemplateFieldDefaults('ticket_autoresponse').buttonLabel).toBe('');
     expect(emailTemplateFieldDefaults('ticket_comment_notification').buttonLabel).toBe('View ticket');
+  });
+
+  it('treats empty TipTap and sanitize-html bodies as blank', () => {
+    expect(isBlankEmailTemplateHtml('')).toBe(true);
+    expect(isBlankEmailTemplateHtml('   ')).toBe(true);
+    expect(isBlankEmailTemplateHtml('<p></p>')).toBe(true);
+    expect(isBlankEmailTemplateHtml('<p><br></p>')).toBe(true);
+    expect(isBlankEmailTemplateHtml('<p><br /></p>')).toBe(true);
+    expect(isBlankEmailTemplateHtml('<p>Hi</p>')).toBe(false);
   });
 
   it('invoice default copy matches the customer invoice email', () => {

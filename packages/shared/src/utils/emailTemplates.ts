@@ -190,3 +190,10 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 export function emailTemplateFieldDefaults(id: EmailTemplateId): EmailTemplateFieldDefaults {
   return FIELD_DEFAULTS_BY_ID[id];
 }
+
+/** Empty TipTap / sanitize-html bodies that must send as catalog default, not a blank letter. */
+export function isBlankEmailTemplateHtml(html: string): boolean {
+  const trimmed = html.trim();
+  if (!trimmed) return true;
+  return /^<p>(?:\s|<br\s*\/?>)*<\/p>$/i.test(trimmed);
+}
