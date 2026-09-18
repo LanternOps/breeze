@@ -924,6 +924,101 @@ describe("QuickbooksMappingWorkbench auto-sync after a decision", () => {
     expect(select.selectedOptions[0]!.textContent).toBe("Acme Corp");
   });
 
+  it("labels the picker with the item name (not the QBO Id) after Create new on the Items tab", async () => {
+    const created = {
+      breezeEntityType: "catalog_item",
+      breezeEntityId: ITEM_ID,
+      remoteEntityType: "Item",
+      remoteEntityId: "345",
+      linkStatus: "confirmed",
+      syncStatus: "synced",
+      lastSyncedAt: "2026-09-06T00:00:00Z",
+      lastError: null,
+    };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // income accounts
+      .mockResolvedValueOnce(jsonResponse({ data: [itemProposal] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: { ...created, remoteEntityId: null, linkStatus: "create_new", syncStatus: "pending" },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: created }));
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ITEM_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-create-${ITEM_ID}`));
+
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-status-${ITEM_ID}`)).toHaveTextContent(
+        "In QuickBooks",
+      ),
+    );
+    const select = screen.getByTestId(`quickbooks-mapping-remote-${ITEM_ID}`) as HTMLSelectElement;
+    expect(select.value).toBe("345");
+    expect(select.selectedOptions[0]!.textContent).toBe("Monthly Support");
+  });
+
+  it("does NOT relabel with the Breeze name when a create_new row is later re-linked to a different existing customer", async () => {
+    // A row that already went through "Create new" (proposedRemoteId set from
+    // that create) is then manually re-pointed at a DIFFERENT, pre-existing
+    // QBO record via search + confirm. The id changes, but this is not a
+    // fresh create — the picker must not borrow the Breeze org name for a
+    // record it did not name.
+    const createdRow = {
+      ...ambiguousOrgProposal,
+      linkStatus: "create_new",
+      proposedRemoteId: "231",
+      proposedRemoteName: "Acme Corp",
+      confidence: "existing_link",
+    };
+    const relinked = {
+      breezeEntityType: "org",
+      breezeEntityId: ORG_ID,
+      remoteEntityType: "Customer",
+      remoteEntityId: "qb-77",
+      linkStatus: "confirmed",
+      syncStatus: "pending",
+      lastSyncedAt: null,
+      lastError: null,
+    };
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/accounting/quickbooks/remote-candidates"))
+        return jsonResponse({ data: [{ id: "qb-77", displayName: "Acme Corporation" }] });
+      if (u.includes("/accounting/quickbooks/mappings") && init?.method === "PUT")
+        return jsonResponse({ data: relinked });
+      if (u.includes("/accounting/quickbooks/mappings"))
+        return jsonResponse({ data: [createdRow] });
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+
+    fireEvent.change(screen.getByTestId(`quickbooks-mapping-search-${ORG_ID}`), {
+      target: { value: "acme" },
+    });
+    const select = screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`) as HTMLSelectElement;
+    await waitFor(() => expect(select).toHaveTextContent("Acme Corporation"));
+    fireEvent.change(select, { target: { value: "qb-77" } });
+
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
+
+    await waitFor(() => expect(select.value).toBe("qb-77"));
+    // Must show the searched candidate's own name ("Acme Corporation") or, at
+    // worst, fall back to the raw id — NEVER the Breeze org's own display
+    // name ("Acme Corp"), which belongs to the row, not this remote record.
+    expect(select.selectedOptions[0]!.textContent).not.toBe("Acme Corp");
+  });
+
   it("does NOT push to QuickBooks after an Unlink decision", async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
