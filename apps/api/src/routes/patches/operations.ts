@@ -196,6 +196,10 @@ operationsRoutes.post(
       return c.json({ error: 'Patch not found' }, 404);
     }
 
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const isAccessibleDevice = (device: { orgId: string; siteId: string | null }) =>
+      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions);
+
     let candidateDevices: Array<{ id: string; orgId: string; siteId: string | null }> = [];
     let missingDeviceIds: string[] = [];
     let notInstalledDeviceIds: string[] = [];
@@ -222,11 +226,15 @@ operationsRoutes.post(
 
       const foundIds = new Set(requestedDevices.map((device) => device.id));
       missingDeviceIds = data.deviceIds.filter((deviceId) => !foundIds.has(deviceId));
+      // Access is decided before install state is revealed: a device the
+      // caller cannot reach is reported as inaccessible whether or not it has
+      // the patch, so the response never discloses per-device install status
+      // for devices outside the caller's scope.
       notInstalledDeviceIds = requestedDevices
-        .filter((device) => device.observationId === null)
+        .filter((device) => device.observationId === null && isAccessibleDevice(device))
         .map((device) => device.id);
       candidateDevices = requestedDevices
-        .filter((device) => device.observationId !== null)
+        .filter((device) => device.observationId !== null || !isAccessibleDevice(device))
         .map(({ id: deviceId, orgId, siteId }) => ({ id: deviceId, orgId, siteId }));
     } else {
       candidateDevices = await db
@@ -245,12 +253,9 @@ operationsRoutes.post(
         );
     }
 
-    const permissions = c.get('permissions') as UserPermissions | undefined;
-    const accessibleDevices = candidateDevices.filter((device) =>
-      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions)
-    );
+    const accessibleDevices = candidateDevices.filter(isAccessibleDevice);
     const inaccessibleDeviceIds = candidateDevices
-      .filter((device) => !auth.canAccessOrg(device.orgId) || !canAccessDeviceSite(device, permissions))
+      .filter((device) => !isAccessibleDevice(device))
       .map((device) => device.id);
 
     if (accessibleDevices.length === 0) {

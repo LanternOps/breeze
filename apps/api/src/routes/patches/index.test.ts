@@ -1306,7 +1306,11 @@ describe('patch routes', () => {
       // DEVICE_C exists and is accessible but has no `installed` observation of
       // this patch — it must be skipped, not sent a rollback for a patch it
       // never reported.
-      { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: null }
+      { id: DEVICE_C, orgId: ACCESSIBLE_ORG_ID, siteId: null, observationId: null },
+      // DEVICE_B is outside the caller's org and also lacks the patch: it must
+      // be reported as inaccessible, never as not-installed (no install-state
+      // disclosure for devices the caller cannot reach).
+      { id: DEVICE_B, orgId: BLOCKED_ORG_ID, siteId: null, observationId: null }
     ]);
     const observationLeftJoin = vi.fn().mockReturnValue({ where: observationWhere });
     // The direct `where` member keeps this boundary test runnable against the
@@ -1330,7 +1334,7 @@ describe('patch routes', () => {
       headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
       body: JSON.stringify({
         scheduleType: 'immediate',
-        deviceIds: [DEVICE_A, DEVICE_C, DEVICE_D]
+        deviceIds: [DEVICE_A, DEVICE_B, DEVICE_C, DEVICE_D]
       })
     });
 
@@ -1345,6 +1349,7 @@ describe('patch routes', () => {
     expect(body.deviceCount).toBe(1);
     expect(body.queuedCommandIds).toEqual(['cmd-rollback-bound']);
     expect(body.skipped.notInstalledDeviceIds).toEqual([DEVICE_C]);
+    expect(body.skipped.inaccessibleDeviceIds).toEqual([DEVICE_B]);
     expect(body.skipped.missingDeviceIds).toEqual([DEVICE_D]);
     expect(queueCommandForExecution).toHaveBeenCalledTimes(1);
     expect(queueCommandForExecution).toHaveBeenCalledWith(
