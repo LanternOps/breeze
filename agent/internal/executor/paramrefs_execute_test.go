@@ -102,6 +102,26 @@ func TestExecuteBashParameterValuesSurviveIntact(t *testing.T) {
 			want:   "* a b",
 		},
 		{
+			// An unquoted expansion splits and globs its result, so the default
+			// word has to carry the value as one quoted word.
+			name:   `unquoted default-value expansion is one word, not split or globbed`,
+			script: `printf '%s\n' ${u:-{{p}}}`,
+			params: map[string]string{"p": "* a b"},
+			want:   "* a b",
+		},
+		{
+			name:   `unquoted alternate-value expansion is one word, not split or globbed`,
+			script: `u=1; printf '%s\n' ${u:+{{p}}}`,
+			params: map[string]string{"p": "* a b"},
+			want:   "* a b",
+		},
+		{
+			name:   `double-quoted default-value expansion keeps the value intact`,
+			script: `printf '%s\n' "${u:-{{p}}}"`,
+			params: map[string]string{"p": "* a b"},
+			want:   "* a b",
+		},
+		{
 			name:   "heredoc body",
 			script: "cat <<EOF\nv={{p}}\nEOF\n",
 			params: map[string]string{"p": "$(id) & echo no"},
