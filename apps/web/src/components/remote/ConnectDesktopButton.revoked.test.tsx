@@ -84,4 +84,56 @@ describe('ConnectDesktopButton — server-revoked session', () => {
       expect(link).toHaveAttribute('href', '/auth/mfa/setup');
     }, { timeout: 3000 });
   });
+
+  it('falls back to the generic message for an unrecognized revocation reason', async () => {
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      desktopAccess: null,
+      hasRemoteAccessLauncher: false,
+      remoteAccessLaunchSkipReason: 'no_provider_configured',
+    }));
+    fetchMock.mockResolvedValueOnce(jsonRes({ id: 'sess-revoked-unknown' }));
+    fetchMock.mockResolvedValueOnce(jsonRes({ code: 'code-unk' }));
+    // A reason the client doesn't recognize yet (e.g. a newer server build) —
+    // must still show something rather than nothing (#6120's whole point).
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      status: 'disconnected',
+      errorMessage: 'revoked:some_future_reason',
+    }));
+
+    render(<ConnectDesktopButton deviceId="dev-revoked-unknown" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Session revoked')).toBeInTheDocument();
+      expect(screen.getByText(/ended by a security policy/i)).toBeInTheDocument();
+    }, { timeout: 3000 });
+
+    // No MFA CTA for a non-MFA reason.
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('does not treat an ordinary disconnected session as revoked (regression guard)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      desktopAccess: null,
+      hasRemoteAccessLauncher: false,
+      remoteAccessLaunchSkipReason: 'no_provider_configured',
+    }));
+    fetchMock.mockResolvedValueOnce(jsonRes({ id: 'sess-ordinary' }));
+    fetchMock.mockResolvedValueOnce(jsonRes({ code: 'code-ord' }));
+    // A genuine disconnect with no revocation errorMessage must still take the
+    // old "viewer connected" fallthrough back to idle, not the revoked card.
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      status: 'disconnected',
+      errorMessage: null,
+    }));
+
+    render(<ConnectDesktopButton deviceId="dev-ordinary" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /connect desktop/i })).not.toBeDisabled();
+    }, { timeout: 3000 });
+
+    expect(screen.queryByText('Session revoked')).not.toBeInTheDocument();
+  });
 });
