@@ -84,7 +84,8 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Test',
-      html: '<p>Hello</p>'
+      html: '<p>Hello</p>',
+      purpose: 'ops.alert'
     });
 
     expect(resendSendMock).toHaveBeenCalledTimes(1);
@@ -108,7 +109,8 @@ describe('email service', () => {
       to: ['user@example.com'],
       subject: 'SMTP Test',
       html: '<p>Hello SMTP</p>',
-      replyTo: 'help@example.com'
+      replyTo: 'help@example.com',
+      purpose: 'ops.alert'
     });
 
     expect(createTransportMock).toHaveBeenCalledTimes(1);
@@ -147,7 +149,8 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Auto SMTP',
-      html: '<p>Auto SMTP</p>'
+      html: '<p>Auto SMTP</p>',
+      purpose: 'ops.alert'
     });
 
     expect(createTransportMock).toHaveBeenCalledTimes(1);
@@ -191,7 +194,8 @@ describe('email service', () => {
       subject: 'Mailgun Test',
       html: '<p>Hello Mailgun</p>',
       text: 'Hello Mailgun',
-      replyTo: ['support@example.com', 'help@example.com']
+      replyTo: ['support@example.com', 'help@example.com'],
+      purpose: 'ops.alert'
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -276,7 +280,8 @@ describe('email service', () => {
     await service!.sendEmail({
       to: 'user@example.com',
       subject: 'Auto Mailgun',
-      html: '<p>Auto Mailgun</p>'
+      html: '<p>Auto Mailgun</p>',
+      purpose: 'ops.alert'
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -399,6 +404,7 @@ describe('email transport deadlines (#3905)', () => {
       subject: 'Proposal',
       html: '<p>hi</p>',
       attachments: [{ filename: 'q.pdf', content: Buffer.from('pdf'), contentType: 'application/pdf' }],
+      purpose: 'ops.alert',
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -410,7 +416,7 @@ describe('email transport deadlines (#3905)', () => {
     mailgunEnv();
     const { getEmailService } = await import('./email');
     const service = getEmailService();
-    await service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>' });
+    await service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>', purpose: 'ops.alert' });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
@@ -452,7 +458,7 @@ describe('email transport deadlines (#3905)', () => {
     const service = getEmailService();
 
     await expect(
-      service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>' }),
+      service!.sendEmail({ to: 'user@example.com', subject: 'Proposal', html: '<p>hi</p>', purpose: 'ops.alert' }),
     ).rejects.toThrow(/Mailgun request timed out after 1000ms/);
   });
 });

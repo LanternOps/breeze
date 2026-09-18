@@ -83,5 +83,10 @@ export type PartnerLaneMailPurpose = {
 export type PlatformMailPurpose = Exclude<MailPurpose, PartnerLaneMailPurpose>;
 
 export function mailPurposePolicy(purpose: MailPurpose): MailPurposePolicy {
-  return MAIL_PURPOSES[purpose];
+  // The `MailPurpose` parameter type is what makes an unclassified send a
+  // compile error (G5) — but TypeScript is erased at runtime, so a caller that
+  // bypasses the type (an `any`, a stale build, a deliberate `@ts-expect-error`
+  // in a test) can still reach this with an unrecognized value. Fail open to
+  // the platform lane rather than throwing and taking outbound mail down.
+  return MAIL_PURPOSES[purpose] ?? { lane: 'platform' };
 }

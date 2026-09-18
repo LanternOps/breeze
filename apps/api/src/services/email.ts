@@ -7,7 +7,7 @@ import {
   renderButton,
   renderLayout,
 } from './emailLayout';
-import type { MailPurpose } from './emailDomains/mailPurposes';
+import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
 import { resolveSender } from './emailDomains/senderResolution';
 
 export interface EmailAttachment {
@@ -41,18 +41,19 @@ export interface RawEmailMessage extends SendEmailBase {
 }
 
 /**
- * TRANSITIONAL (W01 Task 3 → Task 8). `purpose` is optional and the raw `from`
- * is still accepted so the 27 call sites can migrate in reviewable cohorts
- * without the repo going red. Task 8 removes `from` and makes `purpose`
- * required through the discriminated union in the plan index, which is what
- * makes an unclassified send a compile error (spec G5).
+ * Every send declares WHAT IT IS; `services/emailDomains/mailPurposes.ts`
+ * decides who it is from. There is no raw `from`: an unclassified send does
+ * not compile (spec G5), and a spoofed envelope address is unrepresentable.
+ *
+ * A partner-lane purpose MUST state its partner — `null` is allowed and means
+ * "the platform sender", for call sites that cannot always resolve one. It has
+ * to come from a row the call site already read or from the verified auth
+ * context, never from request input (spec §8.1).
  */
-export interface SendEmailParams extends SendEmailBase {
-  from?: string;
-  purpose?: MailPurpose;
-  partnerId?: string | null;
-  partnerName?: string | null;
-}
+export type SendEmailParams = SendEmailBase & (
+  | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never }
+  | { purpose: PartnerLaneMailPurpose; partnerId: string | null; partnerName?: string | null }
+);
 
 export interface InvoiceEmailParams {
   invoiceNumber: string;
@@ -268,35 +269,15 @@ export class EmailService {
     });
   }
 
-  /**
-   * The default sender with a custom display name — keeps the envelope address
-   * (so SPF/DKIM alignment is untouched) while showing e.g.
-   * `"Acme MSP via Breeze" <no-reply@2breeze.app>` in the customer's inbox.
-   * The display name is stripped of header-breaking characters; falls back to
-   * the plain default sender when nothing usable survives.
-   */
-  fromWithDisplayName(displayName: string): string {
-    const match = this.defaultFrom.match(/<([^<>\s]+@[^<>\s]+)>/);
-    const address = (match?.[1] ?? this.defaultFrom).trim();
-    const safe = displayName.replace(/[\r\n"<>\\]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!safe || !address.includes('@')) return this.defaultFrom;
-    return `"${safe}" <${address}>`;
-  }
-
   async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = params;
+    const { to, cc, subject, html, text, replyTo, headers, attachments } = params;
 
-    // A migrated call site names a purpose and the registry decides the
-    // sender; an unmigrated one still passes `from` and is untouched. Both
-    // land on exactly today's address — see platformFallbackFrom.
-    const resolved = params.purpose
-      ? await resolveSender({
-        purpose: params.purpose,
-        partnerId: params.partnerId ?? null,
-        partnerName: params.partnerName ?? null,
-        defaultFrom: this.defaultFrom,
-      })
-      : null;
+    const resolved = await resolveSender({
+      purpose: params.purpose,
+      partnerId: params.partnerId ?? null,
+      partnerName: params.partnerName ?? null,
+      defaultFrom: this.defaultFrom,
+    });
 
     await this.deliverRaw({
       to,
@@ -307,7 +288,7 @@ export class EmailService {
       replyTo,
       headers,
       attachments,
-      from: from ?? resolved?.from ?? this.defaultFrom,
+      from: resolved.from,
     });
   }
 

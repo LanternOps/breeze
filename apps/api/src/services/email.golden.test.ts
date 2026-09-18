@@ -244,3 +244,36 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     ]);
   });
 });
+
+describe('the sender contract is compile-enforced (spec G5)', () => {
+  beforeEach(() => {
+    process.env.EMAIL_PROVIDER = 'resend';
+    process.env.RESEND_API_KEY = 'rk_test';
+    process.env.EMAIL_FROM = DEFAULT_FROM;
+  });
+
+  it('rejects an unclassified send and a raw from at the type level', async () => {
+    const svc = await service();
+    // @ts-expect-error — no `purpose`: every send must declare what it is.
+    await expect(svc.sendEmail({ to: 'a@b.test', subject: 's', html: '<p>h</p>' })).resolves.toBeUndefined();
+    await expect(svc.sendEmail({
+      to: 'a@b.test', subject: 's', html: '<p>h</p>', purpose: 'ops.alert',
+      // @ts-expect-error — the raw `from` is gone; the registry decides it.
+      from: 'spoof@evil.test',
+    })).resolves.toBeUndefined();
+    // A platform purpose cannot smuggle a partner in.
+    // @ts-expect-error — partnerId is `never` on the platform branch.
+    await expect(svc.sendEmail({
+      to: 'a@b.test', subject: 's', html: '<p>h</p>', purpose: 'ops.alert',
+      partnerId: PARTNER_ID,
+    })).resolves.toBeUndefined();
+    // A partner purpose MUST state its partner, even when that is null.
+    // @ts-expect-error — missing required `partnerId`.
+    await expect(svc.sendEmail({ to: 'a@b.test', subject: 's', html: '<p>h</p>', purpose: 'quote.sent' })).resolves.toBeUndefined();
+  });
+
+  it('EmailService no longer exposes fromWithDisplayName', async () => {
+    const svc = await service();
+    expect((svc as unknown as Record<string, unknown>).fromWithDisplayName).toBeUndefined();
+  });
+});
