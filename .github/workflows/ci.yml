@@ -168,6 +168,13 @@ jobs:
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
 
+      # Also runs in `security-audit`, which a docs-only PR skips — and the
+      # guard's inputs ARE docs. #6187 (docs-only) landed example addresses the
+      # guard rejects, unchecked, and every code PR after it failed
+      # Security Audit on main. Runs before the astro check so a hit fails fast.
+      - name: Guard customer PII in docs
+        run: bash scripts/security/check-customer-pii.sh
+
       - name: Check documentation
         run: pnpm --filter @breeze/docs check
 

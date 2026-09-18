@@ -642,3 +642,16 @@ test('classifier: a missing or empty QEMU gate list fails closed to agent=true',
   const empty = spawnSync('bash', [copy], { encoding: 'utf8', input: 'agent/internal/snmppoll/poller.go\n' });
   assert.match(empty.stdout, /^agent=true$/m, 'empty gate list must fail closed');
 });
+
+test('docs-check runs the customer-PII guard: it scans docs, so a docs-only PR must not bypass it', () => {
+  // 2026-09-18: #6187 (docs-only) landed example addresses that
+  // scripts/security/check-customer-pii.sh rejects. The guard ran only in
+  // security-audit, which a docs-only PR skips, so main went red for every code
+  // PR that followed. Every job that a docs-only PR skips must not be the sole
+  // home of a check whose inputs are docs.
+  const docsCheck = job('docs-check');
+  assert.match(docsCheck, /run: bash scripts\/security\/check-customer-pii\.sh$/m);
+  // It must run BEFORE the expensive astro check/build so a hit fails fast.
+  assert.ok(docsCheck.indexOf('check-customer-pii.sh') < docsCheck.indexOf('pnpm --filter @breeze/docs check'));
+});
+
