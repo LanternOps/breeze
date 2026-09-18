@@ -22,7 +22,17 @@ export function getEmailDomainProvider(): EmailDomainProvider | null {
       // No key => degrade to "unsupported" rather than constructing a Resend
       // client, whose constructor throws on a missing key. config/validate.ts
       // already refuses this combination in production.
-      cached = config.resendApiKey ? createResendDomainProvider() : null;
+      if (config.resendApiKey) {
+        cached = createResendDomainProvider();
+      } else {
+        // Warn once (the result is cached): silently returning null is
+        // indistinguishable from "the feature is intentionally off", which is
+        // exactly the misconfiguration the operator needs told about.
+        console.warn(
+          '[emailDomains] EMAIL_DOMAINS_PROVIDER=resend but EMAIL_DOMAINS_RESEND_API_KEY is not set — custom sending domains stay DISABLED. Set the key (full_access; a sending-only key cannot manage domains) or unset EMAIL_DOMAINS_PROVIDER.'
+        );
+        cached = null;
+      }
       break;
     case 'static':
       cached = createStaticDomainProvider();
