@@ -22,7 +22,10 @@ vi.mock('../db/schema', () => ({
     helperTokenHash: 'devices.helperTokenHash',
     previousHelperTokenHash: 'devices.previousHelperTokenHash',
     previousHelperTokenExpiresAt: 'devices.previousHelperTokenExpiresAt',
+    pendingHelperTokenHash: 'devices.pendingHelperTokenHash',
+    pendingTokenExpiresAt: 'devices.pendingTokenExpiresAt',
     status: 'devices.status',
+    agentTokenSuspendedAt: 'devices.agentTokenSuspendedAt',
   },
   organizations: {
     id: 'organizations.id',
@@ -40,9 +43,14 @@ vi.mock('./agentAuth', () => ({
   matchAgentTokenHash: vi.fn(() => true),
 }));
 
+vi.mock('../services/tenantStatus', () => ({
+  getAgentTenantState: vi.fn(async () => 'active'),
+}));
+
 import { helperAuth } from './helperAuth';
 import { db, withDbAccessContext } from '../db';
 import { matchAgentTokenHash } from './agentAuth';
+import { getAgentTenantState } from '../services/tenantStatus';
 
 function mockDeviceRow(overrides: Record<string, unknown> = {}) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -62,6 +70,7 @@ function mockDeviceRow(overrides: Record<string, unknown> = {}) {
             previousHelperTokenHash: null,
             previousHelperTokenExpiresAt: null,
             status: 'online',
+            agentTokenSuspendedAt: null,
             partnerId: 'partner-1',
             ...overrides,
           }]),
@@ -91,6 +100,7 @@ describe('helperAuth middleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(matchAgentTokenHash).mockReturnValue(true as never);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
   });
 
   it('rejects a missing bearer token', async () => {
@@ -162,5 +172,43 @@ describe('helperAuth middleware', () => {
 
     const res = await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
     expect(res.status).toBe(403);
+  });
+  it('rejects a suspended agent token with an opaque 401', async () => {
+    mockDeviceRow({ agentTokenSuspendedAt: new Date('2026-09-01T00:00:00Z') });
+
+    const res = await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid agent credentials' });
+  });
+
+  it('rejects a helper token whose tenant is suspended or severed', async () => {
+    mockDeviceRow();
+    vi.mocked(getAgentTenantState).mockResolvedValue(null);
+
+    const res = await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid agent credentials' });
+  });
+
+  it('rejects a helper token whose tenant is draining (offboarding)', async () => {
+    mockDeviceRow();
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+
+    const res = await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
+    expect(res.status).toBe(401);
+  });
+
+  it('never grants the partner-axis WRITE branch: accessiblePartnerIds is empty', async () => {
+    mockDeviceRow();
+
+    const res = await app.request('/probe', { headers: { Authorization: 'Bearer brz_' + 'a'.repeat(64) } });
+    expect(res.status).toBe(200);
+    const ctx = vi.mocked(withDbAccessContext).mock.calls[0]?.[0] as {
+      accessiblePartnerIds: string[];
+      currentPartnerId: string | null;
+    };
+    expect(ctx.accessiblePartnerIds).toEqual([]);
+    // read-only partner axis is unchanged
+    expect(ctx.currentPartnerId).toBe('partner-1');
   });
 });
