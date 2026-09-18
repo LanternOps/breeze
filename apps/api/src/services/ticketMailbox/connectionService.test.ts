@@ -413,16 +413,31 @@ describe('ticket mailbox connection service', () => {
       lastPolledAt: fullRow.lastPolledAt,
       lastMessageAt: fullRow.lastMessageAt,
     };
-    dbMocks.selectResults.push([publicRow]);
+    dbMocks.selectResults.push([{ ...publicRow, lastError: null }]);
 
     const result = await listMailboxConnections(PARTNER_ID);
 
-    expect(result).toEqual([publicRow]);
+    expect(result).toEqual([{ ...publicRow, verificationError: null }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt',
+      'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
-      'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt',
+      'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
+    ]);
+  });
+
+  it('exposes lastError only when it is our sanitized verification reason, never poller error text', async () => {
+    const base = {
+      mailboxAddress: 'support@example.com', displayName: null, lastPolledAt: null, lastMessageAt: null,
+    };
+    dbMocks.selectResults.push([
+      { ...base, id: 'a', status: 'error', lastError: 'Mailbox verification failed: Graph 403 (ErrorAccessDenied)' },
+      { ...base, id: 'b', status: 'error', lastError: 'Graph GET https://graph.microsoft.com/x -> 500: {"body":"leak"}' },
+    ]);
+    const result = await listMailboxConnections(PARTNER_ID);
+    expect(result.map((r) => r.verificationError)).toEqual([
+      'Mailbox verification failed: Graph 403 (ErrorAccessDenied)',
+      null,
     ]);
   });
 
@@ -501,5 +516,23 @@ describe('probeMailbox', () => {
     const r = await probeMailbox(TENANT_ID, 'support@a.com');
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/403/);
+  });
+
+  it('exposes a sanitized reason: status + Graph error.code, never the message body', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: { code: 'ErrorAccessDenied', message: 'Access is denied for tenant secret-stuff' } }),
+    });
+    const r = await probeMailbox(TENANT_ID, 'support@a.com');
+    expect(r.reason).toBe('Graph 403 (ErrorAccessDenied)');
+    expect(JSON.stringify(r)).not.toContain('secret-stuff');
+  });
+
+  it('reason is status-only when the body is not JSON or the code is not a plain identifier', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => { throw new Error('bad json'); } });
+    expect((await probeMailbox(TENANT_ID, 'a@a.com')).reason).toBe('Graph 404');
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ error: { code: 'has spaces & <script>' } }) });
+    expect((await probeMailbox(TENANT_ID, 'a@a.com')).reason).toBe('Graph 404');
   });
 });

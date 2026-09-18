@@ -622,6 +622,35 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('Graph leaked body');
   });
 
+  it('carries the sanitized probe reason into lastError and the audit details', async () => {
+    mocks.probeMailbox.mockResolvedValue({ ok: false, error: 'Graph returned 403', reason: 'Graph 403 (ErrorAccessDenied)' });
+    await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+    expect(mocks.markPendingConsentFailed).toHaveBeenCalledWith(
+      CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, 'Mailbox verification failed: Graph 403 (ErrorAccessDenied)',
+    );
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ outcome: 'probe_failed', probeReason: 'Graph 403 (ErrorAccessDenied)' }),
+    }));
+  });
+
+  it('retest returns and stores the sanitized probe reason', async () => {
+    mocks.setConnectedMailboxStatus.mockResolvedValue(true);
+    mocks.getMailboxConnection.mockResolvedValueOnce(connection({ status: 'connected' }));
+    mocks.probeMailbox.mockResolvedValueOnce({ ok: false, error: 'Graph returned 404', reason: 'Graph 404 (ErrorInvalidUser)' });
+    const res = await app.request(`/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
+    await expect(res.json()).resolves.toEqual({
+      ok: false, error: 'Mailbox verification failed: Graph 404 (ErrorInvalidUser)',
+    });
+    expect(mocks.setConnectedMailboxStatus).toHaveBeenCalledWith(
+      expect.anything(), 'error', 'Mailbox verification failed: Graph 404 (ErrorInvalidUser)',
+    );
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ probeReason: 'Graph 404 (ErrorInvalidUser)' }),
+    }));
+  });
+
   it('audits a cross-partner ownership conflict without exposing the service error', async () => {
     mocks.bindVerifiedTenant.mockRejectedValue(new Error(`Mailbox tenant is already owned by another partner: ${OTHER_PARTNER_ID}`));
     const response = await app.request('/callback?state=identity-state&code=authorization-code', {

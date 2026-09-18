@@ -229,6 +229,7 @@ function auditDetails(
   connection: Pick<MailboxConnection, 'mailboxAddress'> | null,
   outcome: string,
   verifiedTenantId?: string,
+  probeReason?: string,
 ): Record<string, unknown> {
   return {
     partnerId: session.partnerId,
@@ -236,8 +237,13 @@ function auditDetails(
     ...(connection ? { mailboxAddress: connection.mailboxAddress } : {}),
     ...(verifiedTenantId ? { verifiedTenantId } : {}),
     outcome,
+    ...(probeReason ? { probeReason } : {}),
   };
 }
+
+const VERIFICATION_FAILED = 'Mailbox verification failed';
+const failureMessage = (reason?: string): string =>
+  reason ? `${VERIFICATION_FAILED}: ${reason}` : VERIFICATION_FAILED;
 
 function writeCallbackAudit(
   c: Context,
@@ -261,12 +267,12 @@ async function loadCallbackConnection(session: ConsentSession): Promise<MailboxC
   return callbackDb(() => getMailboxConnection(session.connectionId, session.partnerId));
 }
 
-async function markCallbackFailed(session: ConsentSession): Promise<boolean> {
+async function markCallbackFailed(session: ConsentSession, reason?: string): Promise<boolean> {
   return callbackDb(() => markPendingConsentFailed(
     session.connectionId,
     session.partnerId,
     session.consentAttemptId,
-    'Mailbox verification failed',
+    failureMessage(reason),
   ));
 }
 
@@ -370,6 +376,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
     outcome: 'invalid_identity' | 'insufficient_role' | 'probe_failed' | 'ownership_conflict' | 'stale_attempt',
     redirect: 'error' | 'needs_policy' | 'stale' = 'error',
     verifiedTenantId?: string,
+    probeReason?: string,
   ): Promise<Response> => {
     try {
       connection ??= await loadCallbackConnection(session);
@@ -377,7 +384,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       captureException(error instanceof Error ? error : new Error('Mailbox connection lookup failed'), c);
     }
     try {
-      const changed = await markCallbackFailed(session);
+      const changed = await markCallbackFailed(session, probeReason);
       if (!changed) {
         outcome = 'stale_attempt';
         redirect = 'stale';
@@ -389,7 +396,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       c,
       session,
       'ticket_mailbox.verification_failed',
-      auditDetails(session, connection, outcome, verifiedTenantId),
+      auditDetails(session, connection, outcome, verifiedTenantId, probeReason),
     );
     // W01 settings consolidation (#6224): Email is now a top-level hash tab on
     // the standalone /settings/ticketing page, not an embedded sub-tab under
@@ -466,7 +473,13 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
     if (!hasMailboxConsentAdminRole(claims.wids)) return fail('insufficient_role');
 
     const probe = await probeMailbox(claims.tid, connection.mailboxAddress);
-    if (!probe.ok) return fail('probe_failed', 'needs_policy', claims.tid);
+    if (!probe.ok) {
+      console.warn('[ticketMailbox] mailbox probe failed during consent callback', {
+        connectionId: session.connectionId,
+        reason: probe.reason,
+      });
+      return fail('probe_failed', 'needs_policy', claims.tid, probe.reason);
+    }
 
     try {
       await callbackDb(() => bindVerifiedTenant(
@@ -528,7 +541,7 @@ mailboxRoutes.post(
         changed = await setConnectedMailboxStatus(
           snapshot,
           'error',
-          'Mailbox verification failed',
+          failureMessage(probe.reason),
         );
       } else {
         changed = await isMailboxConnectionSnapshotCurrent(snapshot, 'error');
@@ -537,6 +550,9 @@ mailboxRoutes.post(
       changed = await restoreVerifiedConnection(snapshot);
     } else {
       changed = await isMailboxConnectionSnapshotCurrent(snapshot, 'connected');
+    }
+    if (!probe.ok) {
+      console.warn('[ticketMailbox] mailbox retest probe failed', { connectionId: id, reason: probe.reason });
     }
     const outcome = changed ? (probe.ok ? 'verified' : 'probe_failed') : 'stale';
     writeRouteAudit(c, {
@@ -551,10 +567,11 @@ mailboxRoutes.post(
         connection,
         outcome,
         connection.tenantId,
+        probe.ok ? undefined : probe.reason,
       ),
     });
     if (!changed) return c.json({ error: 'Mailbox connection changed during retest' }, 409);
-    return c.json({ ok: probe.ok, ...(probe.ok ? {} : { error: 'Mailbox verification failed' }) });
+    return c.json({ ok: probe.ok, ...(probe.ok ? {} : { error: failureMessage(probe.reason) }) });
   },
 );
 
