@@ -121,3 +121,5 @@ Renaming tools; a `run_tool` proxy; MCP Sampling/Roots/Logging (deprecated); Ski
 ## Planning
 
 Per-wave implementation plans are written when the wave is next, because A-W01's measurements decide A-W04's shape and the `alwaysLoad` set. A-W01 and A-W02 plans are written first.
+
+**Plans (2026-09-17):** index at `docs/superpowers/plans/ai-mcp/2026-09-17-agent-tool-efficiency-and-mcp-modernization.md`. Written: A-W01, A-W02, A-W03, A-W06, B-W01. Deferred with reasons in the index: A-W04 (needs A-W01 numbers + quorum), A-W05 (after #6140 + hot list), B-W02…B-W06 (quorum, stacked).
