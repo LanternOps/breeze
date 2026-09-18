@@ -585,6 +585,55 @@ describe('user routes', () => {
         vi.useRealTimers();
         vi.unstubAllEnvs();
       });
+
+      it('reports not_required (never overdue) for a role-forced user when the kill switch is off (MFA_FORCE_FOR_PARTNER_ADMIN unset)', async () => {
+        // No vi.stubEnv here — mfaForcePartnerAdmin() defaults to false, which
+        // suppresses the ROLE axis entirely (mfaPolicy.ts: killSwitchOff).
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: OVERDUE, email: 'killswitch@example.com', name: 'Kill Switch User', status: 'active',
+            mfaEnabled: false, mfaEpoch: 1, mfaEnrollmentDeadline: null, mfaEnrollmentGraceGrantedAt: null,
+            roleId: 'role-1', roleName: 'Admin', roleForceMfa: true, orgAccess: 'all', orgIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'not_required', mfaEnrollmentDeadline: null });
+      });
+
+      it('org scope: reports overdue immediately for a role-forced, previously-enrolled user (mfa_epoch !== 1) with no persisted deadline', async () => {
+        // Closes the #5690 review gap: the org-scope branch (different select
+        // shape — siteIds/deviceGroupIds, orgId not partnerId) had no mfaStatus
+        // coverage at all, and mfa_epoch !== 1 (ever held a factor) must show
+        // overdue immediately rather than a preview window.
+        vi.stubEnv('MFA_FORCE_FOR_PARTNER_ADMIN', 'true');
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            scope: 'organization',
+            partnerId: null,
+            orgId: 'org-123',
+            user: { id: 'user-123', email: 'test@example.com' }
+          });
+          return next();
+        });
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockTenantList([{
+            id: OVERDUE, email: 'org-overdue@example.com', name: 'Org Overdue', status: 'active',
+            mfaEnabled: false, mfaEpoch: 3, mfaEnrollmentDeadline: null, mfaEnrollmentGraceGrantedAt: null,
+            roleId: 'role-1', roleName: 'Admin', roleForceMfa: true, siteIds: null, deviceGroupIds: null,
+          }]))
+          .mockReturnValueOnce(mockPasskeyProbe([]));
+
+        const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+        const body = await res.json();
+
+        expect(body.data[0]).toMatchObject({ mfaStatus: 'overdue', mfaEnrollmentDeadline: null });
+        expect(getScopeSecuritySettingsMock).toHaveBeenCalledWith({ scope: 'organization', orgId: 'org-123', partnerId: null });
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+      });
     });
   });
 

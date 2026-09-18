@@ -214,6 +214,20 @@ describe('previewMfaEnrollmentGrace', () => {
     expect(facts.deadline?.toISOString()).toBe(new Date('2026-11-15T00:00:00Z').toISOString());
   });
 
+  it('reports a not-yet-granted window as already expired when graceDays is 0 ("0 disables the window")', () => {
+    const facts = previewMfaEnrollmentGrace({
+      hasFactor: false,
+      mfaEpoch: 1,
+      deadline: null,
+      grantedAt: null,
+      graceDays: 0,
+      now,
+    });
+    // A real grant right now would set deadline = grantedAt (no window at
+    // all) — never "pending" for a graceDays=0 partner.
+    expect(facts.expired).toBe(true);
+  });
+
   it('never issues a DB call — the function signature takes no executor', () => {
     // Compile-time guarantee mostly, but assert the return shape has no
     // promise/thenable leaking through, confirming it's synchronous & pure.
@@ -222,7 +236,7 @@ describe('previewMfaEnrollmentGrace', () => {
       mfaEpoch: 1,
       deadline: null,
       grantedAt: null,
-      graceDays: 0,
+      graceDays: 5,
       now,
     });
     expect(result).not.toBeInstanceOf(Promise);

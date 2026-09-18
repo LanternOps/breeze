@@ -152,9 +152,14 @@ export function previewMfaEnrollmentGrace(input: MfaGracePreviewInput): MfaGrace
     return { hasFactor: false, deadline: effective, expired: now.getTime() >= effective.getTime() };
   }
 
-  // No grant persisted yet — preview only, not a real deadline.
+  // No grant persisted yet — preview only, not a real deadline. `graceDays` is
+  // legally 0 (resolveMfaGraceDays clamps only < 0, not === 0 — "0 disables
+  // the window" per its own JSDoc), in which case a real grant right now would
+  // set deadline = grantedAt immediately, i.e. already expired. Report that
+  // truthfully — otherwise a partner running graceDays=0 sees "pending" for a
+  // user real enforcement would gate this instant.
   const preview = new Date(now.getTime() + input.graceDays * 86_400_000);
-  return { hasFactor: false, deadline: preview, expired: false };
+  return { hasFactor: false, deadline: preview, expired: input.graceDays <= 0 };
 }
 
 type Executor = { execute: (q: ReturnType<typeof sql>) => Promise<unknown> };
