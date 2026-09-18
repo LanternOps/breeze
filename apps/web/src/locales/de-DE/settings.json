@@ -1621,7 +1621,8 @@
       "act": "Aktion",
       "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
       "actUnavailable": "Für diesen Agenten noch nicht verfügbar.",
-      "shadowUnavailableForKind": "Dieser Agent liest und schreibt nur Berichte — es gibt nichts zu beobachten."
+      "designerAct": "Ein",
+      "designerActConsequence": "Läuft nach Zeitplan oder auf Abruf und schreibt ein Fleet Design. Ändert nie ein Gerät."
     },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
@@ -3060,6 +3061,11 @@
       "searchPlaceholder": "Skripte durchsuchen…",
       "selectedCount_one": "{{count}} Skript autorisiert",
       "selectedCount_other": "{{count}} Skripte autorisiert"
+    },
+    "designerNote": {
+      "title": "Dieser Agent liest nur und schreibt Berichte",
+      "body": "Ein Fleet Designer führt nie etwas auf einem Gerät aus. „Ein“ bedeutet, dass er laufen und seine Designs an die von Ihnen gewählten Empfänger liefern darf.",
+      "ack": "Ich verstehe, dass dieser Agent unbeaufsichtigt läuft und Fleet Designs liefert."
     }
   },
   "apiKeyForm": {

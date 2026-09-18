@@ -166,3 +166,26 @@ export interface AiAgentRunFleetDesignDto {
   ruleCount: number;
   evidenceTruncated: boolean;
 }
+
+/**
+ * `GET /ai/fleet-design/designer` (#6214) — whether the org can run a Fleet
+ * Design right now, and if not, why and whether the caller can fix it with
+ * one click (`POST /ai/fleet-design/designer/enable`).
+ *
+ * - `missing`: no partner-wide designer agent exists (an org row alone can
+ *   never self-enable — `resolveEffectiveAgent` needs the partner baseline).
+ * - `disabled` / `off`: an agent resolves but its effective `enabled` is
+ *   false / its effective mode is `off`.
+ * - `kill_switch_off`: `BREEZE_AI_AGENTS_ENABLED` is off platform-wide;
+ *   nothing on a tenant can change that, so `canEnable` is always false.
+ */
+export type FleetDesignerSetupStatus = 'ready' | 'missing' | 'off' | 'disabled' | 'kill_switch_off';
+
+export interface FleetDesignerSetup {
+  status: FleetDesignerSetupStatus;
+  /** The partner baseline row's id when one resolves, else null. */
+  agentId: string | null;
+  /** Whether the enable endpoint would succeed for THIS caller — false for
+   *  an org-scoped token when the fix needs a partner-wide write. */
+  canEnable: boolean;
+}

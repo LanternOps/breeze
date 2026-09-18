@@ -1621,7 +1621,8 @@
       "act": "Azione",
       "actConsequence": "Esegue le operazioni consentite senza un clic. Nessun ripristino automatico.",
       "actUnavailable": "Non ancora disponibile per questo agente.",
-      "shadowUnavailableForKind": "Questo agente legge e scrive solo report — non c'è nulla da osservare in modalità ombra."
+      "designerAct": "Attivo",
+      "designerActConsequence": "Viene eseguito in base a una pianificazione o su richiesta e scrive un Fleet Design. Non modifica mai un dispositivo."
     },
     "allOrgs": "Tutte le organizzazioni",
     "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",
@@ -3060,6 +3061,11 @@
       "searchPlaceholder": "Cerca script…",
       "selectedCount_one": "{{count}} script autorizzato",
       "selectedCount_other": "{{count}} script autorizzati"
+    },
+    "designerNote": {
+      "title": "Questo agente legge e scrive soltanto report",
+      "body": "Un Fleet Designer non esegue mai nulla su un dispositivo. Attivo significa che può essere eseguito e consegnare i suoi design ai destinatari che scegli.",
+      "ack": "Capisco che questo agente viene eseguito senza supervisione e consegna Fleet Design."
     }
   },
   "apiKeyForm": {

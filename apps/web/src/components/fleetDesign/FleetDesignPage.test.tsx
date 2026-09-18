@@ -5,6 +5,16 @@ import FleetDesignPage from './FleetDesignPage';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) }) }));
 
+// usePermissions reads useAuthStore, which the auth mock above does not
+// provide — stub the hook itself, with a per-test switch for ai_agents:write.
+const canWriteAgentsMock = vi.fn(() => true);
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({
+    permissions: [],
+    can: (_resource: string, action: string) => (action === 'write' ? canWriteAgentsMock() : true),
+  }),
+}));
+
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: { organizations: Array<{ id: string; name: string }>; currentOrgId: string | null }) => unknown) =>
     selector({
@@ -22,8 +32,12 @@ const listAppliedMock = vi.fn();
 const startDesignRunMock = vi.fn();
 const rollbackMock = vi.fn();
 const fileAsDocumentMock = vi.fn();
+const getDesignerSetupMock = vi.fn();
+const enableDesignerMock = vi.fn();
 
 vi.mock('@/lib/api/fleetDesign', () => ({
+  getDesignerSetup: (...args: unknown[]) => getDesignerSetupMock(...args),
+  enableDesigner: (...args: unknown[]) => enableDesignerMock(...args),
   listDesigns: (...args: unknown[]) => listDesignsMock(...args),
   getDesign: (...args: unknown[]) => getDesignMock(...args),
   listApplied: (...args: unknown[]) => listAppliedMock(...args),
@@ -111,6 +125,91 @@ describe('FleetDesignPage', () => {
     listDesignsMock.mockResolvedValue([LIST_ITEM]);
     getDesignMock.mockResolvedValue(DETAIL);
     listAppliedMock.mockResolvedValue([]);
+    getDesignerSetupMock.mockResolvedValue({ status: 'ready', agentId: 'agent-1', canEnable: false });
+    canWriteAgentsMock.mockReturnValue(true);
+  });
+
+  // #6214: the page bootstraps its own designer agent instead of dead-ending
+  // on "No designer agent is configured" with no way forward.
+  describe('designer setup banner', () => {
+    it('shows nothing when a designer agent is ready', async () => {
+      render(<FleetDesignPage />);
+      await waitFor(() => expect(getDesignerSetupMock).toHaveBeenCalledWith('org-1'));
+      expect(screen.queryByTestId('fleet-design-designer-setup')).not.toBeInTheDocument();
+    });
+
+    it('offers one-click enable when no designer exists and the user can create one', async () => {
+      getDesignerSetupMock
+        .mockResolvedValueOnce({ status: 'missing', agentId: null, canEnable: true })
+        .mockResolvedValue({ status: 'ready', agentId: 'agent-1', canEnable: false });
+      enableDesignerMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { status: 'ready', agentId: 'agent-1', canEnable: false } }),
+      });
+      render(<FleetDesignPage />);
+
+      const banner = await screen.findByTestId('fleet-design-designer-setup');
+      expect(banner).toHaveAttribute('data-status', 'missing');
+      expect(banner.textContent).toContain('No Fleet Designer agent');
+      fireEvent.click(screen.getByTestId('fleet-design-enable-button'));
+
+      await waitFor(() => expect(enableDesignerMock).toHaveBeenCalledWith('org-1'));
+      await waitFor(() => expect(screen.queryByTestId('fleet-design-designer-setup')).not.toBeInTheDocument());
+    });
+
+    it('explains an off agent and offers to turn it on', async () => {
+      getDesignerSetupMock.mockResolvedValue({ status: 'off', agentId: 'agent-1', canEnable: true });
+      render(<FleetDesignPage />);
+
+      const banner = await screen.findByTestId('fleet-design-designer-setup');
+      expect(banner.textContent).toContain('turned off');
+      expect(screen.getByTestId('fleet-design-enable-button')).toBeInTheDocument();
+    });
+
+    it('hides the button and names the remedy when the caller cannot enable (org token, partner baseline)', async () => {
+      getDesignerSetupMock.mockResolvedValue({ status: 'missing', agentId: null, canEnable: false });
+      render(<FleetDesignPage />);
+
+      const banner = await screen.findByTestId('fleet-design-designer-setup');
+      expect(screen.queryByTestId('fleet-design-enable-button')).not.toBeInTheDocument();
+      expect(banner.textContent).toContain('partner administrator');
+    });
+
+    it('hides the button for a read-only user even when the server says it could be enabled', async () => {
+      canWriteAgentsMock.mockReturnValue(false);
+      getDesignerSetupMock.mockResolvedValue({ status: 'missing', agentId: null, canEnable: true });
+      render(<FleetDesignPage />);
+
+      await screen.findByTestId('fleet-design-designer-setup');
+      expect(screen.queryByTestId('fleet-design-enable-button')).not.toBeInTheDocument();
+    });
+
+    it('never offers enable for the platform kill switch', async () => {
+      getDesignerSetupMock.mockResolvedValue({ status: 'kill_switch_off', agentId: 'agent-1', canEnable: false });
+      render(<FleetDesignPage />);
+
+      const banner = await screen.findByTestId('fleet-design-designer-setup');
+      expect(banner.textContent).toContain('platform-wide');
+      expect(screen.queryByTestId('fleet-design-enable-button')).not.toBeInTheDocument();
+    });
+
+    it('turns the run route\'s 404 no_designer_agent into the same inline reason as a skip', async () => {
+      startDesignRunMock.mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'no_designer_agent' }),
+      });
+      render(<FleetDesignPage />);
+
+      await waitFor(() => expect(listDesignsMock).toHaveBeenCalled());
+      fireEvent.click(screen.getByTestId('fleet-design-start-button'));
+
+      await waitFor(() => expect(screen.getByTestId('fleet-design-start-skip-reason')).toBeInTheDocument());
+      expect(screen.getByTestId('fleet-design-start-skip-reason').textContent).toContain('No Fleet Designer agent');
+      // The probe re-runs after a declined start so the banner catches up.
+      await waitFor(() => expect(getDesignerSetupMock).toHaveBeenCalledTimes(2));
+    });
   });
 
   it('lists designs, selects a row, and renders all eight sections of the outcome', async () => {
