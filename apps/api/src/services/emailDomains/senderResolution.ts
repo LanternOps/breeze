@@ -4,6 +4,8 @@ import {
   type MailPurpose,
   type PartnerMailStream,
 } from './mailPurposes';
+import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
+import { tryCountPartnerLaneSend } from './sendCap';
 
 /**
  * Sender resolution (partner sending domains, spec §8.3).
@@ -118,7 +120,52 @@ export async function resolveSender(input: ResolveSenderInput): Promise<Resolved
     return { lane: 'platform', from, reason: 'no_partner' };
   }
 
-  // W04 inserts the partner branch here. Until then the partner lane does not
-  // exist, so every customer-facing purpose falls back to today's sender.
-  return { lane: 'platform', from, reason: 'lane_unconfigured' };
+  // Condition 1 (spec §8.3): the lane must be configured at all. With
+  // EMAIL_DOMAINS_PROVIDER unset — the default on hosted and self-hosted — this
+  // returns here and the whole feature is inert.
+  if (!isPartnerLaneConfigured()) {
+    return { lane: 'platform', from, reason: 'lane_unconfigured' };
+  }
+
+  // Condition 1 continued: the dark-launch allowlist (§9.1). Empty means every
+  // eligible partner; set means only those ids.
+  const allowlist = getEmailDomainsConfig().partnerAllowlist;
+  if (allowlist.length > 0 && !allowlist.includes(input.partnerId)) {
+    return { lane: 'platform', from, reason: 'not_allowlisted' };
+  }
+
+  // Conditions 2 and 3: ONE read, plus the side-effect-free trust evaluation.
+  // Imported dynamically so a platform purpose never loads the db module at all
+  // (plan amendment 1).
+  const { lookupPartnerLaneIdentity } = await import('./partnerLaneLookup');
+  const identity = await lookupPartnerLaneIdentity(input.partnerId, policy.stream);
+  if (!identity.ok) {
+    return { lane: 'platform', from, reason: identity.reason };
+  }
+
+  // Condition 4, LAST so an ineligible partner never burns a counter slot. A
+  // Redis outage also lands here (sendCap.ts): the message still goes out, on
+  // the platform lane, and the cap is never silently lifted.
+  if (!(await tryCountPartnerLaneSend(input.partnerId))) {
+    return { lane: 'platform', from, reason: 'over_cap' };
+  }
+
+  return {
+    lane: 'partner',
+    // Same header-safety strip as the platform display name: fromWithDisplayName
+    // falls back to the bare address when nothing usable survives, which is
+    // exactly the behaviour wanted here.
+    from: fromWithDisplayName(
+      `${identity.localPart}@${identity.domain}`,
+      identity.displayName?.trim() || identity.partnerName,
+    ),
+    // The DEFAULT Reply-To only. Precedence (the call site's replyTo first) is
+    // applied by EmailService.sendEmail, which is the only place that knows
+    // what the call site passed (spec §8.3).
+    replyTo: identity.replyTo,
+    partnerId: input.partnerId,
+    domainId: identity.domainId,
+    domain: identity.domain,
+    stream: policy.stream,
+  };
 }

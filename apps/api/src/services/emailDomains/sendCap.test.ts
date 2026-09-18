@@ -15,8 +15,8 @@ const PARTNER = '11111111-1111-1111-1111-111111111111';
 /** ioredis `multi()` chain: incr -> expire -> exec, exec resolving [[null, n], [null, 1]]. */
 function redisWithCount(count: number) {
   const chain = {
-    incr: vi.fn(() => chain),
-    expire: vi.fn(() => chain),
+    incr: vi.fn((_key: string) => chain),
+    expire: vi.fn((_key: string, _ttlSeconds: number) => chain),
     exec: vi.fn(async () => [[null, count], [null, 1]]),
   };
   return { multi: vi.fn(() => chain), __chain: chain };

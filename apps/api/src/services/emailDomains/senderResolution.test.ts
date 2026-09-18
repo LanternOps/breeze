@@ -1,18 +1,58 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAIL_PURPOSES, mailPurposePolicy, type MailPurpose } from './mailPurposes';
 import { fromWithDisplayName, platformFallbackFrom, resolveSender } from './senderResolution';
+import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
+import { lookupPartnerLaneIdentity } from './partnerLaneLookup';
+import { tryCountPartnerLaneSend } from './sendCap';
 
-// W04 TRIPWIRE. In W01 senderResolution imports nothing from the db layer, so
-// this factory is never invoked and this mock cannot fail — it is stated here
-// so that the moment W04 adds the partner-lane read, every assertion below
-// (all of which are platform-lane inputs) proves the short-circuit still
-// happens BEFORE any database access, which is spec §8.1's first property.
-vi.mock('../../db', () => new Proxy({}, {
-  get(_target, property) {
-    if (typeof property === 'symbol') return undefined;
-    throw new Error(`resolveSender touched the db module (.${String(property)}) on a platform-lane input`);
-  },
+// W01's property-throwing namespace Proxy, kept as a per-EXPORT tripwire now
+// that W04 has a partner branch that legitimately reads the database. Every
+// assertion in this file is a platform-lane input, so any of these firing means
+// the short-circuit of spec §8.1 regressed. `partnerLaneLookup` is mocked
+// separately, per test, for the partner cases.
+vi.mock('../../db', () => ({
+  db: new Proxy({}, {
+    get(_target, property) {
+      if (typeof property === 'symbol') return undefined;
+      throw new Error(`resolveSender queried the db (db.${String(property)}) on a platform-lane input`);
+    },
+  }),
+  getCurrentDbAccessContext: () => { throw new Error('resolveSender inspected the db context on a platform-lane input'); },
+  runOutsideDbContext: () => { throw new Error('resolveSender left the db context on a platform-lane input'); },
+  withSystemDbAccessContext: () => { throw new Error('resolveSender opened a system context on a platform-lane input'); },
 }));
+
+// A full EmailDomainsConfig: the partner branch reads only `partnerAllowlist`
+// and (through sendCap, which is mocked separately) `dailySendCap`, but the
+// return type is the whole record, so the rest is spelled out once here rather
+// than cast away at each mockReturnValue.
+const { domainsConfigFixture } = vi.hoisted(() => ({
+  domainsConfigFixture: (over: { dailySendCap?: number; partnerAllowlist?: string[] } = {}) => ({
+    provider: 'fake' as const,
+    resendApiKey: null,
+    resendSendingKey: null,
+    region: 'us-east-1',
+    maxPerPartner: 3,
+    dailySendCap: 0,
+    partnerAllowlist: [] as string[],
+    denylist: [] as string[],
+    staticAllowed: [],
+    webhookSecret: null,
+    ...over,
+  }),
+}));
+
+vi.mock('./config', () => ({
+  isPartnerLaneConfigured: vi.fn(() => true),
+  getEmailDomainsConfig: vi.fn(() => domainsConfigFixture()),
+}));
+vi.mock('./partnerLaneLookup', () => ({ lookupPartnerLaneIdentity: vi.fn() }));
+vi.mock('./sendCap', () => ({ tryCountPartnerLaneSend: vi.fn(async () => true) }));
+
+const laneConfigured = vi.mocked(isPartnerLaneConfigured);
+const domainsConfig = vi.mocked(getEmailDomainsConfig);
+const lookup = vi.mocked(lookupPartnerLaneIdentity);
+const cap = vi.mocked(tryCountPartnerLaneSend);
 
 const DEFAULT_FROM = 'Breeze <no-reply@2breeze.app>';
 const ALL_PURPOSES = Object.keys(MAIL_PURPOSES) as MailPurpose[];
@@ -75,6 +115,14 @@ describe('platformFallbackFrom (spec §8.3)', () => {
 });
 
 describe('resolveSender (W01: always the platform lane)', () => {
+  // W01 asserted `lane_unconfigured` for a partner purpose with a partner. That
+  // is still exactly what it asserts — the lane being OFF — so the block pins
+  // the switch rather than relying on the new mock's default.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    laneConfigured.mockReturnValue(false);
+  });
+
   it('returns platform_purpose for every platform purpose, whatever partnerId is passed', async () => {
     for (const purpose of PLATFORM_PURPOSES) {
       for (const partnerId of [null, 'partner-1']) {
@@ -127,5 +175,123 @@ describe('resolveSender (W01: always the platform lane)', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith('[email] unknown mail purpose %s — routed to the platform lane', unknown);
     warn.mockRestore();
+  });
+});
+
+const OK_IDENTITY = {
+  ok: true as const, partnerName: 'Acme MSP', localPart: 'support', displayName: null,
+  replyTo: null, domainId: 'd1', domain: 'mail.acme.test',
+};
+
+describe('resolveSender — the partner branch (spec §8.3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    laneConfigured.mockReturnValue(true);
+    domainsConfig.mockReturnValue(domainsConfigFixture());
+    lookup.mockResolvedValue(OK_IDENTITY);
+    cap.mockResolvedValue(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('returns the partner lane when every condition holds', async () => {
+    await expect(resolveSender({
+      purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM,
+    })).resolves.toEqual({
+      // Spec §8.3: the From is `"<display_name or partner name>" <local@domain>`.
+      // OK_IDENTITY has no display name, so the partner name is used — the same
+      // answer the "display name, else partner name" case below pins.
+      lane: 'partner', from: '"Acme MSP" <support@mail.acme.test>', replyTo: null,
+      partnerId: 'p1', domainId: 'd1', domain: 'mail.acme.test', stream: 'support',
+    });
+  });
+
+  it('asks for the stream the purpose declares', async () => {
+    await resolveSender({ purpose: 'invoice.sent', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    expect(lookup).toHaveBeenCalledWith('p1', 'billing');
+    await resolveSender({ purpose: 'report.delivery', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    expect(lookup).toHaveBeenLastCalledWith('p1', 'general');
+  });
+
+  // Condition 1a: the lane is off. This is the DARK state of W02/W04 on every
+  // deployment until an operator sets EMAIL_DOMAINS_PROVIDER.
+  it('returns lane_unconfigured, before any lookup, when the lane is off', async () => {
+    laneConfigured.mockReturnValue(false);
+    const resolved = await resolveSender({ purpose: 'quote.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'lane_unconfigured' });
+    expect(lookup).not.toHaveBeenCalled();
+    expect(cap).not.toHaveBeenCalled();
+  });
+
+  // Condition 1b: the dark-launch allowlist (spec §9.1).
+  it('honours EMAIL_DOMAINS_PARTNER_ALLOWLIST and does not read for an excluded partner', async () => {
+    domainsConfig.mockReturnValue(domainsConfigFixture({ partnerAllowlist: ['p-other'] }));
+    const resolved = await resolveSender({ purpose: 'portal.invite', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'not_allowlisted' });
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('an EMPTY allowlist means every eligible partner', async () => {
+    domainsConfig.mockReturnValue(domainsConfigFixture());
+    expect((await resolveSender({ purpose: 'portal.invite', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).lane).toBe('partner');
+  });
+
+  it('maps each lookup refusal to its own reason', async () => {
+    for (const reason of ['partner_ineligible', 'no_identity', 'domain_not_sendable'] as const) {
+      lookup.mockResolvedValue({ ok: false, reason });
+      const resolved = await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+      expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason });
+    }
+  });
+
+  // Condition 4 runs LAST so an ineligible partner never burns a counter slot.
+  it('checks the cap only after the lookup succeeds', async () => {
+    lookup.mockResolvedValue({ ok: false, reason: 'no_identity' });
+    await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    expect(cap).not.toHaveBeenCalled();
+  });
+
+  it('returns over_cap when the cap refuses, with the purpose fallback From', async () => {
+    cap.mockResolvedValue(false);
+    const resolved = await resolveSender({ purpose: 'invoice.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'over_cap' });
+  });
+
+  it('builds the From from the identity display name, else the partner name', async () => {
+    lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: 'Acme Support' });
+    expect((await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).from)
+      .toBe('"Acme Support" <support@mail.acme.test>');
+
+    lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: null, partnerName: 'Acme MSP' });
+    expect((await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).from)
+      .toBe('"Acme MSP" <support@mail.acme.test>');
+  });
+
+  it('strips header-breaking characters from the display name, exactly as fromWithDisplayName does', async () => {
+    lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: 'Evil"\r\nBcc: victim <x>' });
+    expect((await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).from)
+      .toBe('"Evil Bcc: victim x" <support@mail.acme.test>');
+  });
+
+  it('falls back to the bare address when nothing usable survives sanitising', async () => {
+    lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: '"<>"', partnerName: '  ' });
+    expect((await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).from)
+      .toBe('support@mail.acme.test');
+  });
+
+  it('carries the identity reply-to onto the partner result', async () => {
+    lookup.mockResolvedValue({ ...OK_IDENTITY, replyTo: 'help@acme.test' });
+    const resolved = await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    expect(resolved.lane === 'partner' && resolved.replyTo).toBe('help@acme.test');
+  });
+
+  it('still short-circuits a platform purpose and a null partner with the lane ON', async () => {
+    for (const purpose of PLATFORM_PURPOSES) {
+      const resolved = await resolveSender({ purpose, partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+      expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'platform_purpose' });
+    }
+    const nullPartner = await resolveSender({ purpose: 'quote.sent', partnerId: null, partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+    expect(nullPartner).toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'no_partner' });
+    expect(lookup).not.toHaveBeenCalled();
+    expect(laneConfigured).not.toHaveBeenCalled();
   });
 });
