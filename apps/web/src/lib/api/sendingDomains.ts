@@ -37,7 +37,12 @@ export type SendingDomainsFetch =
  * which is how the caller learns to hide the tab.
  */
 export async function fetchSendingDomains(): Promise<SendingDomainsFetch> {
-  const response = await fetchWithAuth(SENDING_DOMAINS_PATH, NO_ORG);
+  // Inlined (not the `NO_ORG` const) so the no-silent-mutations guard's static
+  // check — which cannot see through an identifier's initializer — sees a
+  // plain object literal with no `method` property and correctly classifies
+  // this as the GET it is, rather than conservatively flagging it as an
+  // unwrapped mutation.
+  const response = await fetchWithAuth(SENDING_DOMAINS_PATH, { skipOrgIdInjection: true });
   if (response.status === 404) return { supported: false };
   if (!response.ok) throw new Error(`sending_domains_fetch_failed_${response.status}`);
   return { supported: true, data: (await response.json()) as SendingDomainsListResponse };
