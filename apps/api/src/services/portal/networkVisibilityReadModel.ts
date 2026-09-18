@@ -1,11 +1,28 @@
 import type { NetworkOverviewDto } from '@breeze/shared';
-import { desc, eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { and, desc, eq, gte } from 'drizzle-orm';
+import {
+  db,
+  runOutsideDbContext,
+  withDbAccessContext,
+} from '../../db';
 import {
   discoveredAssets,
   networkMonitorResults,
+  networkMonitors,
+  organizations,
 } from '../../db/schema';
+import { MIN_NETWORK_CHECK_FRESHNESS_MS } from '../assetReachability';
 import { loadReachability } from '../assetReachabilityLoader';
+
+// `createMonitorSchema` accepts polling intervals up to 86,400 seconds.
+// The SQL query uses twice that maximum as its absolute lookback so it never
+// walks the full network_monitor_results history. Per-monitor freshness is
+// still evaluated below from the monitor's actual polling interval.
+const MAX_NETWORK_MONITOR_POLLING_INTERVAL_SECONDS = 86_400;
+const NETWORK_MONITOR_RESULT_LOOKBACK_MS = Math.max(
+  2 * MAX_NETWORK_MONITOR_POLLING_INTERVAL_SECONDS * 1000,
+  MIN_NETWORK_CHECK_FRESHNESS_MS,
+);
 
 const NO_DATA_OVERVIEW: NetworkOverviewDto = {
   dataStatus: 'no_data',
@@ -32,7 +49,11 @@ export async function networkOverview(
   orgId: string,
   now: Date = new Date(),
 ): Promise<NetworkOverviewDto> {
-  const [assetRows, latestMonitorRows] = await Promise.all([
+  const monitorResultLowerBound = new Date(
+    now.getTime() - NETWORK_MONITOR_RESULT_LOOKBACK_MS,
+  );
+
+  const [assetRows, orgRows] = await Promise.all([
     db
       .select({
         id: discoveredAssets.id,
@@ -40,24 +61,71 @@ export async function networkOverview(
       .from(discoveredAssets)
       .where(eq(discoveredAssets.orgId, orgId)),
 
-    // One latest execution result per monitor for THIS organization.
-    //
-    // There is intentionally no join to network_monitors.lastStatus here:
-    // partner-wide definitions are shared while these result rows are
-    // organization-scoped.
+    // Resolve the partner through the caller's existing org-scoped RLS
+    // context. A cross-org orgId therefore resolves to no row and never gains
+    // partner-wide visibility below.
     db
-      .selectDistinctOn([networkMonitorResults.monitorId], {
-        monitorId: networkMonitorResults.monitorId,
-        status: networkMonitorResults.status,
+      .select({
+        partnerId: organizations.partnerId,
       })
-      .from(networkMonitorResults)
-      .where(eq(networkMonitorResults.orgId, orgId))
-      .orderBy(
-        networkMonitorResults.monitorId,
-        desc(networkMonitorResults.timestamp),
-        desc(networkMonitorResults.id),
-      ),
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1),
   ]);
+
+  const org = orgRows[0];
+
+  // Portal auth deliberately carries currentPartnerId=null. network_monitors
+  // has a read-only partner-wide SELECT branch keyed by currentPartnerId, so a
+  // direct JOIN from the ambient portal transaction would hide partner-wide
+  // definitions even though their org-scoped result rows are visible.
+  //
+  // Re-establish the SAME organization scope with currentPartnerId derived
+  // from the RLS-visible organization row. accessiblePartnerIds stays empty:
+  // this grants the SELECT-only partner-wide branch without granting partner
+  // write authority.
+  const latestMonitorRows = org
+    ? await runOutsideDbContext(() =>
+        withDbAccessContext(
+          {
+            scope: 'organization',
+            orgId,
+            accessibleOrgIds: [orgId],
+            accessiblePartnerIds: [],
+            userId: null,
+            currentPartnerId: org.partnerId,
+          },
+          () =>
+            db
+              .selectDistinctOn([networkMonitorResults.monitorId], {
+                monitorId: networkMonitorResults.monitorId,
+                status: networkMonitorResults.status,
+                timestamp: networkMonitorResults.timestamp,
+                pollingInterval: networkMonitors.pollingInterval,
+              })
+              .from(networkMonitorResults)
+              .innerJoin(
+                networkMonitors,
+                eq(networkMonitorResults.monitorId, networkMonitors.id),
+              )
+              .where(
+                and(
+                  eq(networkMonitorResults.orgId, orgId),
+                  eq(networkMonitors.isActive, true),
+                  gte(
+                    networkMonitorResults.timestamp,
+                    monitorResultLowerBound,
+                  ),
+                ),
+              )
+              .orderBy(
+                networkMonitorResults.monitorId,
+                desc(networkMonitorResults.timestamp),
+                desc(networkMonitorResults.id),
+              ),
+        ),
+      )
+    : [];
 
   const assetIds = assetRows.map((row) => row.id);
 
@@ -93,9 +161,18 @@ export async function networkOverview(
     offlineAssets,
     snmpDevicesPolling,
     // Keep the contract literal: degraded/unknown are not silently classified
-    // as down.
-    monitorsDown: latestMonitorRows.filter(
-      (row) => row.status === 'offline',
-    ).length,
+    // as down. An offline result also has to remain inside the same freshness
+    // rule used by network-check reachability:
+    // max(2 * polling interval, 5 minutes).
+    monitorsDown: latestMonitorRows.filter((row) => {
+      if (row.status !== 'offline') return false;
+
+      const freshnessMs = Math.max(
+        2 * row.pollingInterval * 1000,
+        MIN_NETWORK_CHECK_FRESHNESS_MS,
+      );
+
+      return now.getTime() - row.timestamp.getTime() <= freshnessMs;
+    }).length,
   };
 }

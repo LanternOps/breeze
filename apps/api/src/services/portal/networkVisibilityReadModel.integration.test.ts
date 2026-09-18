@@ -33,6 +33,7 @@ function orgContext(orgId: string): DbAccessContext {
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId: null,
   };
 }
 
@@ -154,6 +155,7 @@ describe('networkVisibilityReadModel (#5861)', () => {
         name: 'Partner ICMP health',
         monitorType: 'icmp_ping',
         target: 'gateway.example.test',
+        pollingInterval: 3600,
         isActive: true,
         lastStatus: 'offline',
       })
@@ -228,6 +230,85 @@ describe('networkVisibilityReadModel (#5861)', () => {
 
     expect(orgAReadingOrgB).toEqual(NO_DATA);
     expect(orgBReadingOrgA).toEqual(NO_DATA);
+  });
+
+  it('ignores paused monitors and stale offline results when counting monitorsDown', async () => {
+    const testDb = getTestDb();
+
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    const [activeRecentMonitor, pausedRecentMonitor, activeStaleMonitor] =
+      await testDb
+        .insert(networkMonitors)
+        .values([
+          {
+            partnerId: partner.id,
+            name: 'Active recent offline monitor',
+            monitorType: 'icmp_ping',
+            target: 'active-recent.example.test',
+            pollingInterval: 60,
+            isActive: true,
+            lastStatus: 'offline',
+          },
+          {
+            partnerId: partner.id,
+            name: 'Paused recent offline monitor',
+            monitorType: 'icmp_ping',
+            target: 'paused-recent.example.test',
+            pollingInterval: 60,
+            isActive: false,
+            lastStatus: 'offline',
+          },
+          {
+            partnerId: partner.id,
+            name: 'Active stale offline monitor',
+            monitorType: 'icmp_ping',
+            target: 'active-stale.example.test',
+            pollingInterval: 60,
+            isActive: true,
+            lastStatus: 'offline',
+          },
+        ])
+        .returning();
+
+    await testDb.insert(networkMonitorResults).values([
+      {
+        monitorId: activeRecentMonitor!.id,
+        orgId: org.id,
+        status: 'offline',
+        timestamp: new Date('2026-09-17T11:59:00.000Z'),
+      },
+      {
+        monitorId: pausedRecentMonitor!.id,
+        orgId: org.id,
+        status: 'offline',
+        timestamp: new Date('2026-09-17T11:59:00.000Z'),
+      },
+      {
+        monitorId: activeStaleMonitor!.id,
+        orgId: org.id,
+        status: 'offline',
+        timestamp: new Date('2026-09-17T11:00:00.000Z'),
+      },
+    ]);
+
+    const overview = await withDbAccessContext(
+      orgContext(org.id),
+      () => networkOverview(org.id, NOW),
+    );
+
+    expect(overview).toEqual({
+      dataStatus: 'ok',
+      totalAssets: 0,
+      onlineAssets: 0,
+      offlineAssets: 0,
+      snmpDevicesPolling: 0,
+      // Only the active monitor with fresh evidence is currently down.
+      // A paused monitor and stale evidence must never surface as customer
+      // health failures.
+      monitorsDown: 1,
+    });
   });
 
   it('returns no_data with null metrics for an organization with no network data', async () => {
