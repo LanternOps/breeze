@@ -301,6 +301,38 @@ describe('routes', () => {
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'partner_sender_identity.upsert' }));
   });
 
+  // HEADER INJECTION (spec §4.4). The From is built as `localPart@domain`, and
+  // `fromWithDisplayName` sanitises only the DISPLAY NAME — the address passes
+  // through verbatim — so a CRLF in the local part would forge headers. The
+  // shared `senderLocalPartSchema` is the one definition the web form and the
+  // API both use; the route applies it at the boundary so the payload never
+  // reaches the service at all.
+  it.each([
+    ['crlf-bcc', 'a\r\nBcc: x@y'],
+    ['bare newline', 'a\nBcc: x@y'],
+    ['space', 'a b'],
+    ['at-sign', 'a@b'],
+    ['angle bracket', 'a<b'],
+    ['consecutive dots', 'a..b'],
+    ['reserved', 'postmaster'],
+  ])('PUT /identities/:stream rejects a %s local part without reaching the service', async (_label, localPart) => {
+    const res = await buildApp().request('/partner/sending-domains/identities/support', {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sendingDomainId: DOMAIN_ID, localPart }),
+    });
+    expect([400, 422]).toContain(res.status);
+    expect(mocks.service.upsertSenderIdentity).not.toHaveBeenCalled();
+  });
+
+  it('PUT /identities/:stream rejects a display name carrying an address', async () => {
+    const res = await buildApp().request('/partner/sending-domains/identities/support', {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sendingDomainId: DOMAIN_ID, localPart: 'support', displayName: 'Acme <billing@evil.test>' }),
+    });
+    expect([400, 422]).toContain(res.status);
+    expect(mocks.service.upsertSenderIdentity).not.toHaveBeenCalled();
+  });
+
   it('rejects an unknown stream', async () => {
     const res = await buildApp().request('/partner/sending-domains/identities/marketing', {
       method: 'PUT', headers: { 'content-type': 'application/json' },

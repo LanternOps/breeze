@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { SENDER_LOCAL_PART_PATTERN } from '@breeze/shared';
 import { db, getCurrentDbAccessContext } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { partners, partnerSenderIdentities, partnerSendingDomains } from '../../db/schema';
@@ -19,6 +20,15 @@ import type { PartnerMailStream } from './mailPurposes';
  * keeps every existing EmailService unit suite loading exactly what it loads
  * today. See plan amendment 1.
  */
+
+/**
+ * A bare LDH hostname, for the defence-in-depth check below. Deliberately NOT
+ * `normalizeSendingDomain`: that helper also does IDN conversion and could
+ * legitimately transform a stored A-label, which would turn a formatting
+ * difference into a refused send. The only property needed here is that the
+ * string cannot break out of a From header.
+ */
+const SENDER_DOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 
 /** Domain statuses that may send on the partner lane (spec §5.2). */
 const SENDABLE_DOMAIN_STATUSES = new Set(['verified', 'at_risk']);
@@ -128,9 +138,34 @@ export async function lookupPartnerLaneIdentity(
   if (!decision.allow) return { ok: false, reason: 'partner_ineligible' };
 
   // Condition 3: an identity for the stream, on a sendable domain.
-  if (!row.localPart || !row.domainId || !row.domain) return { ok: false, reason: 'no_identity' };
+  if (!row.localPart) return { ok: false, reason: 'no_identity' };
+  // An identity EXISTS but its domain row is gone or invisible. That is a
+  // domain problem, not a missing identity, and spec §8.3 maps it accordingly —
+  // the difference is visible to the operator reading the reason.
+  if (!row.domainId || !row.domain) return { ok: false, reason: 'domain_not_sendable' };
   if (!row.domainStatus || !SENDABLE_DOMAIN_STATUSES.has(row.domainStatus)) {
     return { ok: false, reason: 'domain_not_sendable' };
+  }
+
+  // DEFENCE IN DEPTH (spec §4.4). The route and `upsertSenderIdentity` both
+  // validate the local part with W02's shared schema, so a row reaching here
+  // malformed means one of them was bypassed — a migration, a hand-run SQL fix,
+  // or a future writer that forgets. This module is the one that interpolates
+  // `localPart@domain` into a From, and `fromWithDisplayName` sanitises only the
+  // DISPLAY NAME: the address half goes through verbatim, so a CRLF here would
+  // forge headers on live outbound mail. Refuse to build a From at all rather
+  // than sanitise and send something the partner did not configure.
+  if (!SENDER_LOCAL_PART_PATTERN.test(row.localPart) || row.localPart.includes('..')) {
+    console.error('[emailDomains/partnerLaneLookup] refusing an unsafe sender local part; falling back to the platform lane', {
+      partnerId, stream, domainId: row.domainId,
+    });
+    return { ok: false, reason: 'no_identity' };
+  }
+  if (!SENDER_DOMAIN_PATTERN.test(row.domain)) {
+    console.error('[emailDomains/partnerLaneLookup] refusing an unsafe sending domain; falling back to the platform lane', {
+      partnerId, stream, domainId: row.domainId,
+    });
+    return { ok: false, reason: 'no_identity' };
   }
 
   return {

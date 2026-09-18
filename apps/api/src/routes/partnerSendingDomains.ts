@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { Hono, type Context, type Next } from 'hono';
 import { z } from 'zod';
+import { senderDisplayNameSchema, senderLocalPartSchema } from '@breeze/shared';
 import { db } from '../db';
 import { partners } from '../db/schema';
 import { enqueueTestSend } from '../jobs/sendingDomainsWorker';
@@ -59,10 +60,21 @@ const TEST_SEND_WINDOW_SECONDS = 3600;
 const streamParamSchema = z.object({ stream: z.enum(['support', 'billing', 'general']) });
 const idParamSchema = z.object({ id: z.string().guid() });
 const createBodySchema = z.object({ domain: z.string().trim().min(3).max(253) });
+// HEADER INJECTION (spec §4.4). The partner From is built as
+// `localPart@domain` and `fromWithDisplayName` sanitises only the DISPLAY NAME
+// — the address is interpolated verbatim — so a CRLF, space or angle bracket in
+// the local part would forge headers on every partner-lane message.
+//
+// `senderLocalPartSchema` / `senderDisplayNameSchema` are W02's SHARED
+// definitions, already applied inside `upsertSenderIdentity`
+// (services/emailDomains/sendingDomainService.ts assertIdentityShape). Applying
+// them here too rejects the payload at the boundary rather than one layer in,
+// keeps the route's 400 identical to the web form's client-side rejection, and
+// means the two cannot drift.
 const identityBodySchema = z.object({
   sendingDomainId: z.string().guid(),
-  localPart: z.string().trim().min(1).max(64),
-  displayName: z.string().trim().max(78).nullable().optional(),
+  localPart: senderLocalPartSchema,
+  displayName: senderDisplayNameSchema.nullable().optional(),
   replyTo: z.string().trim().email().max(320).nullable().optional(),
 });
 

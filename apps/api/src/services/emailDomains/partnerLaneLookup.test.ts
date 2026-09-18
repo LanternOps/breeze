@@ -180,6 +180,62 @@ describe('lookupPartnerLaneIdentity — conditions 2 and 3 of spec §8.3', () =>
     expect(evaluateMock).not.toHaveBeenCalled();
   });
 
+  // DEFENCE IN DEPTH (spec §4.4). The route and the service both validate the
+  // local part with the shared schema, but this module is what actually builds
+  // `localPart@domain` into a From. A row poisoned by any path that bypassed
+  // those layers — a migration, a direct SQL fix, a future writer — must never
+  // reach the resolver, because the address half of the From is interpolated
+  // verbatim and a CRLF there forges headers on real outbound mail.
+  it.each([
+    ['crlf', 'a\r\nBcc: x@y'],
+    ['newline', 'a\nBcc: x@y'],
+    ['space', 'a b'],
+    ['at-sign', 'a@b'],
+    ['angle bracket', 'a<b'],
+    ['consecutive dots', 'a..b'],
+  ])('refuses a poisoned local part (%s) rather than building a From from it', async (_label, localPart) => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    selectMock.mockReturnValue(selectChain([row({ localPart })]));
+    await expect(lookupPartnerLaneIdentity(PARTNER, 'support'))
+      .resolves.toEqual({ ok: false, reason: 'no_identity' });
+    expect(error).toHaveBeenCalled();
+  });
+
+  // An EMPTY local part is a MISSING identity, not a poisoned one: it takes the
+  // no-identity branch above and logs nothing, because nothing is wrong.
+  it('treats an empty local part as a missing identity, without an error log', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    selectMock.mockReturnValue(selectChain([row({ localPart: '' })]));
+    await expect(lookupPartnerLaneIdentity(PARTNER, 'support'))
+      .resolves.toEqual({ ok: false, reason: 'no_identity' });
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['crlf', 'mail.acme.test\r\nBcc: x@y'],
+    ['space', 'mail acme.test'],
+    ['at-sign', 'mail@acme.test'],
+  ])('refuses a poisoned domain (%s)', async (_label, domain) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    selectMock.mockReturnValue(selectChain([row({ domain })]));
+    await expect(lookupPartnerLaneIdentity(PARTNER, 'support'))
+      .resolves.toEqual({ ok: false, reason: 'no_identity' });
+  });
+
+  // Spec §8.3 mapping: an identity that EXISTS but whose domain row is gone or
+  // invisible is a domain problem, not a missing identity.
+  it('maps an identity whose domain row is missing to domain_not_sendable', async () => {
+    selectMock.mockReturnValue(selectChain([row({ domainId: null, domain: null, domainStatus: null })]));
+    await expect(lookupPartnerLaneIdentity(PARTNER, 'support'))
+      .resolves.toEqual({ ok: false, reason: 'domain_not_sendable' });
+  });
+
+  it('accepts an ordinary local part and domain unchanged', async () => {
+    await expect(lookupPartnerLaneIdentity(PARTNER, 'support')).resolves.toMatchObject({
+      ok: true, localPart: 'support', domain: 'mail.acme.test',
+    });
+  });
+
   it('carries the identity display name and reply-to through', async () => {
     selectMock.mockReturnValue(selectChain([row({ displayName: 'Acme Support', identityReplyTo: 'help@acme.test' })]));
     await expect(lookupPartnerLaneIdentity(PARTNER, 'support')).resolves.toMatchObject({
