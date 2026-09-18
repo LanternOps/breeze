@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { db } from '../../db';
 import {
@@ -24,7 +24,7 @@ import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
  *
  *   alerts        active + acknowledged (not resolved/suppressed/dismissed)
  *   anomalies     status = open
- *   tickets       not resolved/closed
+ *   tickets       not resolved/closed (and not soft-deleted)
  *   operatorTasks live states (queued/running/waiting/paused)
  *   monitoring    latest result per (watchType, name) that is not `running`
  *   compliance    non_compliant + error
@@ -58,7 +58,7 @@ tabCountsRoutes.get(
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id');
+    const deviceId = c.req.param('id')!;
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -82,7 +82,11 @@ tabCountsRoutes.get(
         ),
         countRows(
           db.select({ count: countExpr }).from(tickets).where(
-            and(eq(tickets.deviceId, deviceId), inArray(tickets.status, ['new', 'open', 'pending', 'on_hold'])),
+            and(
+              eq(tickets.deviceId, deviceId),
+              isNull(tickets.deletedAt),
+              inArray(tickets.status, ['new', 'open', 'pending', 'on_hold']),
+            ),
           ),
         ),
         countRows(

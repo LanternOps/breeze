@@ -12,6 +12,7 @@ vi.mock('drizzle-orm', () => ({
   desc: (column: unknown) => ({ type: 'desc', column }),
   eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
   inArray: (left: unknown, right: unknown) => ({ type: 'inArray', left, right }),
+  isNull: (column: unknown) => ({ type: 'isNull', column }),
   sql: Object.assign((strings: TemplateStringsArray) => ({ type: 'sql', text: strings.join('?') }), {
     raw: (s: string) => ({ type: 'raw', s }),
   }),
@@ -22,7 +23,7 @@ vi.mock('../../db', () => ({ db: { select: selectMock, selectDistinctOn: selectD
 vi.mock('../../db/schema', () => ({
   alerts: { deviceId: 'alerts.deviceId', status: 'alerts.status' },
   metricAnomalies: { deviceId: 'metricAnomalies.deviceId', status: 'metricAnomalies.status' },
-  tickets: { deviceId: 'tickets.deviceId', status: 'tickets.status' },
+  tickets: { deviceId: 'tickets.deviceId', status: 'tickets.status', deletedAt: 'tickets.deletedAt' },
   aiOperatorTasks: { deviceId: 'aiOperatorTasks.deviceId', state: 'aiOperatorTasks.state' },
   AI_OPERATOR_TASK_LIVE_STATES: ['queued', 'running', 'waiting', 'paused'],
   serviceProcessCheckResults: {

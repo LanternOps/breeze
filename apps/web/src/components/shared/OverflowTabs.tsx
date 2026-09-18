@@ -253,7 +253,9 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
               ) : (
                 <>{t('shared.more')}</>
               )}
-              <CountBadge count={hiddenCount} testId="overflow-tabs-hidden-count" />
+              {!activeInOverflow && (
+                <CountBadge count={hiddenCount} testId={`${testIdPrefix ?? ''}overflow-tabs-hidden-count`} />
+              )}
               <ChevronDown aria-hidden="true" className={`h-3.5 w-3.5 transition ${moreOpen ? 'rotate-180' : ''}`} />
             </button>
             {moreOpen && (

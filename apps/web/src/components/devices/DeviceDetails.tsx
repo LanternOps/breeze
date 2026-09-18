@@ -385,25 +385,6 @@ export default function DeviceDetails({
     setHighlightedExecutionId(undefined);
   };
 
-  // "Needs attention" counts per signal tab (GET /devices/:id/tab-counts).
-  // Drives the badges and the promotion of by-default-empty tabs (Anomalies,
-  // Tickets, Operator Tasks) into the primary row. Best-effort: a failed
-  // request simply leaves every count undefined and the layout at its default.
-  const [tabCounts, setTabCounts] = useState<DeviceTabCounts | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setTabCounts(null);
-    fetchWithAuth(`/devices/${device.id}/tab-counts`)
-      .then(async (res) => (res.ok ? ((await res.json()) as { data?: DeviceTabCounts }).data ?? null : null))
-      .catch(() => null)
-      .then((data) => {
-        if (!cancelled) setTabCounts(data);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [device.id]);
-
   // Use provided timezone or browser default
   const effectiveTimezone =
     timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -420,6 +401,30 @@ export default function DeviceDetails({
   // content area. Resolve it back to Overview here, where linkage is known.
   const activeTab: Tab =
     hashTab === "linked-profiles" && !isLinked ? "overview" : hashTab;
+
+  // "Needs attention" counts per signal tab (GET /devices/:id/tab-counts).
+  // Drives the badges and the promotion of by-default-empty tabs (Anomalies,
+  // Tickets, Operator Tasks) into the primary row. Best-effort: a failed
+  // request simply leaves every count undefined and the layout at its default.
+  // Re-fetched on every tab switch so acting inside a tab (resolving alerts,
+  // closing a ticket) is reflected on the next navigation without a reload;
+  // the previous counts are kept meanwhile so the row does not flicker.
+  const [tabCounts, setTabCounts] = useState<DeviceTabCounts | null>(null);
+  useEffect(() => {
+    setTabCounts(null);
+  }, [device.id]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchWithAuth(`/devices/${device.id}/tab-counts`)
+      .then(async (res) => (res.ok ? ((await res.json()) as { data?: DeviceTabCounts }).data ?? null : null))
+      .catch(() => null)
+      .then((data) => {
+        if (!cancelled && data) setTabCounts(data);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [device.id, activeTab]);
 
   // Curated layout: only `primary` tabs sit in the row; everything else is
   // grouped inside "More" under these section headers. A `promoteOnCount`
