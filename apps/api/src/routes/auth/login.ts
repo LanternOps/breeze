@@ -557,6 +557,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     // and release the admitted capability rather than finishing it.
     const pendingRedis = getRedis();
     if (!pendingRedis) {
+      // Log so this 503 is distinguishable in monitoring from the sibling
+      // write-rejection 503 below (both report the same generic body).
+      console.error('[auth] Redis unavailable at the MFA branch — failing closed');
       await cancelAuthIssuance(capability).catch(() => undefined);
       await floorPromise;
       return c.json({ error: 'Service temporarily unavailable' }, 503);

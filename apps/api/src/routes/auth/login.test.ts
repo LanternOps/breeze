@@ -1100,8 +1100,9 @@ describe('POST /login — MFA branch fails closed when Redis is unavailable (#61
   it('returns 503 when Redis flips unavailable between the rate-limit check and the MFA branch', async () => {
     process.env.E2E_MODE = '';
     const setexMock = vi.fn(async () => 'OK');
-    // Top-of-handler rate-limit read sees a live client; by the MFA branch
-    // (after the DB lookup + password compare) the connection has dropped.
+    // The top-of-handler rate-limit read sees a live client; every later
+    // getRedis() call — including the one in the MFA branch — sees null,
+    // i.e. the connection dropped mid-request.
     vi.mocked(getRedis)
       .mockReturnValueOnce({ setex: setexMock } as any)
       .mockReturnValue(null as any);
