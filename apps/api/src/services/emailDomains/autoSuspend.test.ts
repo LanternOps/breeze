@@ -6,7 +6,7 @@ const { selectRows, windowStats, suspendMock, statusMailMock, opsAlertMock, audi
     windowStats: { value: null as unknown },
     suspendMock: vi.fn(async () => undefined),
     statusMailMock: vi.fn(async () => 1),
-    opsAlertMock: vi.fn(async () => true),
+    opsAlertMock: vi.fn(async (_msg: { title: string; body: string }) => true),
     auditMock: vi.fn(async () => undefined),
     configMock: vi.fn(),
     hostedMock: vi.fn(() => true),
@@ -164,7 +164,7 @@ describe('evaluateAutoSuspension — the fan-out', () => {
     windowStats.value = stats({ sent: 10, delivered: 10, complained: 3 });
     await evaluateAutoSuspension(PARTNER);
     expect(opsAlertMock).toHaveBeenCalledTimes(1);
-    const alert = opsAlertMock.mock.calls[0]![0] as unknown as { title: string; body: string };
+    const alert = opsAlertMock.mock.calls[0]![0];
     expect(alert.title).toContain('Acme MSP');
     expect(alert.body).toContain(PARTNER);
     expect(alert.body).toContain('complaints');
