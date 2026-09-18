@@ -1,5 +1,5 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { isHosted } from '../config/env';
 import { db, withSystemDbAccessContext } from '../db';
 import { emailProviderDomainReleases, partnerSenderIdentities, partnerSendingDomains, users } from '../db/schema';
@@ -252,19 +252,18 @@ export async function runTestSend(domainId: string, userId: string): Promise<'se
       .limit(1);
     const domain = found[0];
     if (!domain) return null;
+    // `emailVerifiedAt` is selected (not filtered on) so an active-but-unverified
+    // user can be distinguished from a missing/inactive/foreign one — spec §7
+    // says the test goes to "the calling user's own VERIFIED address", but a
+    // user who exists and is active still needs an explicit, recorded reason
+    // rather than a silent no-op the partner UI polls for forever.
     const recipient = await db
-      .select({ email: users.email })
+      .select({ email: users.email, emailVerifiedAt: users.emailVerifiedAt })
       .from(users)
-      // `emailVerifiedAt IS NOT NULL` is load-bearing, not hygiene: spec §7 says
-      // the test goes to "the calling user's own VERIFIED address". Without it a
-      // partner can add an arbitrary unverified address to their own account and
-      // use the test send as a free relay to it from a domain nobody has proven
-      // they control.
       .where(and(
         eq(users.id, userId),
         eq(users.partnerId, domain.partnerId),
         eq(users.status, 'active'),
-        isNotNull(users.emailVerifiedAt),
       ))
       .limit(1);
     const support = await db
@@ -275,16 +274,34 @@ export async function runTestSend(domainId: string, userId: string): Promise<'se
         eq(partnerSenderIdentities.stream, 'support'),
       ))
       .limit(1);
-    return { domain, to: recipient[0]?.email ?? null, localPart: support[0]?.localPart ?? 'test' };
+    return { domain, user: recipient[0] ?? null, localPart: support[0]?.localPart ?? 'test' };
   }, 'sendingDomainTestSendLoad');
 
-  if (!context || !context.to) {
-    // The recipient query already excludes an unverified/inactive/foreign user,
-    // so the only honest thing to report is "nothing was sent", with a reason.
-    console.warn(`[SendingDomains] test send skipped for ${domainId}: no active, email-verified recipient for user ${userId}`);
+  if (!context || !context.user) {
+    // No active user for this partner — nothing to write, nothing to report but
+    // silence to the caller.
+    console.warn(`[SendingDomains] test send skipped for ${domainId}: no active recipient for user ${userId}`);
     return 'skipped';
   }
-  const { domain, to, localPart } = context;
+  if (!context.user.emailVerifiedAt) {
+    // The user exists and is active but hasn't verified their own email — unlike
+    // the missing-user case, this is actionable, so record it instead of leaving
+    // the partner UI polling for a result that will never arrive.
+    await withSystemDbAccessContext(
+      () => db.update(partnerSendingDomains)
+        .set({
+          lastTestAt: new Date(),
+          lastTestStatus: 'failed',
+          lastTestError: 'Your email address is not verified. Verify it, then send the test again.',
+          updatedAt: sql`now()`,
+        })
+        .where(eq(partnerSendingDomains.id, context.domain.id)),
+      'sendingDomainTestSendUnverifiedRecipient',
+    );
+    return 'refused';
+  }
+  const { domain, localPart } = context;
+  const to = context.user.email;
 
   const sendable = domain.status === 'verified' || domain.status === 'at_risk'
     || (domain.status === 'pending' && !provider.verifiesByDns);

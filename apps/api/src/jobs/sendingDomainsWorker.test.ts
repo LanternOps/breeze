@@ -158,29 +158,6 @@ function sqlTextOf(query: any): string {
     .join(' ');
 }
 
-/**
- * True when `where` contains a Drizzle COLUMN of this physical name. Scanning
- * for the name anywhere would also match a bound string value, which is how a
- * deep-search assertion goes vacuous; this only accepts an object that carries
- * both a `name` and a `columnType`, i.e. an actual column reference.
- */
-function whereMentionsColumn(where: unknown, columnName: string): boolean {
-  const seen = new Set<unknown>();
-  const walk = (node: unknown): boolean => {
-    if (node === null || typeof node !== 'object' || seen.has(node)) return false;
-    seen.add(node);
-    const rec = node as Record<string, unknown>;
-    if (rec.name === columnName && typeof rec.columnType === 'string') return true;
-    // NEVER follow `table`: every column carries a back-reference to its table,
-    // which carries EVERY column — so a naive walk from `eq(users.id, …)`
-    // reaches email_verified_at and the assertion passes with the guard
-    // deleted. Verified by mutation: without this, dropping isNotNull() from
-    // the query still read green.
-    return Object.entries(rec).filter(([k]) => k !== 'table').some(([, v]) => walk(v));
-  };
-  return walk(where);
-}
-
 describe('worker registration', () => {
   it('does not construct a Worker when no provider is configured (the dark default)', async () => {
     laneConfigured.value = false;
@@ -348,7 +325,7 @@ describe('sweep', () => {
 describe('test send (spec §6.1)', () => {
   it('sends from the support identity local part, to the requesting user, tagged as a test', async () => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([{ localPart: 'help' }]);
 
     await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('sent');
@@ -363,7 +340,7 @@ describe('test send (spec §6.1)', () => {
 
   it('falls back to a `test` local part when no support identity exists', async () => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([]);
     await runTestSend(DOMAIN_ID, USER_ID);
     expect(providerMock.send).toHaveBeenCalledWith(expect.objectContaining({ from: 'test@mail.acme.test' }));
@@ -376,7 +353,7 @@ describe('test send (spec §6.1)', () => {
     ['message_rejected'],
   ])('records a %s refusal verbatim and does not verify anything', async (kind) => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([]);
     providerMock.send.mockRejectedValue(
       new PartnerLaneSendFailure({ kind, detail: '550 5.7.60 sender not allowed' } as never),
@@ -397,7 +374,7 @@ describe('test send (spec §6.1)', () => {
     ['a non-PartnerLaneSendFailure exception', new Error('ECONNRESET')],
   ])('rethrows %s instead of recording a failed test', async (_label, err) => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([]);
     providerMock.send.mockRejectedValue(err);
 
@@ -409,21 +386,32 @@ describe('test send (spec §6.1)', () => {
   // Spec §7: the test goes to the calling user's own VERIFIED address. Without
   // this the test send is a free relay to any address a partner adds to their
   // own account, from a domain nobody has proven they control.
-  it('requires the recipient to have a verified email address', async () => {
+  it('never sends for a missing/inactive/foreign recipient, and writes nothing', async () => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
-    execRows.push([]);                       // the guarded lookup finds nobody
+    execRows.push([]);                       // the scoped lookup finds nobody
     execRows.push([]);
 
     await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('skipped');
     expect(providerMock.send).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+  });
 
-    // …and prove the guard is IN the query, not merely that the stub returned
-    // nothing: without the emailVerifiedAt term the row above would have been
-    // returned by a real database.
-    expect(
-      selectWheres.some((w) => whereMentionsColumn(w, 'email_verified_at')),
-      'the recipient lookup does not constrain email_verified_at',
-    ).toBe(true);
+  // A user who exists and is active but hasn't verified their own email is
+  // actionable, unlike a missing user — the partner UI polls for a test result,
+  // so silently doing nothing left them stuck. This records a reason instead.
+  it('refuses and records a reason when the recipient exists but is not email-verified', async () => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: null }]);
+    execRows.push([]);
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('refused');
+
+    expect(providerMock.send).not.toHaveBeenCalled();
+    expect(markStaticVerifiedMock).not.toHaveBeenCalled();
+    expect(updates.at(-1)).toMatchObject({
+      lastTestStatus: 'failed',
+      lastTestError: expect.stringContaining('not verified'),
+    });
   });
 
   it('skips a domain that is not sendable, and a static PENDING one is sendable', async () => {
@@ -431,7 +419,7 @@ describe('test send (spec §6.1)', () => {
       vi.clearAllMocks();
       execRows.length = 0;
       execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status }]);
-      execRows.push([{ email: 'tech@acme.test' }]);
+      execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
       execRows.push([]);
       await expect(runTestSend(DOMAIN_ID, USER_ID), status).resolves.toBe('skipped');
       expect(providerMock.send, status).not.toHaveBeenCalled();
@@ -441,7 +429,7 @@ describe('test send (spec §6.1)', () => {
     providerMock.verifiesByDns = false;   // static
     execRows.length = 0;
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'pending' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([]);
     await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('sent');
   });
@@ -449,7 +437,7 @@ describe('test send (spec §6.1)', () => {
   it('an accepted static test send verifies the row THERE, not through a sync job', async () => {
     providerMock.verifiesByDns = false;
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'pending' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([]);
 
     await runTestSend(DOMAIN_ID, USER_ID);
@@ -471,7 +459,7 @@ describe('test send (spec §6.1)', () => {
   // (its amendment 7); this is the assertion that it landed.
   it('consumes a cap slot for the domain partner before sending', async () => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([{ localPart: 'help' }]);
 
     await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('sent');
@@ -482,7 +470,7 @@ describe('test send (spec §6.1)', () => {
   it('records the cap refusal on the row and never reaches the provider', async () => {
     tryCountPartnerLaneSendMock.mockResolvedValue(false);
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([{ localPart: 'help' }]);
 
     // 'refused', not 'skipped': every skipped branch writes nothing to the row,
@@ -500,7 +488,7 @@ describe('test send (spec §6.1)', () => {
   // pressing "test" on a failed domain.
   it('checks the cap AFTER the sendable guard', async () => {
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'failed' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([{ localPart: 'help' }]);
 
     await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('skipped');
@@ -514,7 +502,7 @@ describe('test send (spec §6.1)', () => {
     tryCountPartnerLaneSendMock.mockResolvedValue(false);
     providerMock.verifiesByDns = false;
     execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'pending' }]);
-    execRows.push([{ email: 'tech@acme.test' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
     execRows.push([]);
 
     await expect(runTestSend(DOMAIN_ID, USER_ID)).resolves.toBe('refused');
