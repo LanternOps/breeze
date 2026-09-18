@@ -121,31 +121,14 @@ func (r *bashRenderer) stepHeredoc(f *bashFrame) error {
 		return nil
 	}
 
-	switch {
-	case r.cur() == '\\':
-		r.copyN(2)
-	case r.hasPrefix("$(("):
-		r.copyN(3)
-		r.push(&bashFrame{kind: bfArith, closer: "))"})
-	case r.hasPrefix("$("):
-		r.copyN(2)
-		r.push(&bashFrame{kind: bfCode, subst: true})
-	case r.hasPrefix("${"):
-		return r.scanParamExpansion()
-	case r.hasPrefix("$["):
-		r.copyN(2)
-		r.push(&bashFrame{kind: bfArith, closer: "]"})
-	case r.cur() == '`':
-		// Backtick command substitution is performed in an unquoted heredoc
-		// exactly as it is in script text, so the body is a CODE frame with its
-		// own simple-command state: `eval`, an array subscript and `declare -i`
-		// all re-interpret the value in there. Copying the backtick as plain
-		// text emitted the `${NAME}` interpolation into a code context instead.
-		r.copyByte()
-		r.push(&bashFrame{kind: bfCode, backtick: true})
-	default:
-		r.copyByte()
+	// An unquoted heredoc body performs the same expansions as script text —
+	// command substitution (including backticks, whose body is a CODE frame
+	// with its own simple-command state), arithmetic and nested `${…}` — so it
+	// routes through the shared dispatcher rather than a local copy of the list.
+	if handled, err := r.stepNested(f); handled {
+		return err
 	}
+	r.copyByte()
 	return nil
 }
 

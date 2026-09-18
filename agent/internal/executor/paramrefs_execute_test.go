@@ -477,6 +477,70 @@ func TestExecuteRendererBypassCanaries(t *testing.T) {
 			script:     func(string) string { return "[[ -n `a[{{i}}]=1` ]]\n" },
 			value:      func(c string) string { return "z[$(touch " + c + ")]" },
 		},
+		// The word body of a `${name<op>word}` expansion is a word-ish context:
+		// bash performs command substitution, arithmetic and nested expansion
+		// in it, so every one of these executed while the renderer copied the
+		// remainder of the expansion through raw.
+		{
+			name:       "bash param expansion default value backtick eval",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "echo ${u:-`eval {{i}}`}\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash param expansion default value command substitution eval",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "echo ${u:-$(eval {{i}})}\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash param expansion assign-default command substitution eval",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "echo ${u:=$(eval {{i}})}\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash param expansion alternate value command substitution eval",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "u=1\necho ${u:+$(eval {{i}})}\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash param expansion pattern replacement backtick eval",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "v=aa\necho ${v/a/`eval {{i}}`}\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash param expansion default value arithmetic",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "echo ${u:-$(( {{i}} ))}\n" },
+			value:      func(c string) string { return "z[$(touch " + c + ")]" },
+		},
+		{
+			name:       "bash param expansion default value nested offset",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "y=abcdefgh\necho ${u:-${y:{{i}}}}\n" },
+			value:      func(c string) string { return "z[$(touch " + c + ")]" },
+		},
+		{
+			name:       "bash param expansion default value nested subscript",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "declare -a arr=(1 2)\necho ${u:-${arr[{{i}}]}}\n" },
+			value:      func(c string) string { return "z[$(touch " + c + ")]" },
+		},
+		{
+			name:       "bash param expansion backtick eval inside double quotes",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "echo \"${u:-`eval {{i}}`}\"\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
+		{
+			name:       "bash param expansion backtick eval inside an unquoted heredoc",
+			scriptType: ScriptTypeBash,
+			script:     func(string) string { return "cat <<EOF\n${u:-`eval {{i}}`}\nEOF\n" },
+			value:      func(c string) string { return "touch " + c },
+		},
 		{
 			// The nested `'}'` string is field data to Python, so the field is
 			// still open where the placeholder lands. The payload is built from

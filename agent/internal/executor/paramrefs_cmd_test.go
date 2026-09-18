@@ -147,6 +147,59 @@ func TestRenderCMDContexts(t *testing.T) {
 			wantErr:     true,
 			errContains: "for /f",
 		},
+		// The in-clause scan has to be quote- and caret-aware, exactly like the
+		// statement scan: a `)` that cmd does NOT read as the end of the clause
+		// — one escaped with a caret, or one inside the clause's own quoted
+		// command string — used to end the guard's view of the clause and let
+		// the value render into a region cmd parses as a command.
+		{
+			name:        "a caret-escaped paren does not end the for /f in-clause",
+			script:      `for /f "tokens=*" %%a in ('echo ^) {{p}}') do @echo %%a`,
+			params:      p,
+			wantErr:     true,
+			errContains: "for /f",
+		},
+		{
+			name:        "a quoted paren does not end the for /f in-clause",
+			script:      `for /f "tokens=*" %%a in ('echo )' {{p}}) do @echo %%a`,
+			params:      p,
+			wantErr:     true,
+			errContains: "for /f",
+		},
+		{
+			name:        "a double-quoted paren does not end the for /f in-clause",
+			script:      `for /f %%a in ("a)b" {{p}}) do @echo %%a`,
+			params:      p,
+			wantErr:     true,
+			errContains: "for /f",
+		},
+		{
+			name:        "a nested paren does not end the for /f in-clause",
+			script:      `for /f %%a in ((a) {{p}}) do @echo %%a`,
+			params:      p,
+			wantErr:     true,
+			errContains: "for /f",
+		},
+		{
+			// Positive control: the clause really does close, so the body is
+			// not condemned by the quote- and caret-aware scan either.
+			name:   "a body after a clause holding a quoted paren is fine",
+			script: `for /f "tokens=*" %%a in ('echo )') do @echo %%a {{p}}`,
+			params: p,
+			want:   `for /f "tokens=*" %%a in ('echo )') do @echo %%a !BREEZE_PARAM_P!`,
+		},
+		{
+			name:   "a for-in set with no in-clause does not condemn the line",
+			script: `for %%a in (1 2) do @echo %%a {{p}}`,
+			params: p,
+			want:   `for %%a in (1 2) do @echo %%a !BREEZE_PARAM_P!`,
+		},
+		{
+			name:   "the word in outside a for statement is not an in-clause",
+			script: `echo in (x) {{p}}`,
+			params: p,
+			want:   `echo in (x) !BREEZE_PARAM_P!`,
+		},
 		{
 			name:   "a doubled caret at end of line is not a continuation",
 			script: "echo ^^\necho {{p}}\n",
