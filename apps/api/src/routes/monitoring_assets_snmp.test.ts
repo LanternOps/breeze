@@ -129,7 +129,12 @@ vi.mock('../services/snmpTemplateSuggest', () => ({
   suggestTemplate: vi.fn(),
 }));
 
+vi.mock('../jobs/snmpWorker', () => ({
+  enqueueSnmpPoll: vi.fn().mockResolvedValue('job-1'),
+}));
+
 import { suggestTemplate } from '../services/snmpTemplateSuggest';
+import { enqueueSnmpPoll } from '../jobs/snmpWorker';
 
 import { monitoringRoutes } from './monitoring';
 import { db } from '../db';
@@ -153,6 +158,8 @@ describe('monitoring routes', () => {
     vi.mocked(db.insert).mockReset();
     vi.mocked(db.update).mockReset();
     vi.mocked(db.delete).mockReset();
+    vi.mocked(enqueueSnmpPoll).mockReset();
+    vi.mocked(enqueueSnmpPoll).mockResolvedValue('job-1');
     app = new Hono();
     app.route('/monitoring', monitoringRoutes);
   });
@@ -879,7 +886,7 @@ describe('monitoring routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, templateId: 'tpl-old' }]) }),
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-2222-2222-2222-222222222222' }]) }),
             }),
           }),
         } as never);
@@ -1011,7 +1018,7 @@ describe('monitoring routes', () => {
     it('keeps a template null after an explicit clear followed by an unrelated edit that omits the key', async () => {
       // Round 1: explicit clear — templateId: null is provided, so it's
       // written as null (existing "null-as-unset is preserved" contract).
-      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'tpl-old', isActive: true });
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-2222-2222-2222-222222222222', isActive: true });
       const clearSet = vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: null, pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
@@ -1050,6 +1057,167 @@ describe('monitoring routes', () => {
       expect((await res.json()).error).toBe('No fields to update');
       expect(suggestTemplate).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('immediate poll on template change (#6209)', () => {
+    const asset = {
+      id: ASSET_ID, orgId: ORG_ID, siteId: SITE_ALLOWED, hostname: 'switch-01', ipAddress: '10.0.0.5',
+    };
+
+    function mockPutChain(existing: Record<string, unknown> | null, validatesTemplateId = false) {
+      const chain = vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([asset]) }),
+          }),
+        }),
+      } as never);
+      if (validatesTemplateId) {
+        chain.mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'aaaaaaaa-9999-9999-9999-999999999999' }]),
+            }),
+          }),
+        } as never);
+      }
+      chain.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(existing ? [existing] : []) }),
+          }),
+        }),
+      } as never);
+    }
+
+    const put = (body: unknown) => app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      body: JSON.stringify(body),
+    });
+
+    it('PUT: enqueues an immediate poll when the row is created for the first time', async () => {
+      mockPutChain(null, true);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:mock', username: null, templateId: 'aaaaaaaa-1111-1111-1111-111111111111', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: 'public', templateId: 'aaaaaaaa-1111-1111-1111-111111111111' });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).toHaveBeenCalledTimes(1);
+      expect(enqueueSnmpPoll).toHaveBeenCalledWith(SNMP_DEVICE_ID, ORG_ID);
+    });
+
+    it('PUT: enqueues an immediate poll when templateId changes on an existing row', async () => {
+      mockPutChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-2222-2222-2222-222222222222', community: 'enc:v1:old', isActive: true }, true);
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:old', username: null, templateId: 'aaaaaaaa-3333-3333-3333-333333333333', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: '********', templateId: 'aaaaaaaa-3333-3333-3333-333333333333' });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).toHaveBeenCalledTimes(1);
+      expect(enqueueSnmpPoll).toHaveBeenCalledWith(SNMP_DEVICE_ID, ORG_ID);
+    });
+
+    it('PUT: does not enqueue a poll when templateId is unchanged', async () => {
+      mockPutChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-4444-4444-4444-444444444444', community: 'enc:v1:old', isActive: true }, true);
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:old', username: null, templateId: 'aaaaaaaa-4444-4444-4444-444444444444', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: '********', templateId: 'aaaaaaaa-4444-4444-4444-444444444444' });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).not.toHaveBeenCalled();
+    });
+
+    function mockPatchChain(existing: Record<string, unknown>, validatesTemplateId = false) {
+      const chain = vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([asset]) }),
+          }),
+        }),
+      } as never);
+      if (validatesTemplateId) {
+        chain.mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'aaaaaaaa-9999-9999-9999-999999999999' }]),
+            }),
+          }),
+        } as never);
+      }
+      chain.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([existing]) }),
+          }),
+        }),
+      } as never);
+    }
+
+    const patch = (body: unknown) => app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      body: JSON.stringify(body),
+    });
+
+    it('PATCH: enqueues an immediate poll when templateId changes', async () => {
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-2222-2222-2222-222222222222', isActive: true }, true);
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: 'aaaaaaaa-3333-3333-3333-333333333333', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await patch({ templateId: 'aaaaaaaa-3333-3333-3333-333333333333' });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).toHaveBeenCalledTimes(1);
+      expect(enqueueSnmpPoll).toHaveBeenCalledWith(SNMP_DEVICE_ID, ORG_ID);
+    });
+
+    it('PATCH: does not enqueue a poll when templateId is omitted (unrelated field edit)', async () => {
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-2222-2222-2222-222222222222', isActive: true });
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: 'aaaaaaaa-2222-2222-2222-222222222222', pollingInterval: 600, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await patch({ pollingInterval: 600 });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).not.toHaveBeenCalled();
+    });
+
+    it('PATCH: does not enqueue a poll when templateId is set to its current value', async () => {
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'aaaaaaaa-4444-4444-4444-444444444444', isActive: true }, true);
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: 'aaaaaaaa-4444-4444-4444-444444444444', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
+
+      const res = await patch({ templateId: 'aaaaaaaa-4444-4444-4444-444444444444' });
+
+      expect(res.status).toBe(200);
+      expect(enqueueSnmpPoll).not.toHaveBeenCalled();
     });
   });
 });
