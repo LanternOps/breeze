@@ -124,6 +124,15 @@ control test to prove they bite.
 a 30-minute rerun on every PR they hit, repo-wide. Quarantine or fix; a flake
 that reruns weekly is a standing tax on merge throughput.
 
+### 7. Fix the forge-check recipe in `CLAUDE.md`
+
+Step 6 of the tenant-table workflow says to forge a cross-tenant insert as
+`breeze_app`. Written as `INSERT … SELECT id FROM partners LIMIT 1` under a
+foreign scope it prints `INSERT 0 0` — RLS filters the row *source* before
+`WITH CHECK` ever runs — and reads as a pass. The recipe needs a literal
+foreign `partner_id`/`org_id` so the policy is actually exercised (W06 hit
+this; the real check produced `new row violates row-level security policy`).
+
 ## What not to change
 
 - **Paste-complete plans.** The planning hours were repaid: four waves ran with
