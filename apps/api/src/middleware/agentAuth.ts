@@ -481,9 +481,10 @@ const CORE_AGENT_ACTION_INDEX = CORE_AGENT_MOUNT_SEGMENTS.length + 1;
  * - commands / commands/:id/result: the poll + ack pair
  * - rotate-token/confirm: lets an agent that already persisted a staged
  *   credential finish, so a mid-stage rotation can't lock it out mid-drain.
- *   The MINT half (`rotate-token`) is allowed for a TENANT drain only — see
- *   DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS for why a removed device must not
- *   be able to mint credentials that outlive its window.
+ *   The MINT half (`rotate-token`) is allowed for NEITHER drain kind as of
+ *   #3997 — see DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS for why neither a
+ *   removed device nor an offboarding tenant may mint credentials that
+ *   outlive the drain window.
  * - logs: post-mortem evidence for devices that never drain
  * Everything else (inventory, patches, WS-adjacent, extension gateway) is
  * refused with an explicit 403 so a departing customer's — or a removed

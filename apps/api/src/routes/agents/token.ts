@@ -81,15 +81,27 @@ const ROTATION_CONFLICT_CODES = {
   PENDING_ROTATION_EXPIRED: 'pending_rotation_expired',
   /** RETRYABLE. A staged rotation must be confirmed before a new one starts. */
   PENDING_ROTATION_UNCONFIRMED: 'pending_rotation_unconfirmed',
-  /**
-   * RETRYABLE (#3997). The tenant is offboarding or the device is being
-   * uninstalled, so no NEW credential may be minted — nothing would revoke it
-   * if the drain is aborted or the device restored. An agent that already
-   * staged a rotation finishes it via `/rotate-token/confirm`, which is not
-   * gated on this. Retryable because the condition clears when the drain does.
-   */
-  DRAINING: 'tenant_or_device_draining',
 } as const;
+
+/**
+ * #3997 — the drain refusal code, deliberately NOT a member of
+ * `ROTATION_CONFLICT_CODES` above.
+ *
+ * That vocabulary is the #2894 contract for 409 rotation CONFLICTS: every
+ * member describes the state of a rotation the agent has to reconcile, every
+ * member ships as a 409, and every member is classified terminal-or-retryable
+ * against a hardcoded switch in `agent/pkg/api/client.go` (guarded by
+ * token.conflictCodes.test.ts). A drain refusal is none of those things. It is
+ * an AUTHORIZATION refusal — 403, matching the middleware's own
+ * `tenant_offboarding` 403 for the same condition — it says nothing about any
+ * rotation's state, and the agent has nothing to reconcile: there is no staged
+ * set to keep or discard, so terminal-vs-retryable does not apply.
+ *
+ * Registering it in the 409 vocabulary would have put a 403 inside a
+ * 409-only contract and forced a Go-side terminal classification for a
+ * distinction that has no meaning here.
+ */
+export const ROTATION_REFUSED_DRAINING_CODE = 'tenant_or_device_draining';
 
 tokenRoutes.post('/:id/rotate-token', async (c) => {
   const agentId = c.req.param('id');
@@ -115,7 +127,7 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
     return c.json(
       {
         error: 'Credential rotation is unavailable while this tenant or device is draining',
-        code: ROTATION_CONFLICT_CODES.DRAINING,
+        code: ROTATION_REFUSED_DRAINING_CODE,
       },
       403
     );
