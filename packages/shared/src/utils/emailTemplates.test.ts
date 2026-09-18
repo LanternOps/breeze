@@ -4,6 +4,7 @@ import {
   varsForEmailTemplate,
   emailTemplateLabel,
   emailTemplateHasCta,
+  isBlankEmailTemplateHtml,
 } from './emailTemplates';
 
 describe('email template catalog', () => {
@@ -54,5 +55,14 @@ describe('email template catalog', () => {
     expect(emailTemplateHasCta('ticket_comment_notification')).toBe(true);
     expect(emailTemplateHasCta('ticket_autoresponse')).toBe(false);
     expect(emailTemplateHasCta('ticket_resolved')).toBe(true);
+  });
+
+  it('treats empty TipTap and sanitize-html bodies as blank', () => {
+    expect(isBlankEmailTemplateHtml('')).toBe(true);
+    expect(isBlankEmailTemplateHtml('   ')).toBe(true);
+    expect(isBlankEmailTemplateHtml('<p></p>')).toBe(true);
+    expect(isBlankEmailTemplateHtml('<p><br></p>')).toBe(true);
+    expect(isBlankEmailTemplateHtml('<p><br /></p>')).toBe(true);
+    expect(isBlankEmailTemplateHtml('<p>Hi</p>')).toBe(false);
   });
 });

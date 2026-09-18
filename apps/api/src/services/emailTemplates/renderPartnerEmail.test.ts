@@ -156,8 +156,61 @@ describe('renderPartnerEmail', () => {
       },
     }));
     expect(out.html).not.toMatch(/href="[^"]*<a[\s>]/i);
-    expect(out.html).not.toContain('%%BREEZE_CTA_BUTTON%%');
+    expect(out.html).not.toMatch(/%%BREEZE_CTA_/);
     expect(out.html).toContain(`href="${PORTAL_HREF}"`);
+  });
+
+  it('does not splice bodyBeforeCta into an href that held {{cta_button}}', () => {
+    const out = renderPartnerEmail(commentArgs({
+      custom: {
+        subject: null,
+        heading: null,
+        buttonLabel: null,
+        html: '<p><a href="{{cta_button}}">click</a></p>',
+      },
+      bodyBeforeCta: '<p style="margin: 0">A PDF copy is attached.</p>',
+    }));
+    expect(out.html).not.toMatch(/href="[^"]*<a[\s>]/i);
+    expect(out.html).not.toMatch(/href="<p/i);
+    expect(out.html).not.toMatch(/%%BREEZE_CTA_/);
+    expect(out.html).toContain('A PDF copy is attached.');
+    expect(out.html).toContain(`href="${PORTAL_HREF}"`);
+  });
+
+  it('treats empty <p></p> custom html as the catalog default', () => {
+    const out = renderPartnerEmail(commentArgs({
+      custom: { subject: null, heading: null, buttonLabel: null, html: '<p></p>' },
+    }));
+    expect(out.html).toContain('Your ticket has a new reply. Sign in to the portal to view it.');
+  });
+
+  it('does not turn a merge value equal to the old CTA sentinel into a button', () => {
+    const out = renderPartnerEmail(commentArgs({
+      custom: {
+        subject: null,
+        heading: null,
+        buttonLabel: null,
+        html: '<p>{{ticket_subject}}</p>',
+      },
+      vars: { ticket_subject: '%%BREEZE_CTA_BUTTON%%' },
+    }));
+    expect(out.html).toContain('%%BREEZE_CTA_BUTTON%%');
+    const buttons = out.html.match(/View ticket/g) ?? [];
+    expect(buttons).toHaveLength(1);
+  });
+
+  it('strips javascript hrefs that hide the scheme with a NBSP', () => {
+    const out = renderPartnerEmail(commentArgs({
+      custom: {
+        subject: null,
+        heading: null,
+        buttonLabel: null,
+        html: '<a href="{{ticket_subject}}">x</a>',
+      },
+      vars: { ticket_subject: 'java\u00a0script:alert(1)' },
+    }));
+    expect(out.html).not.toMatch(/javascript:/i);
+    expect(out.html).not.toMatch(/href="java/i);
   });
 
   it('omits the empty resolution_note paragraph from default resolved mail', () => {

@@ -666,7 +666,7 @@ describe('handleTicketEvent', () => {
     expect(html).toContain('Your ticket has been resolved.');
     expect(html).toContain('Fixed');
     expect(html).not.toContain('href="https://example.test/portal/tickets/t-1"');
-    expect(html).not.toContain('%%BREEZE_CTA_BUTTON%%');
+    expect(html).not.toMatch(/%%BREEZE_CTA_/);
   });
 
   it('ticket.updated is an explicit no-op — no ticket lookup, no insert, no email', async () => {

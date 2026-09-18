@@ -1,6 +1,7 @@
 import {
   type EmailTemplateId,
   emailTemplateHasCta,
+  isBlankEmailTemplateHtml,
   renderTemplate,
   type TicketTemplateVars,
   varsForEmailTemplate,
@@ -41,11 +42,16 @@ export interface RenderPartnerEmailArgs {
    * extra sanitizer loss; DO still wrap the final document in renderLayout.
    */
   inboundAutoresponseFallback?: { subject: string | null; body: string | null };
+  ctaLabel?: string;
+  bodyBeforeCta?: string;
+  bodyAfterCta?: string;
 }
 
 const CTA_TOKEN_RE = /\{\{\s*cta_button\s*\}\}/g;
-// Not a {{merge}} token, so renderTemplate will not eat it. Survives sanitize-html as text.
-const CTA_SENTINEL = '%%BREEZE_CTA_BUTTON%%';
+
+function makeCtaSentinel(): string {
+  return `%%BREEZE_CTA_${crypto.randomUUID()}%%`;
+}
 
 /** Closed catalog only — leftover keys like comment / agent_name must not substitute. */
 function catalogVars(id: EmailTemplateId, vars: Record<string, string>): Record<string, string> {
@@ -77,22 +83,21 @@ function isSafeHttpUrl(url: string): boolean {
   }
 }
 
-function renderRichInner(source: string, escaped: Record<string, string>): string {
+function renderRichInner(source: string, escaped: Record<string, string>, sentinel: string): string {
   const sanitized = sanitizeRichTextHtml(source);
-  const slotted = sanitized.replace(CTA_TOKEN_RE, CTA_SENTINEL);
+  const slotted = sanitized.replace(CTA_TOKEN_RE, sentinel);
   const substituted = substitute(slotted, escaped);
   return sanitizeRichTextHtml(substituted);
 }
 
-/** Drop the CTA sentinel from quoted attribute values so applyCta cannot
- *  splice an anchor into href/src. Text-position sentinels are left for
- *  button replacement. */
-function stripSentinelFromAttributes(html: string): string {
+/** Drop the CTA sentinel from quoted attribute values so splice/applyCta cannot
+ *  splice HTML into href/src. Text-position sentinels are left for the button. */
+function stripSentinelFromAttributes(html: string, sentinel: string): string {
   return html
     .replace(/(\s[A-Za-z_:][\w:.-]*=)("[^"]*")/g, (_m, eq: string, quoted: string) =>
-      eq + quoted.replaceAll(CTA_SENTINEL, ''))
+      eq + quoted.replaceAll(sentinel, ''))
     .replace(/(\s[A-Za-z_:][\w:.-]*=)('[^']*')/g, (_m, eq: string, quoted: string) =>
-      eq + quoted.replaceAll(CTA_SENTINEL, ''));
+      eq + quoted.replaceAll(sentinel, ''));
 }
 
 function applyCta(
@@ -100,16 +105,25 @@ function applyCta(
   id: EmailTemplateId,
   ctaUrl: string | undefined,
   label: string,
+  sentinel: string,
 ): string {
-  inner = stripSentinelFromAttributes(inner);
-  const slotted = inner.includes(CTA_SENTINEL);
+  inner = stripSentinelFromAttributes(inner, sentinel);
+  const slotted = inner.includes(sentinel);
   const safeUrl = ctaUrl && isSafeHttpUrl(ctaUrl) ? ctaUrl : null;
   if (emailTemplateHasCta(id) && safeUrl) {
     const button = renderButton(label, safeUrl);
-    if (slotted) return inner.replaceAll(CTA_SENTINEL, button);
+    if (slotted) return inner.replaceAll(sentinel, button);
     return `${inner}${button}`;
   }
-  return inner.replaceAll(CTA_SENTINEL, '');
+  return inner.replaceAll(sentinel, '');
+}
+
+function spliceBeforeCta(inner: string, beforeCta: string | undefined, sentinel: string): string {
+  if (!beforeCta) return inner;
+  if (inner.includes(sentinel)) {
+    return inner.replace(sentinel, `${beforeCta}${sentinel}`);
+  }
+  return `${inner}${beforeCta}`;
 }
 
 export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: string; html: string } {
@@ -118,7 +132,9 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: str
   const customSubject = args.custom?.subject?.trim() ? args.custom.subject : null;
   const customHeading = args.custom?.heading?.trim() ? args.custom.heading : null;
   const customButtonLabel = args.custom?.buttonLabel?.trim() ? args.custom.buttonLabel : null;
-  const customHtml = args.custom?.html?.trim() ? args.custom.html : null;
+  const customHtml = args.custom?.html && !isBlankEmailTemplateHtml(args.custom.html)
+    ? args.custom.html
+    : null;
 
   const inbound = args.id === 'ticket_autoresponse' && !customSubject && !customHtml
     ? args.inboundAutoresponseFallback
@@ -141,16 +157,20 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: str
     ? substitute(customButtonLabel, vars)
     : defaultButtonLabel(args.id);
 
+  const sentinel = makeCtaSentinel();
   let inner: string;
   if (customHtml) {
-    inner = renderRichInner(customHtml, escaped);
+    inner = renderRichInner(customHtml, escaped, sentinel);
   } else if (inboundBody) {
     inner = `<p>${substitute(escapeHtml(inboundBody), escaped).replace(/\r?\n/g, '<br>')}</p>`;
   } else {
-    inner = renderRichInner(defaultHtml(args.id, vars), escaped);
+    inner = renderRichInner(defaultHtml(args.id, vars), escaped, sentinel);
   }
 
-  inner = applyCta(inner, args.id, args.ctaUrl, buttonLabel);
+  inner = stripSentinelFromAttributes(inner, sentinel);
+  inner = spliceBeforeCta(inner, args.bodyBeforeCta, sentinel);
+  inner = applyCta(inner, args.id, args.ctaUrl, buttonLabel, sentinel);
+  if (args.bodyAfterCta) inner = `${inner}${args.bodyAfterCta}`;
 
   return {
     subject,

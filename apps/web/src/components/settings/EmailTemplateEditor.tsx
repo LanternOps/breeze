@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  canonicalizeHrefForSchemeCheck,
   emailTemplateHasCta,
   emailTemplateLabel,
   renderTemplate,
@@ -48,7 +49,7 @@ const PREVIEW_DISCARD_TAGS = new Set([
 ]);
 
 function isSafePreviewHref(href: string): boolean {
-  const trimmed = href.replace(/[\x00-\x20]/g, '');
+  const trimmed = canonicalizeHrefForSchemeCheck(href);
   if (trimmed.startsWith('//')) return false;
   const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
   if (!scheme) return true;

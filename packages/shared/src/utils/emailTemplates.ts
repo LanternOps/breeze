@@ -69,3 +69,10 @@ export function emailTemplateLabel(id: EmailTemplateId): string {
 export function emailTemplateHasCta(id: EmailTemplateId): boolean {
   return HAS_CTA_BY_ID[id];
 }
+
+/** Empty TipTap / sanitize-html bodies that must send as catalog default, not a blank letter. */
+export function isBlankEmailTemplateHtml(html: string): boolean {
+  const trimmed = html.trim();
+  if (!trimmed) return true;
+  return /^<p>(?:\s|<br\s*\/?>)*<\/p>$/i.test(trimmed);
+}
