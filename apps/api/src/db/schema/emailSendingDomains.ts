@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, varchar, boolean, integer, timestamp, jsonb, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, varchar, boolean, integer, bigint, date, timestamp, jsonb, uniqueIndex, index, primaryKey } from 'drizzle-orm/pg-core';
 import { partners } from './orgs';
 import { users } from './users';
 
@@ -94,6 +94,35 @@ export const emailProviderDomainReleases = pgTable('email_provider_domain_releas
   index('email_provider_domain_releases_due_idx').on(t.nextAttemptAt)
 ]);
 
+/**
+ * Per-partner, per-UTC-day delivery counters (spec §9.3). Partner-axis (RLS
+ * shape 3), registered in PARTNER_TENANT_TABLES only.
+ *
+ * Every counter is written by the delivery webhook from a provider event, never
+ * by the send path — W04 forbids the send path from writing a partner-axis
+ * table, and `sent` therefore comes from Resend's `email.sent` event rather than
+ * from sendOnPartnerLane.
+ *
+ * NO domain_id dimension: the spec's thresholds and the kill switch are
+ * per-partner, and an event can outlive the local domain row.
+ */
+export const partnerSendingDailyStats = pgTable('partner_sending_daily_stats', {
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  day: date('day').notNull(),
+  sent: bigint('sent', { mode: 'number' }).notNull().default(0),
+  delivered: bigint('delivered', { mode: 'number' }).notNull().default(0),
+  bounced: bigint('bounced', { mode: 'number' }).notNull().default(0),
+  complained: bigint('complained', { mode: 'number' }).notNull().default(0),
+  failed: bigint('failed', { mode: 'number' }).notNull().default(0),
+  suppressed: bigint('suppressed', { mode: 'number' }).notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+}, (t) => [
+  primaryKey({ columns: [t.partnerId, t.day] }),
+  index('partner_sending_daily_stats_day_idx').on(t.day)
+]);
+
 export type PartnerSendingDomain = typeof partnerSendingDomains.$inferSelect;
 export type PartnerSenderIdentity = typeof partnerSenderIdentities.$inferSelect;
 export type EmailProviderDomainRelease = typeof emailProviderDomainReleases.$inferSelect;
+export type PartnerSendingDailyStat = typeof partnerSendingDailyStats.$inferSelect;
