@@ -30,8 +30,12 @@
     "desktopUnavailable": "Desktop Unavailable",
     "dismiss": "Dismiss",
     "downloadFor": "Download for {{platform}}",
+    "ending": {
+      "description": "The previous session is still shutting down on the device. Wait a moment and try again.",
+      "title": "Session still ending"
+    },
     "errors": {
-      "agentUpgradeRequired": "Remote desktop needs an agent update on this device (session revocation lease support). The agent updates itself automatically — this usually clears within a minute. Terminal and file transfer are unaffected.",
+      "agentUpgradeRequired": "Remote desktop needs an agent update on this device (session revocation lease and start fence support). The agent updates itself automatically — this usually clears within a minute. Terminal and file transfer are unaffected.",
       "connectionFailed": "Connection failed",
       "createDesktopCode": "Failed to create desktop connect code",
       "createDesktopSession": "Failed to create desktop session",
@@ -664,7 +668,8 @@
       "connecting": "Connecting...",
       "disconnected": "Disconnected",
       "failed": "Failed",
-      "pending": "Pending"
+      "pending": "Pending",
+      "teardownPending": "Ending (awaiting device)"
     },
     "subtitle": "Remote access audit log",
     "title": "Session History",
@@ -700,6 +705,7 @@
       "timeline": "Timeline"
     },
     "subtitle": "View and audit remote access sessions",
+    "teardownPending": "Awaiting device confirmation",
     "title": "Session History",
     "viewDevice": "View Device",
     "viewRecording": "View Recording"

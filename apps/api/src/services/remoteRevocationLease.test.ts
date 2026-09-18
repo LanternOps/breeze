@@ -11,6 +11,9 @@ vi.mock('./remoteAccessPolicy', () => ({
     maxSessionDurationHours: 8,
   })),
 }));
+vi.mock('./mfaPolicy', () => ({
+  getEffectiveMfaPolicy: vi.fn(async () => ({ required: false })),
+}));
 vi.mock('../db', () => ({
   db: {},
   runOutsideDbContext: vi.fn(async (fn: () => unknown) => fn()),
@@ -31,6 +34,8 @@ import {
   type RevocationRecheckRow,
 } from './remoteRevocationLease';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
+import { getEffectiveMfaPolicy } from './mfaPolicy';
+import { afterEach } from 'vitest';
 
 const NOW = Date.parse('2026-10-15T12:00:00.000Z');
 
@@ -46,6 +51,9 @@ function row(overrides: Partial<RevocationRecheckRow> = {}): RevocationRecheckRo
       startedAt: new Date(NOW - 60_000),
       createdAt: new Date(NOW - 120_000),
       permissionsEpochSnapshot: 7,
+      desktopStartGeneration: 4n,
+      terminalGeneration: null,
+      terminationPhase: 'none',
     },
     device: {
       id: 'dev-1',
@@ -53,6 +61,7 @@ function row(overrides: Partial<RevocationRecheckRow> = {}): RevocationRecheckRo
       siteId: 'site-1',
       agentId: 'agent-1',
       revocationLeaseProtocolVersion: 1,
+      desktopFenceProtocolVersion: 1,
     },
     user: {
       status: 'active',
@@ -61,7 +70,7 @@ function row(overrides: Partial<RevocationRecheckRow> = {}): RevocationRecheckRo
       partnerId: 'partner-1',
       mfaProtected: true,
     },
-    orgMembership: { roleId: 'role-1', siteIds: null, forceMfa: false },
+    orgMembership: { roleId: 'role-1', siteIds: null },
     partnerMembership: null,
     sessionOrgUsable: true,
   };
@@ -172,7 +181,7 @@ describe('evaluateRevocationRecheck', () => {
   it('revokes when the device left the caller site ceiling', () => {
     expect(
       evaluateRevocationRecheck(
-        row({ orgMembership: { roleId: 'role-1', siteIds: ['site-9'], forceMfa: false } }),
+        row({ orgMembership: { roleId: 'role-1', siteIds: ['site-9'] } }),
         NOW,
         NOW + 60_000,
       ),
@@ -184,7 +193,7 @@ describe('evaluateRevocationRecheck', () => {
       evaluateRevocationRecheck(
         row({
           device: { ...row().device, siteId: null },
-          orgMembership: { roleId: 'role-1', siteIds: ['site-1'], forceMfa: false },
+          orgMembership: { roleId: 'role-1', siteIds: ['site-1'] },
         }),
         NOW,
         NOW + 60_000,
@@ -202,27 +211,34 @@ describe('evaluateRevocationRecheck', () => {
     ).toEqual({ ok: true });
   });
 
-  it('revokes when the role now forces MFA and the user holds no factor', () => {
+  // #6107: the evaluator no longer reads the role's raw force_mfa. "MFA is
+  // required" is the effective-policy verdict (kill switch, enrolment grace,
+  // org/partner requireMfa) resolved by the caller, so the lease and login
+  // cannot disagree.
+  it('revokes when policy requires MFA and the user holds no factor', () => {
     expect(
       evaluateRevocationRecheck(
-        row({
-          orgMembership: { roleId: 'role-1', siteIds: null, forceMfa: true },
-          user: { ...row().user, mfaProtected: false },
-        }),
+        row({ user: { ...row().user, mfaProtected: false } }),
         NOW,
         NOW + 60_000,
+        true,
       ),
     ).toEqual({ ok: false, reason: 'mfa_required' });
   });
 
-  it('keeps a forced-MFA role renewing while the user still holds a factor', () => {
+  it('keeps a factorless user renewing while policy does not require MFA', () => {
     expect(
       evaluateRevocationRecheck(
-        row({ orgMembership: { roleId: 'role-1', siteIds: null, forceMfa: true } }),
+        row({ user: { ...row().user, mfaProtected: false } }),
         NOW,
         NOW + 60_000,
+        false,
       ),
     ).toEqual({ ok: true });
+  });
+
+  it('keeps renewing under required MFA while the user still holds a factor', () => {
+    expect(evaluateRevocationRecheck(row(), NOW, NOW + 60_000, true)).toEqual({ ok: true });
   });
 
   it('revokes once the hard deadline has passed', () => {
@@ -257,7 +273,6 @@ describe('evaluateRevocationRecheck', () => {
           roleId: 'role-p',
           orgAccess: 'all',
           orgIds: null,
-          forceMfa: false,
         },
         sessionOrgUsable: true,
       });
@@ -302,6 +317,81 @@ describe('evaluateRevocationRecheck', () => {
         reason: 'membership_removed',
       });
     });
+  });
+});
+
+describe('renewRevocationLease fence resync fields (SEC-038 W05)', () => {
+  const liveRedis = () => ({
+    eval: vi.fn(async () =>
+      JSON.stringify({
+        userId: 'user-1',
+        deviceId: 'dev-1',
+        permissionsEpoch: 7,
+        issuedAt: NOW - 25_000,
+        hardDeadline: NOW + 3_600_000,
+      }),
+    ),
+  });
+
+  it('reports the session start generation as a canonical decimal string', async () => {
+    const result = await renewRevocationLease('sess-1', {
+      loadRow: async () =>
+        row({
+          session: {
+            ...row().session,
+            // Above 2^53: must not round-trip through a JS number anywhere.
+            desktopStartGeneration: 9007199254740993n,
+          },
+        } as never),
+      redis: liveRedis() as never,
+      now: () => NOW,
+    });
+    expect(result.status).toBe('renewed');
+    if (result.status !== 'renewed') return;
+    expect(result.startGeneration).toBe('9007199254740993');
+    expect(result.terminationPhase).toBe('none');
+  });
+
+  it('carries the terminal generation onto a revoked verdict', async () => {
+    const result = await renewRevocationLease('sess-1', {
+      loadRow: async () =>
+        row({
+          session: {
+            ...row().session,
+            status: 'ended',
+            terminalGeneration: 12n,
+            terminationPhase: 'pending',
+          },
+        } as never),
+      redis: liveRedis() as never,
+      markRevoked: async () => null,
+      now: () => NOW,
+    });
+    expect(result.status).toBe('revoked');
+    if (result.status !== 'revoked') return;
+    expect(result.terminalGeneration).toBe('12');
+  });
+
+  it('leaves the terminal generation undefined when the session row is unknown', async () => {
+    const result = await renewRevocationLease('sess-1', {
+      loadRow: async () => null,
+      redis: liveRedis() as never,
+      markRevoked: async () => null,
+      now: () => NOW,
+    });
+    expect(result.status).toBe('revoked');
+    if (result.status !== 'revoked') return;
+    expect(result.terminalGeneration).toBeUndefined();
+  });
+
+  it('never reveals another device\'s session generation on a forbidden renew', async () => {
+    const result = await renewRevocationLease('sess-1', {
+      loadRow: async () => row(),
+      expectDeviceId: 'someone-else',
+      redis: liveRedis() as never,
+      now: () => NOW,
+    });
+    expect(result).toEqual({ status: 'forbidden' });
   });
 });
 
@@ -351,6 +441,8 @@ describe('renewRevocationLease', () => {
       hardDeadline: NOW + 3_600_000,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
+      startGeneration: '4',
+      terminationPhase: 'none',
     });
     expect(teardownDisconnectedSessions).not.toHaveBeenCalled();
   });
@@ -375,6 +467,100 @@ describe('renewRevocationLease', () => {
         status: 'disconnected', terminalGeneration: 7n, terminationPhase: 'pending',
       },
     ]);
+  });
+
+  describe('MFA through the effective policy (#6107)', () => {
+    const factorless = (over: Partial<RevocationRecheckRow> = {}) =>
+      row({ user: { ...row().user, mfaProtected: false }, ...over });
+
+    beforeEach(() => {
+      vi.mocked(getEffectiveMfaPolicy).mockReset();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({ required: false } as never);
+    });
+
+    it('renews a factorless user when the policy does not require MFA (kill switch / grace)', async () => {
+      const markRow = vi.fn();
+      const result = await renewRevocationLease('sess-1', {
+        loadRow: async () => factorless(),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+        markRevoked: markRow,
+      });
+      expect(result.status).toBe('renewed');
+      expect(markRow).not.toHaveBeenCalled();
+      expect(getEffectiveMfaPolicy).toHaveBeenCalledWith({
+        scope: 'organization',
+        userId: 'user-1',
+        orgId: 'org-1',
+        partnerId: 'partner-1',
+      });
+    });
+
+    it('revokes a factorless user when the policy requires MFA', async () => {
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({ required: true } as never);
+      const markRow = vi.fn(async () => null);
+      const result = await renewRevocationLease('sess-1', {
+        loadRow: async () => factorless(),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+        markRevoked: markRow,
+      });
+      expect(result).toEqual({ status: 'revoked', reason: 'mfa_required' });
+      expect(markRow).toHaveBeenCalledWith('sess-1', 'mfa_required');
+    });
+
+    it('asks the policy at partner scope for a partner-scoped user', async () => {
+      await renewRevocationLease('sess-1', {
+        loadRow: async () =>
+          factorless({
+            user: { ...row().user, orgId: null, mfaProtected: false },
+            orgMembership: null,
+            partnerMembership: { roleId: 'prole-1', orgAccess: 'all', orgIds: null },
+            sessionOrgUsable: true,
+          }),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+      });
+      expect(getEffectiveMfaPolicy).toHaveBeenCalledWith({
+        scope: 'partner',
+        userId: 'user-1',
+        orgId: null,
+        partnerId: 'partner-1',
+      });
+    });
+
+    it('never consults the policy for a user who holds a factor', async () => {
+      await renewRevocationLease('sess-1', {
+        loadRow: async () => row(),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+      });
+      expect(getEffectiveMfaPolicy).not.toHaveBeenCalled();
+    });
+
+    it('never consults the policy (no grace-grant write) for a session that is revoked anyway', async () => {
+      const result = await renewRevocationLease('sess-1', {
+        loadRow: async () => factorless({ user: { ...row().user, status: 'suspended', mfaProtected: false } }),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+        markRevoked: vi.fn(async () => null),
+      });
+      expect(result).toEqual({ status: 'revoked', reason: 'user_inactive' });
+      expect(getEffectiveMfaPolicy).not.toHaveBeenCalled();
+    });
+
+    it('returns lease_unavailable and does NOT revoke when the policy read throws', async () => {
+      vi.mocked(getEffectiveMfaPolicy).mockRejectedValue(new Error('db down'));
+      const markRow = vi.fn();
+      const result = await renewRevocationLease('sess-1', {
+        loadRow: async () => factorless(),
+        redis: fakeRedis(leaseValue()) as never,
+        now: () => NOW,
+        markRevoked: markRow,
+      });
+      expect(result).toEqual({ status: 'unavailable' });
+      expect(markRow).not.toHaveBeenCalled();
+    });
   });
 
   it('returns lease_unavailable and does NOT mark the session when the recheck query throws', async () => {
@@ -419,6 +605,8 @@ describe('renewRevocationLease', () => {
       hardDeadline: NOW - 60_000 + 8 * 60 * 60 * 1000,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
+      startGeneration: '4',
+      terminationPhase: 'none',
     });
   });
 
@@ -511,5 +699,58 @@ describe('prepareRevocationLeaseForStart', () => {
       renewEverySec: 25,
       graceSec: 90,
     });
+  });
+});
+
+// SEC-038 W06 (#5537): the desktop-fence capability gate mirrors the #5481
+// lease gate — same denial code, same upgrade message — but sits behind
+// REMOTE_DESKTOP_FENCE_REQUIRED, default OFF, so the release that introduces
+// it is a no-op for the fleet until the flag is flipped one release later.
+describe('prepareRevocationLeaseForStart — desktop fence capability gate (SEC-038 W06)', () => {
+  const original = process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+  afterEach(() => {
+    if (original === undefined) delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    else process.env.REMOTE_DESKTOP_FENCE_REQUIRED = original;
+  });
+
+  it('gate off: admits an unfenced agent (fleet no-op on the introducing release)', async () => {
+    delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 0;
+    const result = await prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW });
+    expect(result.ok).toBe(true);
+  });
+
+  it('gate on: refuses an unfenced agent with the agent_upgrade_required code', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 0;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
+  });
+
+  it('gate on: refuses an unknown future fence protocol version rather than assuming forward compatibility', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 2;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
+  });
+
+  it('gate on: admits a fenced agent', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const result = await prepareRevocationLeaseForStart('sess-1', { loadRow: async () => row(), now: () => NOW });
+    expect(result.ok).toBe(true);
+  });
+
+  it('gate on: the lease gate still wins first — a lease-incapable agent is refused regardless of fence', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.revocationLeaseProtocolVersion = 0;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
   });
 });

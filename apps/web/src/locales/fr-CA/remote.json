@@ -30,8 +30,12 @@
     "desktopUnavailable": "Ordinateur de bureau indisponible",
     "dismiss": "Fermer",
     "downloadFor": "Télécharger pour {{platform}}",
+    "ending": {
+      "description": "La session précédente est encore en cours de fermeture sur l’appareil. Patientez un instant et réessayez.",
+      "title": "La session se termine encore"
+    },
     "errors": {
-      "agentUpgradeRequired": "Le bureau à distance nécessite une mise à jour de l'agent sur cet appareil (prise en charge du bail de révocation de session). L'agent se met à jour automatiquement — cela se règle habituellement en moins d'une minute. Le terminal et le transfert de fichiers ne sont pas touchés.",
+      "agentUpgradeRequired": "Le bureau à distance nécessite une mise à jour de l'agent sur cet appareil (prise en charge du bail de révocation de session et de la barrière de démarrage). L'agent se met à jour automatiquement — cela se règle habituellement en moins d'une minute. Le terminal et le transfert de fichiers ne sont pas touchés.",
       "connectionFailed": "Échec de la connexion",
       "createDesktopCode": "Échec de la création du code de connexion au bureau",
       "createDesktopSession": "Impossible de créer une session de bureau",
@@ -664,7 +668,8 @@
       "connecting": "En connexion...",
       "disconnected": "Déconnecté",
       "failed": "Échec",
-      "pending": "En attente"
+      "pending": "En attente",
+      "teardownPending": "En cours de fin (en attente de l’appareil)"
     },
     "subtitle": "Journal d’audit d’accès à distance",
     "title": "Historique des sessions",
@@ -700,6 +705,7 @@
       "timeline": "Chronologie"
     },
     "subtitle": "Consultez et auditez les sessions d’accès à distance",
+    "teardownPending": "En attente de la confirmation de l’appareil",
     "title": "Historique des sessions",
     "viewDevice": "Dispositif de vue",
     "viewRecording": "Voir l’enregistrement"

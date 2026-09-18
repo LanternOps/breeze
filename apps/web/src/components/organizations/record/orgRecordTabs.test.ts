@@ -99,6 +99,20 @@ describe('TAB_PERMISSION registry', () => {
   it('declares an entry for every tab so a new tab cannot ship ungated by omission', () => {
     for (const tab of ORG_RECORD_TABS) expect(TAB_PERMISSION[tab]).toBeDefined();
   });
+
+  // W02: agreements:read is a fourth way into Contracts & Billing. The tab is
+  // ANY-of, so a user who can read signed agreements but holds no contracts,
+  // invoices or quotes grant still has something to see there.
+  it('lets agreements:read alone open Contracts & Billing', () => {
+    expect(TAB_PERMISSION.billing).toEqual(
+      expect.arrayContaining([{ resource: 'agreements', action: 'read' }]),
+    );
+  });
+
+  // The service tab is NOT widened: deliverables are what a contract promises.
+  it('leaves the Service tab on contracts:read only', () => {
+    expect(TAB_PERMISSION.service).toEqual([{ resource: 'contracts', action: 'read' }]);
+  });
 });
 
 describe('Service tab (#5573 W01)', () => {

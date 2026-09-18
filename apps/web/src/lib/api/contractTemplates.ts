@@ -163,3 +163,10 @@ export function detectManualVariables(html: string): string[] {
 export function isAutoVariable(name: string): boolean {
   return AUTO_SET.has(name);
 }
+
+/** Spec §6: `{ quoteCount, signedCount }` for the editor header and archive confirm. */
+export interface TemplateUsage { quoteCount: number; signedCount: number }
+
+export function getTemplateUsage(id: string): Promise<Response> {
+  return fetchWithAuth(`${BASE}/${id}/usage`);
+}

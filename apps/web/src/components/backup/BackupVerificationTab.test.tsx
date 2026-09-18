@@ -78,6 +78,37 @@ describe('BackupVerificationTab', () => {
     await screen.findByText('42');
   });
 
+  it('shows the failure reason in verification history', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/backup/verifications')) {
+        return makeJsonResponse({
+          data: [
+            {
+              ...mockVerifications[0],
+              id: 'v-failed',
+              status: 'failed',
+              filesVerified: 0,
+              filesFailed: 1,
+              details: {
+                reason: 'sessionbroker: command timed out',
+              },
+            },
+          ],
+        });
+      }
+      if (url.includes('/backup/recovery-readiness')) {
+        return makeJsonResponse(mockReadiness);
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<BackupVerificationTab deviceId={deviceId} />);
+
+    await screen.findByText('Failed');
+    expect(await screen.findByText('sessionbroker: command timed out')).toBeTruthy();
+  });
+
   it('shows loading state initially', () => {
     render(<BackupVerificationTab deviceId={deviceId} />);
     expect(screen.getByText('Loading verification data...')).toBeTruthy();

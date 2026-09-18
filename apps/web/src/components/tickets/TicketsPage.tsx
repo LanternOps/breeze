@@ -687,7 +687,7 @@ export default function TicketsPage() {
           </p>
           <div className="mt-3 flex gap-2">
             <a href="/tickets/new" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90" data-testid="tickets-empty-create">{t('ticketsPage.createTicket')}</a>
-            <a href="/settings/partner#ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">{t('ticketsPage.ticketingSettings')}</a>
+            <a href="/settings/ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">{t('ticketsPage.ticketingSettings')}</a>
           </div>
         </div>
       ) : error ? (

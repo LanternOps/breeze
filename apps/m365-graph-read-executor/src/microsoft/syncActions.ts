@@ -7,6 +7,7 @@ import {
   type M365SyncSourceState,
 } from '@breeze/shared/m365';
 import type { ExecutorSyncConfig } from '../config';
+import type { SigninEventsLimiter } from '../signinEventsLimiter';
 import type { SigninLimiter } from '../signinLimiter';
 import { SyncContinuationError, type SyncContinuationCodec } from '../syncContinuation';
 import {
@@ -16,6 +17,13 @@ import {
   type MicrosoftGraphClient,
 } from './graphClient';
 import { project } from './readActions';
+import {
+  isUnlicensedSigninEventsError,
+  signinEventsFilter,
+  signinEventsTruncated,
+  resolveSigninEventsWindow,
+  SIGNIN_EVENTS_PATH,
+} from './signinEvents';
 import type { OpaqueAccessToken } from './tokenClient';
 
 /**
@@ -43,6 +51,8 @@ export interface GraphSyncActionContext {
   limits: ExecutorSyncConfig;
   continuations: SyncContinuationCodec;
   signinLimiter: SigninLimiter;
+  /** #5784 W05. /auditLogs/signIns has its OWN bucket — see signinEventsLimiter.ts. */
+  signinEventsLimiter: SigninEventsLimiter;
   now?: () => Date;
   deadlineAt?: number;
 }
@@ -488,6 +498,62 @@ async function syncSecureScore(
   });
 }
 
+// --- m365.sync.signin_events (#5784 W05) -----------------------------------
+
+async function syncSigninEvents(
+  action: Extract<M365SyncAction, { type: 'm365.sync.signin_events' }>,
+  context: GraphSyncActionContext,
+  fetchedAt: Date,
+): Promise<M365SyncActionResponse> {
+  // A bad continuation must fail loudly (tenant replay attempt or an expiry) —
+  // silently restarting would hide both.
+  const startUrl = action.continuation === undefined
+    ? undefined
+    : context.continuations.open({
+      tenantId: context.tenantId, action: action.type, continuation: action.continuation,
+    });
+
+  const window = resolveSigninEventsWindow(action, fetchedAt);
+
+  let pageSet: GraphSyncPageSet;
+  try {
+    pageSet = await context.graphClient.readSyncCollection({
+      accessToken: context.accessToken,
+      path: SIGNIN_EVENTS_PATH,
+      query: {
+        '$filter': signinEventsFilter(window),
+        // Ascending: a continuation must resume where the last page stopped,
+        // and Graph's default ordering on this endpoint is not guaranteed.
+        '$orderby': 'createdDateTime',
+        '$top': '1000',
+      },
+      ...(startUrl === undefined ? {} : { startUrl }),
+      limits: limitsFor(context, context.limits.maxItemsSigninEvents),
+      beforePage: () => context.signinEventsLimiter.tryTake(),
+    });
+  } catch (error) {
+    // No Entra ID P1: a COMPLETE, zero-item success, not a retryable failure.
+    if (isUnlicensedSigninEventsError(error)) {
+      return succeed(action, [], {
+        truncated: false, fetchedAt, sources: { signinEvents: 'unlicensed' },
+      });
+    }
+    throw error;
+  }
+
+  const resumeLink = pageSet.nextLink ?? (pageSet.stopReason === 'paused' ? startUrl : undefined);
+  const continuation = resumeLink === undefined
+    ? undefined
+    : context.continuations.seal({ tenantId: context.tenantId, action: action.type, nextLink: resumeLink });
+
+  return succeed(action, pageSet.items, {
+    truncated: signinEventsTruncated(pageSet),
+    fetchedAt,
+    sources: { signinEvents: pageSet.stopReason === 'paused' ? 'throttled' : 'ok' },
+    ...(continuation === undefined ? {} : { continuation }),
+  });
+}
+
 export async function executeGraphSyncAction(
   action: M365SyncAction,
   context: GraphSyncActionContext,
@@ -507,6 +573,8 @@ export async function executeGraphSyncAction(
         return await syncSkus(action, context, fetchedAt);
       case 'm365.sync.secure_score':
         return await syncSecureScore(action, context, fetchedAt);
+      case 'm365.sync.signin_events':
+        return await syncSigninEvents(action, context, fetchedAt);
       default: {
         const exhaustive: never = action;
         throw new Error(`Unhandled M365 sync action: ${JSON.stringify(exhaustive)}`);

@@ -99,8 +99,8 @@ async function seedPartner(label: string): Promise<PartnerSeed> {
   // #3775). catalog_item_prices is swept by the dynamic partner_id sweep, not a
   // cascade list — this is the only functional proof that the purge reaches it.
   const [item] = (await testDb.execute(sql`
-    INSERT INTO catalog_items (partner_id, item_type, name, unit_price, cost_currency)
-    VALUES (${partnerId}, 'service', ${`Item ${label}`}, 10.00, 'USD')
+    INSERT INTO catalog_items (partner_id, item_type, name, cost_currency)
+    VALUES (${partnerId}, 'service', ${`Item ${label}`}, 'USD')
     RETURNING id
   `)) as unknown as Array<{ id: string }>;
   await testDb.execute(sql`

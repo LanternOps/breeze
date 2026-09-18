@@ -59,6 +59,8 @@ describe('M365 Graph-read executor config', () => {
         maxItemsDevices: 25_000,
         maxItemsCaPolicies: 500,
         maxItemsSkus: 200,
+        maxItemsSigninEvents: 25_000,
+        signinEventsRpm: 6,
         continuationKey: null,
       },
     });
@@ -184,6 +186,8 @@ describe('M365 Graph-read executor sync limits', () => {
       maxItemsDevices: 25_000,
       maxItemsCaPolicies: 500,
       maxItemsSkus: 200,
+      maxItemsSigninEvents: 25_000,
+      signinEventsRpm: 6,
       continuationKey: null,
     });
   });
@@ -199,6 +203,8 @@ describe('M365 Graph-read executor sync limits', () => {
       M365_SYNC_MAX_ITEMS_DEVICES: '2000',
       M365_SYNC_MAX_ITEMS_CA: '50',
       M365_SYNC_MAX_ITEMS_SKUS: '10',
+      M365_SYNC_MAX_ITEMS_SIGNIN_EVENTS: '3000',
+      M365_SIGNIN_EVENTS_RPM: '2',
       M365_SYNC_CONTINUATION_KEY: key.toString('base64'),
     })).sync).toEqual({
       syncMaxInFlight: 2,
@@ -209,6 +215,8 @@ describe('M365 Graph-read executor sync limits', () => {
       maxItemsDevices: 2000,
       maxItemsCaPolicies: 50,
       maxItemsSkus: 10,
+      maxItemsSigninEvents: 3000,
+      signinEventsRpm: 2,
       continuationKey: key,
     });
   });

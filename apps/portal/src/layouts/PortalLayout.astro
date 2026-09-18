@@ -5,6 +5,7 @@ import { loadPortalBranding } from '../lib/server';
 import { buildPortalNavItems } from '../lib/navItems';
 import { stripBase, withBase } from '../lib/basePath';
 import { buildDocAccentCss } from '../lib/docAccent';
+import { buildPortalCustomCss } from '../lib/customCss';
 
 interface Props {
   title: string;
@@ -32,6 +33,12 @@ const branding = await loadPortalBranding(Astro.request);
 const navItems = buildPortalNavItems(branding);
 
 const accentCss = buildDocAccentCss(docAccent ?? branding.primaryColor);
+// Org-authored portal styling (#5940) — saved via the branding editor and
+// returned by /portal/branding, but never reached the DOM until now. Emitted
+// as its own nonced <style> element (see lib/customCss.ts) after the base
+// stylesheet + accent so it can override either, matching the docs' example
+// of targeting `.portal-header`.
+const customCssContent = buildPortalCustomCss(branding.customCss);
 const cspNonce = Astro.locals.cspNonce;
 
 const isActive = (href: string) => {
@@ -50,6 +57,7 @@ const isActive = (href: string) => {
     <title>{title} | {branding.name || 'Customer Portal'}</title>
     {branding.faviconUrl && <link rel="icon" href={branding.faviconUrl} />}
     {accentCss && <style nonce={cspNonce} set:html={accentCss}></style>}
+    {customCssContent && <style nonce={cspNonce} set:html={customCssContent}></style>}
     <ClientRouter />
   </head>
   <body class="min-h-dvh bg-background antialiased">
@@ -119,7 +127,10 @@ const isActive = (href: string) => {
       </aside>
 
       <div class="flex min-w-0 flex-1 flex-col">
-        <header class="flex h-16 items-center justify-between gap-3 px-4 sm:h-20 sm:px-8">
+        {/* `.portal-header` is the selector the branding docs document as the
+            supported customCss target (apps/docs/.../branding.mdx) — keep it
+            even though nothing else in this file reads the class. */}
+        <header class="portal-header flex h-16 items-center justify-between gap-3 px-4 sm:h-20 sm:px-8">
           <div class="flex min-w-0 items-center gap-3">
             <details class="relative shrink-0 lg:hidden">
               <summary class="cursor-pointer list-none rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent">

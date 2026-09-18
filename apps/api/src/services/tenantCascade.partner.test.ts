@@ -4,8 +4,18 @@ const execMock = vi.fn();
 const cascadeDeleteOrgMock = vi.fn();
 
 vi.mock('../db', () => ({
-  db: { execute: (...a: unknown[]) => execMock(...a) },
+  db: {
+    execute: (...a: unknown[]) => execMock(...a),
+    // releaseSendingDomainsForPartner (spec 2026-09-17 §3.5) runs first in
+    // cascadeDeletePartner and reads partner_sending_domains through the query
+    // builder rather than db.execute. No rows here, so it is a no-op and the
+    // execMock call ORDER this suite asserts is unchanged; its own behaviour is
+    // covered by emailDomains/domainRelease.test.ts and the live-Postgres
+    // partnerSendingDomainsRls.integration.test.ts.
+    select: () => ({ from: () => ({ where: async () => [] }) }),
+  },
   withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
+  getCurrentDbAccessContext: () => undefined,
 }));
 vi.mock('./auditService', () => ({ createAuditLog: vi.fn() }));
 

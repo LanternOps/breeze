@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,6 +27,14 @@ func defaultConfigFilePath() string {
 // flushes at most once a minute, so a 60s TTL costs at most one small YAML
 // read per flush while keeping the post-failover blind window to ~1 minute.
 const defaultPersistedServerURLTTL = 60 * time.Second
+
+// ErrNoPersistedServerURL reports that agent.yaml parsed fine but carries no
+// server_url. That is the normal shape of a host that has not run `enroll`
+// yet, so callers that only want to know "is this host enrolled" must be able
+// to tell it apart from a config file that is genuinely broken (unreadable,
+// corrupt YAML, malformed URL) — those deserve an operator warning, this does
+// not. Wrapped, so errors.Is sees it through the filename prefix.
+var ErrNoPersistedServerURL = errors.New("config has no server_url")
 
 // PersistedServerURL reads server_url straight out of agent.yaml.
 //
@@ -70,7 +79,7 @@ func PersistedServerURL(cfgFile string) (string, error) {
 		return "", fmt.Errorf("parsing %s: %w", path, err)
 	}
 	if parsed.ServerURL == "" {
-		return "", fmt.Errorf("%s has no server_url", path)
+		return "", fmt.Errorf("%s: %w", path, ErrNoPersistedServerURL)
 	}
 	// Validate before handing this to a caller that will cache it.
 	// SetAllAndPersist writes agent.yaml through viper.WriteConfig, which

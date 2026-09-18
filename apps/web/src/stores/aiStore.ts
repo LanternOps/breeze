@@ -10,6 +10,7 @@ import {
   type PendingApproval,
   type PendingPlan,
   type ActivePlan,
+  type ChatRunState,
 } from './processStreamEvent';
 
 interface SearchResult {
@@ -35,6 +36,8 @@ interface AiState {
    */
   sessionOrgId: string | null;
   messages: AiMessage[];
+  /** Analysis runs launched from this conversation, keyed by run id (W05). */
+  chatRuns: Record<string, ChatRunState>;
   isStreaming: boolean;
   isLoading: boolean;
   error: string | null;
@@ -143,6 +146,7 @@ export const useAiStore = create<AiState>()(
   sessionId: null,
   sessionOrgId: null,
   messages: [],
+  chatRuns: {},
   isStreaming: false,
   isLoading: false,
   error: null,

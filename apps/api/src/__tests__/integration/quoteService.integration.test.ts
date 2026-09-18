@@ -98,7 +98,6 @@ async function seedCatalogItem(
       partnerId,
       itemType: 'service',
       name: values.name,
-      unitPrice: values.unitPrice,
       billingType: values.billingType ?? 'one_time',
       billingFrequency: values.billingFrequency ?? null,
       commitmentTermMonths: values.commitmentTermMonths ?? null,
@@ -109,7 +108,7 @@ async function seedCatalogItem(
       sku: values.sku ?? null,
     }).returning({ id: catalogItems.id });
     // Price-book row (multi-currency wave 3): addCatalogLine resolves the sell
-    // price from catalog_item_prices, never from the deprecated unit_price mirror.
+    // price from catalog_item_prices — the only sell-price authority.
     await db.insert(catalogItemPrices).values({
       itemId: row!.id,
       partnerId,

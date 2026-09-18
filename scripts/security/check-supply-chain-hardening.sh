@@ -424,6 +424,25 @@ require_grep 'docker buildx imagetools create' "$promotion_release_block" \
   "image tag promotion must retag exact signed digests without rebuilding"
 reject_grep 'docker/build-push-action@' "$promotion_release_block" \
   "post-signature image promotion must never rebuild image bytes"
+# Out-of-band promotion (promote-release-images.yml) exists for a release whose
+# create-release job died after signing the inventory. It must hold the same
+# line as the in-release job: verify the signed inventory, retag exact digests,
+# never rebuild, never walk a moving channel backwards, and refuse (loudly) a
+# dispatch from any ref but main. The main check is a footgun guard, not a trust
+# boundary — the signature and the tag-commit bindings are the controls.
+OOB_PROMOTION=.github/workflows/promote-release-images.yml
+require_grep 'release-image-manifest\.mjs verify' "$OOB_PROMOTION" \
+  "out-of-band image promotion must verify the signed image inventory"
+require_grep 'docker buildx imagetools create' "$OOB_PROMOTION" \
+  "out-of-band image promotion must retag exact signed digests without rebuilding"
+reject_grep 'docker/build-push-action@' "$OOB_PROMOTION" \
+  "out-of-band image promotion must never rebuild image bytes"
+reject_grep '^  (push|pull_request|pull_request_target|schedule|workflow_run):' "$OOB_PROMOTION" \
+  "out-of-band image promotion must be dispatch-only"
+require_grep '"\$DISPATCH_REF" != "refs/heads/main"' "$OOB_PROMOTION" \
+  "out-of-band image promotion must refuse a dispatch from any ref but main"
+require_grep '"\$MOVING_CHANNELS" == "true" && "\$NEWEST_STABLE" == "true"' "$OOB_PROMOTION" \
+  "out-of-band image promotion must not move :latest/:X/:X.Y unless the tag is the newest stable release"
 require_grep 'dockerfile: apps/m365-communications-executor/Dockerfile' .github/workflows/security.yml \
   "security workflow's trivy-image-scan matrix must build and scan the communications-executor image"
 require_grep 'directory: "/apps/m365-communications-executor"' .github/dependabot.yml \

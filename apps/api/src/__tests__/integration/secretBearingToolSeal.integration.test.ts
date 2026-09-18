@@ -132,8 +132,9 @@ async function seedScenario(): Promise<Scenario> {
   // path entirely; a plain second-approver decide is all this suite needs).
   const requesterRole = await createRole({ scope: 'organization', orgId: org.id });
   await grantRolePermissions(requesterRole.id, [
-    { resource: 'm365', action: 'execute' },
-    { resource: 'google', action: 'execute' },
+    // m365_*/google_* map to organizations:write (2026-09-17 ROLE audit §2.6 —
+    // `m365`/`google` were never catalog resources).
+    { resource: 'organizations', action: 'write' },
   ]);
 
   const approverRole = await createRole({ scope: 'organization', orgId: org.id });

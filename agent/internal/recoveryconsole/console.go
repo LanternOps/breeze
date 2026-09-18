@@ -82,6 +82,35 @@ type Console struct {
 
 const rebootCountdown = 10 * time.Second
 
+// holdAfterPower blocks forever. Run calls it immediately after a
+// successful-or-not c.power(action), so that a console that has committed
+// to powering the machine down never returns to process exit while the
+// kernel is still coming down.
+//
+// That matters because the recovery-console lock's mutual-exclusion
+// primitive is the HOLDER'S PID, not the file: the losing instance polls
+// the lock file and reclaims it as stale the moment the recorded PID stops
+// being alive (acquireRecoveryConsoleLock, cmd/breeze-backup/
+// recovery_console_cmd.go — deliberately, so an OOM-killed holder can't
+// wedge the media forever). `systemctl poweroff` is asynchronous and
+// returns in milliseconds, so simply never RELEASING the lock
+// (powerAndHold, below) is not enough: the winner's process exited, its
+// PID died, and inside the multi-second real shutdown window the loser's
+// next poll saw a dead PID, reclaimed the lock, and ran a whole second
+// recovery attempt — issue #5890's trailing extra "media_booted" in the
+// QEMU e2e's progress.json.
+//
+// A sleep loop rather than `select {}`: the runtime's all-goroutines-
+// asleep deadlock panic would otherwise be reachable on a build where
+// nothing else is running, and a panic here would exit the process — the
+// exact thing this must not do. A var so tests can stub it
+// (stubHoldAfterPower in console_test.go).
+var holdAfterPower = func() {
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
 // Run executes the console end to end. It returns a non-nil error only for
 // conditions that should make the process itself exit non-zero (the media
 // guard, an I/O failure reading operator input, or the operator choosing to
@@ -114,10 +143,41 @@ func (c *Console) Run(ctx context.Context) error {
 	// the next real boot's stale-PID reclaim (recovery_console_cmd.go)
 	// finds this PID dead and reclaims it same as any other abandoned
 	// lock.
+	//
+	// "Hold" is literal as of issue #5890: after c.power(action) returns
+	// (asynchronously, long before the kernel halts) this BLOCKS FOREVER
+	// instead of returning, so this process — and therefore the PID
+	// stamped into the lock file — stays alive for the whole shutdown.
+	// Suppressing the release alone left the loser free to reclaim the
+	// lock as stale the instant this process exited. See holdAfterPower.
 	releaseLock := func() {}
 	powerAndHold := func(action string) error {
 		releaseLock = func() {}
-		return c.power(action)
+		err := c.power(action)
+		if err != nil {
+			// The hold below means this error never reaches cobra's
+			// error printer and never becomes a non-zero exit any
+			// more, so print it here or it is lost entirely — an
+			// operator at a bare-metal console would otherwise just
+			// see the console stop responding. Same norm as
+			// postProgress: print the non-fatal error, don't swallow
+			// it. Holding anyway is still right; a second recovery
+			// attempt is exactly as unsafe when the machine has
+			// failed to go down.
+			c.IO.Print("Power %s failed: %v — the machine may not shut down; power it off manually.\n", action, err)
+		}
+		if c.Deps.Power != nil {
+			// Only hold when something really was asked to power the
+			// machine down. A Deps with no Power seam never asked for
+			// anything (c.power is a no-op then), so blocking forever
+			// would wedge the process for no reason. The real binary
+			// always sets Power — see recovery_console_cmd.go, which
+			// wires it unconditionally, --allow-host included — so this
+			// guard exists for embedders and tests, not for any
+			// production path.
+			holdAfterPower()
+		}
+		return err
 	}
 	if c.Deps.AcquireLock != nil {
 		release, err := c.Deps.AcquireLock(ctx)

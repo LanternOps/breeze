@@ -37,7 +37,7 @@ import type {
   CreateCustomerEmailDomainInput, UpdateCustomerEmailDomainInput
 } from '@breeze/shared';
 import type { TicketSlaPriority } from './ticketSla';
-import { isRepresentableInCurrency, minorUnitExponent } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, readTicketingInboundSettings } from '@breeze/shared';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -398,13 +398,15 @@ export async function getTicketConfig(partnerId: string) {
   const slug = partner?.slug ?? '';
   const inboundLocalPart = partner?.inboundLocalPart ?? null;
   const settings = (partner?.settings as Record<string, unknown> | null) ?? {};
-  const inboundCfg = (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
-    {
-      enabled?: boolean; address?: string; defaultTriageOrgId?: string | null;
-      autoresponderEnabled?: boolean; triageUnknownSenders?: boolean;
-      unknownSenderMode?: string; dropUnverifiedSenders?: boolean;
-      autoresponseSubject?: string | null; autoresponseBody?: string | null;
-    } | undefined) ?? {};
+  // Tolerant read against the shared contract (W02-API / M14): validated data
+  // on the happy path, the raw sub-object plus a warning when a stored row
+  // doesn't match — never a throw (one bad historical jsonb row must not 500
+  // every request that touches this partner's settings), and never a
+  // whole-object drop that would discard the fields that ARE valid.
+  const { settings: inboundCfg, valid: inboundValid } = readTicketingInboundSettings(settings);
+  if (!inboundValid) {
+    console.warn(`[ticketConfigService] stored ticketing.inbound failed validation for partner ${partnerId}; reading it unvalidated`);
+  }
   const domain = getConfig().TICKETS_INBOUND_DOMAIN ?? '';
   const domainConfigured = domain.length > 0;
   const effectiveLocalPart = inboundLocalPart ?? slug;

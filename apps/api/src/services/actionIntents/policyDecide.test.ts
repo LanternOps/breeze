@@ -174,6 +174,14 @@ vi.mock('../contractQuantities', () => ({ countContractDevices: contractMock.cou
 const notifyMock = vi.hoisted(() => ({ createNotification: vi.fn(async () => 'notif-1') }));
 vi.mock('../userNotifications', () => ({ createNotification: notifyMock.createNotification }));
 
+const probeMock = vi.hoisted(() => ({
+  probeSweepSubject: vi.fn<(...args: unknown[]) => Promise<'present' | 'cleared' | 'unknown'>>(async () => 'present'),
+}));
+vi.mock('../aiAgents/sweepSubjectProbe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../aiAgents/sweepSubjectProbe')>();
+  return { ...actual, probeSweepSubject: probeMock.probeSweepSubject };
+});
+
 const sentryMock = vi.hoisted(() => ({ captureException: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: sentryMock.captureException }));
 
@@ -201,6 +209,7 @@ import {
   computePolicySnapshotDigest,
   PolicyDecisionTransientError,
 } from './policyDecide';
+import { SWEEP_ACT_TTL_MS } from '../aiAgents/sweepActMode';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -271,6 +280,27 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxDesignRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay,
       designBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.designBudgetCentsPerRun,
       designMaxTurns: AI_AGENT_LIMIT_DEFAULTS.designMaxTurns,
+      // v14 (#5870) design-profile wall clock — same reason again.
+      designWallClockSeconds: AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds,
+      // v11 (AI patch agent W01) patch-profile caps — same reason again.
+      maxConcurrentPatchRuns: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns,
+      maxPatchRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay,
+      patchBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.patchBudgetCentsPerRun,
+      patchMaxTurns: AI_AGENT_LIMIT_DEFAULTS.patchMaxTurns,
+      analysisMaxInputDevicesPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxInputDevicesPerRun,
+      analysisMaxTurnsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxTurnsPerRun,
+      analysisWallClockSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisWallClockSeconds,
+      analysisMaxComputeSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeSeconds,
+      analysisMaxComputeCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun,
+      analysisMaxStagedBytesPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun,
+      analysisMaxArtifactBytesPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxArtifactBytesPerRun,
+      analysisMaxBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxBudgetCentsPerRun,
+      analysisMaxRunsPerHour: AI_AGENT_LIMIT_DEFAULTS.analysisMaxRunsPerHour,
+      analysisMaxConcurrentRuns: AI_AGENT_LIMIT_DEFAULTS.analysisMaxConcurrentRuns,
+      analysisMaxStepTimeoutSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepTimeoutSeconds,
+      analysisMaxStepsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepsPerRun,
+      maxUnattendedDevicesPerSweep: AI_AGENT_LIMIT_DEFAULTS.maxUnattendedDevicesPerSweep,
+      sweepPromoteThreshold: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },
@@ -371,6 +401,127 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // computePolicySnapshotDigest — pure helper
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// #4442 W04 Task 6 — decide-time freshness and the LIVE condition re-probe.
+//
+// Creation proved the subject was in the evidence the system loaded; by the
+// time this runs, minutes may have passed. A condition that has since cleared
+// must not be acted on unattended, and a probe that cannot answer must fail
+// closed — `unknown` costs a human review, a wrong `cleared` costs an
+// unattended action nothing verified.
+// ---------------------------------------------------------------------------
+describe('attemptPolicyDecision — the sweep lane (#4442 W04)', () => {
+  const SWEEP_TRIGGER_KEY = 'sweep:service_down:spooler';
+
+  function sweepIntent(overrides?: Record<string, unknown>) {
+    return makeIntentRow({
+      triggerKind: 'sweep_finding',
+      triggerRefId: RUN_ID,
+      triggerKey: SWEEP_TRIGGER_KEY,
+      scopeKind: 'device',
+      scopeDeviceId: DEVICE_ID,
+      createdAt: new Date(Date.now() - 60_000),
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    probeMock.probeSweepSubject.mockReset();
+    probeMock.probeSweepSubject.mockResolvedValue('present');
+  });
+
+  it('probe present -> proceeds to the authorize transaction', async () => {
+    pushRows('action_intents', [sweepIntent()]);
+    // A device-SCOPED intent's device read also projects org_id (the scope
+    // must still belong to the intent's org), so the fixture carries it.
+    queueRunAndAgent({ device: { orgId: ORG_ID, siteId: SITE_ID } });
+
+    // The authorize transaction's own fixtures (exposure ledger) are not this
+    // case's subject: reaching it at all is the assertion, so a transient
+    // failure past the guardrail re-run is tolerated here.
+    await attemptPolicyDecision(INTENT_ID).catch(() => {});
+
+    expect(probeMock.probeSweepSubject).toHaveBeenCalledWith('service_down', ORG_ID, DEVICE_ID, 'spooler');
+    expect(guardrailMock.checkAgentGuardrails).toHaveBeenCalled();
+    expect(intentServiceMock.runDeferredHumanFanout).not.toHaveBeenCalled();
+  });
+
+  it('probe cleared -> degrades to human_required and never runs the guardrail re-run or authorize', async () => {
+    probeMock.probeSweepSubject.mockResolvedValue('cleared');
+    pushRows('action_intents', [sweepIntent()]);
+    queueRunAndAgent();
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+    expect(guardrailMock.checkAgentGuardrails).not.toHaveBeenCalled();
+  });
+
+  it('probe unknown -> degrades, fail closed', async () => {
+    probeMock.probeSweepSubject.mockResolvedValue('unknown');
+    pushRows('action_intents', [sweepIntent()]);
+    queueRunAndAgent();
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+    expect(guardrailMock.checkAgentGuardrails).not.toHaveBeenCalled();
+  });
+
+  it('an intent older than SWEEP_ACT_TTL_MS degrades WITHOUT probing', async () => {
+    pushRows('action_intents', [sweepIntent({ createdAt: new Date(Date.now() - SWEEP_ACT_TTL_MS - 1_000) })]);
+    queueRunAndAgent();
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    expect(probeMock.probeSweepSubject).not.toHaveBeenCalled();
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+  });
+
+  it('an unparseable or missing trigger key degrades rather than skipping the lane', async () => {
+    pushRows('action_intents', [sweepIntent({ triggerKey: 'sweep' })]);
+    queueRunAndAgent();
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    expect(probeMock.probeSweepSubject).not.toHaveBeenCalled();
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+  });
+
+  it('a PARSEABLE key naming a kind with no probe degrades without probing — defense against a kind added without one', async () => {
+    // `disk_pressure` parses fine and is a real sweep kind, but
+    // `isActEligibleSweepKind` has no probe for it, so its condition can never
+    // be re-verified. Distinct from the unparseable case above.
+    pushRows('action_intents', [sweepIntent({ triggerKey: 'sweep:disk_pressure:C:' })]);
+    queueRunAndAgent();
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    expect(probeMock.probeSweepSubject).not.toHaveBeenCalled();
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+  });
+
+  it('a sweep intent with no scope device degrades — the probe is per (device, subject)', async () => {
+    pushRows('action_intents', [sweepIntent({ scopeDeviceId: null, scopeKind: null })]);
+    queueRunAndAgent();
+
+    await attemptPolicyDecision(INTENT_ID).catch(() => {});
+
+    expect(probeMock.probeSweepSubject).not.toHaveBeenCalled();
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+  });
+
+  it('a NON-sweep intent takes no new branch at all — never probes', async () => {
+    pushRows('action_intents', [makeIntentRow({ triggerKind: 'alert', triggerKey: 'alert:Disk Low' })]);
+    queueRunAndAgent();
+
+    await attemptPolicyDecision(INTENT_ID).catch(() => {});
+
+    expect(probeMock.probeSweepSubject).not.toHaveBeenCalled();
+    expect(guardrailMock.checkAgentGuardrails).toHaveBeenCalled();
+  });
+});
 
 describe('computePolicySnapshotDigest', () => {
   it('is deterministic for the same snapshot content', () => {

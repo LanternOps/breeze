@@ -13,9 +13,9 @@ Each baseline stores a list of known devices with their IP, MAC, hostname, asset
 
 ## In the console
 
-<Aside type="caution">
-  There is currently no console UI for creating baselines, triggering scans, or reviewing change events -- everything on this page is done through the API shown below. Use the **Known Guests** section (Settings > Partner > Regional) to manage the guest MAC allowlist described further down this page.
-</Aside>
+Baselines have a dedicated **Baselines** tab on the **Network Discovery** page. From there you can create a baseline for a site and subnet, enable or pause its scan schedule, trigger **Scan Now**, edit alert settings, and delete a baseline. The tab links out to the **Changes** tab to review the change events a baseline's scans have recorded. Use the **Known Guests** section (Settings > Partner > Regional) to manage the guest MAC allowlist described further down this page.
+
+Everything the console does maps directly to the API calls documented below, so scripting the same workflow (e.g. for bulk provisioning) is fully supported.
 
 ---
 

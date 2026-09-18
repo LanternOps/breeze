@@ -77,3 +77,12 @@ describe('script_executions insert', () => {
     expect(values.orgId).toBe('device-org');
   });
 });
+
+
+it.each([undefined, { kind: 'sweep_finding' as const, refId: '11111111-1111-4111-8111-111111111111', key: 'sweep:service_down:Spooler' }])('stamps trigger independently from execution lane %j', (trigger) => {
+  const values = __testOnly.buildExecutionValues({
+    device, source: { kind: 'saved', script: { id: 's1', version: 4, language: 'bash', timeoutSeconds: 120, content: 'echo hi' } },
+    runAs: 'system', triggerType: 'automation', trigger,
+  } as never);
+  expect(values).toMatchObject({ triggerType: 'automation', triggerKind: trigger?.kind ?? null, triggerRefId: trigger?.refId ?? null, triggerKey: trigger?.key ?? null });
+});

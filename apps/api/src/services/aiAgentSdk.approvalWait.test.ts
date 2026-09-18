@@ -12,6 +12,7 @@ import {
   settleApprovalWaits,
   waitForTurnToSettle,
   APPROVAL_WAIT_BUDGET_MS,
+  TERMINAL_READBACK_BUDGET_MS,
 } from './aiAgentSdk';
 import { db } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
@@ -102,15 +103,18 @@ vi.mock('./pamToolActionGovernance', () => ({
 
 const mockCreateActionIntent = vi.fn();
 const mockWaitForIntentDecision = vi.fn();
+const mockWaitForIntentTerminalOutcome = vi.fn();
 const mockTransitionIntent = vi.fn();
 vi.mock('./actionIntents/intentService', () => ({
   createActionIntent: (...args: unknown[]) => mockCreateActionIntent(...args),
   waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),
+  waitForIntentTerminalOutcome: (...args: unknown[]) => mockWaitForIntentTerminalOutcome(...args),
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
+const mockRequiresDurableRelease = vi.fn(() => false);
 vi.mock('./actionIntents/durableRelease', () => ({
-  requiresDurableRelease: vi.fn(() => false),
+  requiresDurableRelease: (...args: unknown[]) => mockRequiresDurableRelease(...(args as [])),
   DURABLE_RELEASE_ONLY_TOOLS: new Set<string>(),
 }));
 
@@ -234,6 +238,9 @@ beforeEach(() => {
   vi.mocked(checkToolRateLimit).mockResolvedValue(null as any);
   mockGetUserPushTokens.mockResolvedValue([]);
   mockDispatchApprovalPushToTokens.mockResolvedValue(undefined);
+  mockRequiresDurableRelease.mockReturnValue(false);
+  // Default: the handoff read-back (#6022) observes nothing terminal.
+  mockWaitForIntentTerminalOutcome.mockResolvedValue(null);
 });
 
 // ============================================
@@ -634,5 +641,167 @@ describe('approved-at-creation intent (unattended lane, #5612 W04)', () => {
     const types = vi.mocked(session.eventBus.publish).mock.calls.map((c: unknown[]) => (c[0] as { type: string }).type);
     expect(types).toContain('approval_required');
     expect(types).not.toContain('unattended_release');
+  });
+});
+
+// ============================================
+// Post-approval terminal read-back (#6022)
+// ============================================
+
+/**
+ * The bug: after a human approved, the session handed the action to the
+ * durable release worker and answered "Approved · running" unconditionally.
+ * The worker then ran it, the #5934 autoInstall guardrail refused, the intent
+ * ended `failed` / `tool_returned_error` — and the model told the operator the
+ * arming had succeeded.
+ *
+ * Both handoff exits now read the intent's terminal outcome back first. These
+ * tests pin the WIRING (each exit reads back, with a bounded budget, without
+ * touching the intent); the outcome mapping itself is pinned in
+ * `aiToolHandoff.test.ts` and the poll in
+ * `actionIntents/terminalOutcome.test.ts`.
+ */
+describe('handoff terminal read-back (#6022)', () => {
+  const guardrail =
+    'Arming autoInstall requires a human operator with devices.execute and MFA; the AI agent cannot arm software installation.';
+
+  /** Approved, then the durable worker wins the approved -> executing CAS. */
+  function casLostAfterApproval(intentId: string) {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: `exec-${intentId}` });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: intentId }));
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(false);
+  }
+
+  it('reports the worker FAILURE instead of "approved and running" (the issue repro)', async () => {
+    casLostAfterApproval('intent-readback-failed');
+    mockWaitForIntentTerminalOutcome.mockResolvedValue({
+      status: 'failed',
+      errorCode: 'tool_returned_error',
+      result: { error: guardrail },
+    });
+    const session = makeActiveSession();
+
+    const result = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+      allowed: boolean;
+      error: string;
+      handoff?: string;
+    };
+
+    expect(result.allowed).toBe(false);
+    expect(result.handoff).toBe('approved_failed');
+    expect(result.error).toContain(guardrail);
+    expect(result.error).not.toContain('is being carried out by the approval worker now');
+    // Bounded by the small read-back budget, not the 300s approval budget.
+    expect(mockWaitForIntentTerminalOutcome).toHaveBeenCalledWith(
+      'intent-readback-failed',
+      TERMINAL_READBACK_BUDGET_MS,
+      expect.any(AbortSignal),
+    );
+    // OBSERVER ONLY: the lost CAS was the last write attempt; the read-back
+    // never terminalizes or re-claims the intent.
+    expect(mockTransitionIntent).toHaveBeenCalledTimes(1);
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-readback-failed',
+      'approved',
+      'executing',
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(session.pendingApprovalWaits).toBe(0);
+  });
+
+  it('keeps "approved and running" when the worker has not finished inside the budget', async () => {
+    casLostAfterApproval('intent-readback-running');
+    mockWaitForIntentTerminalOutcome.mockResolvedValue({
+      status: 'executing',
+      errorCode: null,
+      result: null,
+    });
+    const session = makeActiveSession();
+
+    const result = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+      error: string;
+      handoff?: string;
+    };
+
+    expect(result.handoff).toBe('approved_executing');
+    // ...and it no longer promises a separate report that never arrives.
+    expect(result.error).toMatch(/not.*confirmed/i);
+    expect(result.error).not.toMatch(/reported separately/i);
+  });
+
+  it('reports COMPLETED distinctly from still-running', async () => {
+    casLostAfterApproval('intent-readback-done');
+    mockWaitForIntentTerminalOutcome.mockResolvedValue({
+      status: 'completed',
+      errorCode: null,
+      result: { ok: true },
+    });
+    const session = makeActiveSession();
+
+    const result = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+      handoff?: string;
+    };
+
+    expect(result.handoff).toBe('approved_completed');
+  });
+
+  it('reads back on the DURABLE_RELEASE_ONLY exit too — without ever attempting the CAS', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-durable-only' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-durable-only' }));
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockRequiresDurableRelease.mockReturnValue(true);
+    mockWaitForIntentTerminalOutcome.mockResolvedValue({
+      status: 'failed',
+      errorCode: 'rbac_denied',
+      result: null,
+    });
+    const session = makeActiveSession();
+
+    const result = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+      error: string;
+      handoff?: string;
+    };
+
+    expect(result.handoff).toBe('approved_failed');
+    expect(result.error).toContain('rbac_denied');
+    expect(mockWaitForIntentTerminalOutcome).toHaveBeenCalledWith(
+      'intent-durable-only',
+      TERMINAL_READBACK_BUDGET_MS,
+      expect.any(AbortSignal),
+    );
+    // The worker-only exit must never claim the intent.
+    expect(mockTransitionIntent).not.toHaveBeenCalled();
+  });
+
+  it('clamps the read-back to the REMAINING shared budget so it cannot extend the turn', async () => {
+    casLostAfterApproval('intent-readback-clamped');
+    const session = makeActiveSession({ approvalWaitDeadline: Date.now() - 1_000 });
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(mockWaitForIntentTerminalOutcome).toHaveBeenCalledWith(
+      'intent-readback-clamped',
+      0,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('falls back to "still running" — never a fabricated failure — if the read-back throws', async () => {
+    casLostAfterApproval('intent-readback-throws');
+    mockWaitForIntentTerminalOutcome.mockRejectedValue(new Error('db down'));
+    const session = makeActiveSession();
+
+    const result = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+      handoff?: string;
+    };
+
+    expect(result.handoff).toBe('approved_executing');
+    expect(session.pendingApprovalWaits).toBe(0);
   });
 });

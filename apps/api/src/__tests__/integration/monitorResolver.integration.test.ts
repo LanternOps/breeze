@@ -220,10 +220,12 @@ describe('resolveMonitorsForDevice — cumulative resolution (#5289)', () => {
   it('a device in the site with its own attachment gets the site override, plus the inherited/child monitors', async () => {
     const chain = await buildChain();
 
-    const effective = await withDbAccessContext(SYSTEM_CTX, () =>
+    const resolution = await withDbAccessContext(SYSTEM_CTX, () =>
       resolveMonitorsForDevice(chain.deviceInSite.id),
     );
-    const byId = new Map(effective.map((m) => [m.monitorId, m]));
+    expect(resolution.kind).toBe('resolved');
+    if (resolution.kind !== 'resolved') throw new Error('unreachable');
+    const byId = new Map(resolution.monitors.map((m) => [m.monitorId, m]));
 
     expect(byId.size).toBe(3);
 
@@ -245,10 +247,12 @@ describe('resolveMonitorsForDevice — cumulative resolution (#5289)', () => {
   it('a device in another site of the same org gets M1 with no overrides — the parent contribution is not dropped', async () => {
     const chain = await buildChain();
 
-    const effective = await withDbAccessContext(SYSTEM_CTX, () =>
+    const resolution = await withDbAccessContext(SYSTEM_CTX, () =>
       resolveMonitorsForDevice(chain.deviceInOtherSite.id),
     );
-    const byId = new Map(effective.map((m) => [m.monitorId, m]));
+    expect(resolution.kind).toBe('resolved');
+    if (resolution.kind !== 'resolved') throw new Error('unreachable');
+    const byId = new Map(resolution.monitors.map((m) => [m.monitorId, m]));
 
     expect(byId.size).toBe(3);
 
@@ -275,8 +279,18 @@ describe('resolveMonitorsForDevice — cumulative resolution (#5289)', () => {
     createdOrgIds.push(orgB.id);
     const deviceB = await insertDevice(orgB.id, siteB.id);
 
-    const effective = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(deviceB.id));
-    expect(effective).toEqual([]);
+    const resolution = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(deviceB.id));
+    expect(resolution).toEqual({ kind: 'resolved', monitors: [] });
+  });
+
+  it('a device that has been deleted resolves as device_missing, never as "resolved with zero monitors" (#5677)', async () => {
+    const chain = await buildChain();
+    const deviceId = chain.deviceInSite.id;
+
+    await withDbAccessContext(SYSTEM_CTX, () => db.delete(devices).where(eq(devices.id, deviceId)));
+
+    const resolution = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(deviceId));
+    expect(resolution).toEqual({ kind: 'device_missing' });
   });
 
   it('getApplicableRules returns the M1 rule with the overridden value and NOT the disabled M2 rule', async () => {

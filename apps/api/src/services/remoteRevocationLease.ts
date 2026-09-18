@@ -33,7 +33,6 @@ import {
   organizationUsers,
   partnerUsers,
   remoteSessions,
-  roles,
   userPasskeys,
   users,
 } from '../db/schema';
@@ -41,6 +40,8 @@ import { getRedis } from './redis';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
 import { commitDesktopTerminalIntent, type TerminalSessionRow } from './remoteDesktopTerminalIntent';
 import { resolveDesktopSessionPolicy } from './remoteAccessPolicy';
+import { getEffectiveMfaPolicy } from './mfaPolicy';
+import { remoteDesktopFenceRequired } from '../config/env';
 
 // ---------------------------------------------------------------------------
 // Constants — owned here, never borrowed from remoteWsSharedLease.ts
@@ -119,8 +120,29 @@ export type RenewRevocationLeaseResult =
       hardDeadline: number;
       renewEverySec: number;
       graceSec: number;
+      /**
+       * SEC-038: the session's current `desktop_start_generation`, as a
+       * canonical decimal string (it is a bigint — it must never pass through
+       * a JS number). The agent's durable start fence resyncs from this, so a
+       * renewal answer doubles as the fence's authority on what the server
+       * currently considers the live start. Undefined only for a session row
+       * that could not be read.
+       */
+      startGeneration?: string;
+      /** The session's `termination_phase` at the same snapshot. */
+      terminationPhase?: 'none' | 'pending' | 'confirmed';
     }
-  | { status: 'revoked'; reason: RevocationReason }
+  | {
+      status: 'revoked';
+      reason: RevocationReason;
+      /**
+       * The generation at which the session was declared terminal, when it is
+       * known. Deliberately optional: the row may be missing, or the terminal
+       * bookkeeping may have failed while the revocation verdict still
+       * stands. The agent tombstones on the revocation itself, not on this.
+       */
+      terminalGeneration?: string;
+    }
   | { status: 'forbidden' }
   | { status: 'unavailable' };
 
@@ -136,6 +158,11 @@ export interface RevocationRecheckRow {
     startedAt: Date | null;
     createdAt: Date;
     permissionsEpochSnapshot: number | null;
+    /** SEC-038 monotonic start/terminal generation, bumped by both intents. */
+    desktopStartGeneration: bigint;
+    /** The generation at which the session was declared terminal. */
+    terminalGeneration: bigint | null;
+    terminationPhase: 'none' | 'pending' | 'confirmed';
   };
   device: {
     id: string;
@@ -144,6 +171,8 @@ export interface RevocationRecheckRow {
     agentId: string | null;
     /** Agent-declared revocation-lease protocol version; 0 = not capable. */
     revocationLeaseProtocolVersion: number;
+    /** SEC-038 agent-declared desktop start/terminal fence version; 0 = unfenced. */
+    desktopFenceProtocolVersion: number;
   };
   user: {
     status: string;
@@ -152,12 +181,11 @@ export interface RevocationRecheckRow {
     partnerId: string;
     mfaProtected: boolean;
   };
-  orgMembership: { roleId: string; siteIds: string[] | null; forceMfa: boolean } | null;
+  orgMembership: { roleId: string; siteIds: string[] | null } | null;
   partnerMembership: {
     roleId: string;
     orgAccess: string;
     orgIds: string[] | null;
-    forceMfa: boolean;
   } | null;
   /**
    * Whether the session's org is still a live org under the caller's partner.
@@ -206,11 +234,17 @@ export type RecheckVerdict = { ok: true } | { ok: false; reason: RevocationReaso
  * Ordering is deliberate: cheapest / most conclusive first, and the site-scope
  * check comes AFTER membership so a removed member is reported as
  * `membership_removed` rather than as a site problem.
+ *
+ * `mfaRequired` is the EFFECTIVE MFA policy verdict for the session's user
+ * (`resolveLeaseMfaRequired`), never the role's raw `force_mfa` (#6107): login
+ * and the lease must agree on the kill switch, the enrolment grace window and
+ * org/partner `requireMfa`, or an admin who may sign in cannot hold a desktop.
  */
 export function evaluateRevocationRecheck(
   row: RevocationRecheckRow | null,
   nowMs: number,
   hardDeadlineMs: number,
+  mfaRequired = false,
 ): RecheckVerdict {
   if (!row) return { ok: false, reason: 'session_ended' };
 
@@ -237,7 +271,6 @@ export function evaluateRevocationRecheck(
     return { ok: false, reason: 'membership_removed' };
   }
 
-  let forceMfa: boolean;
   if (user.orgId !== null) {
     // Org-scoped user: the session's org must be their own org, and the
     // membership row (which carries role + site ceiling) must still exist.
@@ -249,7 +282,6 @@ export function evaluateRevocationRecheck(
         return { ok: false, reason: 'site_scope_lost' };
       }
     }
-    forceMfa = orgMembership.forceMfa;
   } else {
     // Partner-scoped user: partner membership must exist, still grant org
     // access, and still cover this org — and the org itself must be live.
@@ -265,14 +297,13 @@ export function evaluateRevocationRecheck(
     if (!row.sessionOrgUsable) {
       return { ok: false, reason: 'membership_removed' };
     }
-    forceMfa = partnerMembership.forceMfa;
   }
 
   // MFA per CURRENT policy. The force_mfa flip itself already advances
   // permissions_epoch (2026-08-06-b-live-authorization.sql), so this catches the
-  // other direction: a role that forces MFA whose holder no longer has any
-  // factor (e.g. every passkey deleted) must not keep a live desktop.
-  if (forceMfa && !user.mfaProtected) {
+  // other direction: policy requires MFA and the holder no longer has any
+  // usable factor (e.g. every passkey deleted or disabled).
+  if (mfaRequired && !user.mfaProtected) {
     return { ok: false, reason: 'mfa_required' };
   }
 
@@ -292,8 +323,6 @@ export async function loadRevocationRecheckRow(
 ): Promise<RevocationRecheckRow | null> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
-      const orgRole = sql<boolean | null>`org_role.force_mfa`;
-      const partnerRole = sql<boolean | null>`partner_role.force_mfa`;
       const [found] = await db
         .select({
           sessionId: remoteSessions.id,
@@ -305,26 +334,32 @@ export async function loadRevocationRecheckRow(
           sessionStartedAt: remoteSessions.startedAt,
           sessionCreatedAt: remoteSessions.createdAt,
           permissionsEpochSnapshot: remoteSessions.permissionsEpochSnapshot,
+          desktopStartGeneration: remoteSessions.desktopStartGeneration,
+          terminalGeneration: remoteSessions.terminalGeneration,
+          terminationPhase: remoteSessions.terminationPhase,
           deviceId: devices.id,
           deviceOrgId: devices.orgId,
           deviceSiteId: devices.siteId,
           deviceAgentId: devices.agentId,
           deviceLeaseVersion: devices.revocationLeaseProtocolVersion,
+          deviceFenceVersion: devices.desktopFenceProtocolVersion,
           userStatus: users.status,
           userPermissionsEpoch: users.permissionsEpoch,
           userOrgId: users.orgId,
           userPartnerId: users.partnerId,
           userMfaEnabled: users.mfaEnabled,
+          // Usable passkeys only — same filter as login's userHasUsablePasskey.
+          // A disabled passkey cannot satisfy MFA, so it must not count here.
           userHasPasskey: sql<boolean>`EXISTS (
-            SELECT 1 FROM ${userPasskeys} WHERE ${userPasskeys.userId} = ${users.id}
+            SELECT 1 FROM ${userPasskeys}
+            WHERE ${userPasskeys.userId} = ${users.id}
+              AND ${userPasskeys.disabledAt} IS NULL
           )`,
           orgRoleId: organizationUsers.roleId,
           orgSiteIds: organizationUsers.siteIds,
-          orgForceMfa: orgRole,
           partnerRoleId: partnerUsers.roleId,
           partnerOrgAccess: partnerUsers.orgAccess,
           partnerOrgIds: partnerUsers.orgIds,
-          partnerForceMfa: partnerRole,
           sessionOrgUsable: sql<boolean>`EXISTS (
             SELECT 1 FROM ${organizations}
             WHERE ${organizations.id} = ${remoteSessions.orgId}
@@ -344,19 +379,11 @@ export async function loadRevocationRecheckRow(
           ),
         )
         .leftJoin(
-          sql`${roles} AS org_role`,
-          sql`org_role.id = ${organizationUsers.roleId}`,
-        )
-        .leftJoin(
           partnerUsers,
           and(
             eq(partnerUsers.userId, remoteSessions.userId),
             eq(partnerUsers.partnerId, users.partnerId),
           ),
-        )
-        .leftJoin(
-          sql`${roles} AS partner_role`,
-          sql`partner_role.id = ${partnerUsers.roleId}`,
         )
         .where(eq(remoteSessions.id, sessionId))
         .limit(1);
@@ -378,6 +405,15 @@ export async function loadRevocationRecheckRow(
             found.permissionsEpochSnapshot === undefined
               ? null
               : Number(found.permissionsEpochSnapshot),
+          // Generations stay bigint end to end — see the SEC-038 constraint:
+          // they are produced, transported and compared as canonical decimal
+          // strings and never as a JS number.
+          desktopStartGeneration: BigInt(found.desktopStartGeneration ?? 0n),
+          terminalGeneration:
+            found.terminalGeneration === null || found.terminalGeneration === undefined
+              ? null
+              : BigInt(found.terminalGeneration),
+          terminationPhase: found.terminationPhase ?? 'none',
         },
         device: {
           id: found.deviceId,
@@ -385,6 +421,7 @@ export async function loadRevocationRecheckRow(
           siteId: found.deviceSiteId ?? null,
           agentId: found.deviceAgentId ?? null,
           revocationLeaseProtocolVersion: Number(found.deviceLeaseVersion ?? 0),
+          desktopFenceProtocolVersion: Number(found.deviceFenceVersion ?? 0),
         },
         user: {
           status: found.userStatus,
@@ -397,7 +434,6 @@ export async function loadRevocationRecheckRow(
           ? {
               roleId: found.orgRoleId,
               siteIds: found.orgSiteIds ?? null,
-              forceMfa: found.orgForceMfa === true,
             }
           : null,
         partnerMembership: found.partnerRoleId
@@ -407,13 +443,40 @@ export async function loadRevocationRecheckRow(
               // is treated as 'none' (fail closed), never as blanket access.
               orgAccess: found.partnerOrgAccess ?? 'none',
               orgIds: found.partnerOrgIds ?? null,
-              forceMfa: found.partnerForceMfa === true,
             }
           : null,
         sessionOrgUsable: found.sessionOrgUsable === true,
       } satisfies RevocationRecheckRow;
     }),
   );
+}
+
+/**
+ * Is MFA required for the session's user RIGHT NOW, per the same policy login
+ * enforces (`getEffectiveMfaPolicy`: kill switch, enrolment grace, org/partner
+ * `requireMfa`). Scope mirrors the recheck's own membership axis.
+ *
+ * `failClosed` is deliberately NOT passed: §6E says only a definitive negative
+ * revokes, and a settings-read blip is not one. A role-join failure throws and
+ * the caller answers `unavailable`.
+ */
+export async function resolveLeaseMfaRequired(row: RevocationRecheckRow): Promise<boolean> {
+  const policy = await getEffectiveMfaPolicy(
+    row.user.orgId !== null
+      ? {
+          scope: 'organization',
+          userId: row.session.userId,
+          orgId: row.session.orgId,
+          partnerId: row.user.partnerId,
+        }
+      : {
+          scope: 'partner',
+          userId: row.session.userId,
+          orgId: null,
+          partnerId: row.user.partnerId,
+        },
+  );
+  return policy.required;
 }
 
 /**
@@ -628,7 +691,23 @@ export async function renewRevocationLease(
     hardDeadline = now;
   }
 
-  const verdict = evaluateRevocationRecheck(row, now, hardDeadline);
+  let verdict = evaluateRevocationRecheck(row, now, hardDeadline);
+  // The MFA policy is consulted ONLY for a factorless user whose session would
+  // otherwise renew: a user holding a factor pays no extra queries, and a
+  // session that is ending anyway never triggers the enrolment-grace grant.
+  if (verdict.ok && row && !row.user.mfaProtected) {
+    let mfaRequired: boolean;
+    try {
+      mfaRequired = await resolveLeaseMfaRequired(row);
+    } catch (err) {
+      console.error(
+        `[RevocationLease] MFA policy read failed for session ${sessionId} (returning lease_unavailable):`,
+        err instanceof Error ? err.message : err,
+      );
+      return { status: 'unavailable' };
+    }
+    verdict = evaluateRevocationRecheck(row, now, hardDeadline, mfaRequired);
+  }
   if (verdict.ok) {
     return {
       status: 'renewed',
@@ -636,6 +715,13 @@ export async function renewRevocationLease(
       hardDeadline,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
+      // SEC-038 fence resync: this same row snapshot, not a second query.
+      ...(row
+        ? {
+            startGeneration: row.session.desktopStartGeneration.toString(),
+            terminationPhase: row.session.terminationPhase,
+          }
+        : {}),
     };
   }
 
@@ -656,12 +742,29 @@ export async function renewRevocationLease(
     );
   }
 
-  return { status: 'revoked', reason: verdict.reason };
+  return {
+    status: 'revoked',
+    reason: verdict.reason,
+    // Best effort: a revocation is authoritative with or without it. Reading
+    // the pre-revocation snapshot is enough for the agent — its tombstone is
+    // absolute, and the generation only raises its high-water mark.
+    ...(row?.session.terminalGeneration !== null && row?.session.terminalGeneration !== undefined
+      ? { terminalGeneration: row.session.terminalGeneration.toString() }
+      : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Desktop-start capability gate
 // ---------------------------------------------------------------------------
+
+/**
+ * SEC-038: the only desktop start/terminal fence protocol version this server
+ * speaks. An agent reporting exactly this value keeps the durable per-session
+ * generation fence (W04/W05); anything else is unfenced. Enforced only while
+ * REMOTE_DESKTOP_FENCE_REQUIRED is on (default off — owner decision 1).
+ */
+export const DESKTOP_FENCE_PROTOCOL_VERSION = 1;
 
 /** Machine code every desktop-start dispatch site returns with its 503. */
 export const AGENT_UPGRADE_REQUIRED_CODE = 'agent_upgrade_required';
@@ -673,7 +776,7 @@ export const AGENT_UPGRADE_REQUIRED_CODE = 'agent_upgrade_required';
  * heartbeat interval (default 60 s).
  */
 export const AGENT_UPGRADE_REQUIRED_MESSAGE =
-  'Remote desktop needs an agent update on this device (session revocation lease support). '
+  'Remote desktop needs an agent update on this device (session revocation lease and start fence support). '
   + 'The agent updates itself automatically — this usually clears within a minute. '
   + 'Terminal and file transfer are unaffected.';
 
@@ -709,6 +812,12 @@ export async function prepareRevocationLeaseForStart(
   if (row.device.revocationLeaseProtocolVersion !== REVOCATION_LEASE_PROTOCOL_VERSION) {
     return { ok: false, reason: 'agent_upgrade_required' };
   }
+  // SEC-038 W06: behind the flag, an agent without the durable start fence is
+  // refused with the same code — the generation in the start payload is only
+  // meaningful when the endpoint honours it.
+  if (!isDesktopFenceCapable(row.device.desktopFenceProtocolVersion)) {
+    return { ok: false, reason: 'agent_upgrade_required' };
+  }
   if (row.session.permissionsEpochSnapshot === null) {
     // No durable baseline means no renew can ever prove authority — refusing
     // here is the same fail-closed answer the renew path would give anyway.
@@ -735,18 +844,35 @@ export async function prepareRevocationLeaseForStart(
 }
 
 /**
- * Cheap standalone capability probe for callers that only need to fail fast
- * (session creation) and have no session row yet.
+ * SEC-038 W06 fence admission. Gate off (the default) admits every agent so
+ * the release that introduces the gate is a fleet no-op; gate on admits only
+ * an agent declaring exactly DESKTOP_FENCE_PROTOCOL_VERSION. Read at call time
+ * so the flag can be flipped without a restart-sensitive module constant.
  */
-export async function isRevocationLeaseCapable(deviceId: string): Promise<boolean> {
+export function isDesktopFenceCapable(desktopFenceProtocolVersion: number): boolean {
+  if (!remoteDesktopFenceRequired()) return true;
+  return desktopFenceProtocolVersion === DESKTOP_FENCE_PROTOCOL_VERSION;
+}
+
+/**
+ * Cheap standalone capability probe for callers that only need to fail fast
+ * (session creation) and have no session row yet. Covers both desktop-start
+ * capability gates: the unconditional revocation lease (#5481) and the
+ * flag-gated start fence (SEC-038 W06).
+ */
+export async function isDesktopStartCapable(deviceId: string): Promise<boolean> {
   const [row] = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ version: devices.revocationLeaseProtocolVersion })
+        .select({
+          leaseVersion: devices.revocationLeaseProtocolVersion,
+          fenceVersion: devices.desktopFenceProtocolVersion,
+        })
         .from(devices)
         .where(eq(devices.id, deviceId))
         .limit(1),
     ),
   );
-  return Number(row?.version ?? 0) === REVOCATION_LEASE_PROTOCOL_VERSION;
+  return Number(row?.leaseVersion ?? 0) === REVOCATION_LEASE_PROTOCOL_VERSION
+    && isDesktopFenceCapable(Number(row?.fenceVersion ?? 0));
 }

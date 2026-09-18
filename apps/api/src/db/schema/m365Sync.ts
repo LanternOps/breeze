@@ -38,6 +38,7 @@ export const m365SyncDomainEnum = pgEnum('m365_sync_domain', [
   'ca_policies',
   'skus',
   'secure_score',
+  'signin_events',
 ]);
 
 export const m365SyncStatusEnum = pgEnum('m365_sync_status', [
@@ -292,6 +293,68 @@ export const m365PostureRollups = pgTable(
     orgDateUniq: uniqueIndex('m365_posture_rollups_org_date_uniq').on(table.orgId, table.rollupDate),
   }),
 );
+
+/**
+ * #5784 W05. Interactive Microsoft 365 sign-ins, append-only.
+ *
+ * NOT an entity domain: there is no core_hash, no is_stale and no stale_since,
+ * and inventory-style "unseen means stale" reconciliation must never be applied
+ * — marking an unreturned row stale would corrupt a closed reporting period.
+ * Writes are idempotent upserts on (org_id, graph_id); the delta window
+ * deliberately overlaps because Graph sign-in records surface with delay.
+ *
+ * No jsonb by design: the raw Graph payload stays out so nothing lands in the
+ * excludedOpen export bucket and sign-in PII is exactly the fields the report
+ * renders. No connection_id by design: connection identity lives in
+ * m365_sync_state, and omitting it removes the composite-FK direction question.
+ */
+export const m365SigninEvents = pgTable(
+  'm365_signin_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    /** The verified M365 tenant this row came from; history survives a rebind. */
+    tenantId: uuid('tenant_id').notNull(),
+    /** Graph signIn.id. (org_id, graph_id) is what makes re-sync idempotent. */
+    graphId: text('graph_id').notNull(),
+    /** Graph createdDateTime — the EVENT time, and the delta watermark. */
+    signedInAt: timestamp('signed_in_at', { withTimezone: true }).notNull(),
+    /** Stable id kept alongside the UPN, which is renameable. */
+    userGraphId: text('user_graph_id'),
+    userPrincipalName: text('user_principal_name'),
+    /** Stable app id alongside the display name. */
+    appId: text('app_id'),
+    appDisplayName: text('app_display_name'),
+    /** Legacy-auth detection. */
+    clientAppUsed: text('client_app_used'),
+    ipAddress: text('ip_address'),
+    locationCity: text('location_city'),
+    locationCountry: text('location_country'),
+    /** success / failure / notApplied. */
+    conditionalAccessStatus: text('conditional_access_status'),
+    statusErrorCode: integer('status_error_code'),
+    statusFailureReason: text('status_failure_reason'),
+    /**
+     * From the signIn resource under AuditLog.Read.All — NOT Identity
+     * Protection, which would be a manifest v4 bump. Can come back as Graph's
+     * `hidden` sentinel without P2; the report renders that as unmeasured.
+     */
+    riskLevelAggregated: text('risk_level_aggregated'),
+    riskState: text('risk_state'),
+    isInteractive: boolean('is_interactive'),
+    /** Separate from signed_in_at so late arrivals are detectable. */
+    ingestedAt: timestamp('ingested_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orgGraphUniq: uniqueIndex('m365_signin_events_org_graph_uniq').on(table.orgId, table.graphId),
+    orgSignedInIdx: index('m365_signin_events_org_signed_in_idx').on(table.orgId, table.signedInAt),
+  }),
+);
+
+export type M365SigninEventRow = typeof m365SigninEvents.$inferSelect;
+export type NewM365SigninEventRow = typeof m365SigninEvents.$inferInsert;
 
 export type M365SyncStateRow = typeof m365SyncState.$inferSelect;
 export type NewM365SyncStateRow = typeof m365SyncState.$inferInsert;

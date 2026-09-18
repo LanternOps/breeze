@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
+import { configPolicyAssignments, configurationPolicies, deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter, FilterQueryTimeoutError } from '../services/filterEngine';
 import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS, reportFilterPreviewTimeout } from '../services/filterPreviewTimeout';
@@ -63,6 +63,7 @@ type DeviceGroup = {
   createdAt: string;
   updatedAt: string;
   deviceIds?: string[];
+  policy?: { id: string; name: string };
 };
 
 type GroupMembership = {
@@ -244,7 +245,8 @@ async function siteBelongsToOrg(siteId: string, orgId: string): Promise<boolean>
 function mapGroupRow(
   group: typeof deviceGroups.$inferSelect,
   deviceCount: number,
-  deviceIds?: string[]
+  deviceIds?: string[],
+  policy?: { id: string; name: string } | null
 ): DeviceGroup {
   const result: DeviceGroup = {
     id: group.id,
@@ -258,7 +260,8 @@ function mapGroupRow(
     parentId: group.parentId,
     deviceCount,
     createdAt: group.createdAt.toISOString(),
-    updatedAt: group.updatedAt.toISOString()
+    updatedAt: group.updatedAt.toISOString(),
+    policy: policy ?? undefined,
   };
   if (deviceIds) {
     result.deviceIds = deviceIds;
@@ -396,11 +399,39 @@ groupRoutes.get(
       }
     }
 
+    // Query policy assignments for these groups
+    const groupPolicyMap = new Map<string, { id: string; name: string }>();
+    if (groupIds.length > 0) {
+      const policyRows = await db
+        .select({
+          groupId: configPolicyAssignments.targetId,
+          policyId: configPolicyAssignments.configPolicyId,
+          policyName: configurationPolicies.name,
+        })
+        .from(configPolicyAssignments)
+        .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+        .where(
+          and(
+            eq(configPolicyAssignments.level, 'device_group'),
+            inArray(configPolicyAssignments.targetId, groupIds),
+            eq(configurationPolicies.status, 'active')
+          )
+        )
+        .orderBy(configPolicyAssignments.priority, configPolicyAssignments.createdAt);
+
+      for (const row of policyRows) {
+        if (!groupPolicyMap.has(row.groupId)) {
+          groupPolicyMap.set(row.groupId, { id: row.policyId, name: row.policyName });
+        }
+      }
+    }
+
     const data = results.map((group) =>
       mapGroupRow(
         group,
         countMap.get(group.id) ?? 0,
-        membershipMap?.get(group.id)
+        membershipMap?.get(group.id),
+        groupPolicyMap.get(group.id)
       )
     );
 
@@ -430,7 +461,31 @@ groupRoutes.get(
 
     const deviceCount = await getDeviceCountForGroup(id);
 
-    return c.json({ data: mapGroupRow(group, deviceCount) });
+    const [assignedPolicy] = await db
+      .select({
+        policyId: configPolicyAssignments.configPolicyId,
+        policyName: configurationPolicies.name,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
+      .where(
+        and(
+          eq(configPolicyAssignments.level, 'device_group'),
+          eq(configPolicyAssignments.targetId, id),
+          eq(configurationPolicies.status, 'active')
+        )
+      )
+      .orderBy(configPolicyAssignments.priority, configPolicyAssignments.createdAt)
+      .limit(1);
+
+    return c.json({
+      data: mapGroupRow(
+        group,
+        deviceCount,
+        undefined,
+        assignedPolicy ? { id: assignedPolicy.policyId, name: assignedPolicy.policyName } : null
+      ),
+    });
   }
 );
 

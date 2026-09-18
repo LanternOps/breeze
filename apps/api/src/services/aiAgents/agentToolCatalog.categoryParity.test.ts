@@ -103,6 +103,9 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'delete_tenant',
   'execute_containment',
   'execute_dr_plan',
+  // W03 execution plane (#5711) — a new capability-only tool; tierConfig.ts
+  // has not been swept to add a workspace/export display category yet.
+  'export_dataset',
   'generate_incident_report',
   'get_browser_security',
   'get_catalog_item',
@@ -203,6 +206,13 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'trigger_mssql_backup',
   'trigger_vault_sync',
   'verify_mssql_backup',
+  // W04 execution plane (#5715) — the four sandbox-workspace tools share
+  // `export_dataset`'s situation: the risk page copy is W05's surface work,
+  // so each entry here is a follow-up owed, not a design choice.
+  'workspace_cancel',
+  'workspace_collect',
+  'workspace_run',
+  'workspace_stage',
 ];
 
 /**

@@ -89,8 +89,65 @@ describe('QuoteBlocks — contract block rendering', () => {
     ];
     renderBlocks(blocks);
     const el = screen.getByTestId('contract-block');
-    expect(el.textContent).toContain('Contract file unavailable');
+    expect(el.textContent).toContain('Agreement file unavailable');
     expect(el.querySelector('iframe')).toBeNull();
+  });
+});
+
+describe('QuoteBlocks — agreement vocabulary (spec §3)', () => {
+  it('calls a missing authored body an unavailable agreement, not an unavailable contract', () => {
+    renderBlocks([
+      {
+        id: 'block-a',
+        blockType: 'contract',
+        sortOrder: 0,
+        content: { templateName: 'MSA', versionNumber: 1, sourceType: 'authored', renderedHtml: null, fileUrl: null },
+      },
+    ]);
+    const el = screen.getByTestId('contract-block');
+    expect(el.textContent).toContain('Agreement content unavailable');
+    expect(el.textContent).not.toContain('Contract content unavailable');
+  });
+
+  it('labels the uploaded-file download link "Download agreement"', () => {
+    renderBlocks([
+      {
+        id: 'block-b',
+        blockType: 'contract',
+        sortOrder: 0,
+        content: { templateName: 'MSA', versionNumber: 2, sourceType: 'uploaded', renderedHtml: null, fileUrl: '/f/msa.pdf' },
+      },
+    ]);
+    const link = screen.getByTestId('contract-block-download');
+    expect(link.textContent).toContain('Download agreement');
+    expect(link.textContent).not.toContain('Download contract');
+  });
+
+  it('falls back to the block label, then to "Agreement", when the template name is missing', () => {
+    renderBlocks([
+      {
+        id: 'block-c',
+        blockType: 'contract',
+        sortOrder: 0,
+        content: { label: 'Master Services Agreement', versionNumber: 4, sourceType: 'authored', renderedHtml: '<p>x</p>', fileUrl: null },
+      },
+    ]);
+    // The footer names the block label rather than the old hardcoded "Contract".
+    expect(screen.getByTestId('contract-block').textContent).toContain('Master Services Agreement — v4');
+  });
+
+  it('falls back to "Agreement" when neither a template name nor a label is set', () => {
+    renderBlocks([
+      {
+        id: 'block-d',
+        blockType: 'contract',
+        sortOrder: 0,
+        content: { versionNumber: 5, sourceType: 'authored', renderedHtml: '<p>x</p>', fileUrl: null },
+      },
+    ]);
+    const el = screen.getByTestId('contract-block');
+    expect(el.textContent).toContain('Agreement — v5');
+    expect(el.textContent).not.toContain('Contract — v5');
   });
 });
 

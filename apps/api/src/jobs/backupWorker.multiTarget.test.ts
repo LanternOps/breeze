@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { DispatchOutcome } from '../services/agentCommandRelay';
 
+vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
+
 /**
  * Multi-target dispatch coverage for `processDispatchBackup` (#4137).
  *
@@ -132,9 +134,12 @@ function selectResult(rows: unknown[]) {
   return { from: () => ({ where: () => awaited }) };
 }
 
+let currentDeviceOrgId = 'org-1';
+
 function wireDb() {
   mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
     const keys = cols ? Object.keys(cols) : [];
+    if (keys.length === 1 && keys[0] === 'orgId') return selectResult([{ orgId: currentDeviceOrgId }]);
     if (keys.length === 0) return selectResult([CONFIG_ROW]); // config load
     if (keys.length === 1 && keys[0] === 'status') {
       if (statusCallsSinceFirstInsert !== null) statusCallsSinceFirstInsert += 1;
@@ -187,9 +192,29 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     statusCallsSinceFirstInsert = null;
     cancelAfterInsertOnCheck = null;
     vmRows = [{ vmName: 'vm-a' }, { vmName: 'vm-b' }];
+    currentDeviceOrgId = 'org-1';
     wireDb();
     agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
     agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  it('fails every unsent target when the device moves before dispatch', async () => {
+    currentDeviceOrgId = 'org-2';
+    expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    for (const id of ['job-1', 'child-1']) {
+      expect(updatesFor(id).some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
+    }
+  });
+
+  it('rechecks ownership between target sends', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockImplementationOnce(async () => {
+      currentDeviceOrgId = 'org-2';
+      return { status: 'sent', via: 'local' };
+    });
+    expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
+    expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(updatesFor('child-1').some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
   });
 
   it('creates ONE child backup_jobs row for the second target and dispatches both', async () => {
