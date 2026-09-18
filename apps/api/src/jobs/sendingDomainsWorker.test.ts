@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// The parameter lists are declared, not inferred: a bare `vi.fn(async () => …)`
+// infers a ZERO-argument signature, which makes every `.mock.calls[n][i]` read
+// below a tsc error (the calls tuple is `[]`). Vitest transpiles without
+// typechecking, so those errors only ever surface in `tsc --noEmit`.
 const { queueAdd, getRepeatableJobs, removeRepeatableByKey, queueClose, workerCtor, workerClose } = vi.hoisted(() => ({
-  queueAdd: vi.fn(async () => ({ id: 'j1' })),
-  getRepeatableJobs: vi.fn(async () => [] as Array<{ name: string; key: string }>),
-  removeRepeatableByKey: vi.fn(async () => undefined),
+  queueAdd: vi.fn(async (_name: string, _data: unknown, _opts?: unknown) => ({ id: 'j1' })),
+  getRepeatableJobs: vi.fn(async (): Promise<Array<{ name: string; key: string }>> => []),
+  removeRepeatableByKey: vi.fn(async (_key: string) => undefined),
   queueClose: vi.fn(async () => undefined),
-  workerCtor: vi.fn(),
+  workerCtor: vi.fn((_name: string, _processor: unknown, _opts: unknown) => undefined),
   workerClose: vi.fn(async () => undefined),
 }));
 vi.mock('bullmq', () => ({
@@ -59,7 +63,8 @@ const { providerMock, getProviderMock } = vi.hoisted(() => {
     id: 'fake' as const, verifiesByDns: true,
     createDomain: vi.fn(), findDomainByName: vi.fn(), getDomain: vi.fn(),
     requestVerification: vi.fn(), deleteDomain: vi.fn(),
-    listDomains: vi.fn(async () => []), send: vi.fn(async () => ({ providerMessageId: 'm1' })),
+    listDomains: vi.fn(async (): Promise<Array<{ providerDomainId: string; domain: string }>> => []),
+    send: vi.fn(async (_message: unknown) => ({ providerMessageId: 'm1' })),
   };
   return { providerMock, getProviderMock: vi.fn(() => providerMock as unknown) };
 });

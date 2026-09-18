@@ -263,6 +263,7 @@ import {
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { partnerTrustMode } from './config/partnerTrustMode';
+import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
@@ -1175,6 +1176,7 @@ async function initializeWorkers(): Promise<void> {
     auditChainVerifyEnabled: auditChainVerifyEnabled(),
     eventDispatchEnabled: eventDispatchMode() !== 'off',
     aiAgentsEnabled: AI_AGENTS_ENABLED,
+    sendingDomainsConfigured: isPartnerLaneConfigured(),
     registry: workerReadinessRegistry,
   });
 
