@@ -81,6 +81,14 @@ const ROTATION_CONFLICT_CODES = {
   PENDING_ROTATION_EXPIRED: 'pending_rotation_expired',
   /** RETRYABLE. A staged rotation must be confirmed before a new one starts. */
   PENDING_ROTATION_UNCONFIRMED: 'pending_rotation_unconfirmed',
+  /**
+   * RETRYABLE (#3997). The tenant is offboarding or the device is being
+   * uninstalled, so no NEW credential may be minted — nothing would revoke it
+   * if the drain is aborted or the device restored. An agent that already
+   * staged a rotation finishes it via `/rotate-token/confirm`, which is not
+   * gated on this. Retryable because the condition clears when the drain does.
+   */
+  DRAINING: 'tenant_or_device_draining',
 } as const;
 
 tokenRoutes.post('/:id/rotate-token', async (c) => {
@@ -88,6 +96,29 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
   const agent = c.get('agent') as AgentAuthContext;
   if (agent.role !== 'agent') {
     return c.json({ error: 'Agent credential role mismatch' }, 403);
+  }
+
+  // #3997 / #3986 — Layer 2: a DRAINING tenant or device must not mint
+  // credentials, restated here rather than trusted to the middleware alone.
+  // agentAuthMiddleware already refuses `rotate-token` for both drain kinds
+  // (TENANT_DRAIN_ALLOWED_ACTIONS / DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS),
+  // but that refusal is a path allowlist one edit away from being re-widened,
+  // and NOTHING revokes what this route mints: the offboarding ABORT paths
+  // cancel the queued uninstalls without severing credentials, `POST
+  // /devices/:id/restore` touches no token hash, and there is no expiry
+  // sweeper for staged hashes. A credential minted inside a drain window
+  // therefore becomes the live one the moment the tenant is reinstated or the
+  // device restored. The one flow the drain surface must protect — an agent
+  // finishing a rotation it staged BEFORE the drain — goes through
+  // `/rotate-token/confirm`, which stays open and is unaffected by this guard.
+  if (agent.tenantDraining || agent.deviceUninstallDraining) {
+    return c.json(
+      {
+        error: 'Credential rotation is unavailable while this tenant or device is draining',
+        code: ROTATION_CONFLICT_CODES.DRAINING,
+      },
+      403
+    );
   }
 
   // PART A — superseded (previous-token) credentials must not renew themselves.
