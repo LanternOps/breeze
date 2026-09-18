@@ -3,11 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const {
-  rateLimiterMock, redisSet, redisRef, incrementMock,
+  rateLimiterMock, redisSet, redisDel, redisRef, incrementMock,
   enqueueSyncMock, enqueueAutoSuspendMock, selectRows, configMock, captureMock,
 } = vi.hoisted(() => ({
   rateLimiterMock: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
   redisSet: vi.fn(async () => 'OK' as string | null),
+  redisDel: vi.fn(async (_key: string) => 1),
   redisRef: { value: null as unknown },
   incrementMock: vi.fn(async (_partnerId: string, _column: string, _at?: Date) => true),
   enqueueSyncMock: vi.fn(async (_domainId: string) => undefined),
@@ -89,7 +90,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   selectRows.length = 0;
   configMock.mockReturnValue({ webhookSecret: SECRET });
-  redisRef.value = { set: redisSet };
+  redisRef.value = { set: redisSet, del: redisDel };
   redisSet.mockResolvedValue('OK');
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 10, resetAt: new Date() });
   incrementMock.mockResolvedValue(true);
@@ -267,5 +268,45 @@ describe('malformed payloads', () => {
   it('400s a JSON body with no string `type`', async () => {
     const res = await post({ data: {} });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('the replay reservation is released when the handler fails', () => {
+  // The reservation is claimed BEFORE the handler runs, so a transient DB blip
+  // that 500s would otherwise leave the svix-id burned for 24 h: the provider's
+  // retry hits the dedupe branch, gets 202, and the event is dropped forever.
+  it('deletes the svix-id key before answering 500', async () => {
+    incrementMock.mockRejectedValueOnce(new Error('ECONNRESET'));
+    const res = await post(emailEvent('email.bounced'), { id: 'msg_boom' });
+    expect(res.status).toBe(500);
+    expect(redisDel).toHaveBeenCalledWith('emaildomains:webhook:msg_boom');
+  });
+
+  it("a retry after a failed handler is PROCESSED, not deduped", async () => {
+    // Real reservation semantics: SET NX succeeds only while the key is absent.
+    const held = new Set<string>();
+    redisSet.mockImplementation(async (...args: unknown[]) => {
+      const key = args[0] as string;
+      if (held.has(key)) return null;
+      held.add(key);
+      return 'OK';
+    });
+    redisDel.mockImplementation(async (key: string) => { held.delete(key); return 1; });
+
+    incrementMock.mockRejectedValueOnce(new Error('ECONNRESET'));
+    expect((await post(emailEvent('email.bounced'), { id: 'msg_retry' })).status).toBe(500);
+
+    incrementMock.mockResolvedValue(true);
+    const retry = await post(emailEvent('email.bounced'), { id: 'msg_retry' });
+    expect(retry.status).toBe(202);
+    expect(incrementMock).toHaveBeenCalledTimes(2);
+  });
+
+  // A failed release must not turn a 500 into a 500-plus-crash.
+  it('still answers 500 when the release itself throws', async () => {
+    incrementMock.mockRejectedValueOnce(new Error('ECONNRESET'));
+    redisDel.mockRejectedValueOnce(new Error('redis gone'));
+    const res = await post(emailEvent('email.bounced'), { id: 'msg_del_fails' });
+    expect(res.status).toBe(500);
   });
 });

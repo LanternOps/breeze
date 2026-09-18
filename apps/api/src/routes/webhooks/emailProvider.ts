@@ -32,7 +32,8 @@ import { captureException } from '../../services/sentry';
  *     redelivery of an already-counted event would inflate every counter the
  *     auto-suspension thresholds read. Redis unavailable -> 503, so the
  *     provider retries: silently processing without the guard trades a retry
- *     for permanently wrong numbers.
+ *     for permanently wrong numbers. The reservation is RELEASED again if the
+ *     handler fails, so a 500 the provider retries is not permanently deduped.
  *  6. Handle, then 202. The handler never calls the provider — `domain.updated`
  *     only enqueues `sync-domain`, and a bounce/complaint only enqueues
  *     `evaluate-auto-suspend`. All provider calls live in the worker (spec §2).
@@ -138,9 +139,10 @@ resendWebhookRoutes.post('/email-provider/resend', async (c) => {
     console.error('[emailProviderWebhook] Redis unavailable; asking the provider to retry');
     return c.json({ error: 'Service Unavailable' }, 503);
   }
+  const reservationKey = `emaildomains:webhook:${svixId}`;
   let reserved: string | null;
   try {
-    reserved = await redis.set(`emaildomains:webhook:${svixId}`, '1', 'EX', DEDUPE_TTL_SECONDS, 'NX');
+    reserved = await redis.set(reservationKey, '1', 'EX', DEDUPE_TTL_SECONDS, 'NX');
   } catch (err) {
     console.error('[emailProviderWebhook] replay reservation failed:', err instanceof Error ? err.message : err);
     return c.json({ error: 'Service Unavailable' }, 503);
@@ -172,9 +174,23 @@ resendWebhookRoutes.post('/email-provider/resend', async (c) => {
       err instanceof Error ? err : new Error(`[emailProviderWebhook] handler error for ${envelope.type}: ${String(err)}`),
       c,
     );
-    // 500 so the provider retries. The svix-id reservation is already held, so
-    // a retry would be deduped — which is the correct trade: delivery stats are
-    // advisory, and double-counting them would move a kill switch.
+    // RELEASE the reservation before answering 500. It was claimed before the
+    // handler ran, so leaving it held would burn this svix-id for the full
+    // dedupe TTL: the provider's retry would hit the duplicate branch, get a
+    // 202, and the event would be dropped permanently over what is usually a
+    // transient database blip. Releasing re-opens the narrow double-count
+    // window the reservation exists to close, which is the right trade — a
+    // retry that counts twice is a small error in an advisory counter, while a
+    // silently dropped bounce is a missing input to a kill switch.
+    // Best-effort: a failed release must not turn a 500 into a thrown request.
+    try {
+      await redis.del(reservationKey);
+    } catch (delErr) {
+      console.error(
+        '[emailProviderWebhook] failed to release the replay reservation:',
+        delErr instanceof Error ? delErr.message : delErr,
+      );
+    }
     return c.json({ error: 'Handler error' }, 500);
   }
 
