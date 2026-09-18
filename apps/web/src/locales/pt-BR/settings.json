@@ -5195,7 +5195,7 @@
       "email": "E-mail",
       "role": "Função",
       "lastLogin": "Último login",
-      "mfaStatus": "MFA"
+      "mfaStatus": "Status da MFA"
     },
     "mfaStatus": {
       "enrolled": "Inscrito",

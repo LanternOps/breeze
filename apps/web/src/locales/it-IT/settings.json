@@ -5190,7 +5190,7 @@
       "email": "email",
       "role": "Ruolo",
       "lastLogin": "Ultimo accesso",
-      "mfaStatus": "MFA"
+      "mfaStatus": "Stato MFA"
     },
     "mfaStatus": {
       "enrolled": "Registrato",

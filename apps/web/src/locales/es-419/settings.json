@@ -5142,7 +5142,7 @@
       "email": "Correo electrónico",
       "role": "Rol",
       "lastLogin": "Último inicio de sesión",
-      "mfaStatus": "MFA"
+      "mfaStatus": "Estado de MFA"
     },
     "mfaStatus": {
       "enrolled": "Inscrito",

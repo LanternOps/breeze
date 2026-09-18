@@ -5195,7 +5195,7 @@
       "email": "E-posta",
       "role": "Rol",
       "lastLogin": "Son giriş",
-      "mfaStatus": "MFA"
+      "mfaStatus": "MFA durumu"
     },
     "mfaStatus": {
       "enrolled": "Kayıtlı",
