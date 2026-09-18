@@ -41,7 +41,10 @@ export const partnerSendingDomains = pgTable('partner_sending_domains', {
 }, (t) => [
   uniqueIndex('partner_sending_domains_domain_uq').on(t.domain),
   uniqueIndex('partner_sending_domains_id_partner_uq').on(t.id, t.partnerId),
-  index('partner_sending_domains_partner_idx').on(t.partnerId)
+  index('partner_sending_domains_partner_idx').on(t.partnerId),
+  // The worker's due-check scan. Partial in SQL (WHERE next_check_at IS NOT
+  // NULL); Drizzle carries the column list so the definition is not missing here.
+  index('partner_sending_domains_next_check_idx').on(t.nextCheckAt)
 ]);
 
 /**
