@@ -110,6 +110,13 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ### v0.114.0 — evidence reports, network device page, account board
 
+**Navigation moved, nothing removed.** The Fleet Management entry **Monitoring** is
+now **Network Monitor** and holds only network assets, checks and SNMP templates.
+Device monitors (CPU, memory, disk, service, process, custom) moved to
+**Alerts → Monitors** (`/alerts/monitors`). Old `/monitoring/monitors` links
+redirect. If a technician reports that "Monitors disappeared", this is where they
+went.
+
 **`catalog_items.unit_price` is dropped.** Catalog sell prices have lived in
 `catalog_item_prices` (per-organization price book) since the multi-currency
 work landed; `unit_price` on `catalog_items` was a write-only leftover column
