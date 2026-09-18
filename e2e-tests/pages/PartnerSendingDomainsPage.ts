@@ -41,8 +41,24 @@ export class PartnerSendingDomainsPage extends BasePage {
   identityFrom = (stream: string) => this.page.getByTestId(`sending-identity-${stream}-from`);
   identityClear = (stream: string) => this.page.getByTestId(`sending-identity-${stream}-clear`);
 
+  /**
+   * `page.goto()` to a URL identical to the page's CURRENT url (path + hash)
+   * is a same-document no-op in Chromium — no navigation event, no React
+   * remount, no fresh fetch. That is invisible to a test with its own fresh
+   * `authedPage` context, but this spec shares ONE context/page across all
+   * three tests (see the file docblock), so the second and third test's
+   * `goto()` to this same URL would otherwise leave the PREVIOUS test's
+   * mounted component (and its stale fetched data) on screen. Force a real
+   * reload whenever we're already there; `page.goto()` still does the right
+   * thing for the first, genuine navigation.
+   */
   async goto() {
-    await this.page.goto(this.url);
+    const target = new URL(this.url, this.page.url()).toString();
+    if (this.page.url() === target) {
+      await this.page.reload();
+    } else {
+      await this.page.goto(this.url);
+    }
     await this.waitUntilReady();
   }
 

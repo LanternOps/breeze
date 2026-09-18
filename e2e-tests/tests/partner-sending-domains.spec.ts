@@ -1,5 +1,7 @@
+import type { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
+import { STORAGE_STATE } from '../global-setup';
 import { PartnerSendingDomainsPage } from '../pages/PartnerSendingDomainsPage';
 
 /**
@@ -15,6 +17,14 @@ import { PartnerSendingDomainsPage } from '../pages/PartnerSendingDomainsPage';
  * at all, that the DNS records the API returns actually render, and that the
  * add → verify → configure → test → remove loop survives the polling that
  * refreshes the page underneath each step.
+ *
+ * ONE browser context for the whole file, not the per-test `authedPage`
+ * fixture: the first test's several reloads rotate the shared storageState's
+ * refresh token forward, so a second test's fresh context presenting that
+ * now-stale cookie is treated as replay by the API's family reuse-detection
+ * and lands on "Your session expired" (same shape as
+ * ai-script-proposals.spec.ts and multi-currency.spec.ts). Within one context
+ * the cookie jar follows every rotation.
  */
 test.describe.configure({ mode: 'serial' });
 test.beforeEach(clearRefreshState);
@@ -24,7 +34,18 @@ function uniqueDomain(suffix: string): string {
 }
 
 test.describe('Partner sending domains', () => {
-  test('add, verify, configure a sender address, test send and remove', async ({ authedPage }) => {
+  let ctx: BrowserContext;
+  let authedPage: Page;
+
+  test.beforeAll(async ({ browser }) => {
+    ctx = await browser.newContext({ storageState: STORAGE_STATE });
+    authedPage = await ctx.newPage();
+  });
+  test.afterAll(async () => {
+    await ctx?.close();
+  });
+
+  test('add, verify, configure a sender address, test send and remove', async () => {
     const page = new PartnerSendingDomainsPage(authedPage);
     const domain = uniqueDomain('verify.test');
     let domainId = '';
@@ -107,7 +128,7 @@ test.describe('Partner sending domains', () => {
     });
   });
 
-  test('a domain the provider rejects explains itself and offers Try again and Remove', async ({ authedPage }) => {
+  test('a domain the provider rejects explains itself and offers Try again and Remove', async () => {
     const page = new PartnerSendingDomainsPage(authedPage);
     await page.goto();
 
@@ -126,7 +147,7 @@ test.describe('Partner sending domains', () => {
     ]);
   });
 
-  test('an ineligible partner sees a locked card and no add form', async ({ authedPage }) => {
+  test('an ineligible partner sees a locked card and no add form', async () => {
     // Trust mode is `off` on a self-hosted stack, so ineligibility cannot be
     // produced by seeding — the capability is rewritten on the wire instead.
     // Everything downstream of `eligible: false` is real UI.
