@@ -913,7 +913,7 @@ describe('processInboundEmail', () => {
     createTicketMock.mockResolvedValue({ id: 't-reply', internalNumber: 'T-2026-0015' });
     await processInboundEmail(email({
       from: 'contact@customer.example',
-      messageId: '<CAF=abc@mail.gmail.com>',
+      messageId: '<CAF=abc@mail.example.com>',
       inReplyTo: '<ticket-t1@tickets.example.com>',
       references: ['<ticket-t1@tickets.example.com>'],
     }));
