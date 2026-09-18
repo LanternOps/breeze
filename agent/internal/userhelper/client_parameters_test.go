@@ -190,42 +190,67 @@ func TestExecuteScriptDeliversMetacharacterValueLiterallyInEnvironment(t *testin
 	}
 }
 
-// TestExecuteScriptValidatesAfterParameterSubstitution is the other half:
-// substitution writes the value into shell SOURCE, so the security validator
-// has to see the resolved text. executor.Execute substitutes first and
-// validates second, and the documented contract (docs/features/scripts.mdx)
-// says a parameter value that injects a dangerous command is caught.
+// TestExecuteScriptValidationOnHelperPath is the other half of the parameter
+// contract on the runAs=user hop.
 //
-// Before #4882 the helper path could not reach this at all — nothing was
-// substituted, so a dangerous value was inert here and the parity with the
-// SYSTEM path was untested. Now that parameters are live on this path, prove
-// the validator is live with them.
+// Parameter values are no longer substituted into the script SOURCE: the agent
+// rewrites `{{key}}` into a reference to the BREEZE_PARAM_* environment
+// variable (executor.RenderParameterReferences), so a value is data to the
+// interpreter and can no longer be code. That splits what used to be one
+// assertion in two:
 //
-// The payload is deliberately harmless if the validator ever fails open: it
-// resolves to `echo Format-Volume`, which matches the PowerShell volume-format
-// pattern as TEXT while doing nothing but printing a word.
-func TestExecuteScriptValidatesAfterParameterSubstitution(t *testing.T) {
+//  1. The security validator has to be live on THIS path — before #4882 the
+//     helper never even substituted, so nothing here was exercised. It scans
+//     what the script AUTHOR wrote.
+//  2. A parameter VALUE that merely looks like a dangerous pattern is not code
+//     any more, so it must run and print as ordinary text rather than being
+//     refused. (The old expectation — the validator catching an injected
+//     value — was a symptom of the injection itself.)
+//
+// Both payloads are harmless: one is never executed, the other only echoes.
+func TestExecuteScriptValidationOnHelperPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("script execution test requires Unix/macOS shell")
 	}
 
-	c := New("/tmp/test.sock", ipc.HelperRoleUser)
-
-	result := c.executeScript(ipc.IPCCommand{
-		CommandID: "exec-dangerous-param",
-		Type:      tools.CmdScript,
-		Payload: marshalPayload(t, map[string]any{
-			"language":       "bash",
-			"timeoutSeconds": 10,
-			"content":        `echo {{marker}}`,
-			"parameters":     map[string]any{"marker": "Format-Volume"},
-		}),
+	t.Run("dangerous script text is refused", func(t *testing.T) {
+		c := New("/tmp/test.sock", ipc.HelperRoleUser)
+		result := c.executeScript(ipc.IPCCommand{
+			CommandID: "exec-dangerous-text",
+			Type:      tools.CmdScript,
+			Payload: marshalPayload(t, map[string]any{
+				"language":       "bash",
+				"timeoutSeconds": 10,
+				"content":        `Format-Volume -DriveLetter X`,
+			}),
+		})
+		if result.Status != "failed" {
+			t.Fatalf("a dangerous pattern in the script text must be refused, got status %q (result %s)",
+				result.Status, string(result.Result))
+		}
+		if !strings.Contains(result.Error, "script validation failed") {
+			t.Errorf("expected the validator's refusal, got error %q", result.Error)
+		}
 	})
 
-	if result.Status != "failed" {
-		t.Fatalf("a parameter value that resolves to a dangerous pattern must be refused, got status %q (result %s)", result.Status, string(result.Result))
-	}
-	if !strings.Contains(result.Error, "script validation failed") {
-		t.Errorf("expected the validator's refusal, got error %q", result.Error)
-	}
+	t.Run("a parameter value that looks dangerous is only text", func(t *testing.T) {
+		c := New("/tmp/test.sock", ipc.HelperRoleUser)
+		result := c.executeScript(ipc.IPCCommand{
+			CommandID: "exec-dangerous-param",
+			Type:      tools.CmdScript,
+			Payload: marshalPayload(t, map[string]any{
+				"language":       "bash",
+				"timeoutSeconds": 10,
+				"content":        `echo {{marker}}`,
+				"parameters":     map[string]any{"marker": "Format-Volume"},
+			}),
+		})
+		if result.Status != "completed" {
+			t.Fatalf("a parameter value is data, not code, and must not be refused: status %q error %q",
+				result.Status, result.Error)
+		}
+		if got := strings.TrimRight(decodeHelperScriptStdout(t, result), "\n"); got != "Format-Volume" {
+			t.Fatalf("expected the value echoed literally, got %q", got)
+		}
+	})
 }

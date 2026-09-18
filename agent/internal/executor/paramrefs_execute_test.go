@@ -1,0 +1,383 @@
+package executor
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+// trimEOL strips only the interpreter's trailing newline, so leading and
+// trailing spaces inside a parameter value are still asserted.
+func trimEOL(s string) string { return strings.TrimRight(s, "\r\n") }
+
+func runOne(t *testing.T, scriptType, script string, params map[string]string) *ScriptResult {
+	t.Helper()
+	e := newTestExecutor()
+	result, err := e.Execute(ScriptExecution{
+		ID:         "pos-" + t.Name(),
+		ScriptType: scriptType,
+		Script:     script,
+		Parameters: params,
+		Timeout:    20,
+	})
+	if err != nil {
+		t.Fatalf("execute failed: %v (stderr: %s)", err, result.Stderr)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code %d, stderr: %s", result.ExitCode, result.Stderr)
+	}
+	return result
+}
+
+// TestExecuteBashParameterValuesSurviveIntact covers the documented parameter
+// examples plus the value shapes that shell quoting usually mangles.
+func TestExecuteBashParameterValuesSurviveIntact(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not available on Windows")
+	}
+	tests := []struct {
+		name   string
+		script string
+		params map[string]string
+		want   string
+	}{
+		{
+			name:   "documented threshold example",
+			script: `echo "Threshold is {{threshold}}"`,
+			params: map[string]string{"threshold": "42 percent (ok)"},
+			want:   "Threshold is 42 percent (ok)",
+		},
+		{
+			name:   "documented find example",
+			script: `echo "find /tmp -mtime +{{days}}"`,
+			params: map[string]string{"days": "7"},
+			want:   "find /tmp -mtime +7",
+		},
+		{
+			name:   "single-quoted literal",
+			script: `echo 'v={{v}}'`,
+			params: map[string]string{"v": `hello "world" $HOME`},
+			want:   `v=hello "world" $HOME`,
+		},
+		{
+			name:   "windows-style path with a space",
+			script: `echo {{p}}`,
+			params: map[string]string{"p": `C:\Users\x y`},
+			want:   `C:\Users\x y`,
+		},
+		{
+			name:   "unicode",
+			script: `echo "{{p}}"`,
+			params: map[string]string{"p": "café ☕ naïve"},
+			want:   "café ☕ naïve",
+		},
+		{
+			name:   "leading and trailing spaces",
+			script: `echo "[{{p}}]"`,
+			params: map[string]string{"p": "  two  spaces  "},
+			want:   "[  two  spaces  ]",
+		},
+		{
+			name:   "unquoted value is one word, not split or globbed",
+			script: `printf '%s\n' {{p}}`,
+			params: map[string]string{"p": "* a b"},
+			want:   "* a b",
+		},
+		{
+			name:   "heredoc body",
+			script: "cat <<EOF\nv={{p}}\nEOF\n",
+			params: map[string]string{"p": "$(id) & echo no"},
+			want:   "v=$(id) & echo no",
+		},
+		{
+			name:   "integer in an arithmetic expression",
+			script: `echo $(( {{n}} * 2 ))`,
+			params: map[string]string{"n": "21"},
+			want:   "42",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runOne(t, ScriptTypeBash, tt.script, tt.params)
+			if got := trimEOL(result.Stdout); got != tt.want {
+				t.Fatalf("stdout %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecutePowerShellParameterValuesSurviveIntact(t *testing.T) {
+	if _, err := exec.LookPath("pwsh"); err != nil {
+		t.Skip("pwsh not available")
+	}
+	value := "he said \"hi\" $x `tick` 100%"
+	tests := []struct {
+		name   string
+		script string
+		params map[string]string
+		want   string
+	}{
+		{
+			name:   "single-quoted literal is rewritten but prints the value",
+			script: `Write-Output 'p={{p}}'`,
+			params: map[string]string{"p": value},
+			want:   "p=" + value,
+		},
+		{
+			name:   "double-quoted literal",
+			script: `Write-Output "p={{p}}"`,
+			params: map[string]string{"p": value},
+			want:   "p=" + value,
+		},
+		{
+			name:   "numeric passthrough stays arithmetic",
+			script: `Write-Output ({{n}} * 2)`,
+			params: map[string]string{"n": "21"},
+			want:   "42",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runOne(t, ScriptTypePowerShell, tt.script, tt.params)
+			if got := trimEOL(result.Stdout); got != tt.want {
+				t.Fatalf("stdout %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecutePythonParameterValuesSurviveIntact(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	tests := []struct {
+		name   string
+		script string
+		params map[string]string
+		want   string
+	}{
+		{
+			name:   "double-quoted literal with backslashes",
+			script: `print("{{p}}")`,
+			params: map[string]string{"p": `C:\Users\x y`},
+			want:   `C:\Users\x y`,
+		},
+		{
+			name:   "f-string literal with braces and quotes",
+			script: `print(f"v={{p}}")`,
+			params: map[string]string{"p": `{braces} and "quotes"`},
+			want:   `v={braces} and "quotes"`,
+		},
+		{
+			name:   "raw literal with a plain value",
+			script: `print(r"v={{p}}")`,
+			params: map[string]string{"p": "plain value"},
+			want:   "v=plain value",
+		},
+		{
+			name:   "code context reads the environment",
+			script: `p = {{p}}` + "\nprint(p)\n",
+			params: map[string]string{"p": `unicode café & "quotes"`},
+			want:   `unicode café & "quotes"`,
+		},
+		{
+			name:   "numeric passthrough stays arithmetic",
+			script: `print({{n}} * 2)`,
+			params: map[string]string{"n": "21"},
+			want:   "42",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runOne(t, ScriptTypePython, tt.script, tt.params)
+			if got := trimEOL(result.Stdout); got != tt.want {
+				t.Fatalf("stdout %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExecuteRejectsUnrenderableParameterContext proves Execute fails the run
+// instead of executing a script it could not render safely.
+func TestExecuteRejectsUnrenderableParameterContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not available on Windows")
+	}
+	canary := filepath.Join(t.TempDir(), "canary_unrenderable")
+	e := newTestExecutor()
+	result, err := e.Execute(ScriptExecution{
+		ID:         "reject-arith",
+		ScriptType: ScriptTypeBash,
+		Script:     "touch " + canary + "\necho $(( {{n}} ))\n",
+		Parameters: map[string]string{"n": "a[$(id)]"},
+		Timeout:    10,
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unrenderable arithmetic context")
+	}
+	if !strings.Contains(result.Error, "script parameter substitution failed") {
+		t.Fatalf("result.Error should explain the failure, got %q", result.Error)
+	}
+	canaryAbsent(t, canary)
+}
+
+// TestExecuteBashSyntaxGateFailsClosed proves the `bash -n` gate stops a script
+// whose RENDERED text is broken, before bash executes its first line. The
+// corruption is injected through the test hook because the renderer is not
+// supposed to be able to produce it.
+func TestExecuteBashSyntaxGateFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not available on Windows")
+	}
+	canary := filepath.Join(t.TempDir(), "canary_gate")
+	renderedScriptHookForTests = func(string) string {
+		return "touch " + canary + "\nif [ ; then\n"
+	}
+	t.Cleanup(func() { renderedScriptHookForTests = nil })
+
+	e := newTestExecutor()
+	result, err := e.Execute(ScriptExecution{
+		ID:         "gate-broken-render",
+		ScriptType: ScriptTypeBash,
+		Script:     `echo "{{p}}"`,
+		Parameters: map[string]string{"p": "v"},
+		Timeout:    10,
+	})
+	if err == nil {
+		t.Fatal("expected the syntax gate to fail the execution")
+	}
+	if !strings.Contains(err.Error(), "not valid after parameter substitution") {
+		t.Fatalf("expected the gate's error, got %v", err)
+	}
+	if result.ExitCode != -1 {
+		t.Fatalf("expected exit code -1, got %d", result.ExitCode)
+	}
+	canaryAbsent(t, canary)
+}
+
+// TestExecuteBashSyntaxGatePassesValidRenders makes sure the gate is not a
+// blanket refusal: the same hook returning valid bash still runs.
+func TestExecuteBashSyntaxGatePassesValidRenders(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not available on Windows")
+	}
+	renderedScriptHookForTests = func(s string) string { return s + "\necho tail\n" }
+	t.Cleanup(func() { renderedScriptHookForTests = nil })
+
+	result := runOne(t, ScriptTypeBash, `echo "{{p}}"`, map[string]string{"p": "v"})
+	if got := trimEOL(result.Stdout); got != "v\ntail" {
+		t.Fatalf("stdout %q", got)
+	}
+}
+
+// TestExecuteCMDDelayedExpansionCanary is the Windows-only end-to-end check
+// that a cmd parameter value carrying cmd metacharacters is data.
+func TestExecuteCMDDelayedExpansionCanary(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cmd only available on Windows")
+	}
+	scratch := t.TempDir()
+	canary := filepath.Join(scratch, "canary_cmd_meta")
+	value := "a & echo pwned > " + canary + " | %PATH% ^ 100%"
+
+	e := newTestExecutor()
+	result, err := e.Execute(ScriptExecution{
+		ID:         "cmd-canary",
+		ScriptType: ScriptTypeCMD,
+		Script:     "@echo off\r\necho v={{p}}\r\n",
+		Parameters: map[string]string{"p": value},
+		Timeout:    20,
+	})
+	if err != nil {
+		t.Fatalf("execute failed: %v (stderr: %s)", err, result.Stderr)
+	}
+	canaryAbsent(t, canary)
+	if got := trimEOL(result.Stdout); got != "v="+value {
+		t.Fatalf("stdout %q, want %q", got, "v="+value)
+	}
+	if _, statErr := os.Stat(canary); statErr == nil {
+		t.Fatalf("canary created: %s", canary)
+	}
+}
+
+// TestConfigureRunAsPreservesBreezeEnvNames: sudo strips the environment, and
+// the rendered script now REFERENCES BREEZE_PARAM_* instead of embedding the
+// values, so losing them would silently hand the script empty parameters.
+func TestConfigureRunAsPreservesBreezeEnvNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only test")
+	}
+	env := []string{
+		"PATH=/usr/bin",
+		"BREEZE_SCRIPT_ID=script-1",
+		"BREEZE_PARAM_NAME=value",
+		"BREEZE_EXECUTION_ID=exec-1",
+		"HOME=/root",
+	}
+	wantPreserve := "--preserve-env=BREEZE_EXECUTION_ID,BREEZE_PARAM_NAME,BREEZE_SCRIPT_ID"
+
+	e := newTestExecutor()
+
+	t.Run("named user", func(t *testing.T) {
+		cmd := exec.Command("/bin/bash", "/tmp/script.sh")
+		cmd.Env = env
+		if err := e.configureRunAs(cmd, "testuser"); err != nil {
+			t.Fatalf("configureRunAs: %v", err)
+		}
+		want := []string{"sudo", "-n", wantPreserve, "-u", "testuser", "/bin/bash", "/tmp/script.sh"}
+		if !reflect.DeepEqual(cmd.Args, want) {
+			t.Fatalf("argv\n got: %v\nwant: %v", cmd.Args, want)
+		}
+	})
+
+	t.Run("root", func(t *testing.T) {
+		cmd := exec.Command("/bin/bash", "/tmp/script.sh")
+		cmd.Env = env
+		if err := e.configureRunAs(cmd, "root"); err != nil {
+			t.Fatalf("configureRunAs: %v", err)
+		}
+		want := []string{"sudo", "-n", wantPreserve, "/bin/bash", "/tmp/script.sh"}
+		if !reflect.DeepEqual(cmd.Args, want) {
+			t.Fatalf("argv\n got: %v\nwant: %v", cmd.Args, want)
+		}
+	})
+
+	t.Run("deterministic ordering", func(t *testing.T) {
+		shuffled := []string{
+			"BREEZE_PARAM_NAME=value",
+			"BREEZE_EXECUTION_ID=exec-1",
+			"BREEZE_VAR_SECRET=s",
+			"BREEZE_SCRIPT_ID=script-1",
+		}
+		first := preserveEnvArg(shuffled)
+		second := preserveEnvArg([]string{
+			"BREEZE_SCRIPT_ID=script-1",
+			"BREEZE_VAR_SECRET=s",
+			"BREEZE_PARAM_NAME=value",
+			"BREEZE_EXECUTION_ID=exec-1",
+		})
+		if first != second {
+			t.Fatalf("argument is not order-independent: %q vs %q", first, second)
+		}
+		want := "--preserve-env=BREEZE_EXECUTION_ID,BREEZE_PARAM_NAME,BREEZE_SCRIPT_ID,BREEZE_VAR_SECRET"
+		if first != want {
+			t.Fatalf("got %q, want %q", first, want)
+		}
+	})
+
+	t.Run("no breeze variables means no flag", func(t *testing.T) {
+		cmd := exec.Command("/bin/bash", "/tmp/script.sh")
+		cmd.Env = []string{"PATH=/usr/bin"}
+		if err := e.configureRunAs(cmd, "testuser"); err != nil {
+			t.Fatalf("configureRunAs: %v", err)
+		}
+		want := []string{"sudo", "-n", "-u", "testuser", "/bin/bash", "/tmp/script.sh"}
+		if !reflect.DeepEqual(cmd.Args, want) {
+			t.Fatalf("argv\n got: %v\nwant: %v", cmd.Args, want)
+		}
+	})
+}
