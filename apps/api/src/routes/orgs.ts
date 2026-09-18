@@ -55,7 +55,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -803,16 +803,10 @@ const partnerSettingsSchema = z.object({
   // W06 (#3900): partner-wide time-tracking suggestion flags. Deep-merged one
   // level in the PATCH handler so the location spec's sibling
   // `timeTracking.locationSuggestions` survives a save that only carries this key.
-  // `.strict()` on the inner object so a typo ("enabledd") is a 400 rather than a
-  // silently stored no-op; `.passthrough()` on the wrapper so the sibling block
-  // this wave does not own is neither rejected nor stripped.
-  timeTracking: z.object({
-    sessionSuggestions: z.object({
-      enabled: z.boolean().optional(),
-      minSessionSeconds: z.number().int().min(30).max(3600).optional(),
-      mergeGapMinutes: z.number().int().min(0).max(120).optional()
-    }).strict().optional()
-  }).passthrough().optional(),
+  // Schema promoted to @breeze/shared (W02-API / M14) so the reads in
+  // timeSuggestionSettings.ts validate against the same contract this write
+  // boundary enforces; its `.strict()`/`.passthrough()` rationale lives there.
+  timeTracking: timeTrackingSessionSuggestionsSchema.optional(),
 
   // PATCH /partners/me deep-merges `ticketing` one level (see the handler), so a
   // future sibling like `ticketing.outbound` survives — but the `inbound` sub-object
@@ -820,24 +814,9 @@ const partnerSettingsSchema = z.object({
   // object each time (incl. the `address` self-hosted override read back via
   // getTicketConfig).
   ticketing: z.object({
-    inbound: z.object({
-      enabled: z.boolean().optional(),
-      address: z.string().email().optional().or(z.literal('')),
-      defaultTriageOrgId: z.string().guid().nullable().optional(),
-      autoresponderEnabled: z.boolean().optional(),
-      // Unknown-sender routing. `unknownSenderMode` is the current 3-way control;
-      // `triageUnknownSenders` is the legacy boolean still accepted for back-compat
-      // (loadPartnerInboundPolicy maps it true→'triage'). The card now sends
-      // `unknownSenderMode`, which retires the legacy key on the next save (the
-      // inbound sub-object is replaced wholesale).
-      unknownSenderMode: z.enum(['quarantine', 'triage', 'drop']).optional(),
-      triageUnknownSenders: z.boolean().optional(),
-      // When true, senders failing the SPF/DKIM/DMARC gate are dropped silently
-      // instead of quarantined. Default-off; applies to all unverified senders.
-      dropUnverifiedSenders: z.boolean().optional(),
-      autoresponseSubject: z.string().max(200).nullable().optional(),
-      autoresponseBody: z.string().max(5000).nullable().optional(),
-    }).optional(),
+    // Schema promoted to @breeze/shared (W02-API / M14) so the three read
+    // sites validate against the same contract this write boundary enforces.
+    inbound: ticketingInboundSettingsSchema.optional(),
   }).optional(),
 });
 
