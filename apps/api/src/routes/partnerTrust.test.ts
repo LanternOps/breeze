@@ -48,11 +48,18 @@ import { sendEvidenceCard } from '../services/partnerTrustEvidenceCard';
 const auth = {
   scope: 'partner',
   partnerId: '22222222-2222-4222-8222-222222222222',
+  partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null | undefined,
   user: {
     id: '11111111-1111-4111-8111-111111111111',
     email: 'owner@breeze.test',
   },
 };
+
+// Partner Viewer / Billing Viewer: partner scope but not full partner org
+// access — canManagePartnerWidePolicies (services/partnerWideAccess.ts) is
+// the single source of truth for "may mutate partner-wide state", and
+// requireScope('partner') alone does not encode that distinction.
+const viewerAuth = { ...auth, partnerOrgAccess: 'selected' as const };
 
 function buildApp(authToInject: typeof auth = auth) {
   const app = new Hono();
@@ -130,6 +137,15 @@ describe('partner trust routes', () => {
         }),
       }),
     }));
+  });
+
+  it('rejects POST /request-review for a partner viewer without partner-wide manage access (403)', async () => {
+    const response = await buildApp(viewerAuth).request('/partner/trust/request-review', { method: 'POST' });
+
+    expect(response.status).toBe(403);
+    expect(dbSpies.update).not.toHaveBeenCalled();
+    expect(createAuditLog).not.toHaveBeenCalled();
+    expect(sendEvidenceCard).not.toHaveBeenCalled();
   });
 
   it('requests review, audits it, and sends the evidence card for the partner', async () => {
