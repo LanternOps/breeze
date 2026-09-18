@@ -65,10 +65,22 @@ function utcDay(at: Date): string {
   return at.toISOString().slice(0, 10);
 }
 
-function windowStartDay(now: Date): string {
+/**
+ * The first UTC day of a trailing `days`-day window that includes `now`.
+ *
+ * Exported because every consumer of this table must bind the SAME value:
+ * `current_date - N` in SQL is evaluated in the SESSION time zone, so a
+ * connection anywhere east of UTC rolls over hours early and silently reads a
+ * window shifted by a day against rows that are keyed on the UTC calendar day.
+ */
+export function utcWindowStartDay(now: Date, days: number = STATS_WINDOW_DAYS): string {
   const start = new Date(now.getTime());
-  start.setUTCDate(start.getUTCDate() - (STATS_WINDOW_DAYS - 1));
+  start.setUTCDate(start.getUTCDate() - (days - 1));
   return utcDay(start);
+}
+
+function windowStartDay(now: Date): string {
+  return utcWindowStartDay(now, STATS_WINDOW_DAYS);
 }
 
 function extractRows<T>(result: unknown): T[] {

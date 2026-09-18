@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { loadSignalConfig } from './config';
-import { computeSendingDomainSignals, type SendingDomainAggregate } from './sendingDomains';
+import {
+  computeSendingDomainSignals, loadSendingDomainAggregates, type SendingDomainAggregate,
+} from './sendingDomains';
 
-vi.mock('../../db', () => ({ db: { execute: vi.fn() } }));
-vi.mock('../emailDomains/capHits', () => ({ CAP_HIT_WINDOW_DAYS: 7, loadCapHitWindow: vi.fn() }));
+const { executeMock, capHitWindowMock } = vi.hoisted(() => ({
+  executeMock: vi.fn(async () => ({ rows: [] as unknown[] })),
+  capHitWindowMock: vi.fn(async () => new Map<string, number>()),
+}));
+vi.mock('../../db', () => ({ db: { execute: executeMock } }));
+vi.mock('../emailDomains/capHits', () => ({ CAP_HIT_WINDOW_DAYS: 7, loadCapHitWindow: capHitWindowMock }));
 
 const cfg = loadSignalConfig();
 
@@ -143,5 +149,20 @@ describe('every emitted signal is well-formed', () => {
       expect(signal.score).toBeGreaterThan(0);
       expect(signal.score).toBeLessThanOrEqual(100);
     }
+  });
+});
+
+describe('loadSendingDomainAggregates — the window boundary', () => {
+  // `current_date` is evaluated in the SESSION time zone. A connection running
+  // anywhere east of UTC rolls over hours early and would silently shift the
+  // 7-day window by a day against deliveryStats, which keys its rows on the UTC
+  // calendar day. The bound value has to be computed in UTC, in JS.
+  it('binds a UTC window start rather than leaning on the server time zone', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    // 23:45Z is already the NEXT day in any zone at or east of UTC+1.
+    await loadSendingDomainAggregates(new Date('2026-09-17T23:45:00.000Z'));
+    const serialized = JSON.stringify(executeMock.mock.calls[0]![0]);
+    expect(serialized).toContain('2026-09-11');
+    expect(serialized).not.toContain('current_date');
   });
 });

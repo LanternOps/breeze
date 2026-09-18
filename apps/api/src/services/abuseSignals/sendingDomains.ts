@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { CAP_HIT_WINDOW_DAYS, loadCapHitWindow } from '../emailDomains/capHits';
+import { utcWindowStartDay } from '../emailDomains/deliveryStats';
 import { scoreToSeverity, type SignalConfig } from './config';
 import type { ComputedSignal } from './types';
 
@@ -76,6 +77,10 @@ export async function loadSendingDomainAggregates(now: Date = new Date()): Promi
 }> {
   const addedWindowDays = 7;
   const statsWindowDays = 7;
+  // Bound in UTC, never `current_date - N`: that is evaluated in the SESSION
+  // time zone, and partner_sending_daily_stats rows are keyed on the UTC
+  // calendar day, so a non-UTC connection would read a window shifted by a day.
+  const statsWindowStart = utcWindowStartDay(now, statsWindowDays);
 
   const result = await db.execute(sql`
     with recent as (
@@ -109,7 +114,7 @@ export async function loadSendingDomainAggregates(now: Date = new Date()): Promi
         coalesce(sum(s.complained), 0) as complained,
         coalesce(sum(s.failed), 0)     as failed
       from partner_sending_daily_stats s
-      where s.day >= (current_date - ${statsWindowDays - 1})
+      where s.day >= ${statsWindowStart}::date
       group by s.partner_id
     ),
     scanned as (
