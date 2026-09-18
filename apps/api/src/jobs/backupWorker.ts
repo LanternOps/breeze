@@ -505,17 +505,35 @@ export async function resolveBackupTargets(
   switch (backupMode) {
     case 'file': {
       const t = targets as { paths?: string[]; excludes?: string[] };
-      // #6001: REFUSE rather than emit `{ paths: [] }`. A file-mode run with no
-      // paths is already invalid everywhere else — the validator rejects it
-      // (packages/shared/src/validators/backupTargets.ts) and the profile
-      // resolver drops an empty-path selection — so the only thing an empty
-      // list could ever produce is a command the agent bounces at 0s with
-      // "backup_run payload has no paths". Failing here instead turns a late,
-      // opaque agent error into a server-side job failure naming the remedy,
-      // for all three entry points (manual, run-all, scheduled sweep) at once.
+      // #6001: REFUSE rather than emit `{ paths: [] }`. The only thing an empty
+      // list can ever produce is a command the agent bounces at 0s with
+      // "backup_run payload has no paths"; failing here turns that late, opaque
+      // agent error into a server-side job failure naming the remedy, for all
+      // three entry points (manual, run-all, scheduled sweep) at once.
+      //
+      // This guard is LOAD-BEARING, not a redundant belt: `min(1)` on
+      // `fileTargetsSchema` (packages/shared/src/validators/backupTargets.ts)
+      // is not imported by the API's write path, which persists
+      // `paths: Array.isArray(s.paths) ? s.paths : []` unchecked
+      // (services/configurationPolicy.ts). So an empty selection IS reachable
+      // in the settings row, and only the PROFILE resolver
+      // (`backupSelectionSpecs`) drops an empty-path selection before job
+      // creation. Legacy custom links have had no such check until now.
       const paths = normalizeBackupPaths(t.paths);
       if (paths.length === 0) {
         throw new EmptyBackupPathsError();
+      }
+      // A path list that lost entries to normalization is not the selection the
+      // tech configured. Never silent: it is the only trail a support engineer
+      // has when asked why one folder in a policy stopped being backed up
+      // while the job still reports success.
+      const droppedPaths = (Array.isArray(t.paths) ? t.paths.length : 0) - paths.length;
+      if (droppedPaths > 0) {
+        console.warn(
+          `[BackupWorker] Dropped ${droppedPaths} unusable path entr${droppedPaths === 1 ? 'y' : 'ies'} ` +
+          `(non-string or blank) from the file selection for device ${deviceId} — ` +
+          'backing up the remaining ' + `${paths.length}`
+        );
       }
       // Preserve the omitted-vs-empty distinction the agent relies on: a
       // missing excludes field means "fall back to locally-configured

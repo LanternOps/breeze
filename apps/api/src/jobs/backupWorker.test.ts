@@ -471,6 +471,37 @@ describe('resolveBackupTargets', () => {
     ).rejects.toThrow(EmptyBackupPathsError);
   });
 
+  it('warns when normalization drops SOME path entries rather than dropping them silently', async () => {
+    // A selection that lost entries is not the selection the tech configured.
+    // The job still succeeds on what is left (refusing the whole run would be
+    // worse), so the log line is the only trail explaining why one folder
+    // stopped being backed up.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await resolveBackupTargets(
+        'file',
+        { paths: ['C:\\Users', '', null as unknown as string, '   '] },
+        'device-id'
+      );
+      expect(result[0]!.payload).toEqual({ paths: ['C:\\Users'] });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('Dropped 3 unusable path entries');
+      expect(warn.mock.calls[0]![0]).toContain('device-id');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not warn when every configured path is usable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await resolveBackupTargets('file', { paths: ['/data', '/etc'] }, 'device-id');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('trims surrounding whitespace off dispatched paths', async () => {
     const result = await resolveBackupTargets('file', { paths: ['  C:\\Users  '] }, 'device-id');
     expect(result).toEqual([

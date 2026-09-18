@@ -39,7 +39,14 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { partners, organizations, sites, devices } from '../../db/schema';
+import {
+  partners,
+  organizations,
+  sites,
+  devices,
+  deviceGroups,
+  deviceGroupMemberships,
+} from '../../db/schema';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -243,6 +250,127 @@ describe('#6001 backup resolver parity (manual vs scheduled sweep)', () => {
     expect(swept.find((e) => e.deviceId === deviceId)?.featureLinkId).toBe(orgLinkId);
   });
 
+  it('the sweep honours role targeting on a DEVICE_GROUP assignment', async () => {
+    // Each level is its own expansion branch, and each had to grow the
+    // role/os select independently — so each needs its own proof. A
+    // group-level assignment outranks org, so a mis-wired branch here
+    // reproduces the reported failure on any device in a group.
+    const [group] = await getTestDb()
+      .insert(deviceGroups)
+      .values({ orgId, siteId, name: `Servers ${sfx}` })
+      .returning({ id: deviceGroups.id });
+    await getTestDb()
+      .insert(deviceGroupMemberships)
+      .values({ deviceId, groupId: group!.id, orgId });
+
+    await seedBackupPolicy({
+      name: 'Group, servers only (no paths)',
+      assignment: { level: 'device_group', targetId: group!.id, roleFilter: ['server'] },
+    });
+    const orgLinkId = await seedBackupPolicy({
+      name: 'Org wide (C:\\Users)',
+      paths: [WINDOWS_PATH],
+      assignment: { level: 'organization', targetId: orgId },
+    });
+
+    const manual = await withDbAccessContext(orgContext, () =>
+      resolveBackupConfigForDevice(deviceId)
+    );
+    const swept = await withSystemDbAccessContext(() => resolveAllBackupAssignedDevices(orgId));
+
+    expect(manual?.featureLinkId).toBe(orgLinkId);
+    expect(swept.find((e) => e.deviceId === deviceId)?.featureLinkId).toBe(orgLinkId);
+  });
+
+  it('the sweep honours role targeting on a PARTNER assignment', async () => {
+    // The partner branch joins through `organizations`, so its role/os select
+    // is the one most likely to alias the wrong table.
+    const partnerLinkId = await seedBackupPolicy({
+      name: 'Partner, servers only (no paths)',
+      assignment: { level: 'partner', targetId: partnerId, roleFilter: ['server'] },
+    });
+    const deviceLinkId = await seedBackupPolicy({
+      name: 'Device level (C:\\Users)',
+      paths: [WINDOWS_PATH],
+      assignment: { level: 'device', targetId: deviceId },
+    });
+
+    const manual = await withDbAccessContext(orgContext, () =>
+      resolveBackupConfigForDevice(deviceId)
+    );
+    const swept = await withSystemDbAccessContext(() => resolveAllBackupAssignedDevices(orgId));
+
+    // Device beats partner regardless, so assert the excluded link is gone
+    // rather than only that the winner is right.
+    expect(manual?.featureLinkId).toBe(deviceLinkId);
+    expect(swept.find((e) => e.deviceId === deviceId)?.featureLinkId).toBe(deviceLinkId);
+    expect(swept.map((e) => e.featureLinkId)).not.toContain(partnerLinkId);
+  });
+
+  it('an empty-array filter matches NOTHING, in both resolvers', async () => {
+    // Postgres reads `x = ANY('{}')` as false, so `roleFilter: []` is
+    // "match no device" — NOT "no filter". The JS mirror must agree, and only a
+    // real assignment row proves the column round-trips as [] rather than null.
+    await seedBackupPolicy({
+      name: 'Match nothing (no paths)',
+      assignment: { level: 'site', targetId: siteId, roleFilter: [] },
+    });
+    const orgLinkId = await seedBackupPolicy({
+      name: 'Org wide (C:\\Users)',
+      paths: [WINDOWS_PATH],
+      assignment: { level: 'organization', targetId: orgId },
+    });
+
+    const manual = await withDbAccessContext(orgContext, () =>
+      resolveBackupConfigForDevice(deviceId)
+    );
+    const swept = await withSystemDbAccessContext(() => resolveAllBackupAssignedDevices(orgId));
+
+    expect(manual?.featureLinkId).toBe(orgLinkId);
+    expect(swept.find((e) => e.deviceId === deviceId)?.featureLinkId).toBe(orgLinkId);
+  });
+
+  it('an UNCLASSIFIED device is excluded by a role filter, in both resolvers', async () => {
+    // `devices.device_role` is NOT NULL DEFAULT 'unknown', so the real-world
+    // "role not determined yet" state — the common one on a freshly enrolled
+    // fleet — is the literal 'unknown', not NULL. It must be excluded by a
+    // roleFilter that does not name it, in BOTH resolvers. (The NULL branch of
+    // `matchesRoleOsFilter` is unreachable through this column by schema;
+    // its unit coverage lives in featureConfigResolver.roleOsFilter.test.ts.)
+    const [unclassified] = await getTestDb()
+      .insert(devices)
+      .values({
+        orgId,
+        siteId,
+        agentId: `bsrp-unclassified-${sfx}`,
+        hostname: `bsrp-unclassified-${sfx}`,
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+        deviceRole: 'unknown',
+      })
+      .returning({ id: devices.id });
+
+    await seedBackupPolicy({
+      name: 'Workstations only (no paths)',
+      assignment: { level: 'site', targetId: siteId, roleFilter: ['workstation'] },
+    });
+    const orgLinkId = await seedBackupPolicy({
+      name: 'Org wide (C:\\Users)',
+      paths: [WINDOWS_PATH],
+      assignment: { level: 'organization', targetId: orgId },
+    });
+
+    const manual = await withDbAccessContext(orgContext, () =>
+      resolveBackupConfigForDevice(unclassified!.id)
+    );
+    const swept = await withSystemDbAccessContext(() => resolveAllBackupAssignedDevices(orgId));
+
+    expect(manual?.featureLinkId).toBe(orgLinkId);
+    expect(swept.find((e) => e.deviceId === unclassified!.id)?.featureLinkId).toBe(orgLinkId);
+  });
+
   it('a device matching the filter is still governed by the filtered assignment', async () => {
     // Negative control: the filter must EXCLUDE, not disable. A workstation
     // filter matches this device, so the site-level assignment still wins.
@@ -335,6 +463,32 @@ describe('#6001 file-mode dispatch never ships an empty path list', () => {
     expect(prepared.status).toBe('ok');
     const command = prepared.status === 'ok' ? prepared.prepared[0]!.command : null;
     expect((command?.payload as { paths?: string[] }).paths).toEqual([WINDOWS_PATH]);
+  });
+
+  it('a populated `targets` is authoritative — the legacy column never overrides it', async () => {
+    // The fallback must be a fallback, not a merge: a tech who narrows the
+    // selection in the Backup tab must not keep backing up the paths they
+    // removed. Without this case the `targets` emptiness guard could be
+    // dropped and every other test here would still pass.
+    const linkId = await seedBackupPolicy({
+      name: 'Narrowed targets, stale legacy column',
+      targets: { paths: ['C:\\Narrowed'] },
+      legacyPaths: ['C:\\Stale', 'C:\\AlsoStale'],
+      assignment: { level: 'organization', targetId: orgId },
+    });
+    const jobId = await seedLegacyJob(linkId);
+
+    const cfg = await loadBackupConfig();
+    const prepared = await withSystemDbAccessContext(() =>
+      __testOnly.prepareBackupDispatchTargets(
+        { type: 'dispatch-backup', jobId, configId: backupConfigId, orgId, deviceId },
+        cfg
+      )
+    );
+
+    expect(prepared.status).toBe('ok');
+    const command = prepared.status === 'ok' ? prepared.prepared[0]!.command : null;
+    expect((command?.payload as { paths?: string[] }).paths).toEqual(['C:\\Narrowed']);
   });
 
   it('a link with no paths anywhere fails the job with the typed reason instead of dispatching', async () => {

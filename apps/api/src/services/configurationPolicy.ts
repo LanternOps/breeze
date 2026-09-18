@@ -1024,6 +1024,13 @@ async function decomposeInlineSettings(
         targets = { ...rawTargets, excludes: parsed.data };
       }
 
+      // #6001: `paths` and `targets.paths` are BOTH written for a file-mode
+      // custom selection (the Backup tab sends the same array in both fields),
+      // and dispatch treats `targets` as authoritative, falling back to `paths`
+      // only when `targets` carries none (jobs/backupWorker.ts,
+      // prepareBackupDispatchTargets). Keep writing both. Writing ONLY `paths`
+      // works but depends entirely on that fallback; writing only `targets`
+      // breaks the read-back in this file's own getter, which prefers `paths`.
       await tx.insert(configPolicyBackupSettings).values({
         featureLinkId: linkId,
         orgId: policyRow.orgId,
