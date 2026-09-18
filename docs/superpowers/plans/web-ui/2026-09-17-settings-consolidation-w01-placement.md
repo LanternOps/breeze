@@ -1,7 +1,9 @@
 ---
-tracking_issue: LanternOps/breeze#6164
+tracking_issue: LanternOps/breeze#6223
 ---
 # Settings Consolidation W01: Placement — Implementation Plan
+
+> Wave mapping: W01 = #6224 (this plan), W02-API = #6225, W02-WEB = #6226.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
