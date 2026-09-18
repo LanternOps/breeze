@@ -593,7 +593,12 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
       try {
         await emailService.sendPasswordReset({
           to: user.email,
-          resetUrl
+          resetUrl,
+          purpose: 'portal.password_reset',
+          // The portal_users row read above carries orgId, not partnerId, and
+          // W01 adds no database read. A null partnerId resolves to the
+          // platform sender, which is exactly today's behaviour (§8.1).
+          partnerId: null
         });
       } catch (error) {
         console.error('[portal] Failed to send password reset email:', error);

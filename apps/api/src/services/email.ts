@@ -79,12 +79,21 @@ export interface InvoiceEmailParams {
   payEnabled?: boolean;
 }
 
-export interface PasswordResetEmailParams {
+/**
+ * Two audiences share this template: an MSP staff account (platform lane —
+ * account recovery must never depend on a partner's DNS, spec §8.2) and a
+ * customer's portal login (partner lane, `support` stream). The purpose is
+ * therefore a caller decision, and it drags `partnerId` with it.
+ */
+export type PasswordResetEmailParams = {
   to: string | string[];
   name?: string;
   resetUrl: string;
   supportEmail?: string;
-}
+} & (
+  | { purpose: 'auth.password_reset' }
+  | { purpose: 'portal.password_reset'; partnerId: string | null }
+);
 
 export interface PortalInviteEmailParams {
   to: string | string[];
@@ -93,6 +102,12 @@ export interface PortalInviteEmailParams {
   inviterName?: string;
   message?: string;
   supportEmail?: string;
+  /**
+   * The partner that owns the org this invite belongs to — the `support`
+   * stream's sender once W04 lands. Must come from a row the call site already
+   * read or from the verified auth context, never from request input (§8.1).
+   */
+  partnerId: string | null;
 }
 
 export interface VerificationEmailParams {
@@ -100,6 +115,12 @@ export interface VerificationEmailParams {
   name?: string;
   verificationUrl: string;
   supportEmail?: string;
+  /**
+   * `auth.email_verification` for signup and resend; `auth.email_change_verify`
+   * for the link sent to a NEW address during an email change. Both are
+   * platform purposes — same lane, different delivery-event tag (§9.3).
+   */
+  purpose: 'auth.email_verification' | 'auth.email_change_verify';
 }
 
 export interface InviteEmailParams {
@@ -381,11 +402,23 @@ export class EmailService {
 
   async sendPasswordReset(params: PasswordResetEmailParams): Promise<void> {
     const template = buildPasswordResetTemplate(params);
+    if (params.purpose === 'portal.password_reset') {
+      await this.sendEmail({
+        to: params.to,
+        subject: template.subject,
+        html: template.html,
+        text: template.text,
+        purpose: 'portal.password_reset',
+        partnerId: params.partnerId
+      });
+      return;
+    }
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.password_reset'
     });
   }
 
@@ -395,7 +428,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: params.purpose
     });
   }
 
@@ -405,7 +439,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.staff_invite'
     });
   }
 
@@ -415,7 +450,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'staff.alert_notification'
     });
   }
 
@@ -425,7 +461,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.account_locked'
     });
   }
 
@@ -435,7 +472,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.email_changed'
     });
   }
 
@@ -445,7 +483,8 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'auth.signup_existing_account'
     });
   }
 
@@ -455,7 +494,9 @@ export class EmailService {
       to: params.to,
       subject: template.subject,
       html: template.html,
-      text: template.text
+      text: template.text,
+      purpose: 'portal.invite',
+      partnerId: params.partnerId
     });
   }
 }

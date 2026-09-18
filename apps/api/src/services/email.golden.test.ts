@@ -187,3 +187,60 @@ describe('golden: every purpose renders today\'s envelope on EMAIL_PROVIDER=mail
     });
   }
 });
+
+describe('named helpers carry their purpose to the transport (spec §8.1)', () => {
+  beforeEach(() => {
+    process.env.EMAIL_PROVIDER = 'resend';
+    process.env.RESEND_API_KEY = 'rk_test';
+    process.env.EMAIL_FROM = DEFAULT_FROM;
+  });
+
+  it('sendPasswordReset carries the auth purpose for staff', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendPasswordReset({ to: 'admin@msp.test', resetUrl: 'https://app.test/r', purpose: 'auth.password_reset' });
+    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'auth.password_reset' });
+    expect(resendSendMock.mock.calls[0]![0].from).toBe(DEFAULT_FROM);
+  });
+
+  it('sendPasswordReset carries the portal purpose and partner for a portal user', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendPasswordReset({
+      to: 'buyer@customer.test', resetUrl: 'https://portal.test/r',
+      purpose: 'portal.password_reset', partnerId: PARTNER_ID,
+    });
+    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'portal.password_reset', partnerId: PARTNER_ID });
+  });
+
+  it('sendVerificationEmail carries whichever verification purpose it was given', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendVerificationEmail({ to: 'a@msp.test', verificationUrl: 'https://app.test/v', purpose: 'auth.email_change_verify' });
+    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'auth.email_change_verify' });
+  });
+
+  it('sendPortalInvite is a partner-stream send carrying the partner', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendPortalInvite({ to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', partnerId: PARTNER_ID });
+    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'portal.invite', partnerId: PARTNER_ID });
+  });
+
+  it('the single-audience helpers hard-code their purpose', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendInvite({ to: 'new@msp.test', inviteUrl: 'https://app.test/i' });
+    await svc.sendAccountLocked({ to: 'a@msp.test', resetUrl: 'https://app.test/r', lockoutMinutes: 15 });
+    await svc.sendEmailChanged({ to: 'old@msp.test', newEmail: 'new@msp.test' });
+    await svc.sendSignupAttemptOnExistingAccount({ to: 'a@msp.test' });
+    await svc.sendAlertNotification({ to: 'a@msp.test', alertName: 'Disk', severity: 'high', summary: 'full' });
+    expect(spy.mock.calls.map((c) => c[0].purpose)).toEqual([
+      'auth.staff_invite',
+      'auth.account_locked',
+      'auth.email_changed',
+      'auth.signup_existing_account',
+      'staff.alert_notification',
+    ]);
+  });
+});
