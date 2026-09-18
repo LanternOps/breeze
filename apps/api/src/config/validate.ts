@@ -824,6 +824,13 @@ const envObjectSchema = z
     EMAIL_DOMAINS_PARTNER_ALLOWLIST: z.string().optional(),
     EMAIL_DOMAINS_DENYLIST: z.string().optional(),
     EMAIL_DOMAINS_WEBHOOK_SECRET: z.string().optional(),
+    // Automatic suspension thresholds (spec §9.3). Optional strings like every
+    // other EMAIL_DOMAINS_* key, and deliberately with NO requireIf: hosted
+    // falls back to 0.08 / 50 / 3, self-hosted falls back to "off". Parsing and
+    // range-checking live in services/emailDomains/config.ts.
+    EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE: z.string().optional(),
+    EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES: z.string().optional(),
+    EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: z.string().optional(),
 
     // Cloudflare mTLS — when CLOUDFLARE_API_TOKEN is set, zone id is required.
     CLOUDFLARE_API_TOKEN: z.string().optional(),

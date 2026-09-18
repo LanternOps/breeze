@@ -33,11 +33,39 @@ export interface EmailDomainsConfig {
   denylist: string[];
   staticAllowed: StaticAllowedEntry[];
   webhookSecret: string | null;
+  autoSuspend: EmailDomainsAutoSuspendConfig;
+}
+
+export interface EmailDomainsAutoSuspendConfig {
+  /**
+   * Hosted: on by default (spec §9.3). Self-hosted: off until the operator sets
+   * at least one threshold. A self-hoster's bounce rate is their own business,
+   * and an upgrade that started suspending their only sending domain would be a
+   * bug report, not a protection — the same argument as the send cap's
+   * unlimited self-hosted default.
+   */
+  enabled: boolean;
+  /** Fraction in (0, 1]. */
+  bounceRate: number;
+  /** Minimum messages in the window before the rate means anything. */
+  minMessages: number;
+  /** Complaints in the window that suspend regardless of rate. */
+  complaints: number;
 }
 
 export const DEFAULT_EMAIL_DOMAINS_REGION = 'us-east-1';
 export const DEFAULT_EMAIL_DOMAINS_MAX_PER_PARTNER = 3;
 export const DEFAULT_HOSTED_DAILY_SEND_CAP = 2000;
+
+export const DEFAULT_AUTOSUSPEND_BOUNCE_RATE = 0.08;
+export const DEFAULT_AUTOSUSPEND_MIN_MESSAGES = 50;
+export const DEFAULT_AUTOSUSPEND_COMPLAINTS = 3;
+
+const AUTOSUSPEND_KEYS = [
+  'EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE',
+  'EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES',
+  'EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS',
+] as const;
 
 function str(name: string): string | null {
   const value = (process.env[name] ?? '').trim();
@@ -60,6 +88,40 @@ function nonNegativeInt(name: string, fallback: number): number {
     return fallback;
   }
   return parsed;
+}
+
+/** A fraction in (0, 1]; anything else warns and falls back. */
+function ratio(name: string, fallback: number): number {
+  const raw = str(name);
+  if (raw === null) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    console.warn(`[emailDomains] Ignoring ${name}=${JSON.stringify(raw)} (want a fraction in (0,1]); using ${fallback}.`);
+    return fallback;
+  }
+  return parsed;
+}
+
+/** An integer >= 1; 0 would make one bounce enough to suspend. */
+function positiveInt(name: string, fallback: number): number {
+  const raw = str(name);
+  if (raw === null) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    console.warn(`[emailDomains] Ignoring ${name}=${JSON.stringify(raw)} (want an integer >= 1); using ${fallback}.`);
+    return fallback;
+  }
+  return parsed;
+}
+
+function readAutoSuspendConfig(): EmailDomainsAutoSuspendConfig {
+  const configured = AUTOSUSPEND_KEYS.some((key) => str(key) !== null);
+  return {
+    enabled: isHosted() || configured,
+    bounceRate: ratio('EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE', DEFAULT_AUTOSUSPEND_BOUNCE_RATE),
+    minMessages: positiveInt('EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES', DEFAULT_AUTOSUSPEND_MIN_MESSAGES),
+    complaints: positiveInt('EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS', DEFAULT_AUTOSUSPEND_COMPLAINTS),
+  };
 }
 
 /** `domain` or `domain:partner-slug`, comma-separated. */
@@ -110,7 +172,8 @@ export function getEmailDomainsConfig(): EmailDomainsConfig {
     partnerAllowlist: csv('EMAIL_DOMAINS_PARTNER_ALLOWLIST'),
     denylist: csv('EMAIL_DOMAINS_DENYLIST').map((d) => d.toLowerCase().replace(/\.+$/, '')),
     staticAllowed: parseStaticAllowed(process.env.EMAIL_DOMAINS_STATIC_ALLOWED),
-    webhookSecret: str('EMAIL_DOMAINS_WEBHOOK_SECRET')
+    webhookSecret: str('EMAIL_DOMAINS_WEBHOOK_SECRET'),
+    autoSuspend: readAutoSuspendConfig()
   };
 }
 

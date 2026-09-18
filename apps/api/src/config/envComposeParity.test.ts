@@ -305,6 +305,9 @@ describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02)', () => {
     'EMAIL_DOMAINS_PARTNER_ALLOWLIST',
     'EMAIL_DOMAINS_DENYLIST',
     'EMAIL_DOMAINS_WEBHOOK_SECRET',
+    'EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE',
+    'EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES',
+    'EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS',
   ] as const;
 
   it.each(EMAIL_DOMAINS_VARS)('%s is declared in the validate.ts schema', (name) => {
