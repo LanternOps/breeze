@@ -7,6 +7,7 @@ import {
   buildMicrosoftAuthorizationUrl,
   exchangeMicrosoftAuthorizationCode,
   hasMailboxConsentAdminRole,
+  hasMailboxConsentAdminRoleViaGraph,
   verifyMicrosoftAdminIdToken,
 } from './microsoftIdentity';
 
@@ -136,6 +137,7 @@ describe('exchangeMicrosoftAuthorizationCode', () => {
 
     await expect(exchangeMicrosoftAuthorizationCode(input, { fetch: fetchImpl })).resolves.toEqual({
       idToken: 'id-token',
+      accessToken: null,
     });
 
     const [url, init] = fetchImpl.mock.calls[0]!;
@@ -179,6 +181,18 @@ describe('exchangeMicrosoftAuthorizationCode', () => {
 
     await expect(exchangeMicrosoftAuthorizationCode(input, { fetch: fetchImpl }))
       .rejects.toThrow('Microsoft identity verification failed');
+  });
+
+  it('extracts the delegated access_token alongside the id_token when present', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => new Response(JSON.stringify({
+      id_token: 'id-token',
+      access_token: 'delegated-access-token',
+    }), { status: 200 }));
+
+    await expect(exchangeMicrosoftAuthorizationCode(input, { fetch: fetchImpl })).resolves.toEqual({
+      idToken: 'id-token',
+      accessToken: 'delegated-access-token',
+    });
   });
 });
 
@@ -239,19 +253,71 @@ describe('verifyMicrosoftAdminIdToken', () => {
       .rejects.toThrow('Microsoft identity verification failed');
   });
 
-  it('rejects missing administrator roles', async () => {
+  // verifyMicrosoftAdminIdToken no longer rejects on missing/unaccepted wids.
+  // Some tenants never populate wids in the ID token even with
+  // optionalClaims.idToken correctly configured — reproduced against a
+  // from-scratch app registration and confirmed with Microsoft's own jwt.ms
+  // token inspector. The admin-role decision now happens one level up
+  // (hasMailboxConsentAdminRole / hasMailboxConsentAdminRoleViaGraph), so
+  // this function's job is only to hand back whatever wids it found, valid
+  // or empty, and let the caller decide.
+  it('resolves with an empty wids array when the claim is missing, deferring the role decision to the caller', async () => {
     await expect(verify(await mintToken({ wids: undefined })))
-      .rejects.toThrow('Microsoft identity verification failed');
+      .resolves.toMatchObject({ wids: [] });
   });
 
-  it('rejects malformed administrator roles', async () => {
+  it('resolves with an empty wids array when the claim is malformed', async () => {
     await expect(verify(await mintToken({ wids: GLOBAL_ADMIN_ROLE_ID })))
-      .rejects.toThrow('Microsoft identity verification failed');
+      .resolves.toMatchObject({ wids: [] });
   });
 
-  it('rejects unknown administrator roles', async () => {
+  it('resolves with the presented wids even when none are accepted admin roles', async () => {
     await expect(verify(await mintToken({
       wids: ['9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3'],
-    }))).rejects.toThrow('Microsoft identity verification failed');
+    }))).resolves.toMatchObject({ wids: ['9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3'] });
+  });
+});
+
+describe('hasMailboxConsentAdminRoleViaGraph', () => {
+  it('returns false without a delegated access token', async () => {
+    await expect(hasMailboxConsentAdminRoleViaGraph(null)).resolves.toBe(false);
+  });
+
+  it('accepts a Global Administrator returned by the live directory-role lookup', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async (input, init) => {
+      expect(input.toString()).toBe(
+        'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId',
+      );
+      expect((init?.headers as Record<string, string>).authorization).toBe('Bearer delegated-token');
+      return new Response(JSON.stringify({
+        value: [{ roleTemplateId: GLOBAL_ADMIN_ROLE_ID }],
+      }), { status: 200 });
+    });
+
+    await expect(hasMailboxConsentAdminRoleViaGraph('delegated-token', { fetch: fetchImpl })).resolves.toBe(true);
+  });
+
+  it('rejects a signed-in user with no accepted directory role', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => new Response(JSON.stringify({
+      value: [{ roleTemplateId: '9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3' }],
+    }), { status: 200 }));
+
+    await expect(hasMailboxConsentAdminRoleViaGraph('delegated-token', { fetch: fetchImpl })).resolves.toBe(false);
+  });
+
+  it('treats a non-2xx Graph response (e.g. missing Directory.Read.All consent) as not-an-admin rather than throwing', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => new Response(JSON.stringify({
+      error: { code: 'Authorization_RequestDenied' },
+    }), { status: 403 }));
+
+    await expect(hasMailboxConsentAdminRoleViaGraph('delegated-token', { fetch: fetchImpl })).resolves.toBe(false);
+  });
+
+  it('treats a network failure as not-an-admin rather than throwing', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => {
+      throw new Error('network unreachable');
+    });
+
+    await expect(hasMailboxConsentAdminRoleViaGraph('delegated-token', { fetch: fetchImpl })).resolves.toBe(false);
   });
 });

@@ -69,7 +69,11 @@ export function buildMicrosoftAuthorizationUrl(input: {
   url.searchParams.set('redirect_uri', input.redirectUri);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('response_mode', 'query');
-  url.searchParams.set('scope', 'openid profile');
+  // Directory.Read.All (delegated) lets verifyMailboxConsentAdminRole fall back
+  // to a live Graph directory-role lookup when the `wids` ID token claim is
+  // absent. Must also be added as a Delegated permission on the app
+  // registration and admin-consented, or the live check will 403.
+  url.searchParams.set('scope', 'openid profile Directory.Read.All');
   url.searchParams.set('state', input.state);
   url.searchParams.set('nonce', input.nonce);
   url.searchParams.set('code_challenge', input.codeChallenge);
@@ -84,7 +88,7 @@ export async function exchangeMicrosoftAuthorizationCode(input: {
   redirectUri: string;
   code: string;
   codeVerifier: string;
-}, dependencies: Pick<MicrosoftIdentityDependencies, 'fetch'> = {}): Promise<{ idToken: string }> {
+}, dependencies: Pick<MicrosoftIdentityDependencies, 'fetch'> = {}): Promise<{ idToken: string; accessToken: string | null }> {
   const tenant = requireTenantHint(input.tenantHint);
   const tokenUrl = new URL(`/${tenant}/oauth2/v2.0/token`, MICROSOFT_LOGIN_ORIGIN);
   const body = new URLSearchParams({
@@ -106,16 +110,23 @@ export async function exchangeMicrosoftAuthorizationCode(input: {
     if (!response.ok) throw new MicrosoftIdentityVerificationError('Microsoft identity verification failed');
 
     const tokenResponse: unknown = await response.json();
-    const idToken = (
-      typeof tokenResponse === 'object' && tokenResponse !== null
-        ? (tokenResponse as Record<string, unknown>).id_token
-        : undefined
-    );
+    const record = typeof tokenResponse === 'object' && tokenResponse !== null
+      ? (tokenResponse as Record<string, unknown>)
+      : undefined;
+    const idToken = record?.id_token;
     if (typeof idToken !== 'string' || idToken.length === 0) {
       throw new MicrosoftIdentityVerificationError('Microsoft identity verification failed');
     }
-    return { idToken };
-  } catch {
+    // Optional: only used for the live directory-role fallback below. Its
+    // absence must never fail the exchange — the wids claim path still works
+    // without it, and probeMailbox/Graph mail calls use the app-only token
+    // from getMailboxToken(), not this delegated one.
+    const accessToken = typeof record?.access_token === 'string' && record.access_token.length > 0
+      ? record.access_token
+      : null;
+    return { idToken, accessToken };
+  } catch (error) {
+    if (error instanceof MicrosoftIdentityVerificationError) throw error;
     throw new MicrosoftIdentityVerificationError('Microsoft identity verification failed');
   }
 }
@@ -148,17 +159,22 @@ export async function verifyMicrosoftAdminIdToken(
 
   const oid = normalizeGuid(payload.oid);
   const expectedIssuer = `${MICROSOFT_LOGIN_ORIGIN}/${tid}/v2.0`;
+  // `wids` is intentionally NOT required here. Some tenants do not populate
+  // it in the ID token even with optionalClaims.idToken correctly configured
+  // (observed against a from-scratch app registration, verified with
+  // Microsoft's own jwt.ms token inspector — see the linked GitHub issue).
+  // Admin-role verification for mailbox consent now happens one level up in
+  // hasMailboxConsentAdminRole / hasMailboxConsentAdminRoleViaGraph, which
+  // treats wids as a fast path and falls back to a live Graph role lookup.
   const wids = Array.isArray(payload.wids) && payload.wids.every((wid) => typeof wid === 'string')
     ? payload.wids
-    : null;
+    : [];
   if (
     !oid
     || payload.iss !== expectedIssuer
     || payload.nonce !== expected.nonce
     || typeof payload.sub !== 'string'
     || payload.sub.length === 0
-    || !wids
-    || !hasMailboxConsentAdminRole(wids)
   ) {
     throw new MicrosoftIdentityVerificationError('Microsoft identity verification failed');
   }
@@ -173,4 +189,46 @@ export async function verifyMicrosoftAdminIdToken(
 
 export function hasMailboxConsentAdminRole(wids: readonly string[]): boolean {
   return wids.some((wid) => ACCEPTED_ADMIN_ROLES.has(wid.toLowerCase()));
+}
+
+/**
+ * Fallback for tenants where the `wids` ID token claim is not populated even
+ * with optionalClaims.idToken correctly configured on the app registration.
+ * Reads the signed-in user's directory role membership directly from Graph
+ * using the delegated access token from the same authorization-code
+ * exchange. Requires the Directory.Read.All delegated permission to be
+ * granted (admin-consented) on the app registration — a 401/403 here is
+ * treated as "not an admin" rather than a hard failure, since an
+ * unconfigured permission should not be indistinguishable from a real
+ * privilege-escalation attempt in the audit log, but also must never be
+ * treated as success.
+ */
+export async function hasMailboxConsentAdminRoleViaGraph(
+  accessToken: string | null,
+  dependencies: Pick<MicrosoftIdentityDependencies, 'fetch'> = {},
+): Promise<boolean> {
+  if (!accessToken) return false;
+  try {
+    const response = await (dependencies.fetch ?? globalThis.fetch)(
+      'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId',
+      { headers: { authorization: `Bearer ${accessToken}` } },
+    );
+    if (!response.ok) return false;
+
+    const body: unknown = await response.json();
+    const values = typeof body === 'object' && body !== null
+      ? (body as Record<string, unknown>).value
+      : undefined;
+    if (!Array.isArray(values)) return false;
+
+    const roleTemplateIds = values
+      .map((role) => (typeof role === 'object' && role !== null
+        ? (role as Record<string, unknown>).roleTemplateId
+        : undefined))
+      .filter((id): id is string => typeof id === 'string');
+
+    return hasMailboxConsentAdminRole(roleTemplateIds);
+  } catch {
+    return false;
+  }
 }
