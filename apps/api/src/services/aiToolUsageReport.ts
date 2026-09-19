@@ -1,6 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { getAllRegisteredToolNames } from './aiTools';
 
 export interface ToolUsageRow {
   surface: string;
@@ -63,6 +62,9 @@ export async function buildToolUsageReport(days: number): Promise<ToolUsageRepor
     lastUsedAt: r.last_used_at == null ? null : new Date(String(r.last_used_at)).toISOString(),
   }));
   const seen = new Set(mapped.map((r) => r.toolName));
+  // Lazy: importing the tool hub statically drags jobs/routes into every
+  // module that mounts adminRoutes (routes/admin/*.test.ts mock clientIp etc.).
+  const { getAllRegisteredToolNames } = await import('./aiTools');
   const registered = getAllRegisteredToolNames();
   return { days, generatedAt: new Date().toISOString(), rows: mapped, coldTools: registered.filter((n) => !seen.has(n)).sort(), registeredToolCount: registered.length };
 }
