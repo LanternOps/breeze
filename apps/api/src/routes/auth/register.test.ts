@@ -129,7 +129,7 @@ describe('POST /register-partner — SR2-21: email-first, no account created bef
   });
 
   it('returns RATE_LIMITED when registration is throttled', async () => {
-    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false });
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
 
     const res = await postRegisterPartner(VALID_BODY);
 
