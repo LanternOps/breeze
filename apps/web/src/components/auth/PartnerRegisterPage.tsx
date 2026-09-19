@@ -51,9 +51,12 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
         void navigateTo('/dashboard', { replace: true });
         return;
       }
-      // 'throttled' (#3696) is not a verdict on the session — leave the flag
-      // alone and let a later request judge it instead of evicting here.
-      if (outcome !== 'throttled') {
+      // Only a definitive refusal clears the persisted flag. 'throttled'
+      // (#3696) and 'transient' (a 502/offline/timeout on /auth/refresh) are
+      // not verdicts on the session — evicting here on a transient would
+      // hard-log-out a valid session, the regression QA 2026-07-08 fixed in
+      // AuthGuard. Leave the flag alone and let the gate's own request judge.
+      if (outcome === 'auth-failed' || outcome === 'origin-rejected') {
         useAuthStore.getState().logout();
       }
       setSessionChecked(true);

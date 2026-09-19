@@ -99,10 +99,12 @@ export default function ScriptsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        setError(t('scriptsPage.errors.fetch'));
+        if (!opts.silent) setError(t('scriptsPage.errors.fetch'));
         return;
       }
-      setError(err instanceof Error ? err.message : t('scriptsPage.errors.generic'));
+      // A silent (background) refetch must not swap the page for the error
+      // branch either — that would unmount the open import modal (#6005).
+      if (!opts.silent) setError(err instanceof Error ? err.message : t('scriptsPage.errors.generic'));
     } finally {
       if (!opts.silent) setLoading(false);
     }

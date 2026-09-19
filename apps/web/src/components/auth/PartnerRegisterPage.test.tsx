@@ -82,6 +82,15 @@ describe('PartnerRegisterPage — SR2-21 email-first signup', () => {
       expect(screen.queryByLabelText(/company name/i)).toBeNull();
     });
 
+    it('does not evict a valid session on a transient refresh failure (502/offline)', async () => {
+      mockRestoreAccessTokenFromCookieDetailed.mockResolvedValue('transient');
+      render(<PartnerRegisterPage />);
+
+      await screen.findByLabelText(/company name/i);
+      expect(mockLogout).not.toHaveBeenCalled();
+      expect(mockNavigateTo).not.toHaveBeenCalledWith(expect.stringContaining('session-expired'));
+    });
+
     it('clears a merely stale flag and shows the registration form instead of bouncing to /login?reason=session-expired', async () => {
       mockRestoreAccessTokenFromCookieDetailed.mockResolvedValue('auth-failed');
       render(<PartnerRegisterPage />);
