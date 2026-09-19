@@ -225,8 +225,8 @@ const BLOCKED_ROWS: Row[] = [
 
 // Public addresses / hostnames that must stay reachable in every mode, so the
 // table above cannot be satisfied by a guard that simply blocks everything.
-const ALLOWED_ROWS: Array<{ label: string; host: string }> = [
-  { label: 'public hostname', host: 'api.example.com' },
+const ALLOWED_ROWS: Array<{ label: string; host: string; hostname?: boolean }> = [
+  { label: 'public hostname', host: 'api.example.com', hostname: true },
   { label: 'public IPv4', host: '93.184.216.34' },
   { label: 'public IPv6', host: '[2606:2800:220:1:248:1893:25c8:1946]' },
   { label: '172.15.0.1 just below RFC1918', host: '172.15.0.1' },
@@ -234,7 +234,7 @@ const ALLOWED_ROWS: Array<{ label: string; host: string }> = [
   { label: '100.63.255.254 just below CGNAT', host: '100.63.255.254' },
   { label: '100.128.0.1 just above CGNAT', host: '100.128.0.1' },
   { label: '1.0.0.1 leading octet 1, not 0', host: '1.0.0.1' },
-  { label: 'hostname that merely starts with fd', host: 'fd-cdn.example.com' },
+  { label: 'hostname that merely starts with fd', host: 'fd-cdn.example.com', hostname: true },
   { label: 'public IPv6 uncompressed', host: '[2606:2800:0220:0001:0248:1893:25c8:1946]' },
   { label: 'fec0:: (site-local, outside fe80::/10)', host: '[fec0::1]' },
   { label: 'fb00:: (outside fc00::/7)', host: '[fb00::1]' },
@@ -299,7 +299,7 @@ describe('urlSafety classifiers agree with ssrfGuard (one guard)', () => {
   }
 
   for (const row of ALLOWED_ROWS) {
-    if (row.host.includes('example.com')) continue; // hostnames, not IPs
+    if (row.hostname) continue; // DNS names, not IP literals — classified only after resolution
     const bare = row.host.replace(/^\[|\]$/g, '');
     it(`isPrivateIp allows ${row.label}`, () => {
       expect(isPrivateIp(bare)).toBe(false);
@@ -411,18 +411,19 @@ describe('non-routable hostnames, per mode', () => {
     }
   }
 
-  const LOCAL_NETWORK_NAMES = ['nas.local', 'pihole.local', 'es.corp.internal'];
+  // `.local` / `.internal` names are NOT refused by this guard, in any mode: a
+  // self-hosted PSA or appliance legitimately lives on such a domain, the guard
+  // never rejected them, and the connect-time policy classifies whatever they
+  // resolve to. (`webhookSender` keeps its own `.local` rejection for webhook
+  // targets — that is a webhook-specific rule, exercised in its own suite.)
+  const LOCAL_NETWORK_NAMES = ['nas.local', 'pihole.local', 'es.corp.internal', 'jira.acme.internal'];
 
   for (const host of LOCAL_NETWORK_NAMES) {
-    it(`strict-https: rejects ${host}`, () => {
-      expect(isSsrfSafe(urlFor(host, 'strict-https'), { mode: 'strict-https' })).toBe(false);
-    });
-    it(`on-prem-http: accepts ${host}`, () => {
-      expect(isSsrfSafe(urlFor(host, 'on-prem-http'), { mode: 'on-prem-http' })).toBe(true);
-    });
-    it(`on-prem-strict: accepts ${host}`, () => {
-      expect(isSsrfSafe(urlFor(host, 'on-prem-strict'), { mode: 'on-prem-strict' })).toBe(true);
-    });
+    for (const mode of ALL_MODES) {
+      it(`${mode}: accepts ${host}`, () => {
+        expect(isSsrfSafe(urlFor(host, mode), { mode })).toBe(true);
+      });
+    }
   }
 
   it('classifies each hostname kind', () => {

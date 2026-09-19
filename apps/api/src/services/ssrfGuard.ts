@@ -45,22 +45,21 @@ export interface SsrfGuardOptions {
   hostnameAllowlist?: readonly string[];
 }
 
-// Hostname categories (from the shared table in `ipRanges.ts`) that each mode
-// refuses. 'loopback' and 'metadata' are never legitimate. The local-network
-// naming suffixes are refused only in 'strict-https' mode, where the endpoint
-// belongs to a cloud-only vendor and a LAN name cannot be right; the on-prem
-// modes exist precisely to reach appliances that may carry one.
-const REFUSED_HOSTNAME_KINDS: Record<SsrfMode, readonly NonRoutableHostnameKind[]> = {
-  'strict-https': ['loopback', 'metadata', 'mdns-local', 'internal-tld'],
-  'on-prem-http': ['loopback', 'metadata'],
-  'on-prem-strict': ['loopback', 'metadata']
-};
+// Hostname categories (from the shared table in `ipRanges.ts`) that this
+// config-time check refuses, in every mode. Kept to exactly the two the guard
+// refused before this consolidation — loopback aliases and instance-metadata
+// names — so no integration that used to validate stops validating. Notably
+// NOT included: the `.local` / `.internal` naming suffixes. A self-hosted PSA
+// or appliance legitimately lives on a corporate `.internal`/`.local` domain,
+// the guard never rejected those, and the connect-time policy still classifies
+// whatever such a name resolves to. (`webhookSender.ts` keeps its own,
+// longer-standing `.local` rejection for webhook targets; that is a
+// webhook-specific rule, not this guard's.)
+const REFUSED_HOSTNAME_KINDS: readonly NonRoutableHostnameKind[] = ['loopback', 'metadata'];
 
-const HOSTNAME_KIND_REASON: Record<NonRoutableHostnameKind, string> = {
+const HOSTNAME_KIND_REASON: Partial<Record<NonRoutableHostnameKind, string>> = {
   loopback: 'a loopback alias',
-  metadata: 'an instance-metadata endpoint',
-  'mdns-local': 'a local-network-only name',
-  'internal-tld': 'a local-network-only name'
+  metadata: 'an instance-metadata endpoint'
 };
 
 export interface SsrfGuardResult {
@@ -103,7 +102,7 @@ export function checkSsrfSafe(rawUrl: string, opts: SsrfGuardOptions): SsrfGuard
   }
 
   const hostnameKind = classifyNonRoutableHostname(hostnameLower);
-  if (hostnameKind !== null && REFUSED_HOSTNAME_KINDS[opts.mode].includes(hostnameKind)) {
+  if (hostnameKind !== null && REFUSED_HOSTNAME_KINDS.includes(hostnameKind)) {
     return { ok: false, reason: `hostname ${hostnameLower} is ${HOSTNAME_KIND_REASON[hostnameKind]}` };
   }
 
