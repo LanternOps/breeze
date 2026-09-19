@@ -116,10 +116,17 @@ async function main(): Promise<void> {
           create: sum.create + call.cacheCreationInputTokens,
           read: sum.read + call.cacheReadInputTokens,
         }), { input: 0, create: 0, read: 0 });
+        // The proxy also captures the CLI's own /api/hello handshake and a
+        // small Haiku title/summary call, both with tools: []. Prefer the
+        // last request that actually carried tools (the real turn), falling
+        // back to the last request if none did — see the baseline doc's
+        // "trap found while running this task" note.
+        const toolBearingRequest = [...proxyRequests].reverse().find((r) => r.tools.length > 0)
+          ?? proxyRequests.at(-1);
         rows.push({
           surface: args.baseUrl ? `${label}/${surface.id}` : surface.id, turn,
-          'tools sent': proxyRequests[0]?.tools.length ?? null,
-          deferred: proxyRequests[0]?.tools.filter((tool) => tool.deferLoading).length ?? null,
+          'tools sent': toolBearingRequest?.tools.length ?? null,
+          deferred: toolBearingRequest?.tools.filter((tool) => tool.deferLoading).length ?? null,
           input: usage.input, cache_create: usage.create, cache_read: usage.read,
           'ttft ms': observation.ttftMs,
           'ToolSearch seen': `uses=${observation.toolSearchUses}, blocks=${observation.toolSearchResultBlocks}, refs=${observation.toolReferenceNames.length}, stderr=${observation.stderrToolSearchLines.length}`,
