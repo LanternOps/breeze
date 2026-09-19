@@ -43,4 +43,11 @@ describe('createStreamObserver', () => {
   it('is null-safe on a session that produced nothing', () => {
     expect(createStreamObserver().finish()).toMatchObject({ ttftMs: null, apiCalls: [], toolUses: [], result: null, sessionId: null });
   });
+
+  it('handles a stderr line split across chunks and flushes the trailing remainder on finish()', () => {
+    const o = createStreamObserver();
+    o.onStderr('[Tool');
+    o.onStderr('Search] a\r\n[ToolSearch] b');
+    expect(o.finish().stderrToolSearchLines).toEqual(['[ToolSearch] a', '[ToolSearch] b']);
+  });
 });
