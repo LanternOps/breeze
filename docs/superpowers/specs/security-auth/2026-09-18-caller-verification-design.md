@@ -1,7 +1,7 @@
 # Caller verification (anti-vishing) — design
 
-Status: draft v4 for review · Owner: Todd · Date: 2026-09-18 · Revised: 2026-09-19
-(three Codex gpt-6-astra xhigh passes folded in — see "Review notes")
+Status: draft v5 for review · Owner: Todd · Date: 2026-09-18 · Revised: 2026-09-19
+(four Codex gpt-6-astra xhigh passes folded in — see "Review notes")
 
 ## Problem
 
@@ -83,7 +83,7 @@ Breeze has the primitives and none of the orchestration:
 | D10 | Public challenge page `/verify/:token`, patterned on Quick Support. | `routes/supportPublic.ts` already solves the same shape: token is the credential, tight `withSystemDbAccessContext`, per-IP limits, a two-tier miss budget, one atomic single-use transition. |
 | D11 | **Canonical subject** is an Entra principal `(entra_tenant_id, entra_oid)`, independent of any backend connection, recorded in a new table `caller_verification_subject_bindings`, written only by the **Graph-backed** directory sync or by an explicit technician attestation — never by CSV/API import. Every backend validates at dispatch that its connection's tenant (`m365_connections.tenant_id`, `delegant_m365_connections.m365_tenant_id`) equals the pinned tenant. The gate resolves subjects by binding only; there is no email-string fallback. Ambiguity fails closed. All references from `caller_verifications` to bindings, destinations and intents are **composite FKs carrying `org_id`** (and `contact_id` where the target has one). | `contacts.email` is deliberately non-unique (`schema/contacts.ts` ~L86); the importer accepts uploaded external identifiers (`services/contacts/import.ts` ~L351), so an `entra` link from a file is a label, not evidence; the M365 tools resolve UPN → OID and drop the UPN before mutating (`aiToolsM365.ts` ~L258), so a UPN compare can guard a different user than the one mutated and misses aliases. Three connection tables exist (`m365_connections` with per-profile rows, `delegant_m365_connections`), so a binding keyed on one connection cannot serve all backends; tenant+OID is the identity, the connection is the route. A connection id survives a tenant change (`routes/m365.ts` ~L166), hence the tenant check at dispatch. Plain uuid FKs would let an org-A verification reference an org-B binding under RLS on the owning row only; `contact_external_links` already uses the composite form for this reason (`schema/contacts.ts` ~L125). |
 | D12 | **Destination provenance** is its own table `caller_verification_destinations`: one row per (contact, kind, value hash) with `set_at`, `set_by_user_id`, `source` and optional `attested_at`. Every contact write path (CRUD route, import, inbound email, AI tool) records the change through one helper. "Established" is computed from this table, never from `contacts.updated_at` or the audit log. | The existing contact audit events record field *names*, roles and link metadata, not destination values (`services/contacts/audit.ts` ~L60/L96, `routes/orgContacts.ts` ~L351), so they cannot show that a phone number was unchanged for N days. AI-created contacts carry the technician's `userId` (`aiToolsOrgs.ts` ~L518), so "created by a human" is not derivable from ownership. Editing an unrelated field must not establish the phone. |
-| D13 | A verification is a **single-use grant bound to** the verified requester, the **authorised target** `(tenant, oid)`, the initiating technician, and an `action_scope` (`reset_password`, `disable_user`, or `any`). Consumption is **post-claim**: the release path claims `executing` as today, then one transaction runs revalidation, the fence check and the consume CAS (`consumed_at IS NULL`), then dispatches. Consumption is recorded as `consumed_at` plus a **snapshot** `consumed_intent_ref` (no FK: `action_intents` stays with the loser org on merge, `orgMergeRegistry.ts` ~L194, so an FK would break repointing). If revalidation refuses, the intent fails and the grant is untouched. If dispatch fails after consumption, the intent fails, the grant stays consumed, and the technician is told to re-verify. Same-intent retry is idempotent (`consumed_intent_ref = this intent` passes). The **irreversible boundary** is `action_intents.dispatch_started_at`, set in the same short transaction as the backend's final fence check immediately before the outbound call; a rejection that lands after it reports the intent as dispatched, one that lands before it wins because the fence read and the marker are serialised on a per-target advisory lock. Cross-technician use is off by default. Rebinding, contact merge, device move or a fence mark outstanding grants `revoked`. | v1 selected by contact, tier, status and age only, so an impersonator ringing a second technician inherited a grant and one approval authorised repeated actions. v2 said "same transaction as the release CAS", which is impossible: both the worker (`intentReleaseWorker.ts` ~L904) and the inline path (`aiAgentSdk.ts` ~L1388 → ~L1455) claim `executing` before calling revalidation. Post-claim consumption with explicit failure semantics is honest about that ordering. |
+| D13 | A verification is a **single-use grant bound to** the verified requester, the **authorised target** `(tenant, oid)`, the initiating technician, and an `action_scope` (`reset_password`, `disable_user`, or `any`). Consumption is **post-claim**: the release path claims `executing` as today, then one transaction runs revalidation, the fence check and the consume CAS (`consumed_at IS NULL`), then dispatches. Consumption is recorded as `consumed_at` plus a **snapshot** `consumed_intent_ref` (no FK: `action_intents` stays with the loser org on merge, `orgMergeRegistry.ts` ~L194, so an FK would break repointing). If revalidation refuses, the intent fails and the grant is untouched. If dispatch fails after consumption, the intent fails, the grant stays consumed, and the technician is told to re-verify. Same-intent retry is idempotent (`consumed_intent_ref = this intent` passes). The **irreversible boundary** is `action_intents.dispatch_started_at`, set in the same short transaction as the backend's final fence check immediately before the outbound call; a rejection that lands after it reports the intent as dispatched, one that lands before it wins because the fence read and the marker are serialised on advisory locks taken on **both** the requester's and the target's binding ids, always in ascending uuid order. Cross-technician use is off by default. Rebinding, contact merge, device move or a fence mark outstanding grants `revoked`. | v1 selected by contact, tier, status and age only, so an impersonator ringing a second technician inherited a grant and one approval authorised repeated actions. v2 said "same transaction as the release CAS", which is impossible: both the worker (`intentReleaseWorker.ts` ~L904) and the inline path (`aiAgentSdk.ts` ~L1388 → ~L1455) claim `executing` before calling revalidation. Post-claim consumption with explicit failure semantics is honest about that ordering. |
 | D14 | The target is pinned end to end as `(entra_tenant_id, entra_oid)`: the intent stores it at creation, the grant carries it, each backend checks its connection's tenant equals it and passes the OID (never the original identifier) to Graph or the executor; UPN is display-only after resolution. Expiry, tenant, OID and the fence are re-evaluated at dispatch inside each backend, immediately before the outbound call. | `writeActionService.executeM365WriteActionByOrg` forwards the original identifier (`writeActionService.ts` ~L159) and the executor re-resolves it (`m365-graph-actions-executor/src/microsoft/writeActions.ts` ~L56); a UPN reassignment or a connection re-pointed at another tenant between verification and execution separates the verified identity from the mutated one. |
 | D15 | Every grant names two identities: the **requester** (the contact on the call, who is verified) and the **target** (the account acted upon). For `reset_password` they must be the same binding. For `disable_user` they may differ when the requester is an **org-level** contact (`site_id IS NULL`) holding a role in `disable_user_authorizer_roles` (default `{admin}`, an existing `CONTACT_ROLES` value in `services/contacts/types.ts`; `is_primary` confers nothing). The challenge card names the target, so the requester confirms *that* account. A separate **administrative disable** exists for offboarding and containment: the technician performs an interactive MFA step-up (`POST /auth/mfa/step-up`, `services/mfaStepUpGrant.ts`, new operation `caller_verification_administrative_disable` with a resource digest of org + target + reason), and presenting the grant writes a durable `caller_verifications` row with `method='administrative_stepup'`, tier 3, `action_scope='disable_user'`, the target binding, the reason and `initiated_by_user_id`. The row has **no requester binding** and is not a challenge method: it is exempt from `allowed_methods`, governed instead by `allow_administrative_disable` (default true, org may only turn it off), and the gate's requester and destination checks are replaced for it by the administrative eligibility checks (initiating technician still holds `ORGS_WRITE`, step-up session and MFA epoch still valid). Never for `reset_password`. | Requiring the target's own cooperation to disable their account blocks offboarding and compromise containment and would push partners to tier 0. v2 conflated requester and target, so a manager's grant could never satisfy a target-OID check at dispatch. v2 also relied on "fresh MFA" at release, but the release actor context synthesises `mfa: true` (`actionIntents/actorContext.ts` ~L276) and `requireMfa` is a boolean check with no freshness (`middleware/auth.ts` ~L911); the step-up grant is the existing primitive that proves a factor interactively and single-uses it, and turning it into a grant row keeps one dispatch contract. `is_primary` is the headline contact for an org **or a site** (`schema/contacts.ts` ~L59), so it must not confer org-wide authority. |
 | D16 | Feature is dark until W05: server flag `CALLER_VERIFICATION_ENABLED` (default false) hides every entry point and 404s the authenticated routes; per-method availability additionally requires the agent/helper capability (D17). | Green "Caller verified" badges without a live gate are a false sense of security. |
@@ -107,8 +107,8 @@ except the policy table (dual ownership). No json/jsonb/bytea anywhere.
 | `id` | uuid pk | |
 | `org_id` | uuid not null | RLS `breeze_has_org_access(org_id)` |
 | `contact_id` | uuid not null | composite FK `(contact_id, org_id) → contacts(id, org_id)` **DEFERRABLE INITIALLY IMMEDIATE**, `ON DELETE CASCADE` |
-| `requester_binding_id` | uuid null | composite FK `(requester_binding_id, contact_id, org_id) → caller_verification_subject_bindings(id, contact_id, org_id)` `ON DELETE SET NULL`; the verified person's Entra binding; CHECK: NOT NULL whenever `action_scope <> 'any'` **unless** `method = 'administrative_stepup'`. `DEFERRABLE INITIALLY IMMEDIATE`, `ON DELETE NO ACTION` (bindings are soft-revoked, never hard-deleted except via the contact cascade, which removes this row in the same statement) |
-| `target_binding_id` | uuid null | composite FK `(target_binding_id, org_id) → caller_verification_subject_bindings(id, org_id)` `DEFERRABLE INITIALLY IMMEDIATE`, `ON DELETE NO ACTION`; the account acted upon (D15); equals the requester binding for self-service; required when `action_scope <> 'any'` (CHECK) |
+| `requester_binding_id` | uuid null | composite FK `(requester_binding_id, contact_id, org_id) → caller_verification_subject_bindings(id, contact_id, org_id)` `ON DELETE SET NULL`; the verified person's Entra binding; `DEFERRABLE INITIALLY IMMEDIATE`, `ON DELETE SET NULL (requester_binding_id)` (column-specific, PG15+); non-null at creation is enforced by the service for `action_scope <> 'any'` except `administrative_stepup`, and a later null makes the grant unusable (`subject_unmatched`), which is the intended effect of the requester's binding disappearing |
+| `target_binding_id` | uuid null | composite FK `(target_binding_id, org_id) → caller_verification_subject_bindings(id, org_id)` `DEFERRABLE INITIALLY IMMEDIATE`, `ON DELETE SET NULL (target_binding_id)`; the account acted upon (D15); equals the requester binding for self-service; non-null at creation enforced by the service; a later null → `target_rebound`. No NOT NULL CHECK, so hard-deleting target contact B (`services/contacts/crud.ts` ~L646) cascades B's bindings without being blocked by requester A's history row; the `target_entra_*` snapshots keep the record readable |
 | `target_entra_tenant_id`, `target_entra_oid` | varchar(64) null | snapshot of the target identity at creation so a later rebinding is detectable (grant → `revoked`) |
 | `initiated_by_user_id` | uuid not null | technician; FK `users(id)` `RESTRICT` plus `technician_label` snapshot |
 | `technician_label` | varchar(255) not null | display name frozen at creation |
@@ -116,7 +116,7 @@ except the policy table (dual ownership). No json/jsonb/bytea anywhere.
 | `target_label` | varchar(320) null | what the card shows ("reset the password for j.smith@…"); snapshot |
 | `method` | enum `caller_verification_method` | `workstation`, `sms`, `email`, `callback_attestation`, `administrative_stepup` |
 | `reason` | text null | required for `administrative_stepup` (min 20 chars) |
-| `stepup_session_id`, `stepup_mfa_epoch`, `stepup_verified_at` | text / int / timestamptz null | `administrative_stepup` only: copied from the consumed step-up grant so release can re-check the session is live and the MFA epoch unchanged (D15) |
+| `stepup_session_id`, `stepup_auth_epoch`, `stepup_mfa_epoch`, `stepup_verified_at` | text / int / int / timestamptz null | `administrative_stepup` only. Session id and both epochs are the bindings the step-up grant carries (`StepUpGrant`, `mfaStepUpGrant.ts`); the grant has no proof timestamp and `consumeStepUpGrant` returns a boolean, so `stepup_verified_at = now()` at the administrative route, which is within the grant's own mint TTL of the factor proof. The administrative row's freshness is aged from `stepup_verified_at`, not `decided_at` |
 | `status` | enum `caller_verification_status` | `pending`, `verified`, `rejected_by_user`, `wrong_choice`, `expired`, `undeliverable`, `cancelled`, `revoked` |
 | `tier` | smallint not null | frozen at creation by the rules in "Tiers" |
 | `tier_reason` | varchar(64) not null | `bound_principal`, `unbound_principal`, `destination_established`, `destination_recent`, `attestation` |
@@ -124,7 +124,7 @@ except the policy table (dual ownership). No json/jsonb/bytea anywhere.
 | `decoy_values` | char(2)[] not null | two other candidates, fixed so the card is stable across reloads |
 | `reverse_code` | char(4) not null | technician reads it aloud; the card shows it |
 | `challenge_token_hash` | char(64) null | sha256 of a 32-byte link token; link methods only; unique partial index |
-| `destination_id` | uuid null | composite FK `(destination_id, contact_id, org_id) → caller_verification_destinations(id, contact_id, org_id)` `DEFERRABLE INITIALLY IMMEDIATE`, `ON DELETE NO ACTION`; link methods |
+| `destination_id` | uuid null | composite FK `(destination_id, contact_id, org_id) → caller_verification_destinations(id, contact_id, org_id)` `DEFERRABLE INITIALLY IMMEDIATE`, `ON DELETE SET NULL (destination_id)`; link methods; `destination_redacted` keeps the record readable |
 | `destination_redacted` | varchar(64) null | `+44 •••• ••12`, `a•••@acme.com` |
 | `workstation_device_ref` | uuid null | snapshot, **no FK, deliberately not named `device_id`** (D7) |
 | `device_hostname` | varchar(255) null | snapshot |
@@ -351,9 +351,12 @@ the reason when it is lower than expected ("mobile updated 2 days ago",
   `caller_verify` is also added to the HTTP result route's handler registry
   allowlist (`routes/agents/commands.ts` ~L747), which is separate from the WS
   dispatch. A reconciliation job (a) expires pending rows past `expires_at`
-  whose command never terminalised and (b) re-applies the handler to pending
+  whose command never terminalised, (b) re-applies the handler to pending
   rows whose `device_commands` row is already terminal (the handler ran and
-  crashed before the CAS), so a decision is never lost between transports.
+  crashed before the CAS), and (c) scans terminal `caller_verify` commands of
+  **any** verification status whose result is `not_me` and whose row is not
+  `rejected_by_user`, and applies the rejection, so a late "not me" is never
+  lost between transports.
 - `deliverers/link.ts` — builds `https://<partner app url>/verify/<token>`;
   SMS via `TwilioService.sendSmsMessage`, email via the branded layout. Send
   failure → `undeliverable`.
@@ -380,11 +383,13 @@ the reason when it is lower than expected ("mobile updated 2 days ago",
   and site, and not (`method='email'` and destination in the target's mailbox
   set); `administrative_stepup` rows → `allow_administrative_disable`, the
   technician still holds `ORGS_WRITE` on the org, `stepup_session_id` is a
-  live session and its `mfa_epoch` equals `stepup_mfa_epoch`, else
-  `stepup_invalidated` → in `consume` mode, CAS `consumed_at` /
+  live session, the user's `auth_epoch` and `mfa_epoch` equal the stored
+  values, and `stepup_verified_at > now() - ttl`, else `stepup_invalidated` → in `consume` mode, CAS `consumed_at` /
   `consumed_intent_ref`. Everything from the fence read to the CAS is one
-  transaction under `pg_advisory_xact_lock(hashtext(target oid))`, the same
-  lock the rejection path and the dispatch marker take. Refusals are a typed
+  transaction under `pg_advisory_xact_lock` on the requester binding id and
+  the target binding id (ascending order, one lock when equal), the same
+  locks the rejection path and the dispatch marker take, so requester A's
+  rejection also fences an A-authorised action on target B. Refusals are a typed
   `CallerVerificationRequiredError { orgId, contactId?, action, requiredTier,
   reason, latest? }` with reasons `no_fresh_verification`, `grant_consumed`,
   `subject_unmatched`, `subject_ambiguous`, `subject_mailboxes_unknown`,
@@ -407,7 +412,8 @@ the reason when it is lower than expected ("mobile updated 2 days ago",
   pinned target or requester matches, with actor `system:caller_verification`
   and the verification id in details, and returns the ids of intents already
   `executing`. `executing` means "past claim", not "past dispatch": the rejection
-  transaction takes the per-target advisory lock, so any such intent that has
+  transaction takes the advisory locks on the rejecting contact's binding and
+  on every target binding of its outstanding grants, so any such intent that has
   not yet set `dispatch_started_at` will meet the fence at its gate check and
   fail `contact_fenced`; those that have set it are listed in the incident as
   "dispatched before rejection; confirm in Entra whether the change landed",
@@ -542,7 +548,7 @@ re-checked for org ownership and the caller's site reach.
 | `GET /orgs/:orgId/caller-verifications/device-suggestions?contactId=` | online devices whose `last_user` or a binding's `os_username` matches the contact, with the matched username pre-filled and whether a binding exists (tier 3 vs 2). |
 | `GET/PUT /orgs/:orgId/caller-verification-policy`, `GET/PUT /partner/caller-verification-policy` | `GET` returns own row + effective policy with per-field provenance; `PUT` upserts. |
 | `GET /verify/:token` (public) | JSON for the card: branding, technician label, contact first name, action and target label, reverse code, the three candidates in stored order, expiry. Unknown, spent or expired → one generic "expired" response. `Cache-Control: no-store, private`. |
-| `POST /verify/:token` (public) | `{ choice: '<2 digits>' \| 'not_me' }`. One atomic `UPDATE … WHERE status='pending' AND expires_at > now()` CAS; `not_me` then runs `rejection.ts` through the outbox. |
+| `POST /verify/:token` (public) | `{ choice: '<2 digits>' \| 'not_me' }`. A number choice is one atomic `UPDATE … WHERE status='pending' AND expires_at > now()` CAS. `not_me` is accepted for any resolvable token whose row is not already `rejected_by_user` (expired, wrong-choice or verified rows included, within 24 h of creation) and runs `rejection.ts` through the outbox; the response is the same generic body either way. |
 
 Public handlers wrap only the token lookup and the CAS in
 `withSystemDbAccessContext` and get a live-DB integration test. Page rendering
@@ -649,7 +655,7 @@ consistent with the Quick Support landing page.
   repoints, `consumed_at` intact), and the same OID or `os_principal` bound in
   both orgs (both revoked, conflict audited, merge completes); deleting a
   contact cascades verifications, bindings and destinations in one statement
-  without tripping the deferred NO ACTION references; device org-move leaves
+  with the column-specific SET NULL leaving `org_id`/`contact_id` intact; deleting target contact B while requester A holds a grant on B succeeds and A's grant becomes `target_rebound`; device org-move leaves
   `workstation_device_ref` rows untouched
   and does not trip the composite FK; intent release refused without a fresh
   verification and allowed with one; "not me" during `executing` reports the
@@ -763,6 +769,17 @@ Full text: `2026-09-18-caller-verification-design.codex-review-v3.md`.
 | N11 | `(intent, org)` FK breaks repoint because intents stay with the loser org | `consumed_intent_ref` snapshot, no FK; `consumed_at` is the marker |
 | N12 | New composite FKs not deferrable; `SET NULL` clears owner columns / violates CHECK | all three `DEFERRABLE INITIALLY IMMEDIATE`, `ON DELETE NO ACTION`, rely on contact cascade |
 | N13 | `it_admin` is not in `CONTACT_ROLES` | default authoriser role `admin` |
+
+### Codex gpt-6-astra `xhigh`, fourth pass on v4, 2026-09-19 (v5) — 3/7 resolved, 4 partial, **no new blockers**
+
+Full text: `2026-09-18-caller-verification-design.codex-review-v4.md`.
+
+| # | Residual | Adopted as |
+|---|---|---|
+| P7 | Target-only lock misses requester A's rejection vs A-authorised action on B | advisory locks on both requester and target binding ids, ordered |
+| P9 | Reconciliation pending-only; public POST required pending | reconciliation (c) for late `not_me`; public `not_me` accepted from any non-rejected state |
+| N2 | `authEpoch` omitted; grant has no proof timestamp | `stepup_auth_epoch` added; `stepup_verified_at` set at the route within grant TTL; admin freshness aged from it |
+| N12 | Requester FK delete action contradictory; target delete blocked by history rows | column-specific `SET NULL` on all three, service-enforced non-null at creation, null → unusable grant |
 
 ## Open questions for Todd
 
