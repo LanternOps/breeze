@@ -20,6 +20,8 @@ const mockState = vi.hoisted(() => ({
   failExecuteMatching: null as RegExp | null,
   /** id returned by the mocked `db.insert(...).values(...).returning(...)`. */
   insertedId: 'merge-event-1',
+  ticketCandidates: [] as Array<{ id: string }>,
+  revalidateTicketAssignee: vi.fn(),
 }));
 
 function sqlToText(q: unknown): string {
@@ -80,6 +82,7 @@ vi.mock('../db', () => ({
       if (mockState.failExecuteMatching?.test(text)) {
         return Promise.reject(new Error('stamp write exploded'));
       }
+      if (/SELECT id FROM tickets WHERE org_id/.test(text)) return Promise.resolve(mockState.ticketCandidates);
       const next = mockState.executeResponses.shift();
       return Promise.resolve(next === undefined ? [] : next);
     }),
@@ -90,6 +93,8 @@ vi.mock('../db', () => ({
     })),
   },
 }));
+
+vi.mock('./ticketService', () => ({ revalidateTicketAssignee: mockState.revalidateTicketAssignee }));
 
 vi.mock('./auditService', () => ({
   createAuditLog: vi.fn(async () => {}),
@@ -667,6 +672,29 @@ describe('stampTerminalShell', () => {
   // namespace (the same `self.` surface the engine uses), the stamp is left
   // REAL, and its write is made to fail: `executeOrgMerge` must still resolve
   // with the merge result, and must NOT unfence — the merge committed.
+  it('revalidates moved ticket assignees after all tenant and permission rewrites', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    const fixups = vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined);
+    mockState.ticketCandidates = [{ id: 'ticket-with-device' }, { id: 'ticket-without-device' }];
+    try {
+      await orgMergeModule.executeOrgMerge(input);
+      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledTimes(2);
+      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledWith('ticket-with-device', { userId: input.performedBy });
+      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledWith('ticket-without-device', { userId: input.performedBy });
+      expect(mockState.revalidateTicketAssignee.mock.invocationCallOrder[0]).toBeGreaterThan(fixups.mock.invocationCallOrder[0]!);
+      const index = mockState.executedSql.findIndex(s => /SELECT id FROM tickets WHERE org_id/.test(s));
+      expect(mockState.executedParams[index]).toContain(LOSER);
+    } finally {
+      mockState.ticketCandidates = [];
+      mockState.revalidateTicketAssignee.mockClear();
+    }
+  });
+
   it('a failing stamp still resolves executeOrgMerge and never unfences', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });

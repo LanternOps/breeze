@@ -2,7 +2,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, deviceVulnerabilities, type TicketOutboxEvent } from '../db/schema';
+import { auditLogs, tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, deviceVulnerabilities, type TicketOutboxEvent } from '../db/schema';
 import { serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
@@ -221,6 +221,65 @@ async function assertAssigneeEligible(
   if (!eligible) {
     throw new TicketServiceError('Assignee is not eligible for this ticket', 400, 'ASSIGNEE_NOT_ELIGIBLE');
   }
+}
+
+/** Clear a retained assignment when a ticket's org or device scope changes. */
+export async function revalidateTicketAssignee(
+  ticketId: string,
+  actor: TicketActor | { kind: 'ai_agent'; agentId: string; name?: string },
+  connection: Pick<typeof db, 'select' | 'update' | 'insert'> = db,
+  currentTicket?: typeof tickets.$inferSelect
+): Promise<typeof tickets.$inferSelect> {
+  const ticket = currentTicket ?? (await connection.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1))[0];
+  if (!ticket) throw new TicketServiceError('Ticket not found', 404);
+  if (!ticket.assignedTo) return ticket;
+  const assignee = await getAssigneeForValidation(ticket.assignedTo);
+  const partnerId = await resolveTicketPartnerId(ticket);
+  if (assignee && partnerId && await isEligibleTicketRecipient({
+    userId: assignee.id,
+    partnerId: assignee.partnerId,
+    status: assignee.status ?? '',
+    email: assignee.email ?? null,
+  }, partnerId, ticket.orgId, ticket.deviceId, { bypassCache: true })) return ticket;
+
+  const [updated] = await connection.update(tickets)
+    .set({ assignedTo: null, updatedAt: new Date() })
+    .where(and(
+      eq(tickets.id, ticketId),
+      eq(tickets.assignedTo, ticket.assignedTo),
+      eq(tickets.orgId, ticket.orgId),
+      ticket.deviceId ? eq(tickets.deviceId, ticket.deviceId) : isNull(tickets.deviceId),
+    )).returning();
+  if (!updated) throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
+  const isAgent = 'kind' in actor || actor.principalKind === 'ai_agent';
+  const actorId = 'kind' in actor ? actor.agentId : actor.userId;
+  await connection.insert(ticketComments).values({
+    ticketId,
+    userId: isAgent ? null : actorId,
+    authorName: actor.name ?? null,
+    authorType: isAgent ? 'ai_agent' : 'internal',
+    originPrincipalKind: isAgent ? 'ai_agent' : 'user',
+    commentType: 'assignment',
+    content: 'Assignee no longer eligible after ticket scope change',
+    isPublic: false,
+    oldValue: ticket.assignedTo,
+    newValue: null,
+  });
+  await connection.insert(ticketOutbox).values({
+    orgId: ticket.orgId, ticketId, eventType: 'ticket.assigned', payload: { assigneeId: null },
+  });
+  // Keep the audit in the mutation transaction: org merge holds an org row
+  // lock, so a separate audit connection's FK check would wait on this writer.
+  await connection.insert(auditLogs).values({
+    orgId: ticket.orgId,
+    actorId,
+    actorType: isAgent ? 'ai_agent' : 'user',
+    initiatedBy: isAgent ? 'ai' : 'manual',
+    action: 'ticket.assign', resourceType: 'ticket', resourceId: ticketId,
+    details: { from: ticket.assignedTo, to: null, reason: 'assignee_no_longer_eligible' },
+    result: 'success',
+  });
+  return updated;
 }
 
 /**
@@ -1387,6 +1446,10 @@ export async function updateTicketFields(
     .returning();
   if (updated.length === 0) {
     throw new TicketServiceError('Ticket not found', 404);
+  }
+
+  if (changed.includes('deviceId')) {
+    updated[0] = await revalidateTicketAssignee(ticketId, actor, db, updated[0]);
   }
 
   await db.insert(ticketComments).values({
@@ -2815,7 +2878,7 @@ export async function moveTicketOrg(
     if (!row) {
       throw new TicketServiceError('Ticket changed while the organization move was in progress', 409);
     }
-    updated = row;
+    updated = await revalidateTicketAssignee(ticketId, actor, tx, row);
     // #4524, reverse direction: ticket_comments has no org_id (child-via-parent
     // tenancy — see the TICKET_ORG_DENORMALIZED_TABLES comment above), so every
     // comment on this ticket travels into the target org while the run that

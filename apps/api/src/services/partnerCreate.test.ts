@@ -255,6 +255,23 @@ describe('createPartner', () => {
     });
   });
 
+  // Spec: docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md (D1)
+  it('writes settings.security.requireMfa=true for new partners (signup path)', async () => {
+    await createPartner({
+      orgName: 'Acme',
+      adminEmail: 'alex@acme.com',
+      adminName: 'Alex',
+      passwordHash: 'hashed',
+      origin: { mcp: false },
+      status: 'active',
+    });
+
+    const partnerCall = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+    expect(partnerCall.values.settings).toMatchObject({
+      security: { requireMfa: true },
+    });
+  });
+
   it('inserts six system ticket_statuses rows inside the transaction', async () => {
     await createPartner({
       orgName: 'Acme',

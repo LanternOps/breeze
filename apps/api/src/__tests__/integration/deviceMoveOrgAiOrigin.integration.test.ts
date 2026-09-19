@@ -24,6 +24,7 @@ import { createOrganization, createSite, setupTestEnvironment } from './db-utils
 import { getTestDb } from './setup';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 
 function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -100,11 +101,12 @@ async function seed() {
   const app = new Hono();
   app.route('/devices', moveOrgRoutes);
 
-  const move = () =>
+  // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
+  const move = async () =>
     app.request(`/devices/${device.id}/move-org`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: orgB.id, siteId: siteB.id }),
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, device.id, { orgId: orgB.id, siteId: siteB.id })),
     });
 
   return { adminDb, orgA, orgB, device, execution, session, agentRunId, move };

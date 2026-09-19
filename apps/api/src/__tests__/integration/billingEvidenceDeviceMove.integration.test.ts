@@ -23,6 +23,7 @@ import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { createAccessToken } from '../../services/jwt';
 import { createOrganization, createSite, setupTestEnvironment } from './db-utils';
 import { replayMigration } from './replayMigration';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 
 async function seed() {
   const env = await setupTestEnvironment({ scope: 'partner' });
@@ -70,10 +71,11 @@ async function seed() {
       deviceId: dev!.id,
       invoiceId: inv!.id,
       lineId: line!.id,
-      postMove: () => app.request(`/devices/${dev!.id}/move-org`, {
+      // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
+      postMove: async () => app.request(`/devices/${dev!.id}/move-org`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: oB.id, siteId: siteB.id }),
+        body: JSON.stringify(await withMoveOrgStepUpGrant(token, dev!.id, { orgId: oB.id, siteId: siteB.id })),
       }),
     };
   });
