@@ -19,7 +19,7 @@ vi.mock('../../services/invoiceService', () => ({
 // accessibleOrgIds entry or an org-scoped token), so without an explicit
 // semantic audit here most partner admins get NO audit_logs row at all.
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
-vi.mock('../orgs', () => ({ resolveAuditOrgIdForPartner: vi.fn(async () => 'audit-org-1') }));
+vi.mock('../../services/auditOrgResolver', () => ({ resolveAuditOrgIdForPartner: vi.fn(async () => 'audit-org-1') }));
 
 // Multi-currency wave 7 (#3779): the reporting-totals route is thin — the money
 // math lives in the service and is proven in reportingTotals.test.ts.
@@ -66,7 +66,7 @@ import * as svc from '../../services/invoiceService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import * as auditEvents from '../../services/auditEvents';
-import * as orgsModule from '../orgs';
+import * as orgsModule from '../../services/auditOrgResolver';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 

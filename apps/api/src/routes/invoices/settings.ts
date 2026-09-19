@@ -14,7 +14,7 @@ import {
   canManagePartnerWidePolicies,
 } from '../../services/partnerWideAccess';
 import { writeRouteAudit, type AuthContext as AuditAuthContext } from '../../services/auditEvents';
-import { resolveAuditOrgIdForPartner } from '../orgs';
+import { resolveAuditOrgIdForPartner } from '../../services/auditOrgResolver';
 
 // Mounted at the api root (not under the /invoices hub) so the paths read
 // /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
