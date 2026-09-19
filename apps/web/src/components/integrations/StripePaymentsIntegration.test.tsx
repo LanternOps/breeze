@@ -37,6 +37,17 @@ describe('StripePaymentsIntegration — account currency cache (#3777)', () => {
     expect(screen.getByTestId('stripe-connect-refresh-button')).toBeInTheDocument();
   });
 
+  it('shows a loud error when refund/dispute reconciliation cannot poll Stripe', async () => {
+    fetchWithAuth.mockImplementation(async () => json({
+      ...connected,
+      reconciliation: { state: 'error', lastPolledAt: null, error: 'Events read permission denied' },
+    }));
+    render(<StripePaymentsIntegration />);
+    const banner = await screen.findByTestId('stripe-reconciliation-error');
+    expect(banner.textContent).toContain('Events read permission denied');
+    expect(banner.textContent).toContain('read Events');
+  });
+
   it('shows the not-cached copy when the API has no default currency yet', async () => {
     fetchWithAuth.mockImplementation(async () =>
       json({ ...connected, defaultCurrency: null, accountCountry: null, accountRefreshedAt: null }),

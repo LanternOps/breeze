@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { inArray, type SQL } from 'drizzle-orm';
+import { PgDialect, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 
@@ -22,7 +24,7 @@ vi.mock('../db', () => {
   chain.returning = vi.fn(() =>
     selectResults.length ? Promise.resolve(selectResults.shift()) : Promise.resolve([{ id: `doc-${insertedValues.length}` }]),
   );
-  for (const m of ['select', 'from', 'where', 'limit', 'update', 'set']) chain[m] = vi.fn(() => chain);
+  for (const m of ['select', 'from', 'where', 'limit', 'update', 'set', 'innerJoin', 'leftJoin', 'orderBy']) chain[m] = vi.fn(() => chain);
   // Awaiting the chain (a select's `.limit(1)`) shifts the next queued result.
   (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
     Promise.resolve(selectResults.shift() ?? []).then(resolve);
@@ -36,12 +38,14 @@ vi.mock('../db', () => {
 
 import {
   createExecutedDocuments,
+  listContractDocuments,
   buildContractHashParts,
   assertContractRenderDataComplete,
   getContractDocumentPdf,
   linkContractDocument,
   ContractDocumentServiceError,
 } from './contractDocumentService';
+import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import { QuoteServiceError } from './quoteTypes';
@@ -361,5 +365,61 @@ describe('contractDocumentService.getContractDocumentPdf', () => {
       code: 'ORG_DENIED',
     });
     expect(canAccessOrg).toHaveBeenCalledWith('org-denied');
+  });
+});
+
+describe('contractDocumentService.listContractDocuments predicates', () => {
+  beforeEach(() => { insertedValues.length = 0; selectResults.length = 0; vi.clearAllMocks(); });
+
+  // The where() argument is a real drizzle SQL tree; rendering it through the
+  // pg dialect is what makes these assertions non-vacuous (a stub that merely
+  // records "some object was passed" would pass no matter which branch ran).
+  async function whereSqlFor(opts: Parameters<typeof listContractDocuments>[1]): Promise<string> {
+    const auth = {
+      orgCondition: (col: AnyPgColumn) => inArray(col, ['org-1']),
+    } as unknown as AuthContext;
+    queueResult([]);
+    await listContractDocuments(auth, opts);
+    const chain = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where;
+    const arg = chain.mock.calls.at(-1)![0] as SQL;
+    return new PgDialect().sqlToQuery(arg).sql.toLowerCase();
+  }
+
+  it('emits IS NOT NULL on contract_id for linked=linked, and IS NULL for unlinked', async () => {
+    expect(await whereSqlFor({ linked: 'linked' })).toContain('is not null');
+    const unlinked = await whereSqlFor({ linked: 'unlinked' });
+    expect(unlinked).toContain('is null');
+    expect(unlinked).not.toContain('is not null');
+  });
+
+  it('emits no link predicate at all for linked=all', async () => {
+    const all = await whereSqlFor({ linked: 'all' });
+    expect(all).not.toContain('is null');
+    expect(all).not.toContain('is not null');
+  });
+
+  it('keeps contractId winning over an explicit linked filter', async () => {
+    const sqlText = await whereSqlFor({ contractId: 'ct-1', linked: 'linked' });
+    expect(sqlText).toContain('"contract_id" = ');
+    // No link predicate at all: contractId already pins the rows.
+    expect(sqlText).not.toContain('is null');
+    expect(sqlText).not.toContain('is not null');
+  });
+
+  it('pins the service-level default for a caller that passes nothing', async () => {
+    // The route always supplies `linked` via its Zod default, so this is the
+    // contract for any FUTURE direct caller (a worker, an export job): no args
+    // means unlinked-only, matching the route rather than the old "no filter".
+    const sqlText = await whereSqlFor({});
+    expect(sqlText).toContain('is null');
+    expect(sqlText).not.toContain('is not null');
+  });
+
+  it('ANDs orgId with the caller org condition rather than substituting for it', async () => {
+    const sqlText = await whereSqlFor({ orgId: 'org-2', linked: 'all' });
+    // both the access condition (in (...)) and the narrowing equality survive
+    expect(sqlText).toContain('in (');
+    expect(sqlText).toMatch(/"org_id" = /);
+    expect(sqlText).toContain(' and ');
   });
 });

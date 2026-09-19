@@ -624,3 +624,207 @@ describe('graph read methods', () => {
     })).rejects.toMatchObject({ code: 'graph_response_invalid' });
   });
 });
+
+describe('readSyncCollection', () => {
+  const USERS_PATH = '/v1.0/users';
+  // A comfortably distant deadline for tests that don't exercise deadline
+  // behavior themselves. Deliberately relative to the real clock (not a bare
+  // epoch-ms literal): readSyncCollection's default `now` is real Date.now(),
+  // so an absolute constant like `10_000_000` (2h46m after the 1970 epoch) is
+  // already "in the past" and would make every non-deadline test stop
+  // immediately with zero pages.
+  const DEADLINE = Date.now() + 10_000_000;
+
+  function pagedFetch(pages: Array<{ value: unknown[]; next?: string }>) {
+    let index = 0;
+    return vi.fn(async (_url: string, _init?: RequestInit) => {
+      const page = pages[index++];
+      if (!page) throw new Error('fetched more pages than the fixture defines');
+      return json(page.next === undefined
+        ? { value: page.value }
+        : { value: page.value, '@odata.nextLink': page.next });
+    });
+  }
+
+  function syncClient(fetchImpl: typeof fetch, extra: { sleep?: (ms: number, signal: AbortSignal) => Promise<void>; now?: () => number } = {}) {
+    return createMicrosoftGraphClient({ applicationId: APPLICATION_ID }, { fetch: fetchImpl, ...extra });
+  }
+
+  const limits = (over: Partial<Parameters<ReturnType<typeof syncClient>['readSyncCollection']>[0]['limits']> = {}) => ({
+    maxItems: 1_000, maxPages: 60, maxResponseBytes: 64 * 1024 * 1024, deadlineAt: DEADLINE, ...over,
+  });
+
+  it('walks every page and reports completion', async () => {
+    const fetchImpl = pagedFetch([
+      { value: [{ id: 'a' }], next: `https://graph.microsoft.com${USERS_PATH}?$skiptoken=1` },
+      { value: [{ id: 'b' }] },
+    ]);
+    const result = await syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', query: { '$top': '999' }, limits: limits(),
+    });
+    expect(result.items).toEqual([{ id: 'a' }, { id: 'b' }]);
+    expect(result.stopReason).toBe('complete');
+    expect(result.nextLink).toBeUndefined();
+    expect(result.pages).toBe(2);
+  });
+
+  it('stops at maxPages and hands back the resume link', async () => {
+    const fetchImpl = pagedFetch([
+      { value: [{ id: 'a' }], next: `https://graph.microsoft.com${USERS_PATH}?$skiptoken=1` },
+      { value: [{ id: 'b' }], next: `https://graph.microsoft.com${USERS_PATH}?$skiptoken=2` },
+    ]);
+    const result = await syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', limits: limits({ maxPages: 2 }),
+    });
+    expect(result.stopReason).toBe('max_pages');
+    expect(result.nextLink).toBe(`https://graph.microsoft.com${USERS_PATH}?$skiptoken=2`);
+    expect(result.items).toHaveLength(2);
+  });
+
+  it('stops at maxItems mid-page and drops the overflow', async () => {
+    const fetchImpl = pagedFetch([{ value: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] }]);
+    const result = await syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', limits: limits({ maxItems: 2 }),
+    });
+    expect(result.stopReason).toBe('max_items');
+    expect(result.items).toHaveLength(2);
+  });
+
+  it('pauses before a page when beforePage refuses, returning the resume link', async () => {
+    const fetchImpl = pagedFetch([
+      { value: [{ id: 'a' }], next: `https://graph.microsoft.com${USERS_PATH}?$skiptoken=1` },
+    ]);
+    let allowed = 1;
+    const result = await syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', limits: limits(), beforePage: () => allowed-- > 0,
+    });
+    expect(result.stopReason).toBe('paused');
+    expect(result.nextLink).toBe(`https://graph.microsoft.com${USERS_PATH}?$skiptoken=1`);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('pauses before the FIRST page with zero items when the bucket is already empty', async () => {
+    const fetchImpl = vi.fn();
+    const result = await syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', limits: limits(), beforePage: () => false,
+    });
+    expect(result).toMatchObject({ items: [], stopReason: 'paused', pages: 0 });
+    expect(result.nextLink).toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('resumes from a validated startUrl and refuses one pointing anywhere else', async () => {
+    const fetchImpl = pagedFetch([{ value: [{ id: 'z' }] }]);
+    const client = syncClient(fetchImpl as unknown as typeof fetch);
+    const resumed = await client.readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', limits: limits(),
+      startUrl: `https://graph.microsoft.com${USERS_PATH}?$skiptoken=9`,
+    });
+    expect(resumed.items).toEqual([{ id: 'z' }]);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(`https://graph.microsoft.com${USERS_PATH}?$skiptoken=9`);
+
+    for (const bad of [
+      'https://evil.example.test/v1.0/users?$skiptoken=9',
+      'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices',
+      'http://graph.microsoft.com/v1.0/users',
+    ]) {
+      await expect(client.readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/users', limits: limits(), startUrl: bad,
+      })).rejects.toMatchObject({ code: 'graph_response_invalid' });
+    }
+  });
+
+  it('honours Retry-After on 429 and succeeds on the retry', async () => {
+    const slept: number[] = [];
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '7' } }))
+      .mockResolvedValueOnce(json({ value: [{ id: 'a' }] }));
+    const result = await syncClient(fetchImpl as unknown as typeof fetch, {
+      sleep: async (ms) => { slept.push(ms); },
+    }).readSyncCollection({ accessToken: ACCESS_TOKEN, path: '/users', limits: limits() });
+    expect(slept).toEqual([7_000]);
+    expect(result.items).toEqual([{ id: 'a' }]);
+  });
+
+  it('gives up after maxAttempts and surfaces graph_throttled with retryAfterSeconds', async () => {
+    const slept: number[] = [];
+    const throttled = () => new Response('{}', { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '5' } });
+    const fetchImpl = vi.fn().mockResolvedValue(throttled());
+    await expect(syncClient(fetchImpl as unknown as typeof fetch, { sleep: async (ms) => { slept.push(ms); } })
+      .readSyncCollection({ accessToken: ACCESS_TOKEN, path: '/users', limits: limits() }))
+      .rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 5 });
+    expect(slept).toEqual([5_000, 5_000]); // 3 attempts ⇒ 2 sleeps
+  });
+
+  it('stops sleeping once the cumulative throttle budget is spent', async () => {
+    const slept: number[] = [];
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response('{}', { status: 503, headers: { 'content-type': 'application/json', 'retry-after': '90' } }),
+    );
+    await expect(syncClient(fetchImpl as unknown as typeof fetch, { sleep: async (ms) => { slept.push(ms); } })
+      .readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/users',
+        limits: limits({ retry: { maxAttempts: 3, cumulativeBudgetMs: 60_000 } }),
+      }))
+      .rejects.toMatchObject({ code: 'graph_throttled' });
+    expect(slept).toEqual([]); // 90 s > the 60 s budget: never sleep, fail immediately
+  });
+
+  it('uses a fixed backoff when the policy sets one — CA policies send no Retry-After', async () => {
+    const slept: number[] = [];
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(json({ value: [{ id: 'p' }] }));
+    await syncClient(fetchImpl as unknown as typeof fetch, { sleep: async (ms) => { slept.push(ms); } })
+      .readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/identity/conditionalAccess/policies',
+        limits: limits({ retry: { maxAttempts: 3, cumulativeBudgetMs: 60_000, fixedBackoffMs: 2_000 } }),
+      });
+    expect(slept).toEqual([2_000]); // NOT the 60 s Retry-After default
+  });
+
+  it('stops between pages when the remaining deadline cannot fit another request', async () => {
+    let clock = 0;
+    const fetchImpl = pagedFetch([
+      { value: [{ id: 'a' }], next: `https://graph.microsoft.com${USERS_PATH}?$skiptoken=1` },
+    ]);
+    const result = await syncClient(fetchImpl as unknown as typeof fetch, {
+      now: () => { clock += 25_000; return clock; },
+    }).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users',
+      limits: limits({ deadlineAt: 40_000, perRequestTimeoutMs: 30_000 }),
+    });
+    expect(result.stopReason).toBe('deadline');
+    expect(result.nextLink).toBe(`https://graph.microsoft.com${USERS_PATH}?$skiptoken=1`);
+  });
+
+  it('aborts an in-flight request when the hard deadline passes', async () => {
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users',
+      limits: limits({ deadlineAt: Date.now() + 20, perRequestTimeoutMs: 30_000 }),
+    })).rejects.toMatchObject({ code: 'graph_request_timeout' });
+  });
+
+  it('bounds the cumulative response size across pages', async () => {
+    const big = { value: [{ id: 'a', blob: 'x'.repeat(4_000) }], '@odata.nextLink': `https://graph.microsoft.com${USERS_PATH}?$skiptoken=1` };
+    const fetchImpl = vi.fn(async () => json(big));
+    await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', limits: limits({ maxResponseBytes: 5_000 }),
+    })).rejects.toMatchObject({ code: 'graph_response_too_large' });
+  });
+
+  it('maps 403 to graph_permission_missing without retrying', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: 'Authorization_RequestDenied' } }), {
+        status: 403, headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', limits: limits(),
+    })).rejects.toMatchObject({ code: 'graph_permission_missing' });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+});

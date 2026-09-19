@@ -19,7 +19,7 @@ export const patchComplianceHandler: ConditionHandler = {
       .limit(1);
 
     if (!latest) {
-      return { passed: false, description: 'No patch compliance data available' };
+      return { passed: false, description: 'No patch compliance data available', dataAvailable: false };
     }
 
     const score = latest.patchComplianceScore;

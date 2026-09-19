@@ -494,11 +494,49 @@ func shutdownAgent(comps *agentComponents) {
 
 	clock := newShutdownClock(shutdownBudget)
 
+	// Cancel supervision before publishing intent, but do not wait for any
+	// subsystem before telling the watchdog this is an intentional stop.
+	if comps.supervisorCancel != nil {
+		comps.supervisorCancel()
+	}
+
+	// Write stopping state so the watchdog knows shutdown is intentional.
+	statePath := state.PathInDir(config.ConfigDir())
+	if err := state.Write(statePath, &state.AgentState{
+		Status:    state.StatusStopping,
+		Reason:    state.ReasonUserStop,
+		PID:       os.Getpid(),
+		Version:   version,
+		Timestamp: time.Now(),
+	}); err != nil {
+		log.Warn("failed to write stopping state file", "error", err.Error())
+	}
+
+	// Notify the watchdog of intentional shutdown so it doesn't restart us.
+	//
+	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
+	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
+	// stopped reading its end can park this call for longer than the entire
+	// stop window on its own — the same class of unbounded step as the log
+	// shipper, and enough to exhaust the whole budget before a single core
+	// teardown stage starts. Abandoning it is safe: the stopping-state file
+	// written just above is the durable signal the watchdog reconciles
+	// against, and this notify is only the fast path.
+	if broker := comps.hb.SessionBroker(); broker != nil {
+		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
+			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
+				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
+					Reason: state.ReasonUserStop,
+				})
+			})
+		}
+	}
+
 	// The optional, platform/config-dependent component stops share a
 	// sub-budget so they cannot starve the ungated core teardown below.
 	components := clock.sub(componentStopBudget)
 
-	// Cancel the ETW LUA subscriber FIRST so the kernel-side ETW
+	// Cancel the ETW LUA subscriber before other component waits so the kernel-side ETW
 	// session is closed before any later teardown can time out and
 	// orphan it. Otherwise Breeze-LUA-Discovery stays registered with
 	// the kernel and the next agent restart hits the
@@ -543,46 +581,11 @@ func shutdownAgent(comps *agentComponents) {
 		}
 	}
 
-	// Cancel the watchdog supervisor BEFORE we tell the watchdog the agent
-	// is intentionally stopping. Otherwise the supervisor could race
-	// in-flight and re-start a watchdog the SCM is mid-stop on.
+	// Supervision was cancelled before publishing shutdown intent above.
 	if comps.supervisorCancel != nil {
-		comps.supervisorCancel()
 		if comps.supervisorDone != nil {
 			components.run("watchdog supervisor stop", componentStopStage, func() {
 				<-comps.supervisorDone
-			})
-		}
-	}
-
-	// Write stopping state so the watchdog knows shutdown is intentional.
-	statePath := state.PathInDir(config.ConfigDir())
-	if err := state.Write(statePath, &state.AgentState{
-		Status:    state.StatusStopping,
-		Reason:    state.ReasonUserStop,
-		PID:       os.Getpid(),
-		Version:   version,
-		Timestamp: time.Now(),
-	}); err != nil {
-		log.Warn("failed to write stopping state file", "error", err.Error())
-	}
-
-	// Notify the watchdog of intentional shutdown so it doesn't restart us.
-	//
-	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
-	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
-	// stopped reading its end can park this call for longer than the entire
-	// stop window on its own — the same class of unbounded step as the log
-	// shipper, and enough to exhaust the whole budget before a single core
-	// teardown stage starts. Abandoning it is safe: the stopping-state file
-	// written just above is the durable signal the watchdog reconciles
-	// against, and this notify is only the fast path.
-	if broker := comps.hb.SessionBroker(); broker != nil {
-		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
-			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
-				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
-					Reason: state.ReasonUserStop,
-				})
 			})
 		}
 	}
@@ -900,6 +903,17 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 	hb.SetAuthMonitor(authMon)
+
+	// Bare-metal recovery W04a: if the rebuild engine left a marker on this
+	// disk (i.e. this agent booted up as the RESULT of a bare-metal
+	// recovery), report it every heartbeat until the server acks the
+	// check-in — see heartbeat.LoadRecoveryMarker / SetRecoveryMarker.
+	if marker, err := heartbeat.LoadRecoveryMarker(config.GetDataDir()); err != nil {
+		log.Warn("recovery marker unreadable; bare-metal recovery will not auto-complete", "error", err.Error())
+	} else if marker != nil {
+		log.Info("recovery marker found; reporting bare-metal recovery check-in", "recoveryId", marker.RecoveryID)
+		hb.SetRecoveryMarker(marker)
+	}
 	if !cfg.SupportMode {
 		for _, result := range preparePAMLifetimeStartup(context.Background(), hb, startupStatePath) {
 			log.Info("PAM lifetime startup reconciliation evidence",
@@ -1846,16 +1860,21 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// macOS/Linux.
 	detachHelperConsole()
 
-	// Log to file in the same logs folder as the main agent
-	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
-	os.MkdirAll(logDir, 0700)
+	// Log to file in the same logs folder as the main agent (e.g.
+	// C:\ProgramData\Breeze\logs) — except on macOS, where these helpers
+	// run as the logged-in user and the shared directory is root-owned
+	// 0700 and re-hardened on every agent log open/rotation. There they
+	// get ~/Library/Logs/Breeze instead (#5877).
+	logDir, homeErr := config.HelperLogDir()
+	mkdirErr := os.MkdirAll(logDir, 0700)
 	logFileName := "user-helper.log"
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
 		logFileName = "desktop-helper.log"
 	}
 	logPath := filepath.Join(logDir, logFileName)
 	var output io.Writer = os.Stdout
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+	f, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if openErr == nil {
 		// When spawned with CREATE_NO_WINDOW (service helper), stdout is invalid.
 		// Use file-only to avoid io.MultiWriter aborting on stdout write errors.
 		if hasConsole() {
@@ -1926,6 +1945,13 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		}
 		defer logging.StopShipper()
 	}
+
+	// Always record where diagnostics are going; the pre-#5877 code fell
+	// back to stdout silently, so an unwritable directory looked like an
+	// empty log with no explanation anywhere (and under a macOS LaunchAgent
+	// or a CREATE_NO_WINDOW spawn, stdout goes nowhere at all). Emitted
+	// after the shipper is up so the warn still reaches Agent Logs.
+	logging.EmitLogFileOutcome(slog.Default(), logPath, openErr, mkdirErr, homeErr)
 
 	// Top-level panic recovery for the main goroutine of runHelperProcess.
 	// NOTE: recover() only catches panics in THIS goroutine. Panics in

@@ -29,7 +29,8 @@ vi.mock('../db', () => ({
 
 import { db } from '../db';
 import {
-  admitPush, assertSamePartner, isAuthorisedForTicket, resolvePushJobs, __resetApnsWarnForTests,
+  admitPush, assertSamePartner, isAuthorisedForTicket, isEligibleTicketRecipient,
+  resolvePushJobs, __resetApnsWarnForTests,
 } from './ticketPush';
 import { buildTicketPush } from './expoPush';
 
@@ -57,6 +58,11 @@ describe('assertSamePartner', () => {
 });
 
 describe('isAuthorisedForTicket', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    m.getUserPermissions.mockReset();
+    m.selectRows.mockReset();
+  });
   it('requires tickets:read AND org access', async () => {
     m.getUserPermissions.mockResolvedValueOnce({ scope: 'partner', orgAccess: 'selected', allowedOrgIds: ['o-2'], permissions: [{ resource: 'tickets', action: 'read' }] });
     expect(await isAuthorisedForTicket('u-2', 'p-1', 'o-1')).toBe(false);
@@ -68,6 +74,60 @@ describe('isAuthorisedForTicket', () => {
   it('is false when permissions resolve to null', async () => {
     m.getUserPermissions.mockResolvedValueOnce(null);
     expect(await isAuthorisedForTicket('u-2', 'p-1', 'o-1')).toBe(false);
+  });
+
+  it('requires the current device site to remain inside a restricted org member ceiling', async () => {
+    m.getUserPermissions.mockResolvedValueOnce({
+      scope: 'org', orgId: 'o-1', allowedSiteIds: ['s-allowed'],
+      permissions: [{ resource: 'tickets', action: 'read' }],
+    });
+    m.selectRows.mockResolvedValueOnce([{ orgId: 'o-1', siteId: 's-hidden' }]);
+    expect(await isAuthorisedForTicket('u-2', 'p-1', 'o-1', 'd-1')).toBe(false);
+  });
+
+  it('fails closed for a restricted ticket whose current device is missing or site-null', async () => {
+    for (const rows of [[], [{ orgId: 'o-1', siteId: null }]]) {
+      m.getUserPermissions.mockResolvedValueOnce({
+        scope: 'org', orgId: 'o-1', allowedSiteIds: ['s-allowed'],
+        permissions: [{ resource: 'tickets', action: 'read' }],
+      });
+      m.selectRows.mockResolvedValueOnce(rows);
+      expect(await isAuthorisedForTicket('u-2', 'p-1', 'o-1', 'd-1')).toBe(false);
+    }
+  });
+
+  it('does not read the device for unrestricted or deviceless tickets', async () => {
+    m.getUserPermissions.mockResolvedValue({
+      scope: 'partner', orgAccess: 'all',
+      permissions: [{ resource: 'tickets', action: 'read' }],
+    });
+    expect(await isAuthorisedForTicket('u-2', 'p-1', 'o-1', 'd-1')).toBe(true);
+    expect(await isAuthorisedForTicket('u-2', 'p-1', 'o-1', null)).toBe(true);
+    expect(m.selectRows).not.toHaveBeenCalled();
+  });
+});
+
+describe('isEligibleTicketRecipient', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    m.getUserPermissions.mockReset();
+  });
+
+  it('requires an active same-partner recipient before resolving permissions', async () => {
+    const invited = { userId: 'u-2', partnerId: 'p-1', status: 'invited', email: 'u@example.test' };
+    const foreign = { userId: 'u-3', partnerId: 'p-2', status: 'active', email: null };
+    expect(await isEligibleTicketRecipient(invited, 'p-1', 'o-1')).toBe(false);
+    expect(await isEligibleTicketRecipient(foreign, 'p-1', 'o-1')).toBe(false);
+    expect(m.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('admits an active same-partner recipient only through the canonical ticket check', async () => {
+    m.getUserPermissions.mockResolvedValueOnce({
+      scope: 'partner', orgAccess: 'all',
+      permissions: [{ resource: 'tickets', action: 'read' }],
+    });
+    const active = { userId: 'u-2', partnerId: 'p-1', status: 'active', email: null };
+    expect(await isEligibleTicketRecipient(active, 'p-1', 'o-1')).toBe(true);
   });
 });
 

@@ -1,26 +1,29 @@
 ---
 import ErrorLayout from '../layouts/ErrorLayout.astro';
+import { tServer } from '../lib/i18n/server';
 
 Astro.response.status = 404;
+
+const locale = Astro.locals.locale;
 ---
 
-<ErrorLayout title="Page not found" statusCode={404}>
-  <h1 class="text-2xl font-semibold tracking-tight text-foreground">Page not found</h1>
+<ErrorLayout titleKey="titles.notFound" statusCode={404}>
+  <h1 class="text-2xl font-semibold tracking-tight text-foreground">{tServer(locale, 'titles.notFound')}</h1>
   <p class="text-sm text-muted-foreground">
-    The page you&rsquo;re looking for doesn&rsquo;t exist or may have been moved.
+    {tServer(locale, 'errorPage.notFoundBody')}
   </p>
   <div class="flex items-center justify-center gap-3">
     <a
       href="/"
       class="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
     >
-      Go to dashboard
+      {tServer(locale, 'errorPage.dashboardLink')}
     </a>
     <a
       href="/login"
       class="inline-flex h-10 items-center justify-center rounded-md border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted"
     >
-      Sign in
+      {tServer(locale, 'errorPage.signInLink')}
     </a>
   </div>
 </ErrorLayout>

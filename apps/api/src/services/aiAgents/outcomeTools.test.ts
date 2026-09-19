@@ -13,9 +13,13 @@ import {
 import { aiTools } from '../aiTools';
 import { TOOL_TIERS, createBreezeMcpServer } from '../aiAgentSdkTools';
 import { verdictToolAllowlist } from './verdictProfile';
+import { analysisToolAllowlist } from './analysisProfile';
 import { sweepToolAllowlist } from './sweepProfile';
 import { narrativeToolAllowlist } from './narrativeProfile';
 import { triageToolAllowlist } from './triageProfile';
+import { designToolAllowlist } from './designProfile';
+import { patchToolAllowlist } from './patchProfile';
+import type { FleetDesignOutcomeRefs } from '@breeze/shared';
 
 /** Minimal valid `SweepFindingsOutcome` — one device-bound finding with a
  *  proposal, which is the shape the sweep prompt actually asks for. */
@@ -81,6 +85,71 @@ describe('outcome tools', () => {
   });
 });
 
+// AI patch agent (W01) — submit_patch_plan validates structurally AND
+// referentially inside the tool, so a bad reference is a retryable tool error.
+describe('submit_patch_plan outcome tool (AI patch agent W01)', () => {
+  const D1 = '00000000-0000-4000-8000-0000000000d1';
+  const D2 = '00000000-0000-4000-8000-0000000000d2';
+  const P1 = '00000000-0000-4000-8000-0000000000e1';
+  const P9 = '00000000-0000-4000-8000-0000000000e9';
+  const patchRefs = {
+    refs: {
+      deviceIds: new Set([D1]),
+      patchIdsByDevice: new Map([[D1, new Set([P1])]]),
+      windowIds: new Set<string>(),
+      jobResultIds: new Set<string>(),
+    },
+    evidenceTruncated: false,
+    generatedAt: '2026-09-14T02:00:00.000Z',
+  };
+  const plan = (item: Record<string, unknown>) => ({
+    summary: 'Two devices hold critical updates.',
+    posture: { compliancePct: 80, devicesAtRisk: 2, oldestOutstandingDays: 30 },
+    items: [{ class: 'install', severity: 'high', title: 'Install KB1 on ws-01', detail: 'Critical, 30 days old.', evidenceRef: 'topNonCompliant', ...item }],
+  });
+
+  it('accepts a plan whose references are all in the evidence', () => {
+    const out = validateOutcomeToolInput('submit_patch_plan', plan({ deviceId: D1, patchIds: [P1] }), patchRefs);
+    expect(out.items).toHaveLength(1);
+    expect(out).toMatchObject({ schemaVersion: 1, dispositions: [], generatedAt: patchRefs.generatedAt });
+  });
+
+  it('THROWS on a device or patch absent from the evidence, so the model retries', () => {
+    expect(() => validateOutcomeToolInput('submit_patch_plan', plan({ deviceId: D2, patchIds: [P1] }), patchRefs)).toThrow(/deviceId/);
+    expect(() => validateOutcomeToolInput('submit_patch_plan', plan({ deviceId: D1, patchIds: [P9] }), patchRefs)).toThrow(/patchIds/);
+    expect(() => validateOutcomeToolInput('submit_patch_plan', { summary: 'x' }, patchRefs)).toThrow();
+  });
+
+  it('refuses to validate without patch refs', () => {
+    expect(() => validateOutcomeToolInput('submit_patch_plan', plan({ deviceId: D1, patchIds: [P1] }))).toThrow(/refs/);
+  });
+
+  it('is an outcome tool, never a registered chat/MCP tool', () => {
+    expect(isOutcomeTool('submit_patch_plan')).toBe(true);
+    expect(aiTools.has('submit_patch_plan')).toBe(false);
+    expect((TOOL_TIERS as Record<string, unknown>)['submit_patch_plan']).toBeUndefined();
+    expect(OUTCOME_MCP_TOOL_NAMES.submit_patch_plan).toBe('mcp__breeze__submit_patch_plan');
+  });
+
+  it('refuses to build the SDK tool without patch refs, and the built handler records without executing', async () => {
+    expect(() => buildOutcomeSdkTools(['submit_patch_plan'])).toThrow(/patch refs/);
+    const tool = buildOutcomeSdkTools(['submit_patch_plan'], { patch: patchRefs })[0]!;
+    expect(tool.name).toBe('submit_patch_plan');
+    const result = await tool.handler(plan({ deviceId: D1, patchIds: [P1] }), {});
+    expect(JSON.stringify(result)).toContain('recorded');
+    await expect(tool.handler(plan({ deviceId: D2, patchIds: [P1] }) as never, {})).rejects.toThrow();
+  });
+
+  it('describes every field of the patch plan shape (the model reads these)', () => {
+    const tool = buildOutcomeSdkTools(['submit_patch_plan'], { patch: patchRefs })[0]!;
+    const shape = tool.inputSchema as Record<string, unknown>;
+    expect(Object.keys(shape).sort()).toEqual(['items', 'posture', 'summary']);
+    const undescribed = undescribedLeaves(shape);
+    expect(undescribed, `these leaves need a .describe(): ${undescribed.join(', ')}`).toEqual([]);
+    expect(describedLeafPaths(shape).length).toBeGreaterThan(8);
+  });
+});
+
 // Phase 2 wave P2-2 (scheduled sweeps), task 6 — the second outcome tool.
 describe('submit_sweep_findings outcome tool (P2-2)', () => {
   it('validates submit_sweep_findings input with the shared schema', () => {
@@ -92,7 +161,7 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
     // A finding naming a kind outside AI_SWEEP_KINDS is not a finding.
     expect(() => validateOutcomeToolInput('submit_sweep_findings', {
       summary: 'x',
-      findings: [{ kind: 'expiring_certs', severity: 'low', title: 't', detail: 'd', evidence: {} }],
+      findings: [{ kind: 'not_a_sweep_kind', severity: 'low', title: 't', detail: 'd', evidence: {} }],
     })).toThrow();
   });
 
@@ -155,6 +224,10 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       full: null,
       // A deliberately broad agent allowlist: the floor must not vary with it.
       verdict: verdictToolAllowlist(['manage_services', 'run_script']),
+      // Execution plane W04: the analysis floor carries read tools AND the
+      // four workspace tools, and still must not vary with the agent's own
+      // allowlist.
+      analysis: analysisToolAllowlist(['manage_services', 'run_script']),
       sweep: sweepToolAllowlist(['manage_services', 'run_script']),
       // The narrative floor is the outcome tool ALONE (empty drill-down
       // tier) — the same broad agent allowlist must not widen it either.
@@ -162,6 +235,12 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       // The triage floor is the outcome tool ALONE too (empty drill-down
       // tier), same broad-agent-allowlist-must-not-widen-it check.
       triage: triageToolAllowlist(['manage_services', 'run_script']),
+      // The design floor is a small read-only drill-down tier PLUS the
+      // outcome tool (`designProfile.ts`'s `DESIGN_TOOL_ALLOWLIST`) — same
+      // broad-agent-allowlist-must-not-widen-it check as every sibling above.
+      design: designToolAllowlist(['manage_services', 'run_script']),
+      // AI patch agent (W01) — read-only drill-down tier plus the outcome tool.
+      patch: patchToolAllowlist(['manage_services', 'run_script', 'manage_patches:install']),
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {
@@ -177,6 +256,8 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
     expect(outcomeToolsForProfile('sweep')).toEqual(['submit_sweep_findings']);
     expect(outcomeToolsForProfile('narrative')).toEqual(['submit_narrative']);
     expect(outcomeToolsForProfile('triage')).toEqual(['submit_ticket_proposal']);
+    expect(outcomeToolsForProfile('design')).toEqual(['submit_fleet_design']);
+    expect(outcomeToolsForProfile('patch')).toEqual(['submit_patch_plan']);
     // Every name in the catalog is reachable through exactly one SELECTOR —
     // an outcome tool that no selector exposes is dead code the pre-hook will
     // always deny, and one that two selectors expose is an authority the
@@ -401,6 +482,88 @@ describe('submit_ticket_proposal outcome tool (P2-4)', () => {
       'notes[]',
       'summary',
     ]);
+  });
+});
+
+// Fleet Designer W01 (#5651) — the fifth outcome tool.
+const FD_D1 = '11111111-1111-4111-8111-111111111111';
+const FD_D2 = '22222222-2222-4222-8222-222222222222';
+const FD_UNKNOWN_DEVICE = '33333333-3333-4333-8333-333333333333';
+
+/** Mirrors `validSubmission()` in packages/shared/src/validators/fleetDesign.test.ts. */
+function validFleetDesignSubmission() {
+  return {
+    found: {
+      summary: ['12 devices across 2 sites.'],
+      findings: [{ title: 'Shared local admin on 4 workstations', deviceCount: 4, evidence: ['posture:localAdmin'] }],
+    },
+    functions: [
+      { functionKey: 'file_server', deviceIds: [FD_D1], confidence: 0.9, evidence: ['SMB listener; 2 TB data volume'] },
+    ],
+    monitoring: [
+      {
+        functionKey: 'file_server',
+        watches: [{ watchType: 'service', name: 'LanmanServer', alertOnStop: true, autoRestart: true, rationale: 'SMB is the function.' }],
+        alertRules: [{
+          name: 'File server disk over 85%', severity: 'high',
+          conditions: [{ type: 'metric', metric: 'disk', operator: 'gt', value: 85, durationMinutes: 15 }],
+          cooldownMinutes: 60, rationale: 'Data volume growth is the failure mode.', action: 'none', paging: 'business_hours',
+        }],
+      },
+    ],
+    retired: [],
+    automation: [{ functionKey: 'file_server', playbooks: [{ builtInName: 'Restart stopped service' }], scripts: [] }],
+    legacy: [],
+    baseline: { notes: ['Alert rate is dominated by disk warnings.'] },
+    unsure: {
+      lowConfidenceFunctions: [{ functionKey: 'kiosk', deviceIds: [FD_D2], confidence: 0.4, evidence: ['single logon user'] }],
+      unreachableDevices: [], needsHuman: [], roleCorrections: [],
+    },
+  };
+}
+
+const FLEET_DESIGN_REFS: FleetDesignOutcomeRefs = {
+  deviceIds: new Set([FD_D1, FD_D2]),
+  baseline: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] },
+  generatedAt: '2026-09-12T00:00:00.000Z',
+};
+
+describe('submit_fleet_design outcome tool (Fleet Designer W01)', () => {
+  it('exposes submit_fleet_design to the design profile only', () => {
+    expect(outcomeToolsForProfile('design')).toEqual(['submit_fleet_design']);
+    for (const p of ['full', 'verdict', 'sweep', 'narrative', 'triage'] as const) {
+      expect(outcomeToolsForProfile(p)).not.toContain('submit_fleet_design');
+    }
+  });
+
+  it('is not a registered chat/MCP tool (never reachable from routes/ai or the MCP server)', () => {
+    expect(aiTools.has('submit_fleet_design')).toBe(false);
+    expect((TOOL_TIERS as Record<string, unknown>)['submit_fleet_design']).toBeUndefined();
+    expect(isOutcomeTool('submit_fleet_design')).toBe(true);
+    expect(OUTCOME_MCP_TOOL_NAMES.submit_fleet_design).toBe('mcp__breeze__submit_fleet_design');
+  });
+
+  it('submit_fleet_design validates structure and references inside the tool', async () => {
+    const tools = buildOutcomeSdkTools(['submit_fleet_design'], { design: FLEET_DESIGN_REFS });
+    const tool = tools[0]!;
+    expect(tool.name).toBe('submit_fleet_design');
+
+    // Structural: a wildly incomplete submission is rejected by the shared
+    // schema's `.parse()` before the referential pass ever runs.
+    await expect(tool.handler({ found: {} } as never, {})).rejects.toThrow();
+
+    // Referential: a device id outside the evidence's set is rejected with
+    // a path naming exactly where it went wrong.
+    const bad = validFleetDesignSubmission();
+    bad.functions[0]!.deviceIds = [FD_UNKNOWN_DEVICE];
+    await expect(tool.handler(bad as never, {})).rejects.toThrow(/deviceIds\[0\]/);
+
+    const result = await tool.handler(validFleetDesignSubmission() as never, {});
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({ status: 'recorded' });
+  });
+
+  it('building submit_fleet_design without refs throws (the loop must pass evidence)', () => {
+    expect(() => buildOutcomeSdkTools(['submit_fleet_design'])).toThrow(/design refs/);
   });
 });
 

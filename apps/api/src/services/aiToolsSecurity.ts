@@ -25,19 +25,19 @@ import {
 } from './securityPosture';
 import { publishEvent } from './eventBus';
 import { resolveSensitiveDataKeySelection } from './sensitiveDataKeys';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { aiExecuteCommand, aiQueueCommand } from './aiDispatch';
+// Static, from the pure type module — NOT from './commandQueue', whose lazy
+// import used to be this file's last route to the queue (#5022 W01).
+// `commandTypes.ts` is a constant table with no dispatch surface, so importing
+// it does not re-open the hole the contract scan closes.
+import { CommandTypes } from './commandTypes';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
 }
 
 type AiToolTier = 1 | 2 | 3 | 4;
-
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
-}
 
 function envFlag(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -139,7 +139,6 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
-      const { executeCommand } = await getCommandQueue();
       const actionMap: Record<string, string> = {
         scan: 'security_scan',
         status: 'security_collect_status',
@@ -151,7 +150,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
       const secCommandType = actionMap[input.action as string];
       if (!secCommandType) return JSON.stringify({ error: `Unknown action: ${input.action}` });
 
-      const result = await executeCommand(deviceId, secCommandType, {
+      const result = await aiExecuteCommand(auth, 'security_scan', deviceId, secCommandType, {
         threatId: input.threatId
       }, { userId: auth.user.id, timeoutMs: 60000 });
 
@@ -222,8 +221,31 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Organization context required' });
       }
 
+      // Site AND exact-device axes. This branch takes no deviceId, so the
+      // declarative `deviceArgs` gate never runs and a device-bound agent run
+      // could enumerate the whole fleet's posture (#6096 #9). Mirrors
+      // get_sensitive_data_overview below. The resolved allowlist is pushed
+      // INTO the query (`deviceIds`) rather than applied to its result, so
+      // `limit` bounds the narrowed set instead of the whole org's — a
+      // post-fetch filter returned short (or empty) pages whenever the
+      // caller's own devices sorted past the cut.
+      const postureOrgId = (typeof input.orgId === 'string' && input.orgId) ? input.orgId : getOrgId(auth);
+      const allowedDeviceIds = postureOrgId ? await resolveSiteAllowedDeviceIds(postureOrgId, auth) : null;
+      if (allowedDeviceIds !== null && allowedDeviceIds.length === 0) {
+        return JSON.stringify({
+          summary: {
+            totalDevices: 0, averageScore: 0, lowRiskDevices: 0,
+            mediumRiskDevices: 0, highRiskDevices: 0, criticalRiskDevices: 0
+          },
+          worstDevices: [],
+          devices: [],
+          note: SITE_SCOPE_EMPTY_NOTE
+        });
+      }
+
       const postures = await listLatestSecurityPosture({
         orgIds,
+        deviceIds: allowedDeviceIds ?? undefined,
         minScore: typeof input.minScore === 'number' ? input.minScore : undefined,
         maxScore: typeof input.maxScore === 'number' ? input.maxScore : undefined,
         riskLevel: input.riskLevel as 'low' | 'medium' | 'high' | 'critical' | undefined,
@@ -590,7 +612,6 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
-      const { queueCommand, CommandTypes } = await getCommandQueue();
       const commandType = action === 'encrypt'
         ? CommandTypes.ENCRYPT_FILE
         : action === 'quarantine'
@@ -619,7 +640,9 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
       const failed: Array<{ findingId: string; error: string }> = [];
       for (const finding of findings) {
         try {
-          const command = await queueCommand(
+          const command = await aiQueueCommand(
+            auth,
+            'remediate_sensitive_data',
             finding.deviceId,
             commandType,
             {

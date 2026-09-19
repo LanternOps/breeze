@@ -2,11 +2,13 @@
 import Layout from '../../../layouts/Layout.astro';
 import AuthOverlay from '../../../components/auth/AuthOverlay';
 import RemoteToolsPage from '../../../components/remote/RemoteToolsPage';
+import { tServer } from '../../../lib/i18n/server';
 
 const { deviceId } = Astro.params;
+const locale = Astro.locals.locale;
 ---
 
-<Layout title="Remote Terminal">
+<Layout titleKey="titles.remoteTerminalDevice">
   <!-- #3984: this page used bare Layout.astro with no AuthOverlay, so an
        AuthThrottledError from a throttled /auth/refresh here went unhandled —
        no waiting mask, no recovery, just a broken remote session. -->
@@ -14,14 +16,14 @@ const { deviceId } = Astro.params;
   <div class="h-[calc(100vh-1rem)]">
     <RemoteToolsPage
       deviceId={deviceId!}
-      deviceName="Loading device..."
+      deviceName={tServer(locale, 'remoteTerminalPage.loadingDeviceName')}
       deviceOs="windows"
       initialTab="terminal"
       showClose={true}
       client:only="react"
     >
       <div slot="fallback" class="flex h-full items-center justify-center">
-        <p class="text-sm text-muted-foreground">Loading Remote Terminal...</p>
+        <p class="text-sm text-muted-foreground">{tServer(locale, 'remoteTerminalPage.loading')}</p>
       </div>
     </RemoteToolsPage>
   </div>

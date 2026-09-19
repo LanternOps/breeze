@@ -447,8 +447,8 @@ Two remote desktop modes are available: WebRTC-based (legacy) and WebSocket-base
 
 | Action | Description | Key Payload Fields |
 |---|---|---|
-| `start_desktop` | Start a WebRTC desktop session | `sessionId`, `offer`, `iceServers` |
-| `stop_desktop` | Stop a WebRTC desktop session | `sessionId` |
+| `start_desktop` | Start a WebRTC desktop session | `sessionId`, `offer`, `iceServers`, `startGeneration` |
+| `stop_desktop` | Stop a WebRTC desktop session | `sessionId`, `terminalGeneration` |
 
 #### `start_desktop`
 
@@ -457,8 +457,18 @@ Two remote desktop modes are available: WebRTC-based (legacy) and WebSocket-base
 | `sessionId` | string | Yes | Unique session identifier |
 | `offer` | string | Yes | WebRTC SDP offer |
 | `iceServers` | array | No | Array of `{ urls, username, credential }` ICE server configs |
+| `startGeneration` | string | No | Monotonic start/terminal generation for this session, as a canonical decimal string (never a JSON number). The agent refuses a start that is not strictly newer than every generation it has already seen for the session. Absent from servers that predate the fence; such starts are admitted. |
 
 Returns `{ sessionId, answer }` where `answer` is the WebRTC SDP answer.
+
+#### `stop_desktop`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | Yes | Session to stop |
+| `terminalGeneration` | string | No | The generation at which the server declared the session terminal, as a canonical decimal string. The command id is `desk-stop-<sessionId>-<terminalGeneration>`; the agent's `completed` result for that exact id moves the server-side teardown phase from `pending` to `confirmed`. A stop installs a terminal tombstone for the session even when no session is running, so a start that arrives after its own stop is refused. |
+
+Returns `{ stopped: true }`.
 
 ### WebSocket Streaming
 
@@ -754,7 +764,8 @@ Network discovery, SNMP polling, and connectivity checks for monitoring.
 | `excludeIps` | string[] | -- | IP addresses to skip |
 | `methods` | string[] | -- | Scan methods: `ping`, `arp`, `port` |
 | `portRanges` | string[] | -- | Port ranges for port scanning (e.g. `["22", "80", "443"]`) |
-| `snmpCommunities` | string[] | -- | SNMP community strings to try |
+| `snmpCommunities` | string[] | -- | SNMPv1/v2c community strings to try |
+| `snmpCredentials` | object | -- | Structured SNMP credential (`version`, `username`, `authProtocol`, `authPassphrase`, `privacyProtocol`, `privacyPassphrase`, `port`, `timeout` in ms, `retries`); tried before `snmpCommunities`. `public` is only used when neither is set |
 | `timeout` | int | `2` | Per-host timeout in seconds |
 | `concurrency` | int | `128` | Max concurrent scan workers |
 | `deepScan` | bool | `false` | Enable deep scanning (more ports, slower) |

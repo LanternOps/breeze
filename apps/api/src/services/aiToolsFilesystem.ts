@@ -24,6 +24,7 @@ import {
   saveFilesystemSnapshot,
   safeCleanupCategories,
 } from './filesystemAnalysis';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -32,6 +33,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -46,12 +50,6 @@ async function verifyDeviceAccess(
       error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
     };
   return { device };
-}
-
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
 }
 
 export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
@@ -87,7 +85,6 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
       const actionMap: Record<string, string> = {
         list: 'file_list',
         read: 'file_read',
@@ -114,7 +111,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
-      const result = await executeCommand(deviceId, fileCommandType, {
+      const result = await aiExecuteCommand(auth, 'file_operations', deviceId, fileCommandType, {
         path: input.path,
         content: input.content,
         newPath: input.newPath
@@ -167,9 +164,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       let snapshot = await getLatestFilesystemSnapshot(deviceId);
 
       if (refresh || !snapshot) {
-        const { executeCommand } = await getCommandQueue();
         const timeoutMs = Math.max(90_000, ((Number(input.timeoutSeconds) || 300) + 75) * 1000);
-        const commandResult = await executeCommand(deviceId, 'filesystem_analysis', {
+        const commandResult = await aiExecuteCommand(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
           trigger: 'on_demand',
           path: scanPath,
           maxDepth: input.maxDepth,
@@ -323,12 +319,11 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'No valid cleanup candidates selected from the latest preview set' });
       }
 
-      const { executeCommand } = await getCommandQueue();
       const actions: Array<{ path: string; category: string; sizeBytes: number; status: string; error?: string }> = [];
       let bytesReclaimed = 0;
 
       for (const candidate of selected) {
-        const commandResult = await executeCommand(deviceId, 'file_delete', {
+        const commandResult = await aiExecuteCommand(auth, 'disk_cleanup', deviceId, 'file_delete', {
           path: candidate.path,
           recursive: true,
         }, { userId: auth.user.id, timeoutMs: 30_000 });

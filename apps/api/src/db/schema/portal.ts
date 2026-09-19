@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -6,6 +6,8 @@ import { users } from './users';
 export const ticketStatusEnum = pgEnum('ticket_status', ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'high', 'urgent']);
 export const ticketSourceEnum = pgEnum('ticket_source', ['portal', 'email', 'alert', 'manual', 'api', 'ai']);
+// Spec #5573 §4.8: planned work (service deliverables, project tasks) is typed, not tagged.
+export const ticketWorkKindEnum = pgEnum('ticket_work_kind', ['support', 'deliverable', 'project_task']);
 export const ticketCommentTypeEnum = pgEnum('ticket_comment_type', ['comment', 'internal', 'status_change', 'assignment', 'time_entry', 'system']);
 
 export const portalBranding = pgTable('portal_branding', {
@@ -29,6 +31,7 @@ export const portalBranding = pgTable('portal_branding', {
   // with this on gets an "Equipment" page that duplicates Devices and can't
   // borrow anything. Off by default until the portal side ships.
   enableAssetCheckout: boolean('enable_asset_checkout').notNull().default(false),
+  enableDevices: boolean('enable_devices').notNull().default(false),
   enableSelfService: boolean('enable_self_service').notNull().default(true),
   enablePasswordReset: boolean('enable_password_reset').notNull().default(true),
   // Portal visibility Wave 1 (#4562): per-org gates for the customer portal
@@ -38,6 +41,14 @@ export const portalBranding = pgTable('portal_branding', {
   enableBackups: boolean('enable_backups').notNull().default(false),
   enableReports: boolean('enable_reports').notNull().default(false),
   enableSupportUsage: boolean('enable_support_usage').notNull().default(false),
+  // Service deliverables W04 (spec §4.7, D10): the Service scorecard and the
+  // org document library. Same fail-closed shape as the five flags above.
+  enableService: boolean('enable_service').notNull().default(false),
+  enableDocuments: boolean('enable_documents').notNull().default(false),
+  // Portal Hardware Lifecycle (#5719): required alongside enableReports so an
+  // MSP can turn on generic report self-service before exposing the
+  // replacement plan, which names specific machines.
+  enableLifecycle: boolean('enable_lifecycle').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -92,7 +103,9 @@ export const portalUsers = pgTable('portal_users', {
   invitedAt: timestamp('invited_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  orgIdIdx: index('portal_users_org_id_idx').on(table.orgId),
+}));
 
 // P2-4 (#4191): tickets also gains a composite-FK target unique index,
 // `tickets_id_org_uq` on (id, org_id) — a plain `CREATE UNIQUE INDEX` in
@@ -146,6 +159,7 @@ export const tickets = pgTable('tickets', {
   slaPausedAt: timestamp('sla_paused_at'),
   slaPausedMinutes: integer('sla_paused_minutes').default(0),
   source: ticketSourceEnum('source').notNull().default('portal'),
+  workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
   internalNumber: varchar('internal_number', { length: 20 }),
   emailMessageId: text('email_message_id'),
   emailThreadKey: text('email_thread_key'),
@@ -222,7 +236,23 @@ export const ticketComments = pgTable('ticket_comments', {
   // origin_principal_kind = 'ai_agent' — at most one AI-authored comment per
   // run. Not modeled in Drizzle for the same "partial index" reason as
   // ticketDrafts.ts's ticket_drafts_active_uq.
-  agentRunId: uuid('agent_run_id')
+  agentRunId: uuid('agent_run_id'),
+  // #4211 (W01): the agent run whose ticketProposal.summary a TECHNICIAN chose
+  // to post under their own identity. Distinct from agentRunId above, which
+  // means "an agent run wrote this row". A row with proposedByRunId set is
+  // human-authored (origin_principal_kind='user', user_id=<tech>) and MUST NOT
+  // trip the helpdesk loop guard — see the migration header. FK
+  // (ON DELETE SET NULL) is SQL-only, same circular-import reason as agentRunId.
+  //
+  // #4211 review: also carries a partial unique index,
+  // ticket_comments_one_proposal_note_per_run_uq ON ticket_comments
+  // (proposed_by_run_id) WHERE proposed_by_run_id IS NOT NULL AND
+  // origin_principal_kind = 'user' — at most one technician-posted proposal
+  // note per run, same idempotency shape as agent_run_id's own
+  // ticket_comments_one_ai_note_per_run_uq. Not modeled in Drizzle for the
+  // same "partial index" reason as that index and ticketDrafts.ts's
+  // ticket_drafts_active_uq.
+  proposedByRunId: uuid('proposed_by_run_id')
 });
 
 export const assetCheckouts = pgTable('asset_checkouts', {

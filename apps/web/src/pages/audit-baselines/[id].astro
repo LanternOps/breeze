@@ -5,6 +5,6 @@ import BaselineDetailPage from '../../components/auditBaselines/BaselineDetailPa
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Audit Baseline">
+<DashboardLayout titleKey="titles.auditBaselinesDetail">
   <BaselineDetailPage baselineId={id} client:load />
 </DashboardLayout>

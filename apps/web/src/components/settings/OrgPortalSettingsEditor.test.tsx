@@ -24,11 +24,15 @@ const SETTINGS = {
   enableAssetCheckout: true,
   enableSelfService: false,
   enablePasswordReset: true,
+  enableDevices: false,
   enableDashboard: false,
   enableSecurity: false,
   enableBackups: false,
   enableReports: false,
   enableSupportUsage: false,
+  enableService: false,
+  enableDocuments: false,
+  enableLifecycle: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
@@ -113,11 +117,15 @@ describe('OrgPortalSettingsEditor', () => {
     ));
 
     for (const key of [
+      'enableDevices',
       'enableDashboard',
       'enableSecurity',
       'enableBackups',
       'enableReports',
       'enableSupportUsage',
+      'enableService',
+      'enableDocuments',
+      'enableLifecycle',
     ]) {
       expect((screen.getByTestId(
         `org-portal-toggle-${key}`,
@@ -148,11 +156,16 @@ describe('OrgPortalSettingsEditor', () => {
     );
     expect(patchCall).toBeDefined();
     expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({
+      enableDevices: true,
+      enableSelfService: false,
       enableDashboard: true,
       enableSecurity: true,
       enableBackups: true,
       enableReports: true,
       enableSupportUsage: true,
+      enableService: true,
+      enableDocuments: true,
+      enableLifecycle: true,
     });
   });
 

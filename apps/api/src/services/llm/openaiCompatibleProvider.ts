@@ -41,6 +41,12 @@ const LLM_REQUEST_TIMEOUT_MESSAGE = 'LLM request timed out after 6 minutes';
  */
 const MAX_STREAM_RESPONSE_BYTES = 32 * 1024 * 1024;
 
+// A monetary reservation is one ceiling, not permission to expand an
+// otherwise ordinary request without bound. Keep a provider-independent
+// per-turn work ceiling even when a very large budget or tiny configured
+// token price would make the arithmetic yield an impractical value.
+const MAX_OUTPUT_TOKENS_PER_REQUEST = 100_000;
+
 /**
  * Abort comes from AbortSignal.any([caller, timeout]): distinguish timeout vs user Stop.
  */
@@ -80,6 +86,44 @@ export interface OpenAICompatibleProviderConfig {
 export class OpenAICompatibleProvider implements LLMProvider {
   constructor(private readonly config: OpenAICompatibleProviderConfig) {}
 
+  /**
+   * Convert a monetary reservation into a conservative output-token ceiling.
+   *
+   * OpenAI-compatible endpoints do not expose a portable tokenizer. UTF-8 byte
+   * length is nevertheless a safe upper bound on content tokens; the fixed
+   * allowance covers role/framing tokens added by common chat templates. A
+   * capped request fails closed when output pricing is absent, because in that
+   * configuration no monetary ceiling can be translated into provider work.
+   */
+  maxOutputTokensForBudgetUsd(messages: ChatMessage[], budgetUsd: number): number | null {
+    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) return null;
+    if (!Number.isFinite(this.config.priceOutputPerMUsd) || this.config.priceOutputPerMUsd <= 0) {
+      return null;
+    }
+    if (!Number.isFinite(this.config.priceInputPerMUsd) || this.config.priceInputPerMUsd < 0) {
+      return null;
+    }
+
+    const contentBytes = messages.reduce(
+      (total, message) => total + Buffer.byteLength(message.content, 'utf8'),
+      0,
+    );
+    const conservativeInputTokens = contentBytes + (messages.length * 16) + 256;
+    const inputCostUsd = this.config.priceInputPerMUsd > 0
+      ? (conservativeInputTokens * this.config.priceInputPerMUsd) / 1_000_000
+      : 0;
+    const remainingUsd = budgetUsd - inputCostUsd;
+    if (remainingUsd <= 0) return null;
+
+    const monetaryMaxTokens = Math.floor(
+      (remainingUsd * 1_000_000) / this.config.priceOutputPerMUsd,
+    );
+    if (!Number.isFinite(monetaryMaxTokens)) return MAX_OUTPUT_TOKENS_PER_REQUEST;
+    return monetaryMaxTokens > 0
+      ? Math.min(monetaryMaxTokens, MAX_OUTPUT_TOKENS_PER_REQUEST)
+      : null;
+  }
+
   async *chatStream(
     messages: ChatMessage[],
     options: {
@@ -95,7 +139,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       messages,
       stream: true,
       stream_options: { include_usage: true },
-      ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+      ...(options.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
       // Explicitly no `tools` or `tool_choice` field.
     });
 

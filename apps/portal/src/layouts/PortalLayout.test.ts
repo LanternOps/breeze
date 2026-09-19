@@ -38,3 +38,23 @@ describe('PortalLayout navigation', () => {
     expect(mobileNav()).not.toContain('bg-accent font-semibold');
   });
 });
+
+describe('PortalLayout custom CSS (#5940)', () => {
+  it('builds the saved customCss via the shared sanitizer', () => {
+    expect(SOURCE).toContain("import { buildPortalCustomCss } from '../lib/customCss'");
+    expect(SOURCE).toContain('buildPortalCustomCss(branding.customCss)');
+  });
+
+  it('renders it as its own nonced <style> element, after the accent style', () => {
+    const accentIdx = SOURCE.indexOf('{accentCss && <style nonce={cspNonce} set:html={accentCss}></style>}');
+    const customCssIdx = SOURCE.indexOf(
+      '{customCssContent && <style nonce={cspNonce} set:html={customCssContent}></style>}'
+    );
+    expect(accentIdx).toBeGreaterThan(-1);
+    expect(customCssIdx).toBeGreaterThan(accentIdx);
+  });
+
+  it('gives the header the class the branding docs document as the customCss target', () => {
+    expect(SOURCE).toMatch(/<header class="portal-header /);
+  });
+});

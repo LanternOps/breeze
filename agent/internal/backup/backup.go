@@ -279,6 +279,13 @@ func (m *BackupManager) GetPaths() []string {
 	return m.config.Paths
 }
 
+// GetExcludes returns the configured file-exclusion glob patterns
+// (BackupConfig.Excludes). RunBackupContext's excludes parameter overrides
+// this per-run when non-nil (#2418); this is the config-level fallback.
+func (m *BackupManager) GetExcludes() []string {
+	return m.config.Excludes
+}
+
 // GetRetention returns the configured retention count. It is retained for
 // config-shape compatibility only: agent-side retention pruning has been
 // removed entirely (D18 §3.5) — the server is the sole retention/GC
@@ -495,9 +502,23 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// is an optimization, never worth a world-writable root-owned write.
 	var journal *snapshotJournal
 	var resumedJournal bool
+	// journalDirsForExclude is threaded into collectBackupFilesFromPaths
+	// below so the walker never backs up this run's own checkpoint-journal
+	// files (or another run's, sharing the same directory) as ordinary
+	// content — see collectBackupFilesFromPaths's journalDirs doc comment
+	// and #5581. Holds the LITERAL journal directory whenever one resolved,
+	// even if opening the journal itself failed (the directory can still
+	// hold OTHER journal files, e.g. from a concurrent run with a different
+	// destination identity); a second, VSS-shadow-rewritten form is
+	// appended below once vssSession is known (a VSS run's walker only ever
+	// visits shadow-copy paths, never the literal ones — see that block's
+	// comment). Left nil only when resolveJournalDir found nowhere secure
+	// to journal at all, matching "no journal, nothing to exclude".
+	var journalDirsForExclude []string
 	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
 		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
 	} else {
+		journalDirsForExclude = append(journalDirsForExclude, journalDir)
 		var journalErr error
 		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
 		if journalErr != nil {
@@ -765,6 +786,34 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		sourceLiveness = newShadowRootLiveness(vssSession.ShadowPaths)
 		var unmappedIdx []int
 		backupPaths, unmappedIdx = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths, systemStateStagingIdx)
+
+		// journalDirsForExclude was computed from the LITERAL staging dir
+		// above, before this rewrite — but the walker below only ever
+		// visits the REWRITTEN backupPaths on a VSS run, never the literal
+		// ones. That alone would make the hard-exclude silently never fire
+		// under VSS: VSS snapshots the WHOLE volume, so the shadow copy
+		// also contains whatever the journal directory held at the instant
+		// of the snapshot (a real, uploadable file, not a hypothetical) —
+		// only the whole-machine preset's glob exclude would be left
+		// protecting a whole-machine run, and nothing would protect a
+		// custom path selection (review finding on #5583). Run every
+		// already-collected literal journal dir through the SAME
+		// volume→shadow substitution rewritePathsForVSS just used, and add
+		// whichever ones actually mapped to a shadow root (a dir on a
+		// volume VSS couldn't shadow is unmapped — matches
+		// rewritePathsForVSS's own live-volume fallback, nothing to add).
+		literalJournalDirs := journalDirsForExclude
+		rewrittenJournalDirs, unmappedJournalIdx := rewritePathsForVSS(literalJournalDirs, vssSession.ShadowPaths, noStagingIdx)
+		unmappedJournalSet := make(map[int]struct{}, len(unmappedJournalIdx))
+		for _, idx := range unmappedJournalIdx {
+			unmappedJournalSet[idx] = struct{}{}
+		}
+		for i, shadowed := range rewrittenJournalDirs {
+			if _, unmapped := unmappedJournalSet[i]; unmapped {
+				continue
+			}
+			journalDirsForExclude = append(journalDirsForExclude, shadowed)
+		}
 		if liveReads := reportableLiveReads(backupPaths, unmappedIdx, systemStateStagingIdx); len(liveReads) > 0 {
 			shadowedVolumes := make([]string, 0, len(vssSession.ShadowPaths))
 			for vol := range vssSession.ShadowPaths {
@@ -808,7 +857,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// timing in snapshot.go (#2790).
 	log.Info("scanning backup paths", "jobId", job.ID, "pathCount", len(backupPaths))
 	scanStart := time.Now()
-	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes))
+	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes), journalDirsForExclude)
 	if scanErr != nil {
 		if errors.Is(scanErr, errBackupStopped) {
 			return stopBackupRun()
@@ -1116,6 +1165,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		log.Warn("snapshot completed with upload failures", "warning", failureWarning, "errorCount", job.ErrorCount)
 	}
 
+	// Volatile files (#5581): kept changing while being backed up, so their
+	// manifest entry describes the last pre-upload measurement rather than
+	// any single instant an observer could point to. Not an error (the
+	// files ARE backed up, and restore/verify treat a mismatch on them as
+	// advisory) — surfaced as a Warning only, no ErrorCount contribution.
+	if snapshot != nil && snapshot.VolatileFiles > 0 {
+		volatileWarning := fmt.Sprintf("%d file(s) were modified while being backed up (recorded as volatile)", snapshot.VolatileFiles)
+		appendWarning(job, volatileWarning)
+		log.Warn("snapshot completed with volatile files", "warning", volatileWarning, "volatileFiles", snapshot.VolatileFiles)
+	}
+
 	// Collection-phase (scan) errors — permission-denied files, walk failures,
 	// unreadable stat — are folded into the SAME ErrorCount/Warning summary as
 	// upload failures so they're visible on the wire. scanErr is an errors.Join
@@ -1386,6 +1446,11 @@ type backupFile struct {
 	linkTarget string
 	modeBits   uint32
 	owner      *FileOwner
+	// placeholder mirrors SnapshotFile.Placeholder — see that field's doc
+	// comment (snapshot.go). Set only via contentlessEntry for a KindDir
+	// entry the walker force-recorded because the directory matched an
+	// exclude pattern (#5493).
+	placeholder bool
 }
 
 // fullModeBits keeps perm + setuid/setgid/sticky; everything else (type bits)
@@ -1424,10 +1489,64 @@ func dirNeedsEntry(info os.FileInfo, owner *FileOwner, empty bool) bool {
 }
 
 func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
-	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, newExcludeMatcher(m.config.Excludes))
+	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, newExcludeMatcher(m.config.Excludes), nil)
 }
 
-func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher) ([]backupFile, error) {
+// isWithinDir reports whether path IS dir, or lies somewhere inside it.
+// Used to hard-exclude this run's own checkpoint-journal directory from the
+// backup walk (see collectBackupFilesFromPaths's journalDirs parameter)
+// independent of any user-configured exclude pattern: a live journal file
+// growing while the walker is mid-scan is exactly the #5581 failure mode,
+// and this guard must keep working even when an operator edits or removes
+// the whole-machine preset excludes that also target this directory
+// (apps/web/.../backupTabPresets.ts) by name. An unresolvable relative path
+// (different volumes on Windows, etc.) is treated as "not within" — the
+// same fail-open default filepath.Rel errors already get everywhere else in
+// this file.
+func isWithinDir(path, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	path = filepath.Clean(path)
+	dir = filepath.Clean(dir)
+	if path == dir {
+		return true
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// isWithinAnyDir reports whether path is within (or equal to) any of dirs —
+// see isWithinDir. collectBackupFilesFromPaths passes both the journal's
+// literal directory and, on a VSS run, its shadow-copy-rewritten form
+// (#5583 review fix): the walker only ever visits ONE of those two forms
+// depending on whether VSS is active, but journalDirs carries both
+// unconditionally, so this must check every candidate rather than just the
+// first.
+func isWithinAnyDir(path string, dirs []string) bool {
+	for _, dir := range dirs {
+		if isWithinDir(path, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// journalDirs, when non-empty, are every path form that identifies this
+// run's own checkpoint-journal directory: the literal directory (see
+// resolveJournalDir) and, on a VSS run, its shadow-copy-rewritten form —
+// the walker below visits the REWRITTEN backupPaths under VSS, never the
+// literal ones, and VSS snapshots the whole volume, so the shadow copy also
+// contains whatever the journal directory held at snapshot time (#5583).
+// Every directory's subtree is skipped entirely regardless of excl, so the
+// walker never captures the very journal file this run is writing to (or
+// another run's, in the same directory) as ordinary backup content. Empty
+// for callers with no journal context (the collectBackupFiles() test/legacy
+// helper above).
+func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher, journalDirs []string) ([]backupFile, error) {
 	var files []backupFile
 	var errs []error
 	seen := make(map[string]struct{})
@@ -1453,7 +1572,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				continue
 			}
 			relPath := filepath.Base(cleanRoot)
-			if excl.matches(relPath) {
+			if excl.matches(relPath) || isWithinAnyDir(cleanRoot, journalDirs) {
 				continue
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
@@ -1477,12 +1596,36 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 		// walkedDir/dirs/childCount defer the "does this directory need its
 		// own manifest entry" decision until after the walk: emptiness is
 		// only known once every child has been visited (see dirNeedsEntry).
-		// childCount is keyed by the ABSOLUTE parent path and counts every
-		// visited child (files, symlinks, subdirs) INCLUDING excluded ones,
-		// so an excluded-only directory still counts as non-empty and gets
-		// no entry of its own — its exclusion means "do not back this up",
-		// not "this is an empty directory worth recreating".
-		type walkedDir struct{ path, rel string }
+		// childCount is keyed by the ABSOLUTE parent path and counts only
+		// children that actually make it into the backup (non-excluded
+		// files/symlinks/subdirs) — an excluded child, file or directory,
+		// does NOT count. That matters two ways (#5493):
+		//   - a directory whose children are ALL excluded (e.g. a cache dir
+		//     holding only *.tmp files under a "*.tmp" exclude) still reads
+		//     as empty and gets its own manifest entry, same as a directory
+		//     that was always empty.
+		//   - a directory that is ITSELF excluded (walkedDir.forced below)
+		//     is force-recorded regardless of childCount/mode — its contents
+		//     are skipped, but the directory's presence, mode, and ownership
+		//     still need to survive a rebuild. This is what keeps mount
+		//     points like /proc, /tmp, and /var/tmp (whole-machine preset
+		//     excludes) present after a bare-metal restore: nothing else in
+		//     the manifest recreates them, and systemd/update-initramfs
+		//     require them to exist.
+		type walkedDir struct {
+			path, rel string
+			// forced marks a directory that was itself pattern-excluded
+			// (never the journal dir — see the walker below, which checks
+			// journalDirs first and returns before this can be set for
+			// it): it always gets a manifest entry — mode and ownership
+			// recorded, contents skipped — bypassing dirNeedsEntry's
+			// "would the default MkdirAll suffice" check, since nothing
+			// else will ever recreate this directory. Carried into the
+			// resulting backupFile/SnapshotFile as Placeholder, which
+			// restore uses to avoid re-permissioning an already-existing
+			// directory (review fix, #5493).
+			forced bool
+		}
 		var dirs []walkedDir
 		childCount := map[string]int{}
 
@@ -1504,19 +1647,45 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				if path == cleanRoot {
 					return nil
 				}
-				// An excluded directory is skipped entirely (fs.SkipDir), not
-				// just its immediate files (#2418).
+				// An excluded directory's CONTENTS are skipped entirely
+				// (fs.SkipDir), not just its immediate files (#2418). The
+				// journal-dir check rides the same fs.SkipDir path so the
+				// whole checkpoint journal subtree — not just files that
+				// happen to match a glob — is pruned in one step (#5581).
+				//
+				// The journal-dir check runs FIRST and unconditionally wins
+				// (review fix): the journal directory is this run's own
+				// ephemeral bookkeeping location and must NEVER appear in
+				// the manifest at all — not even if it also happens to
+				// match a user-configured exclude pattern (e.g. an explicit
+				// "**/backup-journal/**" exclude, or simply a pattern broad
+				// enough to catch it incidentally). Checking journalDirs
+				// first, and returning before excludedByPattern is even
+				// evaluated, means that combination can never accidentally
+				// force an entry for it — see
+				// TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath
+				// and TestRunBackupContext_JournalHardExclude_WinsOverMatchingUserExclude.
+				//
+				// Only THEN does a PATTERN-excluded directory get
+				// force-recorded (see walkedDir.forced above): it
+				// represents a real, user-owned filesystem location (e.g.
+				// /proc, /tmp under the whole-machine preset) that a
+				// rebuild must still recreate.
+				if isWithinAnyDir(path, journalDirs) {
+					return fs.SkipDir
+				}
 				if excl != nil && excl.matches(slashRel) {
+					dirs = append(dirs, walkedDir{path: path, rel: slashRel, forced: true})
 					return fs.SkipDir
 				}
 				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
 				childCount[filepath.Dir(path)]++
 				return nil
 			}
-			childCount[filepath.Dir(path)]++
-			if excl.matches(slashRel) {
+			if excl.matches(slashRel) || isWithinAnyDir(path, journalDirs) {
 				return nil
 			}
+			childCount[filepath.Dir(path)]++
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
 			if _, exists := seen[snapshotPath]; exists {
 				log.Debug("duplicate backup path skipped", "snapshotPath", snapshotPath)
@@ -1568,7 +1737,18 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				continue
 			}
 			owner := fileOwner(info)
-			if !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
+			// A forced (pattern-excluded — never the journal dir, see the
+			// walker above) entry always gets recorded — dirNeedsEntry's
+			// emptiness/mode/owner heuristics are about whether the default
+			// restore behavior (MkdirAll 0755) would already recreate it
+			// correctly; an excluded directory is never recreated by
+			// anything else in the manifest, so it always needs its own
+			// entry regardless of what dirNeedsEntry would say. It is also
+			// marked Placeholder (review fix, #5493): restore must only
+			// apply its mode/owner when creating it fresh, never re-apply
+			// them over a directory a customer may have deliberately
+			// reconfigured since the backup — see SnapshotFile.Placeholder.
+			if !d.forced && !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
 				continue
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, d.rel))
@@ -1578,7 +1758,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			seen[snapshotPath] = struct{}{}
 			files = append(files, backupFile{
 				sourcePath: d.path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
-				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner,
+				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner, placeholder: d.forced,
 			})
 		}
 	}

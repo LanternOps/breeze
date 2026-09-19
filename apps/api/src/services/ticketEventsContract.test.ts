@@ -160,6 +160,7 @@ vi.mock('./ticketPush', () => ({
   loadTicketPushPrefs: hoisted.loadTicketPushPrefsMock,
   listAnySlaSubscribers: hoisted.listAnySlaSubscribersMock,
   isAuthorisedForTicket: hoisted.isAuthorisedForTicketMock,
+  isEligibleTicketRecipient: vi.fn(async () => true),
   admitPush: hoisted.admitPushMock,
   resolvePushJobs: hoisted.resolvePushJobsMock,
   assertSamePartner: (c: { partnerId: string }, eventPartnerId: string | null) =>

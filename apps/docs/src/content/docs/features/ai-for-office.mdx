@@ -84,8 +84,12 @@ On an open received message, the pane shows, top to bottom:
 <Steps>
 1. Register the add-in in your own Microsoft Entra tenant and deploy it to your technicians through Microsoft 365 centralized deployment (sideload it first if you just want to try it).
 2. In Outlook, open the Breeze pane and choose **Technician sign-in**.
-3. Sign in with the technician's Breeze email, password, and MFA code. A technician without MFA enrolled is asked to enrol in Breeze first.
+3. Sign in with the technician's Breeze email, password, and MFA code. The account must have an **authenticator app (TOTP)** factor — SMS or passkey-only accounts are refused with an "MFA enrollment required" message and the technician is asked to enrol a TOTP factor in Breeze first.
 </Steps>
+
+<Aside type="caution" title="Upgrading to v0.112.0: every technician binding is revoked">
+  Bindings created before v0.112.0 do not record the MFA state they were created under, so the upgrade revokes all of them. The next time a bound technician opens the pane it reports the binding as revoked; they simply repeat the sign-in above once (with a TOTP code) to relink. A binding is also revoked automatically from now on whenever the technician's MFA factor is reset or their password/session epoch changes.
+</Aside>
 
 That links the technician's Microsoft identity to their Breeze account once. From then on it is the **Microsoft identity** that authorizes the pane, so nothing about which pane a person gets is left to them: a linked identity gets the technician console, an unlinked one falls through to the customer assistant, and a revoked one is refused outright.
 

@@ -42,6 +42,12 @@ const backupSnapshotSummarySchema = z.object({
   timestamp: z.string().min(1).optional(),
   size: z.number().nonnegative().optional(),
   files: z.array(backupSnapshotFileSchema).optional(),
+  // D18 (#5429/§3.1): mirrors resultSchemas.ts's backupSnapshotResultSchema —
+  // must be added here too or `.strict()` drops/rejects these before
+  // backupWorker.ts's process-results handler ever sees them.
+  baseSnapshotId: z.string().optional(),
+  formatVersion: z.number().optional(),
+  backupIdentity: z.string().optional(),
 }).strict();
 
 export const backupProcessResultSchema = z.object({
@@ -224,6 +230,11 @@ export const monitorQueueJobDataSchema = z.discriminatedUnion('type', [
     type: z.literal('process-check-result'),
     monitorId: z.string().min(1),
     result: monitorCheckResultSchema,
+    // #5291 W04 - the org the probe ran FOR and the device it ran FROM. Both
+    // optional so a payload enqueued before this wave still parses at the
+    // dequeue boundary instead of dead-lettering the drain.
+    orgId: z.string().min(1).optional(),
+    deviceId: z.string().min(1).optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
@@ -404,12 +415,6 @@ export const recoveryMediaQueueJobDataSchema = z.object({
   meta: queueActorMetaSchema.optional(),
 }).strict();
 
-export const recoveryBootMediaQueueJobDataSchema = z.object({
-  type: z.literal('build-boot-media'),
-  artifactId: z.string().min(1),
-  meta: queueActorMetaSchema.optional(),
-}).strict();
-
 export const vulnSourceSyncSchema = z.object({
   source: z.enum(['msrc', 'nvd', 'sofa', 'kev_epss']),
   month: z.string().optional(),
@@ -492,6 +497,15 @@ export type AiOperatorTaskWakeJobData = z.infer<typeof aiOperatorTaskWakeJobData
 
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
+// W02 (#5612): `script-review` queue — structurally identical to
+// services/scriptProposals/reviewQueue.ts's `ScriptReviewJobData` (the
+// producer's hand-written type); this is the dequeue-boundary parse.
+export const scriptReviewQueueJobDataSchema = z.object({
+  proposalId: z.string().uuid(),
+  orgId: z.string().uuid(),
+  attempt: z.number().int().min(0),
+});
+
 export type FdbEntry = z.infer<typeof fdbEntrySchema>;
 export type MonitorQueueJobData = z.infer<typeof monitorQueueJobDataSchema>;
 export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema>;
@@ -502,8 +516,16 @@ export type AgentNotifyRetryQueueJobData = z.infer<typeof agentNotifyRetryQueueJ
 export type FixWatchQueueJobData = z.infer<typeof fixWatchQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
-export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;
 export type VulnSourceSyncJobData = z.infer<typeof vulnSourceSyncSchema>;
+export type ScriptReviewQueueJobData = z.infer<typeof scriptReviewQueueJobDataSchema>;
+// W03 (#5612): `script-verify` queue — the dequeue-boundary parse of
+// services/scriptProposals/verify.ts's `ScriptVerifyJobData`.
+export const scriptVerifyQueueJobDataSchema = z.object({
+  proposalId: z.string().uuid(),
+  executionId: z.string().uuid(),
+  attempt: z.number().int().min(1),
+});
+export type ScriptVerifyQueueJobData = z.infer<typeof scriptVerifyQueueJobDataSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
 // Note: NOT named RouteEventJobData/DeliverEventJobData — those canonical
 // interfaces are hand-written in services/eventDispatchQueue.ts (the

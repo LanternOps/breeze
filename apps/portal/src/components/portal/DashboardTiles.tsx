@@ -239,6 +239,20 @@ function BackupValue({ tile, timezone }: { tile: DashboardDto['backup']; timezon
   );
 }
 
+function ServiceValue({ tile }: { tile: NonNullable<DashboardDto['service']> }) {
+  const { deliveredOnTime, deliveredLate, missed, nextDue } = tile;
+  if (deliveredOnTime == null || deliveredLate == null || missed == null) return null;
+  const total = deliveredOnTime + deliveredLate + missed;
+  return (
+    <>
+      {total > 0 && (
+        <span className={FIGURE}>{`${deliveredOnTime} of ${total} on time`}</span>
+      )}
+      {nextDue && <span className={QUIET}>{`Next: ${nextDue.name}`}</span>}
+    </>
+  );
+}
+
 export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
   const {
     securityScore,
@@ -248,6 +262,7 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
     support,
     actionItems,
     awaitingYou,
+    service,
   } = dashboard;
 
   return (
@@ -303,6 +318,21 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
         >
           <BackupValue tile={backup} timezone={dashboard.timezone} />
         </LedgerRow>
+
+        {/* Capability -> protection -> work delivered -> requests. Absent
+            entirely when the org has not enabled the Service surface. */}
+        {service && (
+          <LedgerRow
+            testId="portal-dashboard-tile-service"
+            label="Service delivered (90 days)"
+            status={effectiveStatus(
+              service.status,
+              service.deliveredOnTime != null || service.nextDue != null,
+            )}
+          >
+            <ServiceValue tile={service} />
+          </LedgerRow>
+        )}
 
         <LedgerRow
           testId="portal-dashboard-tile-support"

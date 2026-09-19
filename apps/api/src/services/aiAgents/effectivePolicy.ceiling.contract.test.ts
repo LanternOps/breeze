@@ -91,7 +91,10 @@ describe('supervisedActionKeys — partner keys are a ceiling, not a grant (C3)'
 // lowering it. Table-driven over every key in AI_AGENT_LIMIT_DEFAULTS so a
 // future limit silently added to the max-merge exception set (or removed
 // from it) fails this test loudly instead of drifting unnoticed.
-const MAX_MERGED_LIMIT_KEYS = new Set<keyof AiAgentLimits>(['promoteThreshold']);
+// `sweepPromoteThreshold` (#4442 W05) is the second: a bar, not a budget.
+// `maxUnattendedDevicesPerSweep` (same wave) is deliberately NOT here — it
+// is a budget and wants the default min.
+const MAX_MERGED_LIMIT_KEYS = new Set<keyof AiAgentLimits>(['promoteThreshold', 'sweepPromoteThreshold']);
 const LIMIT_KEYS = Object.keys(AI_AGENT_LIMIT_DEFAULTS) as Array<keyof AiAgentLimits>;
 
 describe('mergeLimits — promoteThreshold merges with max, every other limit with min', () => {
@@ -148,5 +151,52 @@ describe('mergeLimits — promoteThreshold merges with max, every other limit wi
     });
 
     expect(normalized.limits.promoteThreshold).toBe(20);
+  });
+
+  it('maxUnattendedDevicesPerSweep merges with MIN — org 1 vs partner 5 -> 1; org 9 vs partner 3 -> 3 (#4442 W05)', () => {
+    const a = mergeAgentPolicies(
+      policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxUnattendedDevicesPerSweep: 5 } }),
+      policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxUnattendedDevicesPerSweep: 1 } }),
+      { allowedModels: null },
+    );
+    expect(a.effective.limits.maxUnattendedDevicesPerSweep).toBe(1);
+    const b = mergeAgentPolicies(
+      policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxUnattendedDevicesPerSweep: 3 } }),
+      policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxUnattendedDevicesPerSweep: 9 } }),
+      { allowedModels: null },
+    );
+    expect(b.effective.limits.maxUnattendedDevicesPerSweep).toBe(3);
+  });
+
+  it('sweepPromoteThreshold merges with MAX — org 5 vs partner 25 -> 25 (an org cannot lower the bar) (#4442 W05)', () => {
+    const merged = mergeAgentPolicies(
+      policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, sweepPromoteThreshold: 25 } }),
+      policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, sweepPromoteThreshold: 5 } }),
+      { allowedModels: null },
+    );
+    expect(merged.effective.limits.sweepPromoteThreshold).toBe(25);
+  });
+
+  it('a v12 snapshot with neither W05 key reads both from AI_AGENT_LIMIT_DEFAULTS (3 / 10)', () => {
+    // A pre-v13 stored `limits` jsonb has neither property; the
+    // .transform() backfill is what makes an in-flight v12 snapshot safe.
+    const { maxUnattendedDevicesPerSweep: _a, sweepPromoteThreshold: _b, ...v12Limits } = AI_AGENT_LIMIT_DEFAULTS;
+
+    const normalized = normalizeAgentPolicy({
+      enabled: true,
+      mode: 'act',
+      model: null,
+      toolAllowlist: [],
+      protectedResources: {},
+      limits: v12Limits,
+      triggers: {},
+      recipients: {},
+      actAssets: {},
+      instructions: null,
+      cooldownSeconds: 300,
+    });
+
+    expect(normalized.limits.maxUnattendedDevicesPerSweep).toBe(3);
+    expect(normalized.limits.sweepPromoteThreshold).toBe(10);
   });
 });

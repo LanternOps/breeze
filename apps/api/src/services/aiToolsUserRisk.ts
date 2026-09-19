@@ -8,11 +8,17 @@
  * - assign_security_training (Tier 2): Assign security awareness training
  */
 
-import type { AuthContext } from '../middleware/auth';
+import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { listReliabilityDevices } from './reliabilityScoring';
-import { assignSecurityTraining, getUserRiskDetail, listUserRiskScores } from './userRiskScoring';
+import {
+  assignSecurityTraining,
+  getUserRiskDetail,
+  getUserRiskOrgMembership,
+  listUserRiskScores
+} from './userRiskScoring';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { filterToDeviceScope, runFrozenDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -107,7 +113,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
           ? input.issueType as 'crashes' | 'hangs' | 'hardware' | 'services' | 'uptime'
           : undefined;
 
-        const { total, rows } = await listReliabilityDevices({
+        const { total: fleetTotal, rows: fleetRows } = await listReliabilityDevices({
           orgIds,
           siteId: requestedSiteId,
           siteIds,
@@ -117,6 +123,19 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
           limit,
           offset: 0,
         });
+
+        // Exact-device axis: `listReliabilityDevices` takes no device filter and
+        // lives outside this module, so narrow its result here. The site axis
+        // above is NOT a substitute — a device-less analysis run carries
+        // `allowedDeviceIds` with no `allowedSiteIds`, so `siteIds` stays
+        // undefined and the read is fleet-wide (#6086 finding 8). `total` is the
+        // pre-narrowing org count, which would itself disclose sibling devices,
+        // so a restricted caller gets the narrowed count instead.
+        const frozenDeviceIds = runFrozenDeviceIds(auth);
+        const rows = frozenDeviceIds
+          ? filterToDeviceScope(auth, fleetRows, (row) => row.deviceId)
+          : fleetRows;
+        const total = frozenDeviceIds ? rows.length : fleetTotal;
 
         const avgScore = rows.length > 0
           ? Math.round(rows.reduce((sum, row) => sum + row.reliabilityScore, 0) / rows.length)
@@ -247,7 +266,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: resolved.error ?? 'orgId is required for this operation' });
       }
 
-      const detail = await getUserRiskDetail(resolved.orgId, input.userId);
+      const detail = await getUserRiskDetail(resolved.orgId, input.userId, auth.allowedSiteIds);
       if (!detail) {
         return JSON.stringify({ message: 'No user risk data available for this user' });
       }
@@ -277,6 +296,14 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      // This tool performs the same mutation the HTTP route gates behind
+      // requireMfa(); Tier 2 means it auto-executes, so the MFA and site-ceiling
+      // proofs have to be re-established here or the AI/MCP path is a bypass.
+      // Checked before input validation, matching the HTTP route's ordering.
+      if (!hasSatisfiedMfa(auth)) {
+        return JSON.stringify({ error: 'MFA required' });
+      }
+
       if (typeof input.userId !== 'string' || !input.userId) {
         return JSON.stringify({ error: 'userId is required' });
       }
@@ -287,6 +314,11 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
       );
       if (resolved.error || !resolved.orgId) {
         return JSON.stringify({ error: resolved.error ?? 'orgId is required for this operation' });
+      }
+
+      const isMember = await getUserRiskOrgMembership(input.userId, resolved.orgId, auth.allowedSiteIds);
+      if (!isMember) {
+        return JSON.stringify({ error: 'User not found in this organization' });
       }
 
       try {

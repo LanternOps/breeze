@@ -18,8 +18,10 @@ vi.mock('../redis', () => ({
 import { getRedis } from '../redis';
 import {
   consumeM365ReadActionBudget,
+  consumeM365SyncBudget,
   M365_READ_ACTIONS_PER_MINUTE,
   M365_READ_ACTIONS_PER_DAY,
+  M365_SYNC_ACTIONS_PER_HOUR,
 } from './readActionBudget';
 
 interface MultiMock {
@@ -195,5 +197,87 @@ describe('readActionBudget.consumeM365ReadActionBudget', () => {
     expect(keyA).toContain('conn-a');
     expect(keyB).toContain('conn-b');
     expect(keyA).not.toBe(keyB);
+  });
+});
+
+// Deviation from the plan text: this file's Redis mock helper is
+// `buildMockRedis(execResult)` + `vi.mocked(getRedis).mockReturnValue(...)`,
+// not `mockRedis({...})` / `mockRedisUnavailable()` — reused verbatim below
+// per the task's own instruction to use whatever helpers actually exist here.
+describe('consumeM365SyncBudget (spec §5.10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('uses a key prefix disjoint from the interactive pools, so 12/h cannot eat 30/min', async () => {
+    const { redis, multi } = buildMockRedis([
+      [null, 1],
+      [null, 1],
+    ]);
+    vi.mocked(getRedis).mockReturnValue(redis);
+
+    await consumeM365SyncBudget('conn-1');
+
+    expect(multi.incr).toHaveBeenCalledTimes(1);
+    const key = multi.incr.mock.calls[0]?.[0] as string;
+    expect(key.startsWith('m365-sync-budget-hour-')).toBe(true);
+    expect(key.startsWith('m365-read-budget-')).toBe(false);
+  });
+
+  it('allows the 12th call in the hour and denies the 13th', async () => {
+    const { redis: redisAllow } = buildMockRedis([
+      [null, M365_SYNC_ACTIONS_PER_HOUR],
+      [null, 1],
+    ]);
+    vi.mocked(getRedis).mockReturnValue(redisAllow);
+    await expect(consumeM365SyncBudget('conn-1')).resolves.toEqual({ allowed: true });
+
+    const { redis: redisDeny } = buildMockRedis([
+      [null, M365_SYNC_ACTIONS_PER_HOUR + 1],
+      [null, 1],
+    ]);
+    vi.mocked(getRedis).mockReturnValue(redisDeny);
+    const denied = await consumeM365SyncBudget('conn-1');
+    expect(denied.allowed).toBe(false);
+    if (!denied.allowed) {
+      expect(denied.retryAfterSeconds).toBeGreaterThan(0);
+      expect(denied.retryAfterSeconds).toBeLessThanOrEqual(3600);
+    }
+  });
+
+  it('fails CLOSED when Redis is unavailable', async () => {
+    vi.mocked(getRedis).mockReturnValue(null);
+    await expect(consumeM365SyncBudget('conn-1')).resolves.toEqual({
+      allowed: false,
+      retryAfterSeconds: 3600,
+    });
+  });
+
+  it('fails CLOSED when multi().exec() returns null or an unparseable shape', async () => {
+    const { redis: redisNull } = buildMockRedis(null);
+    vi.mocked(getRedis).mockReturnValue(redisNull);
+    expect((await consumeM365SyncBudget('conn-1')).allowed).toBe(false);
+
+    const { redis: redisBad } = buildMockRedis([
+      [null, 'not-a-number' as unknown as number],
+      [null, 1],
+    ]);
+    vi.mocked(getRedis).mockReturnValue(redisBad);
+    expect((await consumeM365SyncBudget('conn-1')).allowed).toBe(false);
+  });
+
+  it('does not disturb the interactive budget: a sync call increments no read key', async () => {
+    const { redis, multi } = buildMockRedis([
+      [null, 1],
+      [null, 1],
+    ]);
+    vi.mocked(getRedis).mockReturnValue(redis);
+    await consumeM365SyncBudget('conn-1');
+    expect(multi.incr).toHaveBeenCalledTimes(1);
   });
 });

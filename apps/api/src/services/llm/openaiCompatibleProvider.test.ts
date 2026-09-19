@@ -50,6 +50,86 @@ function makeProvider(baseUrl = BASE_URL): OpenAICompatibleProvider {
   });
 }
 
+describe('OpenAICompatibleProvider monetary ceiling', () => {
+  it('derives a conservative output-token cap after reserving prompt cost', () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: BASE_URL,
+      apiKey: 'test-key',
+      priceInputPerMUsd: 1,
+      priceOutputPerMUsd: 10,
+    });
+
+    const cap = provider.maxOutputTokensForBudgetUsd(
+      [{ role: 'user', content: 'hello' }],
+      1,
+    );
+
+    expect(cap).not.toBeNull();
+    expect(cap!).toBeGreaterThan(0);
+    expect(cap!).toBeLessThan(100_000);
+  });
+
+  it('fails closed when a capped request has no declared output price', () => {
+    expect(
+      makeProvider().maxOutputTokensForBudgetUsd(
+        [{ role: 'user', content: 'hello' }],
+        1,
+      ),
+    ).toBeNull();
+  });
+
+  it('fails closed when conservative prompt cost exhausts the reservation', () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: BASE_URL,
+      apiKey: 'test-key',
+      priceInputPerMUsd: 1_000_000,
+      priceOutputPerMUsd: 1,
+    });
+
+    expect(
+      provider.maxOutputTokensForBudgetUsd(
+        [{ role: 'user', content: 'already too expensive' }],
+        0.01,
+      ),
+    ).toBeNull();
+  });
+
+  it('retains an independent request ceiling for a huge budget and tiny output price', async () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: BASE_URL,
+      apiKey: 'test-key',
+      priceInputPerMUsd: Number.POSITIVE_INFINITY,
+      priceOutputPerMUsd: Number.MIN_VALUE,
+    });
+
+    // Overflow in conservative input pricing fails closed instead of
+    // manufacturing capacity.
+    expect(provider.maxOutputTokensForBudgetUsd(
+      [{ role: 'user', content: 'hello' }],
+      Number.MAX_VALUE,
+    )).toBeNull();
+
+    const tinyPriceProvider = new OpenAICompatibleProvider({
+      baseUrl: BASE_URL,
+      apiKey: 'test-key',
+      priceInputPerMUsd: 0,
+      priceOutputPerMUsd: Number.MIN_VALUE,
+    });
+    const cap = tinyPriceProvider.maxOutputTokensForBudgetUsd(
+      [{ role: 'user', content: 'hello' }],
+      Number.MAX_VALUE,
+    );
+    expect(cap).toBe(100_000);
+
+    await collect(tinyPriceProvider.chatStream(
+      [{ role: 'user', content: 'hello' }],
+      { model: 'm', maxTokens: cap! },
+    ));
+    const body = JSON.parse(lastInit().body as string) as Record<string, unknown>;
+    expect(body.max_tokens).toBe(100_000);
+  });
+});
+
 /** Build an SSE body from already-encoded event payloads. */
 function sseBody(chunks: string[]): string {
   return chunks.map((c) => `data: ${c}\n\n`).join('');

@@ -67,6 +67,26 @@ describe('evaluateConditions context.actualValue (issue #1980)', () => {
   });
 });
 
+describe('evaluateConditions dataState (issue #5290)', () => {
+  beforeEach(() => {
+    getRecentMetricsMock.mockReset();
+    getLatestMetricMock.mockReset();
+  });
+
+  it('reports dataState "unknown" when the device has no metrics for a threshold condition', async () => {
+    getRecentMetricsMock.mockResolvedValue([]);
+    getLatestMetricMock.mockResolvedValue(undefined);
+
+    const result = await evaluateConditions(
+      [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }],
+      'device-with-no-metrics'
+    );
+
+    expect(result.triggered).toBe(false);
+    expect(result.dataState).toBe('unknown');
+  });
+});
+
 describe('findRetiredConditionTypes (issue #2948)', () => {
   it('flags the retired `custom` type, which never had an evaluator', () => {
     expect(findRetiredConditionTypes([{ type: 'custom', customCondition: 'x' }]).retired).toEqual(['custom']);

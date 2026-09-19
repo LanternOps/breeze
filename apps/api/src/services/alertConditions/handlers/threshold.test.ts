@@ -120,4 +120,31 @@ describe('thresholdHandler (averaged window semantics)', () => {
 
     expect(result.passed).toBe(true);
   });
+
+  it('sets dataAvailable: false when the window has no metric rows at all (#5290)', async () => {
+    getRecentMetricsMock.mockResolvedValue([]);
+
+    const result = await thresholdHandler.evaluate(
+      { type: 'metric', metric: 'cpu', operator: 'gt', value: 90 },
+      DEVICE_ID
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.dataAvailable).toBe(false);
+  });
+
+  it('leaves dataAvailable absent for a normal comparison that simply does not breach (#5290)', async () => {
+    // avg(50, 60) = 55, threshold gt 90 → no fire, but this IS an observation
+    // (metrics were present) — not a no-data condition.
+    getRecentMetricsMock.mockResolvedValue(rows('cpuPercent', [50, 60]));
+
+    const result = await thresholdHandler.evaluate(
+      { type: 'metric', metric: 'cpu', operator: 'gt', value: 90 },
+      DEVICE_ID
+    );
+
+    expect(result.passed).toBe(false);
+    // Absent means available: a handler that doesn't opt in keeps today's semantics.
+    expect(result.dataAvailable).toBeUndefined();
+  });
 });

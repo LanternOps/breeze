@@ -171,6 +171,7 @@ async function notifyAdminsOfDeletionRequest(opts: {
       subject,
       html,
       text,
+      purpose: 'account.deletion_requested',
     });
   } catch (error) {
     console.error('[account-deletion] Failed to send admin notification email:', error);
@@ -670,7 +671,7 @@ async function notifyUserOfRejection(opts: {
   ].filter(Boolean).join('\n');
 
   try {
-    await emailService.sendEmail({ to: opts.user.email, subject, html, text });
+    await emailService.sendEmail({ to: opts.user.email, subject, html, text, purpose: 'account.deletion_declined' });
   } catch (error) {
     console.error('[account-deletion] Failed to send rejection email:', error);
   }

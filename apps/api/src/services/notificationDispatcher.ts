@@ -16,7 +16,9 @@ import {
   notificationRoutingRules,
   devices,
   organizations,
-  partners
+  partners,
+  configPolicyAlertRules,
+  monitorDefinitions
 } from '../db/schema';
 import { eq, and, ne, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
@@ -262,6 +264,8 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   // Get notification channels — from rule overrides or org defaults
   let channelIds: string[] = [];
   let ruleOverrides: Record<string, unknown> | null = null;
+  // #5290 — set only by a monitor whose delivery_mode is 'none'.
+  let suppressChannelFallback = false;
 
   if (alert.ruleId) {
     const [rule] = await db
@@ -274,6 +278,63 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       ruleOverrides = rule.overrideSettings as Record<string, unknown> | null;
       channelIds = (ruleOverrides?.notificationChannelIds as string[]) || [];
     }
+  } else if (alert.configPolicyId) {
+    // Delivery parity for config-policy alerts (#5289 Task 9, spec
+    // §Delivery): a config-policy-sourced alert has `ruleId: null` and
+    // `configPolicyId` set to the `config_policy_alert_rules` row id (the
+    // column name is historical). That row can carry its own
+    // escalation/channel overrides, same shape as `alertRules.overrideSettings`
+    // above, so the fallbacks below (routing rules, then org default
+    // channels) and the escalation scheduling at the bottom of this function
+    // work unchanged whether the alert came from a standalone rule or a
+    // config policy.
+    const [cpRule] = await db
+      .select({
+        escalationPolicyId: configPolicyAlertRules.escalationPolicyId,
+        notificationChannelIds: configPolicyAlertRules.notificationChannelIds
+      })
+      .from(configPolicyAlertRules)
+      .where(eq(configPolicyAlertRules.id, alert.configPolicyId))
+      .limit(1);
+
+    if (cpRule) {
+      ruleOverrides = {
+        escalationPolicyId: cpRule.escalationPolicyId ?? undefined,
+        notificationChannelIds: cpRule.notificationChannelIds ?? []
+      };
+      channelIds = cpRule.notificationChannelIds ?? [];
+    }
+  } else if (alert.monitorId) {
+    // #5290 — a rule-less MONITOR alert (the recurrence escalation) has no
+    // alert_rules row to read overrideSettings from, so it sources delivery
+    // straight from the monitor definition the technician authored. Without
+    // this branch a requires-human alert would fall through to the org's
+    // default channels and ignore the monitor's escalation policy entirely.
+    const [monitor] = await db
+      .select({
+        deliveryMode: monitorDefinitions.deliveryMode,
+        deliveryChannelIds: monitorDefinitions.deliveryChannelIds,
+        escalationPolicyId: monitorDefinitions.escalationPolicyId
+      })
+      .from(monitorDefinitions)
+      .where(eq(monitorDefinitions.id, alert.monitorId))
+      .limit(1);
+
+    if (monitor) {
+      // delivery_mode 'none' means "inbox only": suppress channel sends but
+      // leave the alert visible. It must also skip the routing-rule and
+      // org-default fallbacks below, which is what `suppressChannelFallback`
+      // does — those fallbacks exist for alerts with no delivery opinion, and
+      // 'none' IS an opinion.
+      suppressChannelFallback = monitor.deliveryMode === 'none';
+      ruleOverrides = {
+        escalationPolicyId: monitor.escalationPolicyId ?? undefined,
+        notificationChannelIds: monitor.deliveryMode === 'channels'
+          ? (monitor.deliveryChannelIds ?? [])
+          : []
+      };
+      channelIds = (ruleOverrides.notificationChannelIds as string[]) ?? [];
+    }
   }
 
   // Dual-axis rail resolution (#2130): resolve the alert org's partner once,
@@ -283,7 +344,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   // Phase 5: Notification routing rules. Site-restricted rules fail closed if
   // the firing device or its site cannot be resolved.
   // Check routing rules before falling back to all channels
-  if (channelIds.length === 0) {
+  if (channelIds.length === 0 && !suppressChannelFallback) {
     const routedChannelIds = await resolveRoutingRules(
       alert.orgId,
       alert.severity,
@@ -298,7 +359,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   // For config policy alerts (no ruleId) or rules without channel overrides and no routing rules,
   // fall back to all enabled channels for the org — including the partner's
   // partner-wide channels, which are active for every member org by design.
-  if (channelIds.length === 0) {
+  if (channelIds.length === 0 && !suppressChannelFallback) {
     const orgChannels = await db
       .select({ id: notificationChannels.id })
       .from(notificationChannels)
@@ -377,7 +438,8 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     addedJobs.map((job) => retryIfFailedJob(job, `alert ${data.alertId} baseline send`))
   );
 
-  // Check for escalation policy (only applicable to rule-based alerts)
+  // Check for escalation policy — sourced from either the alert rule's or
+  // the config-policy alert rule's overrides (#5289 Task 9).
   const escalationPolicyId = ruleOverrides?.escalationPolicyId as string | undefined;
   if (escalationPolicyId) {
     await scheduleEscalation(data.alertId, escalationPolicyId, alert.orgId, orgPartnerId);

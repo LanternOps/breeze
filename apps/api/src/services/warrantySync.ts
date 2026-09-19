@@ -309,6 +309,37 @@ async function upsertWarranty(
         updatedAt: now,
       },
     });
+
+  await recordVendorShipDate(subject, result.shipDate ?? null);
+}
+
+/**
+ * Hardware Lifecycle report: the vendor ship date is the best purchase-date
+ * proxy a lookup can give us. Written as `purchase_date_source = 'vendor'`
+ * and ONLY where the operator has not typed a date themselves — a 'manual'
+ * value is never overwritten, and a vendor value is refreshed on every sync
+ * so a corrected vendor record propagates.
+ */
+async function recordVendorShipDate(subject: WarrantySubject, shipDate: string | null): Promise<void> {
+  if (!shipDate) return;
+  const now = new Date();
+  if (subject.kind === 'device') {
+    await db
+      .update(devices)
+      .set({ purchaseDate: shipDate, purchaseDateSource: 'vendor', updatedAt: now })
+      .where(and(
+        eq(devices.id, subject.deviceId),
+        sql`${devices.purchaseDateSource} IS DISTINCT FROM 'manual'`,
+      ));
+  } else {
+    await db
+      .update(manualAssets)
+      .set({ purchaseDate: shipDate, purchaseDateSource: 'vendor', updatedAt: now })
+      .where(and(
+        eq(manualAssets.id, subject.manualAssetId),
+        sql`${manualAssets.purchaseDateSource} IS DISTINCT FROM 'manual'`,
+      ));
+  }
 }
 
 /** Upsert warranty data reported directly by the agent (e.g. Apple plist). */

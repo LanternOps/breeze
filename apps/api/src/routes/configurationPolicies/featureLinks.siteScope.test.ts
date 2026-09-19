@@ -27,13 +27,22 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
   };
 });
 
-vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/auditEvents', () => ({
+  writeRouteAudit: vi.fn(),
+  // The route now imports services/monitors/monitorService (getMonitorDefinition
+  // for 'monitors' inline-settings validation), which transitively loads
+  // routes/agentWs -> services/commandResultHandlers ->
+  // customFields/scriptWriteBack, and that module calls
+  // requestLikeFromSnapshot({}) at import time. A partial mock without it
+  // throws before any test in this file runs.
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
+}));
 
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
-  hasSatisfiedMfa: vi.fn(() => true),
+  requireMfa: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
 import { featureLinkRoutes } from './featureLinks';

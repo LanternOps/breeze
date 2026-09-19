@@ -7,7 +7,7 @@
     },
     "loading": "Loading automation...",
     "breadcrumb": {
-      "automations": "Automations",
+      "automations": "Jobs",
       "new": "New Automation",
       "edit": "Edit Automation"
     },
@@ -106,7 +106,8 @@
       "sendNotification": "Send Notification",
       "createAlert": "Create Alert",
       "executeCommand": "Execute Command",
-      "deploySoftware": "Deploy Software"
+      "deploySoftware": "Deploy Software",
+      "aiTriage": "AI triage"
     },
     "severity": {
       "critical": "Critical",
@@ -133,7 +134,8 @@
       "saveAutomation": "Save automation",
       "copyUrl": "Copy URL",
       "addCondition": "Add Condition",
-      "addAction": "Add Action"
+      "addAction": "Add Action",
+      "removeAction": "Remove action"
     },
     "scope": {
       "title": "Scope",
@@ -204,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Elevated",
     "relativeTime": {
       "justNow": "Just now",
       "minutesAgo": "{{count}}m ago",
@@ -341,8 +344,8 @@
       "delete": "Failed to delete automation"
     },
     "loading": "Loading automations...",
-    "title": "Automations",
-    "description": "Create and manage automated workflows.",
+    "title": "Jobs",
+    "description": "Scheduled, on-demand, webhook and event-driven automations.",
     "actions": {
       "new": "New Automation",
       "deleting": "Deleting..."
@@ -351,6 +354,14 @@
       "title": "Delete Automation",
       "confirmPrefix": "Are you sure you want to delete",
       "confirmSuffix": "This action cannot be undone."
+    },
+    "tabs": {
+      "ariaLabel": "Job types",
+      "all": "All",
+      "scheduled": "Scheduled",
+      "on-demand": "On demand",
+      "webhooks": "Webhooks",
+      "event-rules": "Event rules"
     }
   },
   "complianceDashboard": {
@@ -1332,6 +1343,11 @@
       "confirmSuffix": "This action cannot be undone."
     },
     "library": {
+      "target": "Import into",
+      "allOrgs": "All orgs (partner-wide)",
+      "chooseOrg": "Choose an organization",
+      "partnerPermission": "You cannot import scripts for all organizations. Choose an organization instead.",
+      "importSuccess": "Imported “{{name}}”",
       "title": "System Script Library",
       "description": "Import scripts into your organization",
       "searchPlaceholder": "Search system scripts...",
@@ -1370,6 +1386,8 @@
     "modeSkip": "Skip it",
     "modeRename": "Import with a new name",
     "modeNewVersion": "Add as a new version of the existing script",
+    "tagLegacy": "Tag as legacy import",
+    "tagLegacyHint": "Adds the legacy-import tag so a Fleet Design can inventory what these scripts were for.",
     "partnerWide": "Make available to all organizations (partner-wide)",
     "importCommit": "Import {{count}} scripts",
     "resultSummary": "{{imported}} imported, {{renamed}} renamed, {{versioned}} versioned, {{skipped}} skipped, {{failed}} failed",
@@ -1412,5 +1430,33 @@
       "pollDeadline": "Still no result — check the execution history for the outcome.",
       "pollFailed": "Could not read the run result — it may have been deleted or your access changed."
     }
+  },
+  "provenance": {
+    "origin": "Origin",
+    "originHuman": "Human",
+    "originAiProposal": "AI proposal",
+    "originImported": "Imported",
+    "originSystem": "Built-in",
+    "reviewed": "Reviewed",
+    "editedSinceReview": "Edited since review",
+    "notReviewed": "Not reviewed",
+    "notReviewedDetail": "AI-authored and approved by a person, but no model review was performed on this version.",
+    "provenanceTitle": "Provenance",
+    "reviewSummary": "Review summary",
+    "approvedBy": "Approved by",
+    "evidenceErased": "Review evidence erased",
+    "allOrigins": "All origins"
+  },
+  "scriptProposalDetail": {
+    "loading": "Loading…",
+    "loadError": "Couldn't load this proposal.",
+    "evidenceErased": "This proposal's review evidence has been erased (the source organization was merged or its data retention period ended). The script execution it produced is still visible in device history.",
+    "statusLabel": "Status",
+    "riskTierLabel": "Risk tier",
+    "reviewSummaryLabel": "Reviewer summary",
+    "riskLow": "Low",
+    "riskMedium": "Medium",
+    "riskHigh": "High",
+    "riskCritical": "Critical"
   }
 }

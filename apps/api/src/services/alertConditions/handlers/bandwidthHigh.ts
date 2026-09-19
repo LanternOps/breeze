@@ -12,7 +12,7 @@ export const bandwidthHighHandler: ConditionHandler = {
     const metrics = await getRecentMetrics(deviceId, durationMinutes);
 
     if (metrics.length === 0) {
-      return { passed: false, description: 'No metrics available for bandwidth' };
+      return { passed: false, description: 'No metrics available for bandwidth', dataAvailable: false };
     }
 
     // cond.value is in Mbps (user-friendly); convert to bps for DB comparison

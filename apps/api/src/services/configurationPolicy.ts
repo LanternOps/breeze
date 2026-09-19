@@ -19,6 +19,7 @@ import {
   configPolicyBackupSettings,
   configPolicyOnedriveSettings,
   configPolicyOnedriveLibraries,
+  configPolicyMonitors,
   devices,
   deviceGroups,
   organizations,
@@ -37,6 +38,7 @@ import {
 } from '../db/schema';
 import { and, eq, desc, or, isNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
+import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
   InvalidParentPolicyError,
   isCompatibleParent,
@@ -52,8 +54,14 @@ import {
   deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
+  monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
+  warrantyInlineSettingsSchema,
+  warrantyHpCmslCollectionEffective,
+  readRecordedWarrantyHpCmslConsent,
+  HP_CMSL_EULA_ID,
+  type WarrantyHpCmslConsent,
 } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
@@ -278,7 +286,8 @@ export async function createConfigPolicy(
     status?: 'active' | 'inactive' | 'archived';
     parentPolicyId?: string;
   },
-  userId: string
+  userId: string,
+  executor: DbExecutor = db
 ) {
   const values = {
     orgId: owner.orgId ?? null,
@@ -294,13 +303,13 @@ export async function createConfigPolicy(
   // ONLY for the inheritance case, so the overwhelmingly common create keeps its
   // existing shape and cost.
   if (!data.parentPolicyId) {
-    const [policy] = await db.insert(configurationPolicies).values(values).returning();
+    const [policy] = await executor.insert(configurationPolicies).values(values).returning();
     if (!policy) throw new Error('Failed to create configuration policy');
     return policy;
   }
 
   const parentPolicyId = data.parentPolicyId;
-  return db.transaction(async (tx) => {
+  return executor.transaction(async (tx) => {
     // Read the parent through the CALLER'S OWN RLS context — an org token sees a
     // partner-wide parent via configuration_policies_partner_wide_select, and
     // sees nothing of another tenant, so "not visible" collapses into the same
@@ -444,6 +453,55 @@ export async function getConfigPolicy(id: string, auth: AuthContext) {
  * baseline must not silently strip config from every child), so hiding archived
  * rows here would misrepresent what is selectable.
  */
+/**
+ * True when the named parent policy carries a warranty link that actually
+ * delivers HP CMSL collection (#5511 W02, contract D4) — the input to the
+ * create-with-parent gate in routes/configurationPolicies/crud.ts.
+ *
+ * Keyed on a value inside the link's JSONB, not on the presence of a link.
+ * One level is all that is needed: a parent must itself be a root policy
+ * (`parent_policy_id IS NULL`, see listEligibleParentPolicies), so there is no
+ * grandparent to walk. A parent this context cannot see resolves to `false`
+ * here, but createConfigPolicy then refuses the create outright
+ * (InvalidParentPolicyError), so that is never a way around the gate.
+ */
+export async function parentPolicyEnablesHpCmslCollection(parentId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+    .from(configPolicyFeatureLinks)
+    .where(
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, parentId),
+        eq(configPolicyFeatureLinks.featureType, 'warranty')
+      )
+    )
+    .limit(1);
+  return warrantyHpCmslCollectionEffective(row?.inlineSettings);
+}
+
+/**
+ * True when the warranty link IN EFFECT on a policy — its own, else the one it
+ * inherits (config_policy_effective_feature_links resolves exactly that, whole
+ * link, no merge: contract D5) — delivers HP CMSL collection (#5511 W02, D4).
+ *
+ * Used by the AI assignment tool, which has no loaded policy aggregate to read
+ * links from; the HTTP assignment route reads the same answer off
+ * getConfigPolicy's links instead of querying again.
+ */
+export async function policyEffectivelyEnablesHpCmslCollection(policyId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings })
+    .from(configPolicyEffectiveFeatureLinks)
+    .where(
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, policyId),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'warranty')
+      )
+    )
+    .limit(1);
+  return warrantyHpCmslCollectionEffective(row?.inlineSettings);
+}
+
 export async function listEligibleParentPolicies(
   auth: AuthContext,
   sel: { ownerScope: 'organization'; orgId: string } | { ownerScope: 'partner' },
@@ -491,21 +549,6 @@ export async function listEligibleParentPolicies(
     name: r.name,
     ownerScope: r.orgId === null ? ('partner' as const) : ('organization' as const),
   }));
-}
-
-/**
- * Feature types linked on a prospective parent, read under the caller's own RLS
- * context (no access condition — same read-only rationale as the parent embed).
- *
- * Feeds the MFA-by-effectiveness gate: creating a child of a parent that carries
- * a gated link makes that link effective on the new policy.
- */
-export async function getParentLinkFeatureTypes(parentId: string): Promise<string[]> {
-  const rows = await db
-    .select({ featureType: configPolicyFeatureLinks.featureType })
-    .from(configPolicyFeatureLinks)
-    .where(eq(configPolicyFeatureLinks.configPolicyId, parentId));
-  return rows.map((r) => r.featureType);
 }
 
 export async function listConfigPolicies(
@@ -612,13 +655,14 @@ export async function listConfigPolicies(
 export async function updateConfigPolicy(
   id: string,
   data: { name?: string; description?: string; status?: 'active' | 'inactive' | 'archived' },
-  auth: AuthContext
+  auth: AuthContext,
+  executor: DbExecutor = db
 ) {
   const conditions: SQL[] = [eq(configurationPolicies.id, id)];
   const accessCond = policyAccessCondition(auth);
   if (accessCond) conditions.push(accessCond);
 
-  const [existing] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
+  const [existing] = await executor.select().from(configurationPolicies).where(and(...conditions)).limit(1);
   if (!existing) return null;
 
   // Partner-wide policies are READABLE by any member of the partner but
@@ -634,7 +678,7 @@ export async function updateConfigPolicy(
   if (data.description !== undefined) updates.description = data.description;
   if (data.status !== undefined) updates.status = data.status;
 
-  const [updated] = await db
+  const [updated] = await executor
     .update(configurationPolicies)
     .set(updates)
     .where(and(...conditions))
@@ -723,7 +767,10 @@ async function decomposeInlineSettings(
             autoResolveConditions: item.autoResolveConditions ?? null,
             titleTemplate: item.titleTemplate ?? '{{ruleName}} triggered on {{deviceName}}',
             messageTemplate: item.messageTemplate ?? '{{ruleName}} condition met',
+            escalationPolicyId: item.escalationPolicyId ?? null,
+            notificationChannelIds: item.notificationChannelIds ?? null,
             sortOrder: item.sortOrder ?? idx,
+            rationale: item.rationale ?? null,
           }))
         );
       }
@@ -883,6 +930,7 @@ async function decomposeInlineSettings(
             maxRestartAttempts: w.maxRestartAttempts,
             restartCooldownSeconds: w.restartCooldownSeconds,
             sortOrder: idx,
+            rationale: w.rationale ?? null,
           }))
         );
       }
@@ -976,6 +1024,13 @@ async function decomposeInlineSettings(
         targets = { ...rawTargets, excludes: parsed.data };
       }
 
+      // #6001: `paths` and `targets.paths` are BOTH written for a file-mode
+      // custom selection (the Backup tab sends the same array in both fields),
+      // and dispatch treats `targets` as authoritative, falling back to `paths`
+      // only when `targets` carries none (jobs/backupWorker.ts,
+      // prepareBackupDispatchTargets). Keep writing both. Writing ONLY `paths`
+      // works but depends entirely on that fallback; writing only `targets`
+      // breaks the read-back in this file's own getter, which prefers `paths`.
       await tx.insert(configPolicyBackupSettings).values({
         featureLinkId: linkId,
         orgId: policyRow.orgId,
@@ -1059,6 +1114,22 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'monitors': {
+      const parsed = monitorsInlineSettingsSchema.parse(s);
+      if (parsed.items.length > 0) {
+        await tx.insert(configPolicyMonitors).values(
+          parsed.items.map((item, idx) => ({
+            featureLinkId: linkId,
+            monitorId: item.monitorId,
+            enabled: item.enabled,
+            overrides: item.overrides ?? null,
+            sortOrder: item.sortOrder ?? idx,
+          }))
+        );
+      }
+      break;
+    }
+
     case 'warranty':
     case 'helper':
     case 'pam':
@@ -1105,6 +1176,9 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
       break;
     case 'onedrive_helper':
       onedriveHelperInlineSettingsSchema.parse(settings);
+      break;
+    case 'monitors':
+      monitorsInlineSettingsSchema.parse(settings);
       break;
     default:
       break;
@@ -1168,6 +1242,9 @@ async function deleteNormalizedRows(
       await tx.delete(configPolicyOnedriveSettings).where(eq(configPolicyOnedriveSettings.featureLinkId, linkId));
       break;
     }
+    case 'monitors':
+      await tx.delete(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, linkId));
+      break;
     case 'warranty':
     case 'helper':
     case 'pam':
@@ -1187,11 +1264,12 @@ async function deleteNormalizedRows(
  */
 async function assembleInlineSettings(
   featureType: ConfigFeatureType,
-  linkId: string
+  linkId: string,
+  executor: DbExecutor
 ): Promise<unknown | null> {
   switch (featureType) {
     case 'alert_rule': {
-      const rows = await db
+      const rows = await executor
         .select()
         .from(configPolicyAlertRules)
         .where(eq(configPolicyAlertRules.featureLinkId, linkId))
@@ -1207,13 +1285,16 @@ async function assembleInlineSettings(
           autoResolveConditions: r.autoResolveConditions,
           titleTemplate: r.titleTemplate,
           messageTemplate: r.messageTemplate,
+          escalationPolicyId: r.escalationPolicyId,
+          notificationChannelIds: r.notificationChannelIds,
           sortOrder: r.sortOrder,
+          rationale: r.rationale,
         })),
       };
     }
 
     case 'automation': {
-      const rows = await db
+      const rows = await executor
         .select()
         .from(configPolicyAutomations)
         .where(eq(configPolicyAutomations.featureLinkId, linkId))
@@ -1235,7 +1316,7 @@ async function assembleInlineSettings(
     }
 
     case 'compliance': {
-      const rows = await db
+      const rows = await executor
         .select()
         .from(configPolicyComplianceRules)
         .where(eq(configPolicyComplianceRules.featureLinkId, linkId))
@@ -1254,7 +1335,7 @@ async function assembleInlineSettings(
     }
 
     case 'patch': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyPatchSettings)
         .where(eq(configPolicyPatchSettings.featureLinkId, linkId))
@@ -1284,7 +1365,7 @@ async function assembleInlineSettings(
     }
 
     case 'maintenance': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyMaintenanceSettings)
         .where(eq(configPolicyMaintenanceSettings.featureLinkId, linkId))
@@ -1307,7 +1388,7 @@ async function assembleInlineSettings(
     }
 
     case 'event_log': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyEventLogSettings)
         .where(eq(configPolicyEventLogSettings.featureLinkId, linkId))
@@ -1324,7 +1405,7 @@ async function assembleInlineSettings(
     }
 
     case 'sensitive_data': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicySensitiveDataSettings)
         .where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId))
@@ -1347,13 +1428,13 @@ async function assembleInlineSettings(
     }
 
     case 'monitoring': {
-      const [settingsRow] = await db
+      const [settingsRow] = await executor
         .select()
         .from(configPolicyMonitoringSettings)
         .where(eq(configPolicyMonitoringSettings.featureLinkId, linkId))
         .limit(1);
       if (!settingsRow) return null;
-      const watches = await db
+      const watches = await executor
         .select()
         .from(configPolicyMonitoringWatches)
         .where(eq(configPolicyMonitoringWatches.settingsId, settingsRow.id))
@@ -1375,12 +1456,13 @@ async function assembleInlineSettings(
           autoRestart: w.autoRestart,
           maxRestartAttempts: w.maxRestartAttempts,
           restartCooldownSeconds: w.restartCooldownSeconds,
+          rationale: w.rationale,
         })),
       };
     }
 
     case 'backup': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyBackupSettings)
         .where(eq(configPolicyBackupSettings.featureLinkId, linkId))
@@ -1398,7 +1480,7 @@ async function assembleInlineSettings(
     }
 
     case 'remote_access': {
-      const [row] = await db
+      const [row] = await executor
         .select()
         .from(configPolicyRemoteAccessSettings)
         .where(eq(configPolicyRemoteAccessSettings.featureLinkId, linkId))
@@ -1410,6 +1492,23 @@ async function assembleInlineSettings(
         notifyOnSessionEnd: row.notifyOnSessionEnd,
         showActiveIndicator: row.showActiveIndicator,
         technicianIdentityLevel: row.technicianIdentityLevel,
+      };
+    }
+
+    case 'monitors': {
+      const rows = await executor
+        .select()
+        .from(configPolicyMonitors)
+        .where(eq(configPolicyMonitors.featureLinkId, linkId))
+        .orderBy(asc(configPolicyMonitors.sortOrder));
+      if (rows.length === 0) return null;
+      return {
+        items: rows.map((r) => ({
+          monitorId: r.monitorId,
+          enabled: r.enabled,
+          overrides: r.overrides,
+          sortOrder: r.sortOrder,
+        })),
       };
     }
 
@@ -1471,11 +1570,95 @@ async function authorizeConfigPolicyAutomationSettings(
   await resolveAutomationReferencesForOwner(tx, policy, actions);
 }
 
+/**
+ * Raised when a caller asks to enable HP CMSL warranty collection but cannot
+ * record an acceptance of HP's licence (#5511 W02, contract D3).
+ *
+ * Its own class, mirroring AutomationReferenceAuthorizationError, so the HTTP
+ * routes and the AI tool can map it to a 400 with a useful message instead of
+ * letting a bare Error reach the global onError handler as a 500.
+ */
+export class WarrantyConsentError extends Error {
+  readonly code = 'warranty_hp_cmsl_consent_required' as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'WarrantyConsentError';
+  }
+}
+
+/**
+ * The authenticated user on whose behalf a warranty consent may be stamped.
+ * Supplied OUT OF BAND by the HTTP routes — never read from the payload, and
+ * never available to `manage_policy_feature_link`, which is why an assistant
+ * cannot switch collection on. `null`/`undefined` means "this caller cannot
+ * accept a licence".
+ */
+export type WarrantyConsentActor = { userId: string } | null | undefined;
+
+/**
+ * Validates a warranty inline-settings payload and returns the value to store.
+ *
+ * Contract, in order:
+ *  1. `warrantyInlineSettingsSchema` has no `consent` key and is `.strict()`,
+ *     so a client-supplied acceptance THROWS here rather than being stripped
+ *     (D3). The HTTP routes catch this earlier and return a coded 400; this
+ *     parse is the backstop for every other caller.
+ *  2. Not enabling collection (absent block, or `enabled: false`) stores the
+ *     parsed value as-is. Any previously recorded acceptance goes with the old
+ *     block: re-enabling later re-consents rather than silently reusing an
+ *     acceptance by a user who may have left the partner.
+ *  3. Enabling with a still-current acceptance already on the row carries that
+ *     acceptance forward verbatim, so an unrelated threshold edit does not
+ *     churn `acceptedAt` or re-attribute who accepted.
+ *  4. Enabling with no acceptance — or one naming a superseded EULA id (D2) —
+ *     stamps a fresh one from `actor` and the SERVER clock, or throws when
+ *     there is no actor.
+ *
+ * Exported for direct unit testing: this function is the whole of the consent
+ * rule, and it is the thing worth pinning.
+ */
+export function resolveWarrantyInlineSettingsForWrite(
+  incoming: unknown,
+  stored: unknown,
+  actor: WarrantyConsentActor,
+): unknown {
+  if (incoming === undefined || incoming === null) return incoming;
+
+  const parsed = warrantyInlineSettingsSchema.parse(incoming);
+  if (parsed.hpCmsl?.enabled !== true) return parsed;
+
+  if (warrantyHpCmslCollectionEffective(stored)) {
+    const carried = readRecordedWarrantyHpCmslConsent(stored) as WarrantyHpCmslConsent;
+    return { ...parsed, hpCmsl: { enabled: true, consent: carried } };
+  }
+
+  if (!actor?.userId) {
+    throw new WarrantyConsentError(
+      'Enabling HP CMSL warranty collection records an acceptance of HP\'s licence, which requires an authenticated user. This caller cannot record one.',
+    );
+  }
+
+  return {
+    ...parsed,
+    hpCmsl: {
+      enabled: true,
+      consent: {
+        acceptedByUserId: actor.userId,
+        acceptedAt: new Date().toISOString(),
+        eulaId: HP_CMSL_EULA_ID,
+      },
+    },
+  };
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
   featurePolicyId?: string | null,
-  inlineSettings?: unknown
+  inlineSettings?: unknown,
+  consentActor?: WarrantyConsentActor,
+  executor: DbExecutor = db
 ) {
   if (inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
@@ -1491,6 +1674,13 @@ export async function addFeatureLink(
 
   if (featureType === 'device_lifecycle' && inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = deviceLifecycleInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
+  // write. There is no stored row yet on this path, so `stored` is null and an
+  // enable always stamps fresh.
+  if (featureType === 'warranty' && inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = resolveWarrantyInlineSettingsForWrite(inlineSettings, null, consentActor);
   }
 
   // Service-level backstop for callers that bypass the HTTP route's validation
@@ -1509,7 +1699,7 @@ export async function addFeatureLink(
     : null;
   if (normalizedAutomation) inlineSettings = normalizedAutomation.settings;
 
-  return db.transaction(async (tx) => {
+  return executor.transaction(async (tx) => {
     const effectiveInlineSettings =
       featureType === 'patch'
         ? normalizePatchInlineSettings(inlineSettings)
@@ -1562,13 +1752,15 @@ export async function addFeatureLink(
 export async function updateFeatureLink(
   linkId: string,
   updates: { featurePolicyId?: string | null; inlineSettings?: unknown },
-  configPolicyId?: string
+  configPolicyId?: string,
+  consentActor?: WarrantyConsentActor,
+  executor: DbExecutor = db
 ) {
   if (updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
     updates.inlineSettings = configFeatureInlineSettingsSchema.parse(updates.inlineSettings);
   }
 
-  return db.transaction(async (tx) => {
+  return executor.transaction(async (tx) => {
     // Fetch current link to get featureType, scoped to configPolicyId when provided
     const conditions = [eq(configPolicyFeatureLinks.id, linkId)];
     if (configPolicyId) {
@@ -1591,6 +1783,18 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'device_lifecycle' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       updates.inlineSettings = deviceLifecycleInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    // #5511 W02: same consent rule as addFeatureLink, but with the row's
+    // current settings in hand so a still-current acceptance survives an
+    // unrelated edit. REPLACE semantics (not merge, contract D5): settings sent
+    // without an hpCmsl block drop it, which revokes collection.
+    if (existing.featureType === 'warranty' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      updates.inlineSettings = resolveWarrantyInlineSettingsForWrite(
+        updates.inlineSettings,
+        existing.inlineSettings,
+        consentActor,
+      );
     }
 
     // Same service-level backstop as addFeatureLink (AI tool path) — see #2320.
@@ -1694,8 +1898,8 @@ export async function removeFeatureLink(linkId: string, configPolicyId: string) 
   return deleted ?? null;
 }
 
-export async function listFeatureLinks(configPolicyId: string) {
-  const links = await db
+export async function listFeatureLinks(configPolicyId: string, executor: DbExecutor = db) {
+  const links = await executor
     .select()
     .from(configPolicyFeatureLinks)
     .where(eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
@@ -1704,7 +1908,7 @@ export async function listFeatureLinks(configPolicyId: string) {
   const enriched = await Promise.all(
     links.map(async (link) => {
       const featureType = link.featureType as ConfigFeatureType;
-      const assembled = await assembleInlineSettings(featureType, link.id);
+      const assembled = await assembleInlineSettings(featureType, link.id, executor);
       let effectiveInlineSettings: unknown;
       if (featureType === 'patch') {
         // CONSTRAINT: autoApproveDeferralDays and apps (block/pin rules) have NO
@@ -1763,7 +1967,8 @@ export async function assignPolicy(
   priority: number = 0,
   userId: string,
   roleFilter?: string[],
-  osFilter?: string[]
+  osFilter?: string[],
+  executor: DbExecutor = db
 ) {
   // ON CONFLICT DO NOTHING instead of catch-and-map: callers run inside the
   // withDbAccessContext transaction, and postgres.js re-throws a raised unique
@@ -1773,7 +1978,7 @@ export async function assignPolicy(
   // only non-PK unique constraint on this table, so a bare onConflictDoNothing
   // only ever suppresses that duplicate-assignment case. Callers must treat a
   // null return as "already assigned".
-  const [assignment] = await db
+  const [assignment] = await executor
     .insert(configPolicyAssignments)
     .values({
       configPolicyId,
@@ -1957,10 +2162,20 @@ export async function authorizeAssignmentTarget(
   level: ConfigAssignmentLevel,
   targetId: string
 ): Promise<AssignmentTargetValidation> {
+  // Exact-device axis (#6096 #6). INDEPENDENT of the site axis: a device-bound
+  // agent run pins `allowedDeviceIds` alongside its site, and a device-LESS
+  // analysis run pins `allowedDeviceIds` with NO `allowedSiteIds` — which the
+  // old `!auth.allowedSiteIds` early return read as unrestricted.
+  const allowedDevices = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
+  const siteRestricted = !!(auth.allowedSiteIds && auth.canAccessSite);
   // Unrestricted caller (partner/system scope, or org user with no site
   // restriction) — org/partner ownership is already enforced elsewhere.
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return { valid: true };
-  const canAccessSite = auth.canAccessSite;
+  if (!siteRestricted && !allowedDevices) return { valid: true };
+  const canAccessSite = siteRestricted ? auth.canAccessSite! : () => true;
+  const deviceScopeError = {
+    valid: false as const,
+    error: 'Your access is restricted to specific devices — this assignment target reaches devices outside it.',
+  };
 
   switch (level) {
     case 'partner':
@@ -1971,6 +2186,9 @@ export async function authorizeAssignmentTarget(
       };
 
     case 'site':
+      // A site assignment fans out to every device at the site, which a
+      // device-restricted caller by definition does not cover.
+      if (allowedDevices) return deviceScopeError;
       return canAccessSite(targetId)
         ? { valid: true }
         : { valid: false, error: 'Target site is outside your site access' };
@@ -1983,12 +2201,28 @@ export async function authorizeAssignmentTarget(
         .limit(1);
       // Unknown group, or a group with no single site (org-wide), is denied for a
       // site-restricted caller (fail closed).
-      return group && canAccessSite(group.siteId)
-        ? { valid: true }
-        : { valid: false, error: 'Target device group is outside your site access' };
+      if (!group || !canAccessSite(group.siteId)) {
+        return { valid: false, error: 'Target device group is outside your site access' };
+      }
+      if (allowedDevices) {
+        // The group is the assignment target, but the devices BENEATH it are
+        // what the policy actually reaches — every member must be in scope.
+        const members = await db
+          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .where(eq(deviceGroupMemberships.groupId, targetId));
+        // An EMPTY group makes `some` vacuously false (#6096 I8) — that is not
+        // "every member is in scope", it is "the target's reach is unknown and
+        // unbounded": membership is reconciled asynchronously (dynamic groups)
+        // and the assignment survives the next device joining. Fail closed.
+        if (members.length === 0
+          || members.some((member) => !allowedDevices.has(member.deviceId))) return deviceScopeError;
+      }
+      return { valid: true };
     }
 
     case 'device': {
+      if (allowedDevices && !allowedDevices.has(targetId)) return deviceScopeError;
       const [device] = await db
         .select({ siteId: devices.siteId })
         .from(devices)
@@ -2201,8 +2435,7 @@ async function resolveEffectiveConfigWithExecutor(
       sql`(${sql.join(targetConditions, sql` OR `)})`,
       // Apply the optional role/os device-type filter (#1724). A NULL filter
       // matches all; a set filter gates the assignment to matching devices.
-      sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
-      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`
+      ...buildRoleOsFilterConditions(device),
     ))
       .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
 
@@ -2658,7 +2891,9 @@ export async function validateFeaturePolicyExists(
     featureType === 'event_log' ||
     featureType === 'onedrive_helper' ||
     featureType === 'vulnerability' ||
-    featureType === 'device_lifecycle'
+    featureType === 'device_lifecycle' ||
+    featureType === 'monitors' ||
+    featureType === 'warranty'
   ) {
     // These have no policy table — they require inlineSettings.
     //

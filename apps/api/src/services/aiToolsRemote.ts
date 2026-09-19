@@ -19,9 +19,10 @@ import { devices, remoteSessions } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { getToolTimeout } from './toolTimeouts';
 import { createRemoteSession, RemoteSessionDeniedError } from './remoteSessionCreate';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -30,6 +31,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -44,12 +48,6 @@ async function verifyDeviceAccess(
       error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
     };
   return { device };
-}
-
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
 }
 
 export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
@@ -82,8 +80,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, 'take_screenshot', {
+      const result = await aiExecuteCommand(auth, 'take_screenshot', deviceId, 'take_screenshot', {
         monitor: input.monitor ?? 0
       }, { userId: auth.user.id, timeoutMs: getToolTimeout('take_screenshot') });
 
@@ -140,8 +137,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, 'take_screenshot', {
+      const result = await aiExecuteCommand(auth, 'analyze_screen', deviceId, 'take_screenshot', {
         monitor: input.monitor ?? 0
       }, { userId: auth.user.id, timeoutMs: getToolTimeout('analyze_screen') });
 
@@ -217,8 +213,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, 'computer_action', {
+      const result = await aiExecuteCommand(auth, 'computer_control', deviceId, 'computer_action', {
         action: input.action,
         x: input.x,
         y: input.y,
@@ -302,6 +297,13 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       if (auth.scope !== 'system') {
         conditions.push(eq(remoteSessions.userId, auth.user.id));
       }
+
+      // Exact-device axis: applies on its own, with no site axis in play. A
+      // device-LESS analysis run carries only `allowedDeviceIds`, so the
+      // site-gated block below never runs for it and the list would otherwise be
+      // org-wide (#6096 RC3). No-op for an unrestricted caller.
+      const deviceCond = deviceScopeCondition(auth, remoteSessions.deviceId);
+      if (deviceCond) conditions.push(deviceCond);
 
       // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
       // caller may only list sessions for devices in their allowed sites. Narrow

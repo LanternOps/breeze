@@ -54,6 +54,6 @@ invoicePaymentRoutes.delete('/:id/payments/:pid', scopes, sendPerm, zValidator('
           : {}),
       }
     });
-    return c.json({ data: invoice });
+    return c.json({ data: invoice, quickbooksRecordUntouched: audit.quickbooksRecordUntouched === true });
   } catch (err) { return handleServiceError(c, err); }
 });

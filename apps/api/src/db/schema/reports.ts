@@ -29,7 +29,30 @@ export const reportTypeEnum = pgEnum('report_type', [
   'security_compliance_posture',
   // Phase 2 wave P2-3 (#4187 / #4190): the weekly AI org narrative. Its
   // definition row is system-managed — see reports.sourceAiAgentScheduleId.
-  'ai_org_narrative'
+  'ai_org_narrative',
+  // Fleet Designer W01 (#5651): one system-managed definition per org, keyed
+  // by type (see reportsAiFleetDesignOrgUniq below) rather than by schedule —
+  // manual design runs have no schedule to key on.
+  'ai_fleet_design',
+  // Hardware Lifecycle report: device replacement plan from purchase +
+  // warranty dates (ported from the LanternOps portal PDF).
+  'hardware_lifecycle',
+  // Service-plan evidence #5784: W02 threat_detection_review (Huntress
+  // incidents for an occurrence's period, with an explicit coverage window;
+  // see services/threatDetectionReport.ts), W03 endpoint_management_review
+  // (over the #5327 M365 Intune sync tables — enrolment coverage, compliance
+  // breakdown, stale enrolments and licence seats; generated on demand, zero
+  // new tables), W04 vulnerability_management (the vulnerability DETAIL
+  // artifact — findings, exceptions and remediation ranking;
+  // `security_compliance_posture` keeps its single vulnerability control
+  // line; neither replaces the other), and W06 identity_access_review
+  // (interactive sign-in review, identity inventory, conditional access
+  // posture and remote-access client presence; org-wide by construction; see
+  // services/identityAccessReport.ts).
+  'threat_detection_review',
+  'endpoint_management_review',
+  'vulnerability_management',
+  'identity_access_review'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [
@@ -91,6 +114,11 @@ export const reports = pgTable('reports', {
     'reports_portal_self_service_org_type_uniq',
   ).on(table.orgId, table.type)
     .where(sql`${table.portalSelfService} = true`),
+  // Fleet Designer W01 (#5651): one Fleet Design definition per org. See
+  // migrations/2026-10-16-170500-ai-agents-fleet-designer.sql.
+  aiFleetDesignOrgUniq: uniqueIndex('reports_ai_fleet_design_org_uniq')
+    .on(table.orgId)
+    .where(sql`${table.type} = 'ai_fleet_design'`),
 }));
 
 export const reportRuns = pgTable('report_runs', {
@@ -123,8 +151,22 @@ export const reportRuns = pgTable('report_runs', {
     () => portalUsers.id,
     { onDelete: 'set null' },
   ),
+  /**
+   * An `ai_run_artifacts` row attached to this report run by reference
+   * (execution-plane spec §6.3). `ON DELETE SET NULL`: an expired artifact
+   * leaves the run intact with nothing attached.
+   *
+   * The FK is created in SQL only (2026-10-16-192900-artifact-attachments.sql),
+   * not declared with `.references()`, to dodge an import cycle: `aiWorkspace`
+   * imports `aiAgents`, which imports THIS module for `reportRuns`. Same
+   * technique as `contracts.ts`'s catalog_item_id / site_id.
+   */
+  artifactId: uuid('artifact_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
+  // (id, report_id) key so service_deliverable_evidence can prove a run belongs to
+  // a report of the same org (report_runs has no org_id of its own). Spec #5573 §4.3.
+  reportRunsIdReportIdUniq: uniqueIndex('report_runs_id_report_id_uniq').on(table.id, table.reportId),
   requestedByShape: check(
     'report_runs_requested_by_shape_chk',
     sql`(
@@ -149,6 +191,54 @@ export const reportRuns = pgTable('report_runs', {
     ) IS TRUE`,
   ),
 }));
+
+export const REPORT_RUN_DELIVERY_STATES = ['pending', 'claimed', 'sent', 'failed', 'unknown'] as const;
+export type ReportRunDeliveryState = (typeof REPORT_RUN_DELIVERY_STATES)[number];
+
+/**
+ * #4248 W03 — one durable delivery record per (run, recipient, channel) for the
+ * weekly AI org narrative. Claimed (`pending -> claimed`) in its own committed
+ * write BEFORE any network call, settled to `sent` / `failed` / `unknown`
+ * afterwards; `unknown` is never auto-reset. See
+ * migrations/2026-10-16-183300-report-run-deliveries.sql for the tenancy and
+ * registration rationale (parent-FK-join RLS via `reports`; ON DELETE CASCADE
+ * is why it is in no cascade/export/merge registry). `state` and `channel` are
+ * plain text -- the migration's CHECK constraints are the source of truth.
+ *
+ * NEVER add the recipient's email address here: it is resolved from `users`
+ * at send time. This table sits outside the export and erasure registries.
+ */
+export const reportRunDeliveries = pgTable(
+  'report_run_deliveries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    reportRunId: uuid('report_run_id')
+      .notNull()
+      .references(() => reportRuns.id, { onDelete: 'cascade' }),
+    recipientUserId: uuid('recipient_user_id').notNull(),
+    channel: text('channel').$type<'email'>().notNull(),
+    state: text('state').$type<ReportRunDeliveryState>().notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runRecipientChannelUniq: uniqueIndex('report_run_deliveries_run_recipient_channel_uq')
+      .on(table.reportRunId, table.recipientUserId, table.channel),
+    unsettledIdx: index('report_run_deliveries_unsettled_idx')
+      .on(table.state, table.claimedAt)
+      .where(sql`${table.state} IN ('pending', 'claimed')`),
+    runIdx: index('report_run_deliveries_run_idx').on(table.reportRunId),
+    channelChk: check('report_run_deliveries_channel_chk', sql`${table.channel} IN ('email')`),
+    stateChk: check(
+      'report_run_deliveries_state_chk',
+      sql`${table.state} IN ('pending', 'claimed', 'sent', 'failed', 'unknown')`,
+    ),
+  }),
+);
 
 export const reportScheduleRecipients = pgTable(
   'report_schedule_recipients',

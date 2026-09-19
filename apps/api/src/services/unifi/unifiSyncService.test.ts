@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { syncIntegration } from './unifiSyncService';
+import { syncIntegration, isUnifiDeviceOnline } from './unifiSyncService';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
 import type { UnifiClient } from './unifiClient';
 import type { DbExecutor } from './unifiConnectionService';
@@ -669,4 +669,50 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     expect(insert.conflictSet).not.toHaveProperty('detectedAssetType');
     expect(insert.conflictSet).not.toHaveProperty('detectedTypeSource');
   });
+});
+
+describe('unifiSyncService — status provenance (spec §4.3)', () => {
+  it('stamps status provenance as unifi on the update path', async () => {
+    const { writes, db } = scriptedDb({ mappings: [BASE_MAPPING], existingAsset: { id: 'asset-1' } });
+    await syncIntegration({ db, client: fakeClient([NET_NEW_DEVICE]) }, BASE_INTEGRATION, 'scheduled');
+
+    const set = writes.updates.find((w) => w.table === discoveredAssets)!.values;
+    expect(set.statusSource).toBe('unifi');
+    expect(set.statusObservedAt).toBeInstanceOf(Date);
+  });
+
+  it('stamps status provenance as unifi on both sides of the insert conflict', async () => {
+    const { writes, db } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await syncIntegration({ db, client: fakeClient([NET_NEW_DEVICE]) }, BASE_INTEGRATION, 'manual');
+
+    const insert = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    expect(insert.values.statusSource).toBe('unifi');
+    expect(insert.values.statusObservedAt).toBeInstanceOf(Date);
+    expect(insert.conflictSet.statusSource).toBe('unifi');
+    expect(insert.conflictSet.statusObservedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('unifiSyncService.isUnifiDeviceOnline (#5643)', () => {
+  // The Network Integration API reports `status` as lowercase "online"/"offline";
+  // older payloads used the adoption state "CONNECTED". Both must count as online.
+  const cases: Array<[string | null | undefined, boolean]> = [
+    ['CONNECTED', true],
+    ['connected', true],
+    ['online', true],
+    ['ONLINE', true],
+    ['  online ', true],
+    ['offline', false],
+    ['OFFLINE', false],
+    ['DISCONNECTED', false],
+    ['pending', false],
+    ['', false],
+    [null, false],
+    [undefined, false],
+  ];
+  for (const [input, expected] of cases) {
+    it(`maps ${JSON.stringify(input)} to isOnline=${expected}`, () => {
+      expect(isUnifiDeviceOnline(input)).toBe(expected);
+    });
+  }
 });

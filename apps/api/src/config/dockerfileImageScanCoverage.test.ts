@@ -505,6 +505,10 @@ describe('Trivy image scan covers the images we publish', () => {
       // which derives that rather than trusting this comment.
       'docker/Dockerfile.api': 'not published, scanned anyway',
       'docker/Dockerfile.web': 'not published, scanned anyway',
+      // Never published — Vercel builds it directly from source as a custom
+      // image, not via a build-push-action publish step this guard can see.
+      // Executes model-authored code, so it is scanned anyway.
+      'docker/ai-workspace/Dockerfile': 'not published, scanned anyway',
       // See SCAN_EXEMPT: staging/ build context cannot be reproduced in CI.
       'docker/Dockerfile.binaries': 'published, scan-exempt',
       // Hot-reload dev images: floating base tag, never published.

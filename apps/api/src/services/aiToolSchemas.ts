@@ -8,8 +8,8 @@
 
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
-import { backupProfileSelectionsSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
+import { backupProfileSelectionsSchema, proposeScriptInputSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
@@ -25,6 +25,7 @@ import { CONTACT_ROLES } from './contacts/types';
 
 // Reusable validators
 const uuid = z.string().guid();
+
 const deviceId = z.object({ deviceId: uuid });
 const ipAddress = z.string().trim().max(45).refine(
   (value) => {
@@ -153,6 +154,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
     flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
     limit: z.number().int().min(1).optional(),
+  }),
+
+  get_network_asset_reachability: z.object({
+    asset_id: uuid,
   }),
 
   get_ip_history: z.object({
@@ -323,6 +328,23 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     payment: z.record(z.string(), z.unknown()).optional(),
   }),
 
+  // Org document library (service deliverables W03). No byte-carrying field:
+  // MCP never uploads document content.
+  list_org_documents: z.object({
+    orgId: uuid,
+    category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
+    includeSuperseded: z.boolean().optional(),
+  }),
+
+  manage_org_documents: z.object({
+    action: z.enum(['update_metadata', 'set_portal_visibility', 'supersede']),
+    orgId: uuid,
+    documentId: uuid.optional(),
+    supersedesDocumentId: uuid.optional(),
+    portalVisible: z.boolean().optional(),
+    patch: z.record(z.string(), z.unknown()).optional(),
+  }),
+
   list_quotes: z.object({
     orgId: uuid.optional(),
     status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']).optional(),
@@ -466,6 +488,43 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     lineId: uuid.optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     line: z.record(z.string(), z.unknown()).optional(),
+    patch: z.record(z.string(), z.unknown()).optional(),
+  }),
+
+  // Service deliverables W02 (#5573 spec §10). Payload objects stay open
+  // records here; the handlers parse them with the HTTP routes' own schemas.
+  list_deliverables: z.object({
+    orgId: uuid,
+    contractId: uuid.optional(),
+    includeInactive: z.boolean().optional(),
+    occurrencesFor: uuid.optional(),
+  }),
+
+  // Deliverable template sets W05 (#5573 spec 4.6/10).
+  list_deliverable_templates: z.object({ orgId: uuid.optional() }),
+
+  manage_deliverables: z.object({
+    action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),
+    orgId: uuid.optional(),
+    deliverableId: uuid.optional(),
+    occurrenceId: uuid.optional(),
+    setId: uuid.optional(),
+    contractId: uuid.optional(),
+    effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    ownerUserId: uuid.optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
+    patch: z.record(z.string(), z.unknown()).optional(),
+    note: z.string().max(4000).optional(),
+    reason: z.string().max(2000).optional(),
+    dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    reportRunId: uuid.optional(),
+  }),
+
+  manage_key_dates: z.object({
+    action: z.enum(['list', 'create', 'update', 'delete']),
+    orgId: uuid,
+    keyDateId: uuid.optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
     patch: z.record(z.string(), z.unknown()).optional(),
   }),
 
@@ -729,8 +788,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     payload: z.record(z.string(), z.unknown()).optional(),
   }),
 
+  // AI script authoring (spec §4.2). The full propose_script input contract
+  // lives in @breeze/shared so the tool handler, a future HTTP route and the
+  // web form cannot disagree about it.
+  propose_script: proposeScriptInputSchema,
+  get_script_proposal: z.object({ proposalId: uuid }),
+
   run_script: z.object({
-    scriptId: uuid,
+    // EXACTLY ONE of these (AI script authoring, spec §4.2). Both optional at
+    // the field level so the refinement below owns the message; the JSON
+    // schema's `required: ['deviceIds']` says the same thing to the model.
+    scriptId: uuid.optional(),
+    proposalId: uuid.optional(),
     deviceIds: z.array(uuid).min(1).max(10),
     parameters: z.record(z.string(), z.unknown()).optional(),
     // #4888 — an assistant may choose the run context, under exactly the
@@ -741,6 +810,25 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     // "…and exactly one device") live there, not here, so the two callers
     // cannot disagree about them.
     ...aiRunContextInputShape,
+  }).superRefine((data, ctx) => {
+    const named = [data.scriptId, data.proposalId].filter((v) => typeof v === 'string').length;
+    if (named !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['scriptId'],
+        message: 'run_script takes exactly one of scriptId or proposalId',
+      });
+    }
+    // A proposal's content is literal and its digest pins that literal content;
+    // there are no parameter definitions to bind, so accepting parameters would
+    // mean running something the reviewer never saw.
+    if (data.proposalId && data.parameters && Object.keys(data.parameters).length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['parameters'],
+        message: 'a proposal-backed run does not take parameters',
+      });
+    }
   }),
 
   // #3525: the bound mirrors MAX_GRACE_SECONDS in services/scriptCancellation —
@@ -1184,6 +1272,35 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     sortOrder: z.enum(['asc', 'desc']).optional(),
   }),
 
+  export_dataset: z.object({
+    dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+    format: z.enum(['jsonl', 'csv']).optional(),
+    filters: z.record(z.string(), z.unknown()).optional(),
+    deviceIds: z.array(uuid).max(200).optional(),
+    siteId: uuid.optional(),
+    maxRows: z.number().int().min(1).max(1_000_000).optional(),
+  }),
+
+  // Execution plane W04 — sandbox workspace tools. Bounds mirror
+  // WORKSPACE_MCP_SHAPES (services/workspace/workspaceTools.ts); this map is
+  // the gate the non-SDK callers (chat dispatch, MCP server) pass through. A
+  // tool with no entry here is REJECTED by validateToolInput, not defaulted.
+  workspace_stage: z.object({
+    handles: z.array(uuid).min(1).max(200),
+    into: z.string().max(200).optional(),
+  }).strict(),
+  workspace_run: z.object({
+    script: z.string().min(1).max(100_000),
+    language: z.enum(['bash', 'python', 'node']),
+    timeoutSeconds: z.number().int().min(1).max(600).optional(),
+    stdinHandle: uuid.optional(),
+  }).strict(),
+  workspace_collect: z.object({
+    paths: z.array(z.string().min(1).max(400)).min(1).max(50),
+    labels: z.record(z.string().max(400), z.string().max(200)).optional(),
+  }).strict(),
+  workspace_cancel: z.object({}).strict(),
+
   get_log_trends: z.object({
     timeRange: z.object({
       start: z.string().datetime({ offset: true }),
@@ -1269,6 +1386,46 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
     featurePolicyId: uuid.optional().nullable(),
     inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
+  }),
+
+  // Monitor definition tools (#5289 Task 8). `definition` is deep-validated by
+  // createMonitorDefinitionSchema/updateMonitorDefinitionSchema inside the
+  // handler itself (aiToolsMonitors.ts) — this entry is defense-in-depth only.
+  list_monitors: z.object({
+    kind: monitorKindSchema.optional(),
+    enabled: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_monitor: z.object({
+    monitorId: uuid,
+  }),
+
+  // #5290 (W03) monitor activity/escalation tools — defense-in-depth only,
+  // same as the other monitor entries above (deep validation lives in the
+  // handler in aiToolsMonitors.ts).
+  get_monitor_activity: z.object({
+    monitorId: uuid,
+    deviceId: uuid.optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  reset_monitor_escalation: z.object({
+    monitorId: uuid,
+    deviceId: uuid,
+  }),
+
+  // NOTE: named manage_monitor_definitions, NOT manage_monitors — that name is
+  // already taken by the unrelated network-monitor CRUD tool below
+  // (query_monitors / manage_monitors, aiToolsMonitoring.ts).
+  manage_monitor_definitions: z.object({
+    action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+    monitorId: uuid.optional(),
+    definition: z.record(z.string(), z.unknown()).optional(),
+    configPolicyId: uuid.optional(),
+    attachmentId: uuid.optional(),
+    enabled: z.boolean().optional(),
+    overrides: z.record(z.string(), z.unknown()).optional().nullable(),
   }),
 
   manage_backup_profiles: z.object({

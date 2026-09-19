@@ -84,6 +84,19 @@ function applyClassification(target: AssetWriteSet, write: ClassificationWrite):
 }
 
 // Find-or-create a discovered_assets row for a UniFi device; return its id.
+/**
+ * Whether a controller-reported adoption/status value means the device is online.
+ *
+ * The Network Integration API reports `status` as lowercase `online`/`offline`
+ * (see unifiClient.ts, which maps `status ?? state ?? adoptionState`), while
+ * older payloads carried the adoption state `CONNECTED`. Comparing against the
+ * exact uppercase `CONNECTED` alone marked every synced device offline (#5643).
+ */
+export function isUnifiDeviceOnline(adoptionState: string | null | undefined): boolean {
+  const normalized = (adoptionState ?? '').trim().toLowerCase();
+  return normalized === 'connected' || normalized === 'online';
+}
+
 async function reconcileDiscoveredAsset(
   db: DbExecutor,
   device: UnifiDeviceDto,
@@ -152,8 +165,14 @@ async function reconcileDiscoveredAsset(
     hostname: device.name ?? undefined,
     manufacturer: 'Ubiquiti',
     model: device.model ?? undefined,
-    isOnline: device.adoptionState === 'CONNECTED',
+    isOnline: isUnifiDeviceOnline(device.adoptionState),
     lastSeenAt: new Date(),
+    // Spec §4.3 — UniFi writes is_online UNCONDITIONALLY on every sync pass,
+    // which is exactly why D1 rejected materialised reachability columns. The
+    // stamp lets the reachability service age this claim out after 60 min
+    // instead of trusting it forever.
+    statusObservedAt: new Date(),
+    statusSource: 'unifi' as const,
   };
 
   if (existing) {

@@ -1,0 +1,103 @@
+---
+title: AI Script Authoring & Review
+description: How the AI assistant and background agents can write, get reviewed, and run scripts on your devices — and the controls that keep a human in the loop.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+When no existing script in your library fits, the Breeze AI assistant (in chat) and background AI agents can **write one**, get it independently reviewed, and — after a human approves it, or your organization has explicitly opted in to unattended runs — execute it on the devices you're working on.
+
+Nothing the AI writes ever runs unless a human reads a plain-language summary of it and approves, or your partner and your organization have both opted in to the unattended lane described below and the script cleared every safety check.
+
+---
+
+## The three review layers
+
+Every AI-written script goes through three checks, in order, before it can run:
+
+<Steps>
+
+1. **Automated scan.** The script is scanned for known-dangerous patterns (disabling security tools, deleting system files, exfiltrating credentials, and similar) before anyone — human or AI — sees it. A match on the most dangerous pattern list stops the process immediately; nothing is shown to a reviewer or an approver.
+
+2. **Independent AI review.** A second AI model — one that never sees your conversation with the assistant, only the script itself and the devices it targets — reads the script and produces a plain-language summary, a risk tier (Low, Medium, High, or Critical), a list of findings, and a recommendation to approve, request changes, or reject.
+
+3. **Human approval.** You see a readable approval card: what the script is for, what it does, the reviewer's summary and risk tier, and the code itself — never raw JSON. Low- and Medium-risk scripts can be approved by one qualified technician; High- and Critical-risk scripts require a second, independent approver ("four eyes").
+
+</Steps>
+
+## The approval card
+
+When the assistant or an agent proposes a script, you're shown:
+
+- **Goal and expected effect**, in the AI's own words
+- **Risk tier** and the reviewer's summary
+- **Findings** the reviewer flagged, with severity
+- **The script itself**, exactly as it will run
+- **Rollback notes**, if the AI provided any
+
+Approving runs the exact script you read — there is no "edit and approve" option. If you want changes, choose **Request changes** with a note; the AI gets your feedback and the reviewer's findings, and proposes a revised script that goes through all three review layers again.
+
+Some scripts also require an extra acknowledgement before you can approve: any script that matched a "strict" pattern (for example, a registry change under `HKLM`) needs the approver to hold the Scripts permission and complete a fresh multi-factor authentication check — the same requirement as approving a strict pattern on a script from your library.
+
+## Provenance
+
+Every script version and every execution that comes from this feature carries its origin:
+
+- The **script library** shows an **Origin** column (Human, AI proposal, Imported, or System) and a "Reviewed" / "Edited since review" badge — editing an AI-authored script by hand clears the review badge, because what was reviewed is no longer exactly what would run.
+- **Script detail** has a **Provenance panel**: who authored it, the reviewer's summary and risk tier, who approved it and how, and links to every execution.
+- **Device Activity** on a device's page lists AI-authored script runs with an AI badge and a link to the originating proposal — opening that link shows the goal, status, risk tier, and the reviewer's summary.
+
+If the organization that produced a proposal is later merged into another organization, or its data retention period ends, the proposal's own record may be erased. The script version and execution it produced remain visible; the provenance panel and the device-activity link both show "evidence erased" instead of a broken page.
+
+## Promotion to the library
+
+An AI-authored script is not added to your library automatically. After it has run and its author-specified verification claim has been independently confirmed (not just "the command exited 0" — an actual check, like confirming a service is running), **Save to library** becomes available on the proposal. Saving requires the Scripts permission and a fresh MFA check, exactly like creating a script by hand. From then on it's an ordinary library script, usable anywhere a library script is — including in an AI agent's autonomous "Act mode" toolkit.
+
+## The unattended lane
+
+For narrow, low-risk, high-confidence cases, Breeze can run an AI-authored script **without waiting for a human** — but only when every one of the following is true:
+
+- Your **partner** (MSP) has raised the ceiling that allows the unattended lane for its organizations at all.
+- **Your organization** has separately and explicitly turned the lane on. A partner-level ceiling never turns it on by itself.
+- The independent reviewer rated the script **Low or Medium risk** (never higher), found it matched the stated goal, is reversible, and has an adequate verification plan.
+- The script touches only a small, configurable allow-list of resource classes (for example: services, temporary files, DNS cache, printing) — never credentials, security tooling, disk, boot configuration, user/group accounts, firewall rules, shell evaluation, or anything the scanner can't confidently classify.
+- It targets exactly **one device**, has a timeout of 5 minutes or less, and — on Windows, for the resource classes that warrant it — a System Restore point is captured immediately before the run.
+- Your organization hasn't had two unattended runs in a row fail their independent verification — if it has, the lane pauses itself for that organization until an administrator resets it.
+- An hourly cap on unattended runs, set by your organization within your partner's ceiling, hasn't been reached.
+
+Any script that doesn't clear every one of these goes to a human instead — there is no partial credit. On Linux and macOS, the resource classes that would need a restore point (registry, services, filesystem changes) are not eligible for the unattended lane at all in this release, because only Windows can take one.
+
+<Aside type="caution">
+Helper coverage for the checks behind this lane is partial today — treat the unattended lane as an MSP-managed capability you opt individual organizations into deliberately, not a default you enable fleet-wide without reviewing which devices and script classes it will actually touch.
+</Aside>
+
+### Admin setup
+
+<Aside type="note">
+The unattended lane is off for every organization by default. Turning it on requires two separate actions.
+</Aside>
+
+1. Your **partner** administrator raises the partner-wide ceiling (maximum risk tier, allowed resource classes, hourly cap) under partner-level AI settings.
+2. An **organization** administrator with the Approvals permission and a fresh MFA check turns the lane on for that organization, optionally tightening any of the partner's limits further (but never loosening them).
+3. The **AI Risk Dashboard**'s Script Proposals panel shows unattended-run counts and the lane's current state (open/closed) so you can monitor it.
+
+## FAQ
+
+**Can the AI run any script it writes?**
+No. Every AI-authored script is reviewed by an independent model and then either approved by a human or, only if your partner and your organization have both opted in, cleared through the unattended lane's fixed safety checks.
+
+**What if I disagree with the reviewer?**
+You decide. The reviewer's risk tier and recommendation are advisory to you (though they set the deterministic floor for the unattended lane) — you can approve a script the reviewer flagged as Medium risk, or reject one it recommended approving, and the AI Risk Dashboard tracks how often that happens.
+
+**Does this replace the Script Builder AI in the editor?**
+No — [Script Builder AI](/features/script-ai/) is a separate, in-editor assistant that helps you write scripts by hand and only runs a script with your explicit click. This feature is about the chat assistant and background agents authoring and running a script mid-conversation or mid-task, with independent review in between.
+
+**Can I turn this off entirely?**
+Yes — script proposing can be disabled per organization independently of the unattended lane.
+
+## Related
+
+- [Scripts](/features/scripts/) — the script library, execution history, and security patterns this feature builds on
+- [AI Features](/features/ai/) — the assistant, its tool tiers, and the AI Risk Dashboard
+- [AI Agents](/features/ai-agents/) — background agents, Act mode, and how they use this feature
+- [Approval & Assurance](/features/approval-security/) — four-eyes approval and MFA step-up

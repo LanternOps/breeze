@@ -15,6 +15,7 @@ import type {
   FilterPreviewResult,
   FilterPreviewDevice
 } from '@breeze/shared/types/filters';
+import { DEVICE_FUNCTION_KEYS } from '@breeze/shared/validators';
 export type {
   FilterOperator,
   FilterFieldCategory,
@@ -78,6 +79,11 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'tags', label: 'Tags', category: 'core', type: 'array', operators: OPERATORS_BY_TYPE.array },
   { key: 'deviceRole', label: 'Device Role', category: 'core', type: 'enum', operators: OPERATORS_BY_TYPE.enum,
     enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
+  // Fleet Designer W02 (#5652): the ACTIVE device function projection. Known
+  // keys come from the shared SSOT; a custom:<slug> key is matchable through
+  // equals/in with the value typed by hand.
+  { key: 'deviceFunction', label: 'Device Function', category: 'core', type: 'enum', operators: OPERATORS_BY_TYPE.enum,
+    enumValues: [...DEVICE_FUNCTION_KEYS] },
   { key: 'lastUser', label: 'Last User', category: 'core', type: 'string', operators: OPERATORS_BY_TYPE.string },
   { key: 'isHeadless', label: 'Headless', category: 'core', type: 'boolean', operators: OPERATORS_BY_TYPE.boolean },
   { key: 'uptimeSeconds', label: 'Uptime (seconds)', category: 'core', type: 'number', operators: OPERATORS_BY_TYPE.number },
@@ -568,6 +574,14 @@ export interface EvaluateFilterOptions {
    * (#sec-review-1)
    */
   allowedSiteIds?: string[] | null;
+  /**
+   * Exact-device allowlist (`auth.allowedDeviceIds`), the axis that actually
+   * bounds a preconfigured agent run (#6096). Independent of
+   * `allowedSiteIds`: a device-bound run shares its site with every sibling
+   * device, and a device-LESS analysis run carries this axis with no site
+   * axis at all. `undefined`/`null` means unrestricted; `[]` matches nothing.
+   */
+  allowedDeviceIds?: readonly string[] | null;
 }
 
 /**
@@ -578,6 +592,16 @@ function siteScopeCondition(allowedSiteIds: string[] | null | undefined): SQL | 
   if (allowedSiteIds == null) return undefined;
   if (allowedSiteIds.length === 0) return sql`false`;
   return inArray(devices.siteId, allowedSiteIds);
+}
+
+/**
+ * Exact-device counterpart of {@link siteScopeCondition}. Same null/empty
+ * semantics: absent means unrestricted, `[]` matches nothing.
+ */
+function deviceIdScopeCondition(allowedDeviceIds: readonly string[] | null | undefined): SQL | undefined {
+  if (allowedDeviceIds == null) return undefined;
+  if (allowedDeviceIds.length === 0) return sql`false`;
+  return inArray(devices.id, [...allowedDeviceIds]);
 }
 
 // The `matches` operator emits a Postgres regex (`~`). `MAX_REGEX_PATTERN_LENGTH`
@@ -679,6 +703,7 @@ export async function evaluateFilter(
 ): Promise<FilterEvaluationResult> {
   const { orgId, limit, offset } = options;
   const siteScope = siteScopeCondition(options.allowedSiteIds);
+  const deviceScope = deviceIdScopeCondition(options.allowedDeviceIds);
 
   // Determine which tables we need to join
   const fieldsUsed = extractFieldsFromFilter(filter);
@@ -700,7 +725,7 @@ export async function evaluateFilter(
     tx
       .select({ id: devices.id })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, filterSQL))
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, filterSQL))
   );
 
   return {
@@ -719,6 +744,7 @@ export async function evaluateFilterWithPreview(
 ): Promise<FilterPreviewResult> {
   const { orgId, previewLimit = 10 } = options;
   const siteScope = siteScopeCondition(options.allowedSiteIds);
+  const deviceScope = deviceIdScopeCondition(options.allowedDeviceIds);
 
   const filterSQL = buildGroupSQL(filter);
 
@@ -727,7 +753,7 @@ export async function evaluateFilterWithPreview(
     const [countResult] = await tx
       .select({ count: sql<number>`count(*)` })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, filterSQL));
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, filterSQL));
 
     // Get preview devices
     const previewDevices = await tx
@@ -740,7 +766,7 @@ export async function evaluateFilterWithPreview(
         lastSeenAt: devices.lastSeenAt
       })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, filterSQL))
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, filterSQL))
       .limit(previewLimit);
 
     return { countResult, previewDevices };

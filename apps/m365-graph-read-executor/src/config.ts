@@ -34,6 +34,33 @@ const publicJwkSchema = z.object({
 
 export type ExecutorInternalAuthPublicJwk = z.infer<typeof publicJwkSchema>;
 
+export interface ExecutorSyncConfig {
+  syncMaxInFlight: number;
+  maxInFlight: number;
+  signinActivityRpm: number;
+  signinPagesPerCall: number;
+  maxItemsUsers: number;
+  maxItemsDevices: number;
+  maxItemsCaPolicies: number;
+  maxItemsSkus: number;
+  /** #5784 W05. Per-run item budget for the /auditLogs/signIns walk. */
+  maxItemsSigninEvents: number;
+  /** #5784 W05. Own bucket rate: /auditLogs/signIns is not signin_activity's surface. */
+  signinEventsRpm: number;
+  /**
+   * Continuation encryption secret. `null` means "mint an ephemeral one at
+   * boot": continuations then die with the process and do not cross replicas,
+   * which the API handles by restarting the sign-in domain from page 1. That
+   * is a deliberate, self-healing default — it keeps the var optional for
+   * every already-deployed executor.
+   *
+   * The spec asks for a key derived from the executor's signing key; the
+   * executor holds only the PUBLIC verification JWK (parsePublicJwk below), so
+   * there is no private material here to derive from.
+   */
+  continuationKey: Buffer | null;
+}
+
 export interface M365GraphReadExecutorConfig {
   clientId: string;
   callbackUrl: string;
@@ -47,6 +74,7 @@ export interface M365GraphReadExecutorConfig {
   azureCredentialMode: AzureCredentialMode;
   bindHost: string;
   port: number;
+  sync: ExecutorSyncConfig;
 }
 
 function privateBindAddress(value: string): boolean {
@@ -154,6 +182,61 @@ export function createAzureCredential(
   );
 }
 
+const CONTINUATION_KEY_BYTES = 32;
+const BASE64_32_BYTES = /^[A-Za-z0-9+/]{43}=$/;
+
+function boundedInteger(
+  source: Environment,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = source[name]?.trim();
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer from ${min} through ${max}`);
+  }
+  return value;
+}
+
+function parseContinuationKey(source: Environment): Buffer | null {
+  const raw = source.M365_SYNC_CONTINUATION_KEY?.trim();
+  if (!raw) return null;
+  // Buffer.from(_, 'base64') silently drops invalid characters, so the regex —
+  // not the decode — is what rejects a malformed key.
+  if (!BASE64_32_BYTES.test(raw)) {
+    throw new Error(`M365_SYNC_CONTINUATION_KEY must be exactly ${CONTINUATION_KEY_BYTES} bytes of base64`);
+  }
+  const decoded = Buffer.from(raw, 'base64');
+  if (decoded.byteLength !== CONTINUATION_KEY_BYTES) {
+    throw new Error(`M365_SYNC_CONTINUATION_KEY must be exactly ${CONTINUATION_KEY_BYTES} bytes of base64`);
+  }
+  return decoded;
+}
+
+function parseSyncConfig(source: Environment): ExecutorSyncConfig {
+  const syncMaxInFlight = boundedInteger(source, 'M365_SYNC_MAX_IN_FLIGHT', 4, 1, 64);
+  const maxInFlight = boundedInteger(source, 'M365_MAX_IN_FLIGHT', 32, 1, 1024);
+  if (maxInFlight < syncMaxInFlight) {
+    throw new Error('M365_MAX_IN_FLIGHT must be greater than or equal to M365_SYNC_MAX_IN_FLIGHT');
+  }
+  return {
+    syncMaxInFlight,
+    maxInFlight,
+    signinActivityRpm: boundedInteger(source, 'M365_SIGNIN_ACTIVITY_RPM', 4, 1, 60),
+    signinPagesPerCall: boundedInteger(source, 'M365_SIGNIN_PAGES_PER_CALL', 5, 1, 60),
+    maxItemsUsers: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_USERS', 25_000, 1, 200_000),
+    maxItemsDevices: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_DEVICES', 25_000, 1, 200_000),
+    maxItemsCaPolicies: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_CA', 500, 1, 5_000),
+    maxItemsSkus: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_SKUS', 200, 1, 5_000),
+    maxItemsSigninEvents: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_SIGNIN_EVENTS', 25_000, 1, 200_000),
+    signinEventsRpm: boundedInteger(source, 'M365_SIGNIN_EVENTS_RPM', 6, 1, 60),
+    continuationKey: parseContinuationKey(source),
+  };
+}
+
 /** Loads the executor's fixed profile and public-only internal-auth descriptor. */
 export function loadExecutorConfig(
   source: Environment = process.env,
@@ -230,5 +313,6 @@ export function loadExecutorConfig(
     azureCredentialMode,
     bindHost,
     port,
+    sync: parseSyncConfig(source),
   };
 }

@@ -33,6 +33,7 @@ type EvidenceCard = {
     enrollmentIp: string | null;
   }>;
   denials24h: number;
+  sendingDomains: Array<{ domain: string; status: string; verifiedAt: string | null }>;
   matchedSuspendedAxes: Array<'email_domain' | 'billing_card_fingerprint'>;
 };
 
@@ -94,6 +95,14 @@ function EvidenceCardDetails({ card }: { card: EvidenceCard }) {
           <dd className="font-medium">
             {card.matchedSuspendedAxes.length
               ? card.matchedSuspendedAxes.map((axis) => axis === 'email_domain' ? 'Email domain' : 'Billing card fingerprint').join(', ')
+              : 'None'}
+          </dd>
+        </div>
+        <div data-testid={`trust-queue-sending-domains-${card.partner.id}`}>
+          <dt className="text-muted-foreground">Sending domains</dt>
+          <dd className="font-medium">
+            {card.sendingDomains.length
+              ? card.sendingDomains.map((d) => `${d.domain} (${d.status})`).join(', ')
               : 'None'}
           </dd>
         </div>

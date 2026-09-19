@@ -1,0 +1,362 @@
+{
+  "managed": {
+    "readOnly": "Von einem Monitor verwaltet",
+    "description": "Dieser Datensatz wird von einem Monitor erzeugt und kann nicht direkt bearbeitet werden. Verwalten Sie ihn stattdessen über den Monitor.",
+    "open": "Monitor öffnen",
+    "badge": "Monitor-verwaltet",
+    "badgeHint": "Von einem Monitor verwaltet — bearbeiten Sie ihn stattdessen über den Monitor.",
+    "monitorLabel": "Monitor"
+  },
+  "hub": {
+    "title": "Überwachung & Automatisierung",
+    "tabs": {
+      "monitors": "Monitore",
+      "network": "Netzwerk",
+      "delivery": "Zustellung",
+      "legacyRules": "Ältere Regeln"
+    },
+    "ariaLabel": "Überwachungsbereiche"
+  },
+  "list": {
+    "title": "Monitore",
+    "description": "Überwachen Sie eine Bedingung, reagieren Sie auf dem Gerät, benachrichtigen Sie und eskalieren Sie, wenn sie wiederholt auftritt.",
+    "new": "Neuer Monitor",
+    "empty": "Noch keine Monitore.",
+    "columns": {
+      "name": "Name",
+      "kind": "Art",
+      "severity": "Schweregrad",
+      "deployedTo": "Bereitgestellt für",
+      "enabled": "Aktiviert",
+      "owner": "Verantwortlich"
+    },
+    "allOrgs": "Alle Orgs",
+    "policiesCount_one": "{{count}} Richtlinie",
+    "policiesCount_other": "{{count}} Richtlinien",
+    "notDeployed": "Nicht bereitgestellt",
+    "errors": {
+      "fetch": "Monitore konnten nicht geladen werden",
+      "delete": "Monitor konnte nicht gelöscht werden",
+      "toggle": "Monitor konnte nicht aktualisiert werden"
+    },
+    "deleteConfirm": "Monitor {{name}} löschen? Die zugehörige Alarmregel und die Reaktionsautomatisierung werden ebenfalls entfernt.",
+    "builtIn": "Integriert",
+    "builtInHint": "Von Breeze bereitgestellt. Schwellenwerte bearbeiten, deaktivieren oder löschen – er kommt nicht zurück."
+  },
+  "editor": {
+    "titleNew": "Neuer Monitor",
+    "titleEdit": "Monitor bearbeiten",
+    "breadcrumb": {
+      "monitors": "Monitore",
+      "new": "Neuer Monitor"
+    },
+    "sections": {
+      "watch": "Was überwacht werden soll",
+      "noise": "Schweregrad & Rauschunterdrückung",
+      "respond": "Reagieren",
+      "notify": "Benachrichtigen",
+      "escalate": "An eine Person eskalieren",
+      "deployed": "Bereitgestellt für"
+    },
+    "tabs": {
+      "settings": "Einstellungen",
+      "activity": "Aktivität"
+    },
+    "fields": {
+      "name": "Name",
+      "description": "Beschreibung",
+      "kind": "Art",
+      "severity": "Schweregrad",
+      "cooldownMinutes": "Abklingzeit (Minuten)",
+      "autoResolve": "Automatisch auflösen, wenn die Bedingung nicht mehr zutrifft",
+      "deliveryMode": "Zustellung",
+      "channels": "Kanäle",
+      "escalationPolicy": "Eskalationsrichtlinie",
+      "recurrenceThreshold": "Eskalieren nach",
+      "recurrenceWindowDays": "Vorfällen innerhalb (Tagen)",
+      "pauseResponses": "Automatische Reaktionen anhalten, bis eine Person sie zurücksetzt",
+      "aiAgent": "KI-Agent (aktiviert KI-Triage-Reaktionen)"
+    },
+    "deliveryModes": {
+      "inherit": "Routing-Regeln verwenden",
+      "channels": "Routing-Regeln plus diese Kanäle",
+      "none": "Nicht benachrichtigen"
+    },
+    "agentDeliveredHint": "Dieser Watch läuft auf dem Gerät und muss bis zur Vereinheitlichung zusätzlich im Tab „Dienst- & Prozessüberwachung“ der Richtlinie vorhanden sein.",
+    "responsesHint": "Reaktionen laufen der Reihe nach auf dem Gerät, auf dem die Verletzung aufgetreten ist.",
+    "recurrenceHint": "Wird in Verletzungsvorfällen gezählt: Ein neuer Vorfall beginnt erst, nachdem sich die Bedingung wieder normalisiert hat.",
+    "ownerScope": {
+      "legend": "Eigentümer",
+      "partner": "Alle Organisationen (partnerweit)",
+      "organization": "Nur diese Organisation"
+    },
+    "actions": {
+      "save": "Monitor speichern",
+      "saving": "Wird gespeichert…",
+      "create": "Monitor erstellen",
+      "test": "Auf einem Gerät testen",
+      "deploy": "Bereitstellen für…",
+      "delete": "Löschen"
+    },
+    "errors": {
+      "load": "Monitor konnte nicht geladen werden",
+      "save": "Monitor konnte nicht gespeichert werden",
+      "delete": "Monitor konnte nicht gelöscht werden",
+      "test": "Test fehlgeschlagen",
+      "generic": "Ein Fehler ist aufgetreten"
+    },
+    "saved": "Monitor gespeichert",
+    "deleted": "Monitor gelöscht",
+    "detached": "Monitor gelöst",
+    "loading": "Monitor wird geladen…",
+    "noAttachments": "Noch nicht für eine Richtlinie bereitgestellt.",
+    "testResult": {
+      "triggered": "Bedingung erfüllt auf {{device}}",
+      "notTriggered": "Bedingung nicht erfüllt auf {{device}}"
+    },
+    "testDialog": {
+      "title": "Auf einem Gerät testen",
+      "selectDevice": "Gerät",
+      "run": "Test ausführen"
+    }
+  },
+  "kinds": {
+    "cpu": "CPU-Auslastung",
+    "memory": "Arbeitsspeicherauslastung",
+    "disk": "Festplattennutzung",
+    "offline": "Gerät offline",
+    "event_log": "Ereignisprotokoll",
+    "patch_compliance": "Patch-Compliance",
+    "service": "Dienst gestoppt",
+    "process": "Prozess gestoppt",
+    "process_resource": "Prozessressource",
+    "cert_expiry": "Zertifikatsablauf",
+    "bandwidth": "Bandbreite",
+    "disk_io": "Festplatten-E/A",
+    "network_errors": "Netzwerkfehler",
+    "antivirus": "Virenschutz",
+    "software_presence": "Softwarevorhandensein",
+    "backup_continuity": "Backup-Kontinuität",
+    "script": "Skriptprüfung",
+    "network_check": "Netzwerkprüfung"
+  },
+  "fields": {
+    "operator": "Vergleich",
+    "value": "Wert",
+    "durationMinutes": "Für mindestens (Minuten)",
+    "category": "Kategorie",
+    "level": "Ebene",
+    "sourcePattern": "Quelle entspricht",
+    "messagePattern": "Nachricht entspricht",
+    "countThreshold": "Vorkommen",
+    "windowMinutes": "Innerhalb (Minuten)",
+    "serviceName": "Dienstname",
+    "processName": "Prozessname",
+    "consecutiveFailures": "Aufeinanderfolgende Fehlschläge",
+    "resource": "Ressource",
+    "withinDays": "Läuft ab innerhalb (Tagen)",
+    "direction": "Richtung",
+    "errorType": "Fehlerrichtung",
+    "interfaceName": "Schnittstelle (optional)",
+    "check": "Prüfung",
+    "staleAfterDays": "Veraltet nach (Tagen)",
+    "minThreatCount": "Mindestanzahl Bedrohungen",
+    "softwareName": "Softwarename",
+    "vendor": "Hersteller (optional)",
+    "presence": "Vorhandensein",
+    "version": "Versionsnummer",
+    "backupCheck": "Prüfung",
+    "maxAgeHours": "Maximales Alter (Stunden)",
+    "failureCount": "Anzahl Fehlschläge",
+    "script": "Skript",
+    "scriptSelectPlaceholder": "Skript auswählen…",
+    "scriptLoadError": "Skripte konnten nicht geladen werden",
+    "intervalMinutes": "Ausführen alle (Minuten)",
+    "timeoutSeconds": "Zeitlimit (Sekunden)",
+    "breachOnNonZeroExit": "Verstoß bei Exit-Code ungleich null",
+    "checkType": "Prüfungstyp",
+    "target": "Ziel",
+    "port": "Portnummer",
+    "expectStatus": "Erwarteter Statuscode",
+    "pollingIntervalSeconds": "Abfrage alle (Sekunden)"
+  },
+  "operators": {
+    "gt": "größer als",
+    "gte": "mindestens",
+    "lt": "kleiner als",
+    "lte": "höchstens",
+    "eq": "gleich",
+    "neq": "ungleich"
+  },
+  "severities": {
+    "critical": "Kritisch",
+    "high": "Hoch",
+    "medium": "Mittel",
+    "low": "Niedrig",
+    "info": "Infos"
+  },
+  "eventCategories": {
+    "security": "Sicherheit",
+    "hardware": "Hardware",
+    "application": "Anwendung",
+    "system": "System"
+  },
+  "eventLevels": {
+    "warning": "Warnung",
+    "error": "Fehler",
+    "critical": "Kritisch"
+  },
+  "resources": {
+    "cpu": "CPU",
+    "memory": "Arbeitsspeicher"
+  },
+  "directions": {
+    "in": "Eingehend",
+    "out": "Ausgehend",
+    "read": "Lesen",
+    "write": "Schreiben",
+    "total": "Gesamt"
+  },
+  "antivirusChecks": {
+    "not_protected": "Nicht geschützt",
+    "definitions_stale": "Definitionen veraltet",
+    "realtime_disabled": "Echtzeitschutz deaktiviert",
+    "threats_present": "Bedrohungen vorhanden"
+  },
+  "presences": {
+    "installed": "Installiert",
+    "not_installed": "Nicht installiert",
+    "version_below": "Version unter"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Kein erfolgreiches Backup",
+    "consecutive_failures": "Aufeinanderfolgende Fehlschläge"
+  },
+  "checkTypes": {
+    "icmp_ping": "ICMP-Ping",
+    "tcp_port": "TCP-Port",
+    "http_check": "HTTP-Prüfung",
+    "dns_check": "DNS-Prüfung"
+  },
+  "deploy": {
+    "title": "Monitor bereitstellen",
+    "existingPolicy": "An eine vorhandene Konfigurationsrichtlinie anhängen",
+    "newPolicy": "Richtlinie erstellen für",
+    "levels": {
+      "organization": "diese Organisation",
+      "site": "einen Standort",
+      "device_group": "eine Gerätegruppe"
+    },
+    "selectPolicy": "Konfigurationsrichtlinie",
+    "selectTarget": "Ziel",
+    "noOrgSelected": "Wählen Sie eine Organisation aus, für die bereitgestellt werden soll.",
+    "policyName": "Richtlinienname",
+    "attach": "Anhängen",
+    "attached": "Monitor angehängt",
+    "cancel": "Abbrechen",
+    "detachConfirm": "Von {{policy}} lösen?",
+    "errors": {
+      "attach": "Monitor konnte nicht angehängt werden",
+      "detach": "Monitor konnte nicht gelöst werden"
+    }
+  },
+  "policyTab": {
+    "title": "Monitore",
+    "description": "Monitore, die dieser Richtlinie zugeordnet sind. Deaktivierte Zeilen schalten einen Monitor für den Geltungsbereich dieser Richtlinie aus; Überschreibungen ändern dessen Schwellenwerte.",
+    "attachExisting": "Vorhandenen anhängen",
+    "createNew": "Monitor erstellen",
+    "empty": "Keine Monitore zugeordnet.",
+    "columns": {
+      "monitor": "Monitor",
+      "kind": "Art",
+      "enabled": "Aktiviert",
+      "overrides": "Überschreibungen",
+      "source": "Quelle"
+    },
+    "inherited": "Vom übergeordneten Element vererbt",
+    "overrideEditor": {
+      "title": "Überschreibung für diese Richtlinie",
+      "clear": "Überschreibungen entfernen"
+    },
+    "save": "Speichern",
+    "errors": {
+      "save": "Monitore konnten nicht gespeichert werden"
+    }
+  },
+  "legacy": {
+    "title": "Ältere Alarmregeln",
+    "description": "Eigenständige Alarmregeln, die nicht von einem Monitor verwaltet werden. Konvertieren Sie sie, um Reaktionen, Zustellung und Eskalation an einem Ort zu erhalten.",
+    "empty": "Keine älteren Regeln.",
+    "columns": {
+      "name": "Name",
+      "template": "Vorlage",
+      "target": "Ziel",
+      "owner": "Verantwortlich",
+      "active": "Aktiv"
+    },
+    "convert": "In Monitor umwandeln",
+    "converted": "Umgewandelt",
+    "notConvertible": "Die Bedingungen dieser Regel können nicht als einzelner Monitor ausgedrückt werden.",
+    "errors": {
+      "fetch": "Alarmregeln konnten nicht geladen werden",
+      "convert": "Regel konnte nicht umgewandelt werden"
+    }
+  },
+  "devices": {
+    "title": "Geräte",
+    "columns": {
+      "device": "Gerät",
+      "enabled": "Aktiviert",
+      "overrides": "Überschreibungen",
+      "source": "Quellrichtlinie"
+    },
+    "empty": "Diesem Monitor sind noch keine Geräte zugeordnet.",
+    "errors": {
+      "fetch": "Geräte konnten nicht geladen werden"
+    }
+  },
+  "activity": {
+    "title": "Aktivität",
+    "columns": {
+      "device": "Gerät",
+      "state": "Status",
+      "openSince": "Offen seit",
+      "episodesInWindow": "Episoden im Zeitfenster",
+      "escalated": "Eskaliert",
+      "responses": "Reaktionen"
+    },
+    "state": {
+      "ok": "Normal",
+      "breach": "Verletzung",
+      "unknown": "Unbekannt"
+    },
+    "responses": {
+      "active": "Aktiv",
+      "paused": "Reaktionen pausiert bis zum Zurücksetzen"
+    },
+    "reset": {
+      "button": "Eskalation zurücksetzen",
+      "confirm": "Eskalation für {{device}} zurücksetzen? Dies setzt den Wiederholungszähler zurück und nimmt automatische Reaktionen wieder auf. Die offene Episode wird dadurch nicht geschlossen und der Alarm nicht aufgelöst.",
+      "success": "Eskalation zurückgesetzt",
+      "error": "Eskalation konnte nicht zurückgesetzt werden"
+    },
+    "empty": {
+      "title": "Noch keine Aktivität",
+      "body": "Dieser Monitor hat noch kein Gerät ausgewertet."
+    },
+    "episodes": {
+      "title": "Episoden",
+      "endReason": {
+        "recovered": "Erholt",
+        "monitorDetached": "Monitor getrennt"
+      },
+      "outcome": {
+        "queued": "Eingereiht",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen",
+        "skippedPaused": "Übersprungen (Reaktionen pausiert)",
+        "skippedNoResponse": "Übersprungen (keine Reaktion konfiguriert)"
+      }
+    }
+  }
+}

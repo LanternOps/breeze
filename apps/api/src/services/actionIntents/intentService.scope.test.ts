@@ -85,7 +85,7 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     effectDigestState: {
       computeEffectDigestOutcome: vi.fn(async () => ({ kind: 'not_applicable' }) as { kind: string }),
     },
-    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    envMock: { policyDecideEnabled: vi.fn(() => false), sweepActEnabled: vi.fn(() => false) },
     policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
   };
 });
@@ -151,11 +151,28 @@ vi.mock('../../db/schema/actionIntents', () => ({
   actionIntents: schema.actionIntentsTbl,
   intentOutbox: schema.intentOutboxTbl,
 }));
+// W04 (#5612): the script lane's evaluator is a sibling decision path this
+// suite does not exercise; mocked wholesale so its transitive imports (agent
+// policy resolver, maintenance gate) never reach the partial schema mocks here.
+// W04 (#5612): the post-commit `ai.script.unattended_run` audit write. Mocked
+// so auditService's whole-schema import never reaches the partial schema
+// mocks in this file; the write itself is asserted in
+// intentService.scriptReviewer.test.ts.
+vi.mock('../auditService', () => ({ createAuditLogAsync: vi.fn(async () => {}) }));
+vi.mock('./scriptReviewerAutonomy', () => ({
+  evaluateScriptReviewerAutonomy: vi.fn(async () => ({ granted: false, reason: 'lane_disabled' })),
+  revalidateScriptReviewerEvidence: vi.fn(async () => ({ ok: false, reason: 'lane_disabled' })),
+}));
 vi.mock('../../db/schema/approvals', () => ({ approvalRequests: schema.approvalRequestsTbl }));
 vi.mock('./intentApprovers', () => ({
   resolveIntentApprovers: intentApproversState.resolveIntentApprovers,
   resolveAgentIntentApprovers: intentApproversState.resolveAgentIntentApprovers,
   resolveIntentTargetScope: intentApproversState.resolveIntentTargetScope,
+  // Org-wide governance classifier (audit §1.1) — REAL semantics, not a
+  // constant, so the fan-out filter flag is driven by the same tool/action
+  // shape production uses. Literals: vi.mock factories are hoisted.
+  isOrgWideGovernanceIntent: (toolName: string, args: Record<string, unknown> | null | undefined) =>
+    toolName === 'manage_ai_agents' && args?.action === 'authorize_supervised_key',
 }));
 vi.mock('../../middleware/auth', () => ({ dbAccessContextFromAuth: authMock.dbAccessContextFromAuth }));
 vi.mock('../aiTools', () => ({
@@ -182,7 +199,12 @@ vi.mock('../expoPush', () => ({
 vi.mock('../userNotifications', () => ({ createNotification: notifyState.createNotification }));
 vi.mock('./metrics', () => ({ recordActionIntentEvent: metricsMock.recordActionIntentEvent }));
 vi.mock('./effectDigest', () => ({ computeEffectDigestOutcome: effectDigestState.computeEffectDigestOutcome }));
-vi.mock('../../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
+vi.mock('../../config/env', () => ({
+  policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04's sub-flag, default OFF here so this suite keeps asserting the
+  // pre-wave behaviour of a scoped intent unless a case arms it explicitly.
+  sweepActEnabled: envMock.sweepActEnabled,
+}));
 vi.mock('./policyDecide', () => ({ attemptPolicyDecision: policyDecideMock.attemptPolicyDecision }));
 
 vi.mock('drizzle-orm', () => ({
@@ -333,6 +355,7 @@ beforeEach(() => {
   notifyState.createNotification.mockResolvedValue('notif-1');
   effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'not_applicable' });
   envMock.policyDecideEnabled.mockReturnValue(false);
+  envMock.sweepActEnabled.mockReturnValue(false);
   policyDecideMock.attemptPolicyDecision.mockResolvedValue(undefined);
 });
 
@@ -356,6 +379,7 @@ describe('createActionIntent — explicit device scope (P2-2)', () => {
       'manage_services',
       expect.anything(),
       expect.objectContaining({ deviceId: SCOPE_DEVICE_ID, deviceSiteId: SITE_ID }),
+      undefined,
     );
     // Approver targeting resolves against the scope device too — the humans
     // who can reach IT, not whatever the (device-less) run could reach.
@@ -391,6 +415,7 @@ describe('createActionIntent — explicit device scope (P2-2)', () => {
       'manage_services',
       expect.anything(),
       expect.objectContaining({ deviceId: SCOPE_DEVICE_ID, deviceSiteId: null }),
+      undefined,
     );
   });
 
@@ -599,6 +624,46 @@ describe('createActionIntent — a scoped (sweep) intent is never policy-decided
     expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
   });
 
+  it('#4442 W04: with the sweep sub-flag ARMED and a matching subject, the same scoped intent IS policy-decided', async () => {
+    envMock.sweepActEnabled.mockReturnValue(true);
+    queueSweepContext({ run: actModeRun() });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), {
+      ...sweepInput(),
+      trigger: { kind: 'sweep_finding', refId: RUN_ID, key: 'sweep:service_down:Spooler' },
+      sweepAct: {
+        scheduleActMode: true,
+        subject: { kind: 'service_down', key: 'Spooler', observedAt: '2026-09-15T09:30:00.000Z' },
+        argumentsMatchSubject: true,
+      },
+    });
+    await flush();
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('unattempted');
+    expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('#4442 W04: armed, but the schedule is NOT — still human_required', async () => {
+    envMock.sweepActEnabled.mockReturnValue(true);
+    queueSweepContext({ run: actModeRun() });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), {
+      ...sweepInput(),
+      trigger: { kind: 'sweep_finding', refId: RUN_ID, key: 'sweep:service_down:Spooler' },
+      sweepAct: {
+        scheduleActMode: false,
+        subject: { kind: 'service_down', key: 'Spooler', observedAt: null },
+        argumentsMatchSubject: true,
+      },
+    });
+    await flush();
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+
   it('CONTROL: the same run without a scope still reaches the policy-decide path', async () => {
     // Run-device-bound (a scope is what a device-LESS run needs), everything
     // else identical: same agent, same tool, same act-mode snapshot, same
@@ -614,5 +679,66 @@ describe('createActionIntent — a scoped (sweep) intent is never policy-decided
 
     expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('unattempted');
     expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('creation-time remediation trigger', () => {
+  it.each([undefined, { kind: 'sweep_finding' as const, refId: RUN_ID, key: 'sweep:service_down:Spooler' }])('stamps an optional envelope %j', async (trigger) => {
+    queueSweepContext();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    await createActionIntent(makeAgentAuth(), { ...sweepInput(), trigger });
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      triggerKind: trigger?.kind ?? null,
+      triggerRefId: trigger?.refId ?? null,
+      triggerKey: trigger?.key ?? null,
+    });
+    if (trigger) expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'created', details: expect.objectContaining({ triggerKind: trigger.kind, triggerRefId: trigger.refId, triggerKey: trigger.key }),
+    }));
+  });
+  it('rejects malformed provenance before database access', async () => {
+    await expect(createActionIntent(makeAgentAuth(), {
+      ...sweepInput(), trigger: { kind: 'invalid' as never },
+    })).rejects.toThrow();
+    expect(dbState.insertedActionIntentValues).toEqual([]);
+    expect(authMock.dbAccessContextFromAuth).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// #5022 W01 Task 12 — the AI origin is PERSISTED at intent creation.
+//
+// The reconstruct half (actorContext.test.ts) is only half the contract: if
+// the columns are never written, the release worker reconstructs nothing.
+// ============================================================================
+describe('createActionIntent — persists the creating context AI origin (#5022 W01)', () => {
+  it('writes the three ai_origin_* columns from auth.aiOrigin', async () => {
+    queueSweepContext();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    const auth = makeAgentAuth() as unknown as Record<string, unknown>;
+    auth.aiOrigin = { kind: 'ai_agent', agentRunId: RUN_ID };
+
+    await createActionIntent(auth as unknown as Parameters<typeof createActionIntent>[0], sweepInput());
+
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      aiOriginKind: 'ai_agent',
+      aiOriginAgentRunId: RUN_ID,
+      aiOriginSessionId: null,
+    });
+  });
+
+  it('writes three explicit NULLs when the creating context had no AI origin', async () => {
+    queueSweepContext();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), sweepInput());
+
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      aiOriginKind: null,
+      aiOriginSessionId: null,
+      aiOriginAgentRunId: null,
+    });
   });
 });

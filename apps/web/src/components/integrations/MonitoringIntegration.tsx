@@ -63,11 +63,7 @@ type MonitoringSettings = {
 
 type ProviderKey = Exclude<keyof MonitoringSettings, "metrics">;
 
-let webhookIdCounter = 0;
-const createWebhookId = () => {
-  webhookIdCounter += 1;
-  return `wh-${webhookIdCounter}`;
-};
+const createWebhookId = () => crypto.randomUUID();
 
 type TestResult = {
   state: "idle" | "testing" | "success" | "error";

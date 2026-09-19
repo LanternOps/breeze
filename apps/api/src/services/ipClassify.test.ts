@@ -87,6 +87,59 @@ describe('classifyIp', () => {
     await expect(classifyIp('198.51.104.1')).resolves.toMatchObject({ ipClass: 'residential' });
   });
 
+  it('returns unknown when ipinfo omits the privacy object entirely', async () => {
+    // A token without privacy detection returns no `privacy` key at all.
+    // Absent evidence is NOT evidence of a residential address — every
+    // hosting/VPN abuser would otherwise pass the promotion gate.
+    process.env.IP_CLASSIFY_PROVIDER = 'ipinfo';
+    process.env.IP_CLASSIFY_API_KEY = 'secret';
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ asn: { asn: 'AS64500' }, company: { type: 'business' } }),
+    })));
+
+    await expect(classifyIp('198.51.100.1')).resolves.toEqual({
+      ipClass: 'unknown', asn: 64500, provider: 'ipinfo',
+    });
+  });
+
+  it('returns unknown when the ipinfo privacy field is not an object', async () => {
+    process.env.IP_CLASSIFY_PROVIDER = 'ipinfo';
+    process.env.IP_CLASSIFY_API_KEY = 'secret';
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ privacy: null, asn: 64500 }),
+    })));
+
+    await expect(classifyIp('198.51.105.1')).resolves.toMatchObject({ ipClass: 'unknown' });
+  });
+
+  it('returns unknown when ipdata omits the threat object entirely', async () => {
+    process.env.IP_CLASSIFY_PROVIDER = 'ipdata';
+    process.env.IP_CLASSIFY_API_KEY = 'secret';
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ asn: { asn: 64501 }, company: { type: 'business' } }),
+    })));
+
+    await expect(classifyIp('203.0.113.8')).resolves.toEqual({
+      ipClass: 'unknown', asn: 64501, provider: 'ipdata',
+    });
+  });
+
+  it('still classifies when the evidence object is present but empty', async () => {
+    // Positive control for the two tests above: `privacy: {}` IS evidence —
+    // the provider looked and found no privacy flags — so residential stands.
+    process.env.IP_CLASSIFY_PROVIDER = 'ipinfo';
+    process.env.IP_CLASSIFY_API_KEY = 'secret';
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ privacy: {}, asn: 64500 }),
+    })));
+
+    await expect(classifyIp('198.51.106.1')).resolves.toMatchObject({ ipClass: 'residential' });
+  });
+
   it('maps ipdata threat fields', async () => {
     process.env.IP_CLASSIFY_PROVIDER = 'ipdata';
     process.env.IP_CLASSIFY_API_KEY = 'secret';

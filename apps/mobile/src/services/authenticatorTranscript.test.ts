@@ -2,6 +2,9 @@ import crypto from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  ANDROID_KEYGEN_CHALLENGE_DOMAIN,
+  androidKeyGenChallengeB64,
+  androidKeyGenChallengePreimage,
   registrationTranscriptB64,
   registrationTranscriptPreimage,
   TRANSCRIPT_DOMAIN,
@@ -81,5 +84,89 @@ describe('registrationTranscriptB64', () => {
     // SHA-256 -> 32 bytes -> 44 base64 chars including one '=' pad.
     expect(out).toHaveLength(44);
     expect(Buffer.from(out, 'base64')).toHaveLength(32);
+  });
+});
+
+// The SAME vector the API pins in `authenticatorAttestation.test.ts`
+// ("matches the exact documented pre-image — W06 Kotlin passes this to
+// setAttestationChallenge"). The Kotlin decodes this base64 and hands the 32
+// raw bytes to `KeyGenParameterSpec.Builder.setAttestationChallenge`, so a
+// drift here is a drift in every leaf certificate the fleet produces.
+const KEYGEN_VECTOR_INPUT = {
+  attemptId: 'a1',
+  challenge: 'c1',
+  publicKeyAlg: 'ES256' as const,
+};
+const KEYGEN_VECTOR_PREIMAGE = 'breeze.authenticator.mobile-register.keygen.v1\na1\nc1\nES256';
+const KEYGEN_VECTOR_DIGEST_B64 = '0tpRJBSE1f4xgpEwx3ORQm0ZFEUNrEynv217InW04yE=';
+
+describe('androidKeyGenChallengePreimage', () => {
+  it('matches the exact pre-image the API pins, byte for byte', () => {
+    expect(androidKeyGenChallengePreimage(KEYGEN_VECTOR_INPUT)).toBe(KEYGEN_VECTOR_PREIMAGE);
+  });
+
+  it('leads with its own versioned domain tag', () => {
+    expect(ANDROID_KEYGEN_CHALLENGE_DOMAIN).toBe('breeze.authenticator.mobile-register.keygen.v1');
+    expect(
+      androidKeyGenChallengePreimage(KEYGEN_VECTOR_INPUT).startsWith(
+        `${ANDROID_KEYGEN_CHALLENGE_DOMAIN}\n`,
+      ),
+    ).toBe(true);
+  });
+
+  it('is domain-separated from the registration transcript', () => {
+    // Not merely "different because the SPKI field is absent": the tags differ,
+    // so no choice of inputs can make one digest serve as the other.
+    expect(ANDROID_KEYGEN_CHALLENGE_DOMAIN).not.toBe(TRANSCRIPT_DOMAIN);
+    expect(androidKeyGenChallengePreimage(KEYGEN_VECTOR_INPUT)).not.toBe(
+      registrationTranscriptPreimage({ ...KEYGEN_VECTOR_INPUT, publicKeySpkiB64: '' }),
+    );
+  });
+
+  it('does NOT commit to the SPKI — it cannot, the key does not exist yet', () => {
+    expect(androidKeyGenChallengePreimage(KEYGEN_VECTOR_INPUT)).not.toContain('spki');
+  });
+
+  it.each([
+    ['attemptId', { attemptId: 'a2' }],
+    ['challenge', { challenge: 'c2' }],
+    ['publicKeyAlg', { publicKeyAlg: 'RS256' as const }],
+  ])('changes when %s changes', (_name, patch) => {
+    expect(androidKeyGenChallengePreimage({ ...KEYGEN_VECTOR_INPUT, ...patch })).not.toBe(
+      androidKeyGenChallengePreimage(KEYGEN_VECTOR_INPUT),
+    );
+  });
+});
+
+describe('androidKeyGenChallengeB64', () => {
+  it('reproduces the API-pinned digest for the pinned inputs', async () => {
+    await expect(androidKeyGenChallengeB64(KEYGEN_VECTOR_INPUT, nodeSha256B64)).resolves.toBe(
+      KEYGEN_VECTOR_DIGEST_B64,
+    );
+  });
+
+  it('the pinned digest really is SHA-256 of the pinned pre-image', async () => {
+    expect(await nodeSha256B64(KEYGEN_VECTOR_PREIMAGE)).toBe(KEYGEN_VECTOR_DIGEST_B64);
+  });
+
+  it('is not the raw server challenge (the bug this replaced)', async () => {
+    // The first cut passed `challenge` straight through as the KeyStore
+    // attestation challenge. The server never expected that value, so every
+    // Android registration would have failed verification.
+    await expect(androidKeyGenChallengeB64(KEYGEN_VECTOR_INPUT, nodeSha256B64)).resolves.not.toBe(
+      KEYGEN_VECTOR_INPUT.challenge,
+    );
+  });
+
+  it('is 32 decoded bytes, well under Android\'s 128-byte challenge cap', async () => {
+    const out = await androidKeyGenChallengeB64(KEYGEN_VECTOR_INPUT, nodeSha256B64);
+    expect(out).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+    expect(Buffer.from(out, 'base64')).toHaveLength(32);
+  });
+
+  it('differs from the registration transcript for the same attempt', async () => {
+    const keygen = await androidKeyGenChallengeB64(KEYGEN_VECTOR_INPUT, nodeSha256B64);
+    const transcript = await registrationTranscriptB64(VECTOR_INPUT, nodeSha256B64);
+    expect(keygen).not.toBe(transcript);
   });
 });

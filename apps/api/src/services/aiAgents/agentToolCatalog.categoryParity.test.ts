@@ -103,6 +103,9 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'delete_tenant',
   'execute_containment',
   'execute_dr_plan',
+  // W03 execution plane (#5711) — a new capability-only tool; tierConfig.ts
+  // has not been swept to add a workspace/export display category yet.
+  'export_dataset',
   'generate_incident_report',
   'get_browser_security',
   'get_catalog_item',
@@ -135,12 +138,23 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'get_vulnerability_report',
   'instant_boot_vm',
   'list_contracts',
+  // Service deliverables W02 (#5573): same content gap as the contracts family
+  // above — the AI Risk page has no deliverables/key-dates copy yet, and
+  // authoring a tier + description + category for them belongs with the
+  // customer-facing deliverables UI, not this wave.
+  'list_deliverable_templates',
+  'list_deliverables',
   'list_invoices',
+  // Org document library (service deliverables W03) — same family as the other
+  // business objects above: metadata-only tools whose tier-page entry is a
+  // content-authoring task, tracked with the rest of this gap.
+  'list_org_documents',
   'list_organizations',
   'list_quotes',
   'list_script_templates',
   'list_scripts',
   'lookup_distributor_product',
+  'manage_org_documents',
   'm365_query_groups',
   'm365_query_intune_devices',
   'm365_query_org',
@@ -152,10 +166,12 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'manage_browser_policy',
   'manage_catalog',
   'manage_contracts',
+  'manage_deliverables',
   'manage_dr_plan',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',
   'manage_invoices',
+  'manage_key_dates',
   'manage_organizations',
   'manage_peripheral_policies',
   'manage_peripheral_policy',
@@ -190,6 +206,13 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'trigger_mssql_backup',
   'trigger_vault_sync',
   'verify_mssql_backup',
+  // W04 execution plane (#5715) — the four sandbox-workspace tools share
+  // `export_dataset`'s situation: the risk page copy is W05's surface work,
+  // so each entry here is a follow-up owed, not a design choice.
+  'workspace_cancel',
+  'workspace_collect',
+  'workspace_run',
+  'workspace_stage',
 ];
 
 /**
@@ -219,7 +242,7 @@ const CATEGORY_CAPABILITY_PAIRS: Record<ToolCategory, AgentCapabilityId[]> = {
   'Files, Disk & Registry': ['files_disk', 'scripts_commands'],
   'Logs & Audit': ['alerts_monitoring', 'automations_reports', 'endpoint_agent'],
   'Services & Processes': ['services_startup', 'scripts_commands'],
-  'Scripts & Automation': ['scripts_commands'],
+  'Scripts & Automation': ['scripts_commands', 'author_scripts'],
   'Configuration Policies': ['config_policies'],
   'Fleet Operations': [
     'automations_reports',

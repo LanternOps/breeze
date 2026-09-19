@@ -51,12 +51,26 @@ export interface DeviceContext {
   activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }>;
 }
 
+/** W03 (#5612): the trimmed AI script proposal block that rides the
+ *  `approval_required` event (server: services/scriptProposals/approvalSummary.ts). */
+export interface PendingApprovalScriptProposal {
+  proposalId: string;
+  goal: string;
+  summary: string;
+  riskTier: string;
+  findings: string[];
+  content: string;
+  strictHits: string[];
+}
+
 export interface PendingApproval {
   executionId: string;
   toolName: string;
   input: Record<string, unknown>;
   description: string;
   deviceContext?: DeviceContext;
+  /** Present only when the approval is for an AI-authored script proposal. */
+  scriptProposal?: PendingApprovalScriptProposal;
 }
 
 interface ChatState {
@@ -436,6 +450,7 @@ export async function processSSELines(
               input: event.input,
               description: event.description,
               deviceContext: event.deviceContext,
+              scriptProposal: event.scriptProposal,
             },
           });
           break;

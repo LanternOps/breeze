@@ -1,3 +1,5 @@
+import type { ServiceTileDto } from './portalService';
+
 export type TileStatus =
   | 'ok'
   | 'no_data'
@@ -99,6 +101,9 @@ export interface DashboardDto {
   support: SupportTileDto;
   actionItems: ActionItemsTileDto;
   awaitingYou: AwaitingYouTileDto;
+  /** Service deliverables W04: present only when the org's enable_service flag
+   *  is on, so a portal that never enabled it keeps its previous payload. */
+  service?: ServiceTileDto;
 }
 
 export interface SecurityTrendPoint {
@@ -241,7 +246,27 @@ export interface SlaDto {
 export interface PortalRunDto {
   id: string;
   reportId: string;
-  type: 'security_compliance_posture' | 'executive_summary';
+  /** Every type a portal run row can carry. `portalRunListPredicate` filters
+   *  on org, portal_self_service and status — it has NO type filter — so a
+   *  managed-evidence run of a new type flows through here. An unwidened union
+   *  is a type lie the compiler cannot see, because the value comes from the
+   *  database. Not every member is portal-GENERATABLE: see PORTAL_REPORT_TYPES. */
+  type:
+    | 'security_compliance_posture'
+    | 'executive_summary'
+    | 'hardware_lifecycle'
+    // #5784 W02 — managed evidence. Visible (after delivery) but never
+    // generatable by a portal user, so it belongs in this union without
+    // belonging in PORTAL_REPORT_TYPES.
+    | 'threat_detection_review'
+    // #5784 W03 — managed evidence; listed after delivery, never generated here.
+    | 'endpoint_management_review'
+    // #5784 W04 — managed evidence, visible only once delivered.
+    | 'vulnerability_management'
+    // #5784 W06 — managed evidence, same rule. `portalRunListPredicate` has no
+    // type filter, so an unwidened union here is a type lie the compiler cannot
+    // see: the value comes from the database.
+    | 'identity_access_review';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;

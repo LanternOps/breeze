@@ -31,6 +31,8 @@
       "devices": "Dispositivos",
       "tickets": "Chamados",
       "billing": "Contratos e faturamento",
+      "service": "Serviço",
+      "documents": "Documentos",
       "activity": "Atividade"
     },
     "comingSoon": {
@@ -70,7 +72,8 @@
         "invoicesNothingDue": "Nada a vencer",
         "contacts": "Contatos",
         "portalUsers": "Usuários do portal",
-        "sites": "Sites"
+        "sites": "Sites",
+        "lastActivity": "Última atividade"
       },
       "activity": {
         "title": "Atividade recente",
@@ -125,8 +128,258 @@
       "sections": {
         "contracts": "Contratos",
         "invoices": "Faturas",
-        "quotes": "Cotações"
+        "quotes": "Cotações",
+        "agreements": "Acordos"
       }
+    },
+    "documents": {
+      "title": "Documentos",
+      "subtitle": "Runbooks, baselines, políticas e evidências de entrega desta organização.",
+      "empty": "Ainda não há documentos. Envie um runbook, uma baseline ou uma política assinada para iniciar a biblioteca.",
+      "emptyFiltered": "Nenhum documento nesta categoria.",
+      "loadFailed": "Não foi possível carregar os documentos.",
+      "upload": "Enviar documento",
+      "uploading": "Enviando…",
+      "replace": "Substituir",
+      "download": "Baixar",
+      "delete": "Excluir",
+      "deleteConfirm": "Excluir \"{{title}}\"? Isso remove o arquivo e todas as versões anteriores. Esta ação não pode ser desfeita.",
+      "edit": "Editar",
+      "save": "Salvar",
+      "cancel": "Cancelar",
+      "versions": "Histórico de versões",
+      "showSuperseded": "Mostrar versões anteriores",
+      "form": {
+        "title": "Título",
+        "description": "Descrição",
+        "category": "Categoria",
+        "portalVisible": "Visível no portal do cliente",
+        "file": "Arquivo",
+        "fileHint": "PDF, JPEG, PNG ou WebP, até 10 MB.",
+        "replaceHint": "A versão atual é mantida no histórico e o novo arquivo passa a ser a versão vigente."
+      },
+      "filter": {
+        "all": "Todas as categorias"
+      },
+      "category": {
+        "baseline": "Linha de base",
+        "runbook": "Guia operacional",
+        "policy": "Política",
+        "evidence": "Evidência",
+        "report": "Relatório",
+        "export": "Exportação",
+        "other": "Outro"
+      },
+      "column": {
+        "title": "Título",
+        "category": "Categoria",
+        "size": "Tamanho",
+        "uploaded": "Enviado",
+        "portal": "No portal",
+        "actions": "Ações"
+      },
+      "badge": {
+        "superseded": "Versão anterior",
+        "portal": "No portal"
+      },
+      "errors": {
+        "tooLarge": "Esse arquivo é maior que 10 MB.",
+        "unsupportedType": "Só é possível armazenar arquivos PDF, JPEG, PNG e WebP.",
+        "storageUnavailable": "O armazenamento de documentos está indisponível no momento. Tente novamente em instantes.",
+        "notHead": "Este documento já foi substituído. Recarregue a página e trabalhe a partir da versão atual.",
+        "emptyFile": "Esse arquivo está vazio.",
+        "uploadFailed": "Não foi possível enviar o documento.",
+        "updateFailed": "Não foi possível salvar o documento.",
+        "deleteFailed": "Não foi possível excluir o documento.",
+        "downloadFailed": "Não foi possível baixar o documento."
+      },
+      "toast": {
+        "uploaded": "Documento enviado",
+        "replaced": "Nova versão enviada",
+        "updated": "Documento atualizado",
+        "deleted": "Documento excluído"
+      }
+    }
+  },
+  "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} organizações)",
+    "partnerOption_one": "{{id}}… ({{count}} organização)",
+    "partnerScopeHint": "Exibindo as contas de um único parceiro; os totais abaixo se referem apenas a esse parceiro",
+    "title": "Organizações",
+    "description": "Cada cliente, o que ainda falta e o que está em aberto.",
+    "loading": "Carregando organizações…",
+    "actions": {
+      "addOrganization": "Adicionar organização",
+      "tryAgain": "Tente novamente",
+      "clearFilters": "Limpar filtros",
+      "openRecord": "Abrir registro",
+      "contact": "Contatar {{name}}",
+      "newTicket": "Novo chamado",
+      "workHere": "Trabalhar nesta organização",
+      "settings": "Configurações",
+      "archive": "Arquivar organização",
+      "merge": "Mesclar com outra organização",
+      "restore": "Restaurar",
+      "restoring": "Restaurando…"
+    },
+    "rowMenu": { "label": "Ações para {{name}}" },
+    "search": { "label": "Buscar organizações, contatos e e-mails" },
+    "lens": { "label": "Visão", "setup": "Configuração", "account": "Conta", "both": "Ambas" },
+    "filters": {
+      "label": "Filtrar",
+      "all": "Todas",
+      "setupIncomplete": "Configuração incompleta",
+      "accountMissing": "Dados da conta ausentes",
+      "openTickets": "Chamados abertos",
+      "trial": "Avaliação",
+      "archived": "Arquivadas",
+      "unlinked": "Sem vínculo"
+    },
+    "sort": { "label": "Ordenar", "manual": "Ordem manual", "name": "De A a Z", "tickets": "Chamados abertos" },
+    "columns": { "organization": "Organização", "setup": "Configuração", "account": "Dados da conta", "tickets": "Chamados abertos", "actions": "Ações da linha", "integrations": "Integrações" },
+    "band": {
+      "label": "Prontidão das contas",
+      "all": "Contas",
+      "allSub": "{{trial}} em avaliação · {{suspended}} suspensas",
+      "setupIncomplete": "Configuração incompleta",
+      "accountMissing": "Dados da conta ausentes",
+      "openTickets": "Chamados abertos",
+      "openTicketsSub": "{{count}} SLA violados",
+      "pending": "Verificando organizações…",
+      "partial": "Não foi possível verificar algumas organizações.",
+      "unlinked": "Sem vínculo"
+    },
+    "chips": {
+      "noSite": "Sem local",
+      "noDevices": "Nenhum dispositivo inscrito",
+      "noCheckIn": "Nenhum agente se reportou",
+      "staleCheckIn_one": "Nenhum agente se reportou há {{count}} dia",
+      "staleCheckIn_other": "Nenhum agente se reportou há {{count}} dias",
+      "noPolicy": "Nenhuma política atribuída",
+      "primaryContact": "Contato principal",
+      "contactEmail": "E-mail do contato",
+      "contactPhone": "Telefone do contato",
+      "billingContact": "Contato de faturamento",
+      "billingAddress": "Endereço de faturamento",
+      "overdueInvoices_one": "{{count}} fatura vencida",
+      "overdueInvoices_other": "{{count}} faturas vencidas",
+      "invitation_one": "{{count}} convite não aceito",
+      "invitation_other": "{{count}} convites não aceitos",
+      "complete": "Completo",
+      "notApplicable": "Não se aplica",
+      "unavailable": "Indisponível",
+      "stillNeeded": "Ainda pendente",
+      "link": "{{chip}} de {{orgName}}",
+      "noActiveContract": "Nenhum contrato ativo",
+      "noBackup": "Nenhum backup configurado"
+    },
+    "repair": {
+      "sites": "Abrir a aba Locais de {{orgName}}",
+      "devices": "Abrir a aba Dispositivos de {{orgName}}",
+      "policies": "Abrir as políticas de configuração",
+      "contacts": "Abrir a aba Contatos de {{orgName}}",
+      "settings": "Abrir as configurações de {{orgName}}",
+      "billing": "Abrir a aba Faturamento de {{orgName}}",
+      "backup": "Abrir o backup de {{orgName}}"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "Filtro DNS" },
+      "state": { "linked": "Vinculado", "pending": "Pendente", "error": "Requer atenção", "identity": "Somente identidade", "not_linked": "Não vinculado" },
+      "reason": {
+        "suggested_match": "Correspondência sugerida, ainda não confirmada",
+        "sync_error": "Falha na última sincronização",
+        "consent_pending": "Aguardando o consentimento da Microsoft",
+        "expired": "Conexão expirada",
+        "degraded": "Conexão degradada",
+        "suspended": "Conexão suspensa",
+        "error": "A conexão informou um erro",
+        "never_synced": "Nunca sincronizado",
+        "sync_failed": "Falha na sincronização do conector",
+        "disabled": "Conexão desativada",
+        "connector_error": "Conector inativo ou com falha"
+      },
+      "notLinked": "{{system}} não vinculado",
+      "nothingLinked": "Nada vinculado",
+      "connectorMuted": "O conector do {{system}} não está conectado",
+      "badgeLabel": "{{orgName}}: {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}}: {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} precisa ser reconectado",
+          "disconnected": "{{system}} está desconectado",
+          "error": "O conector do {{system}} tem um erro",
+          "disabled": "O conector do {{system}} está desativado"
+        },
+        "openSettings": "Abrir as configurações do {{system}}"
+      }
+    },
+    "tickets": { "open": "{{count}} abertos", "awaiting": "{{count}} aguardando o cliente", "sla": "{{count}} SLA violados" },
+    "meta": {
+      "workspace": "Espaço de trabalho",
+      "devices_one": "{{count}} dispositivo",
+      "devices_other": "{{count}} dispositivos",
+      "sites_one": "{{count}} local",
+      "sites_other": "{{count}} locais",
+      "archivedBadge": "Arquivada",
+      "archivingBadge": "Arquivando…",
+      "keptIndefinitely": "Mantida indefinidamente",
+      "purgeToday": "Excluída definitivamente hoje",
+      "purgeCountdown_one": "Excluída definitivamente em {{count}} dia",
+      "purgeCountdown_other": "Excluída definitivamente em {{count}} dias"
+    },
+    "reorder": {
+      "handle": "Reordenar {{name}}",
+      "hint": "Use as setas para cima e para baixo para mover esta organização.",
+      "dragToReorder": "Arraste para reordenar",
+      "moved": "{{name}} movida para a posição {{position}} de {{total}}"
+    },
+    "footer": {
+      "summary": "{{accounts}} contas ativas · {{devices}} dispositivos",
+      "summaryWithTickets": "{{accounts}} contas ativas · {{devices}} dispositivos · {{tickets}} chamados abertos",
+      "manualHint": "Ordem manual: arraste uma linha ou use as setas na sua alça."
+    },
+    "empty": {
+      "title": "Ainda não há organizações",
+      "description": "Adicione seu primeiro cliente para começar a acompanhar a configuração e os dados da conta.",
+      "noMatches": "Nenhuma organização corresponde à sua busca ou filtro."
+    },
+    "archived": {
+      "loading": "Carregando organizações arquivadas…",
+      "empty": "Nenhuma organização arquivada.",
+      "noMatches": "Nenhuma organização arquivada corresponde à sua pesquisa.",
+      "truncatedNote": "Mostrando as primeiras {{count}} organizações arquivadas. Pesquise para restringir a lista.",
+      "fetchError": "Falha ao carregar as organizações arquivadas"
+    },
+    "restore": {
+      "success": "{{name}} restaurada — status: {{status}}.",
+      "recreateRequiredNote": "Antes que ela esteja totalmente utilizável de novo: {{items}}",
+      "suspendedNote": "Ela estava suspensa antes de ser arquivada, então foi restaurada como suspensa — resolva isso antes que ela retome o acesso normal.",
+      "errors": {
+        "restore": "Falha ao restaurar a organização",
+        "mfaRequired": "Restaurar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
+        "purging": "Esta organização já está sendo excluída definitivamente e não pode mais ser restaurada."
+      }
+    },
+    "add": {
+      "title": "Adicionar organização",
+      "description": "Crie uma nova organização com os detalhes abaixo.",
+      "submit": "Criar organização",
+      "created": "{{name}} adicionada. A linha mostra o que configurar a seguir."
+    },
+    "errors": {
+      "fetchOrganizations": "Falha ao buscar organizações",
+      "generic": "Ocorreu um erro",
+      "saveOrder": "Falha ao salvar a ordem das organizações",
+      "saveOrganization": "Falha ao salvar a organização",
+      "readiness": "Não foi possível verificar a prontidão de algumas organizações."
+    }
+  },
+  "shared": {
+    "sortableTh": {
+      "ascending": "crescente",
+      "descending": "decrescente",
+      "sortBy": "Ordenar por {{label}}",
+      "sortByWithDirection": "Ordenar por {{label}}, {{direction}}"
     }
   }
 }

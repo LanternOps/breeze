@@ -88,6 +88,7 @@ function makeAgentAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as unknown as AuthContext;
 }
 

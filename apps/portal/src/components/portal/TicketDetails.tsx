@@ -316,12 +316,23 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
 
         {replies.length > 0 && (
           <ol className="mt-4 divide-y divide-border/70 border-y border-border/70">
-            {replies.map((c) => (
+            {replies.map((c) => {
+              // An email-authored comment is the CUSTOMER's only when the
+              // inbound sender resolved to a portal login. A technician's own
+              // reply linked through the Outlook add-in is stored with the same
+              // author_type 'email' and no sender, so keying this badge on
+              // author_type alone showed the customer their IT team's reply
+              // labelled "Customer email".
+              const isCustomerEmail = c.authorType === 'email' && c.senderPortalUserId != null;
+              return (
               <li key={c.id} className="py-4" data-testid="ticket-comment">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <span className="text-sm font-semibold text-foreground">
                     {c.authorName || 'Support'}
-                    {c.authorType !== 'portal' && (
+                    {isCustomerEmail && (
+                      <span className="ml-1.5 text-xs font-medium text-muted-foreground">Customer email</span>
+                    )}
+                    {c.authorType !== 'portal' && !isCustomerEmail && (
                       <span className="ml-1.5 text-xs font-medium text-muted-foreground">Your IT team</span>
                     )}
                   </span>
@@ -332,7 +343,8 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
                 </div>
                 <CommentAttachments ticketId={ticket.id} attachments={c.attachments} />
               </li>
-            ))}
+              );
+            })}
           </ol>
         )}
 

@@ -3,6 +3,7 @@ import { ExtensionAiError, type ExtensionAiInvokeInput } from '@breeze/extension
 
 const {
   buildAnthropicClient,
+  calculateCatalogCostCents,
   calculateCostCents,
   captureException,
   captureMessage,
@@ -12,11 +13,16 @@ const {
   create,
   deductBillingCredits,
   markPartnerLlmError,
+  markAiBudgetReservationIndeterminate,
   recordUsage,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
   resolveLlmConfigForOrg,
+  resolveWireModel,
 } = vi.hoisted(() => ({
   buildAnthropicClient: vi.fn(),
-  calculateCostCents: vi.fn<() => number>(),
+  calculateCatalogCostCents: vi.fn<(...args: unknown[]) => number>(),
+  calculateCostCents: vi.fn<(...args: unknown[]) => number>(),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   checkAiRateLimit: vi.fn<() => Promise<string | null>>(),
@@ -27,11 +33,16 @@ const {
   create: vi.fn(),
   deductBillingCredits: vi.fn<() => Promise<void>>(),
   markPartnerLlmError: vi.fn<() => Promise<boolean>>(),
+  markAiBudgetReservationIndeterminate: vi.fn(),
   recordUsage: vi.fn<() => Promise<void>>(),
+  releaseUnusedAiBudgetReservation: vi.fn(),
+  reserveAiBudget: vi.fn(),
   resolveLlmConfigForOrg: vi.fn(),
+  resolveWireModel: vi.fn(),
 }));
 
 vi.mock('./aiCostTracker', () => ({
+  calculateCatalogCostCents,
   calculateCostCents,
   checkAiRateLimit,
   checkBudgetDetailed,
@@ -45,6 +56,13 @@ vi.mock('./aiCostTracker', () => ({
 }));
 
 vi.mock('./sentry', () => ({ captureException, captureMessage }));
+
+vi.mock('./aiBudgetReservations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiBudgetReservations')>()),
+  markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+}));
 
 const { LlmOrgResolutionError } = vi.hoisted(() => ({
   LlmOrgResolutionError: class LlmOrgResolutionError extends Error {
@@ -61,6 +79,7 @@ vi.mock('./llm/llmConfigResolver', () => ({
   buildAnthropicClient,
   markPartnerLlmError,
   resolveLlmConfigForOrg,
+  resolveWireModel,
   LlmOrgResolutionError,
 }));
 
@@ -129,9 +148,107 @@ beforeEach(() => {
   deductBillingCredits.mockResolvedValue(undefined);
   markPartnerLlmError.mockResolvedValue(true);
   calculateCostCents.mockReturnValue(4);
+  calculateCatalogCostCents.mockReturnValue(4);
+  resolveWireModel.mockImplementation((_resolved, logicalModel) => ({ model: logicalModel }));
+  reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited',
+    reservationId: '44444444-4444-4444-8444-444444444444',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({
+    kind: 'indeterminate', reservationId: '44444444-4444-4444-8444-444444444444',
+  });
+  releaseUnusedAiBudgetReservation.mockResolvedValue({
+    kind: 'released', reservationId: '44444444-4444-4444-8444-444444444444',
+  });
 });
 
 describe('buildExtensionAiContext', () => {
+  it('caps a finite reservation before provider dispatch', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: '44444444-4444-4444-8444-444444444444',
+      reservedCostCents: 2,
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+    calculateCostCents.mockImplementation((_model, _inputTokens, outputTokens) => Number(outputTokens) / 100);
+
+    await buildExtensionAiContext().invoke(input);
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
+  });
+
+  it('uses the verified catalog wire model and revision pricing for cap and settlement', async () => {
+    const pricing = {
+      catalogEntryId: '55555555-5555-4555-8555-555555555555',
+      revisionId: '66666666-6666-4666-8666-666666666666',
+      inputCentsPerM: 3,
+      outputCentsPerM: 25,
+      cacheReadCentsPerM: 1,
+      cacheWriteCentsPerM: 4,
+    };
+    resolveWireModel.mockReturnValueOnce({
+      model: 'provider/verified-haiku',
+      catalogPricing: pricing,
+    });
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: '44444444-4444-4444-8444-444444444444',
+      reservedCostCents: 2,
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+    calculateCatalogCostCents.mockImplementation((_pricing, _inputTokens, outputTokens) =>
+      Number(outputTokens) / 100);
+
+    await buildExtensionAiContext().invoke(input);
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'provider/verified-haiku',
+      max_tokens: 200,
+    }));
+    expect(calculateCatalogCostCents).toHaveBeenCalledWith(pricing, expect.any(Number), expect.any(Number));
+    expect(recordUsage).toHaveBeenCalledWith(
+      null,
+      ORG_ID,
+      'claude-haiku-4-5',
+      17,
+      9,
+      true,
+      'partner_key',
+      pricing,
+      '44444444-4444-4444-8444-444444444444',
+    );
+  });
+
+  it('does not dispatch when durable admission denies the request', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($1.00)',
+    });
+
+    await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+      code: 'budget_exceeded',
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('retains an indeterminate reservation when provider outcome is unknown', async () => {
+    create.mockRejectedValueOnce(new Error('socket reset'));
+
+    await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+      code: 'ai_unavailable',
+    });
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      reservationId: '44444444-4444-4444-8444-444444444444',
+    });
+  });
+
   it('meters a BYOK invocation and records partner_key usage', async () => {
     const result = await buildExtensionAiContext().invoke(input);
 
@@ -159,6 +276,8 @@ describe('buildExtensionAiContext', () => {
       9,
       true,
       'partner_key',
+      undefined,
+      '44444444-4444-4444-8444-444444444444',
     );
     // A partner-funded call must never touch the org's prepaid platform credits.
     expect(deductBillingCredits).not.toHaveBeenCalled();
@@ -201,6 +320,8 @@ describe('buildExtensionAiContext', () => {
       9,
       true,
       'platform',
+      undefined,
+      '44444444-4444-4444-8444-444444444444',
     );
     expect(calculateCostCents).toHaveBeenCalledWith('claude-haiku-4-5', 17, 9);
     expect(deductBillingCredits).toHaveBeenCalledWith(ORG_ID, 7);

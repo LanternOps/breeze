@@ -51,6 +51,22 @@ vi.mock('drizzle-orm', () => ({
   isNull: (col: unknown) => ({ op: 'isNull', col }),
   isNotNull: (col: unknown) => ({ op: 'isNotNull', col }),
   or: (...args: unknown[]) => ({ op: 'or', args }),
+  // #5289: the module graph now reaches schema files that call sql`` at
+  // import time (monitorResolver -> db/schema/*), so the drizzle mock has to
+  // provide it or the whole suite fails to load.
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
+    { join: (...args: unknown[]) => ({ op: 'sqlJoin', args }), raw: (s: string) => ({ op: 'raw', s }) },
+  ),
+  asc: (col: unknown) => ({ op: 'asc', col }),
+  desc: (col: unknown) => ({ op: 'desc', col }),
+}));
+
+// The monitor branch of getApplicableRules has its own coverage
+// (monitorResolver.test.ts + monitorResolver.integration.test.ts); stubbing it
+// here keeps this suite's device fixtures from needing policy tables.
+vi.mock('./monitors/monitorResolver', () => ({
+  resolveMonitorsForDevice: vi.fn(() => Promise.resolve({ kind: 'resolved', monitors: [] })),
 }));
 
 vi.mock('../db', () => ({ db: dbMock }));
@@ -65,6 +81,7 @@ vi.mock('../db/schema', () => ({
   deviceGroupMemberships: {},
   sites: {},
   configPolicyAlertRules: {},
+  monitorDefinitions: { id: 'monitor_definitions.id' },
 }));
 
 vi.mock('./alertConditions', () => ({

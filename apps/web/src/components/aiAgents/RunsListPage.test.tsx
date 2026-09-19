@@ -286,6 +286,30 @@ describe('RunsListPage', () => {
     expect(screen.queryByTestId('ai-agent-run-profile-triage-run-2')).not.toBeInTheDocument();
   });
 
+  // Fleet Designer (W01) — a design-profile run is a fleet-wide report, not a
+  // device outcome; same "tell it apart in a mixed list" rationale as the
+  // sweep/narrative/triage badges above.
+  it('badges a design-profile run beside its verdict', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-10', profile: 'design' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-profile-design-run-10')).toHaveTextContent('Fleet design');
+    // The four profile badges are mutually exclusive.
+    expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-10')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-narrative-run-10')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-triage-run-10')).not.toBeInTheDocument();
+  });
+
+  it('omits the design badge for every other run profile', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-11', profile: 'sweep' as const }, RUN_2] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-profile-design-run-11')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-design-run-2')).not.toBeInTheDocument();
+  });
+
   // Review finding #2: Organization is not fleet-view-only.
   it('shows the Organization column even when a single org is selected', async () => {
     mockEndpoints();

@@ -257,6 +257,32 @@ describe('public reliability routes', () => {
       expect(res.status).toBe(403);
       expect(vi.mocked(evaluateReliabilityScores)).not.toHaveBeenCalled();
     });
+
+    it('preserves a defined-empty site allowlist for fail-closed evaluation', async () => {
+      vi.mocked(evaluateReliabilityScores).mockResolvedValue({
+        atRiskMaxScore: 70,
+        labelWindowDays: 90,
+        evaluatedDevices: 0,
+        atRiskDevices: 0,
+        labeledAtRiskDevices: 0,
+        truePositiveDevices: 0,
+        falsePositiveDevices: 0,
+        missedFailureDevices: 0,
+        unlabeledAtRiskDevices: 0,
+        confirmedFailureLabels: 0,
+        replacementLabels: 0,
+        falseAlarmLabels: 0,
+        precision: null,
+      });
+
+      const app = buildApp({ allowedSiteIds: [] });
+      const res = await app.request('/reliability/evaluation');
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(evaluateReliabilityScores)).toHaveBeenCalledWith(
+        expect.objectContaining({ orgIds: [ORG_ID], siteIds: [] }),
+      );
+    });
   });
 
   // ──────────────────────────────────────────────────────────

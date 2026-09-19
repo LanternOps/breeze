@@ -85,7 +85,7 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     effectDigestState: {
       computeEffectDigestOutcome: vi.fn(async () => ({ kind: 'not_applicable' }) as { kind: string }),
     },
-    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    envMock: { policyDecideEnabled: vi.fn(() => false), sweepActEnabled: vi.fn(() => false) },
     policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
     ticketAutonomyState: {
       evaluateTicketAutonomy: vi.fn(async () => ({ granted: false, reason: 'not_requested' }) as
@@ -156,11 +156,28 @@ vi.mock('../../db/schema/actionIntents', () => ({
   actionIntents: schema.actionIntentsTbl,
   intentOutbox: schema.intentOutboxTbl,
 }));
+// W04 (#5612): the script lane's evaluator is a sibling decision path this
+// suite does not exercise; mocked wholesale so its transitive imports (agent
+// policy resolver, maintenance gate) never reach the partial schema mocks here.
+// W04 (#5612): the post-commit `ai.script.unattended_run` audit write. Mocked
+// so auditService's whole-schema import never reaches the partial schema
+// mocks in this file; the write itself is asserted in
+// intentService.scriptReviewer.test.ts.
+vi.mock('../auditService', () => ({ createAuditLogAsync: vi.fn(async () => {}) }));
+vi.mock('./scriptReviewerAutonomy', () => ({
+  evaluateScriptReviewerAutonomy: vi.fn(async () => ({ granted: false, reason: 'lane_disabled' })),
+  revalidateScriptReviewerEvidence: vi.fn(async () => ({ ok: false, reason: 'lane_disabled' })),
+}));
 vi.mock('../../db/schema/approvals', () => ({ approvalRequests: schema.approvalRequestsTbl }));
 vi.mock('./intentApprovers', () => ({
   resolveIntentApprovers: intentApproversState.resolveIntentApprovers,
   resolveAgentIntentApprovers: intentApproversState.resolveAgentIntentApprovers,
   resolveIntentTargetScope: intentApproversState.resolveIntentTargetScope,
+  // Org-wide governance classifier (audit §1.1) — REAL semantics, not a
+  // constant, so the fan-out filter flag is driven by the same tool/action
+  // shape production uses. Literals: vi.mock factories are hoisted.
+  isOrgWideGovernanceIntent: (toolName: string, args: Record<string, unknown> | null | undefined) =>
+    toolName === 'manage_ai_agents' && args?.action === 'authorize_supervised_key',
 }));
 vi.mock('../../middleware/auth', () => ({ dbAccessContextFromAuth: authMock.dbAccessContextFromAuth }));
 vi.mock('../aiTools', () => ({
@@ -188,7 +205,11 @@ vi.mock('../expoPush', () => ({
 vi.mock('../userNotifications', () => ({ createNotification: notifyState.createNotification }));
 vi.mock('./metrics', () => ({ recordActionIntentEvent: metricsMock.recordActionIntentEvent }));
 vi.mock('./effectDigest', () => ({ computeEffectDigestOutcome: effectDigestState.computeEffectDigestOutcome }));
-vi.mock('../../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
+vi.mock('../../config/env', () => ({
+  policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04 sub-flag, default OFF (dark-ship).
+  sweepActEnabled: envMock.sweepActEnabled,
+}));
 vi.mock('./policyDecide', () => ({ attemptPolicyDecision: policyDecideMock.attemptPolicyDecision }));
 vi.mock('./ticketAutonomy', () => ({ evaluateTicketAutonomy: ticketAutonomyState.evaluateTicketAutonomy }));
 

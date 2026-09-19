@@ -5,6 +5,6 @@ import OrgSettingsPage from '../../../components/settings/OrgSettingsPage';
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Organization Settings">
+<DashboardLayout titleKey="titles.settingsOrganizationsDetail">
   <OrgSettingsPage orgId={id} client:load />
 </DashboardLayout>

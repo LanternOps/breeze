@@ -103,7 +103,7 @@ vi.mock('../../services', () => {
   revokeRefreshTokenJti: vi.fn(async () => true),
   markRefreshTokenJtiRotated: vi.fn(async () => undefined),
   wasRefreshTokenJtiRecentlyRotated: vi.fn(async () => false),
-  revokeFamily: vi.fn(async () => undefined),
+  revokeFamily: vi.fn(async () => ({ redis: 'confirmed', database: 'confirmed' })),
   isFamilyRevoked: vi.fn(async () => false),
   touchFamilyLastUsed: vi.fn(async () => undefined),
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
@@ -309,7 +309,8 @@ vi.mock('../../services/mfaPolicy', () => ({
   getEffectiveMfaPolicy: vi.fn(async () => ({
     required: false,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    pendingEnrollment: null,
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
   })),
 }));
 
@@ -361,6 +362,7 @@ import {
   getRefreshRateWindowSeconds,
   beginAuthIssuance,
   finishAuthIssuance,
+  cancelAuthIssuance,
   issueUserSession,
   bindIssuedUserSession,
   recordAuthTransitionLegacyIssuer,
@@ -809,7 +811,8 @@ describe('POST /login — MFA enrollment enforcement via effective policy (SR2-0
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: true,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
     });
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
@@ -817,6 +820,7 @@ describe('POST /login — MFA enrollment enforcement via effective policy (SR2-0
     expect(res.status).toBe(200);
     const body = await res.json() as Record<string, unknown>;
     expect(body.mfaEnrollmentRequired).toBe(true);
+    expect(body.mfaGraceEndsAt).toBeNull();
     expect(body.enrollUrl).toBe('/auth/mfa/setup');
     expect(createTokenPair).toHaveBeenCalledWith(
       expect.objectContaining({ mfa: false }),
@@ -824,11 +828,33 @@ describe('POST /login — MFA enrollment enforcement via effective policy (SR2-0
     );
   });
 
+  // #5306 — inside the enrolment grace window the user is let in exactly as an
+  // unforced one is, but the login body carries the deadline so the client can
+  // nudge instead of block.
+  it('surfaces mfaGraceEndsAt and lets the user in while the enrolment grace window is open', async () => {
+    const deadline = new Date(Date.now() + 12 * 86_400_000).toISOString();
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      pendingEnrollment: { deadline },
+      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'active' as const },
+    });
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.mfaEnrollmentRequired).toBe(false);
+    expect(body.mfaGraceEndsAt).toBe(deadline);
+    expect(body.enrollUrl).toBeUndefined();
+  });
+
   it('mints mfa:true and mfaEnrollmentRequired:false as today when policy does not require MFA', async () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
@@ -878,7 +904,8 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: false, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
   });
 
@@ -941,7 +968,8 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: false, passkey: false },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
     const denied = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
     expect(await denied.json()).toMatchObject({
@@ -956,7 +984,8 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: false, sms: false, passkey: false },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
     vi.mocked(getRedis).mockReturnValue({ setex: vi.fn(async () => 'OK') } as any);
 
@@ -988,7 +1017,8 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: false, sms: false, passkey: false },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
     const setexMock = vi.fn(async () => 'OK');
     vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
@@ -1012,6 +1042,90 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     const body = await res.json() as Record<string, unknown>;
     expect(body).toMatchObject({ error: 'Invalid email or password' });
     expect(setexMock).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /login — MFA branch fails closed when Redis is unavailable (#6177)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    enable2faState.value = true;
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'secret',
+      mfaMethod: 'totp',
+      mfaRecoveryCodes: ['scrypt$v1$hash-1'],
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 5 });
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
+    });
+  });
+
+  afterEach(() => {
+    enable2faState.value = false;
+    process.env.E2E_MODE = 'true';
+    vi.mocked(getRedis).mockReset();
+    vi.mocked(getRedis).mockImplementation(() => ({ setex: vi.fn(async () => 'OK') }) as any);
+  });
+
+  it('returns a retryable 503 (not a crash, not a token) when getRedis() is null at the MFA branch', async () => {
+    vi.mocked(getRedis).mockReturnValue(null as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(503);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Service temporarily unavailable' });
+    expect(createTokenPair).not.toHaveBeenCalled();
+    // The admitted issuance capability is released rather than finished.
+    expect(finishAuthIssuance).not.toHaveBeenCalled();
+    expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 503 when Redis flips unavailable between the rate-limit check and the MFA branch', async () => {
+    process.env.E2E_MODE = '';
+    const setexMock = vi.fn(async () => 'OK');
+    // The top-of-handler rate-limit read sees a live client; every later
+    // getRedis() call — including the one in the MFA branch — sees null,
+    // i.e. the connection dropped mid-request.
+    vi.mocked(getRedis)
+      .mockReturnValueOnce({ setex: setexMock } as any)
+      .mockReturnValue(null as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Service temporarily unavailable' });
+    expect(setexMock).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 without a tempToken when the pending-record write rejects (e.g. Redis OOM under noeviction)', async () => {
+    const setexMock = vi.fn(async () => {
+      throw new Error("OOM command not allowed when used memory > 'maxmemory'.");
+    });
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(setexMock).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Service temporarily unavailable' });
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 });
@@ -1150,6 +1264,56 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
     expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
     expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('still blocks, but does not claim durable containment, when the family write is unacknowledged', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-blocked',
+      fam: 'family-blocked',
+      mdid: 'lost-installation',
+    } as any);
+    mobileBlockMocks.getBoundMobileDeviceBlock.mockResolvedValueOnce({ reason: 'lost phone' });
+    vi.mocked(revokeFamily).mockResolvedValueOnce({ redis: 'failed', database: 'failed' });
+
+    const res = await postRefresh();
+
+    // The block is terminal for THIS request regardless of the stores.
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'device_blocked', reason: 'lost phone' });
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+    // ...but the unacknowledged durable write must be operator-visible rather
+    // than silently treated as a completed revocation.
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[auth] Mobile-device block could not durably revoke the refresh family',
+      expect.objectContaining({ familyId: 'family-blocked', redis: 'failed', database: 'failed' }),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('does not warn when the mobile-device block durably revoked the family', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-blocked',
+      fam: 'family-blocked',
+      mdid: 'lost-installation',
+    } as any);
+    mobileBlockMocks.getBoundMobileDeviceBlock.mockResolvedValueOnce({ reason: 'lost phone' });
+    vi.mocked(revokeFamily).mockResolvedValueOnce({ redis: 'unavailable', database: 'confirmed' });
+
+    expect((await postRefresh()).status).toBe(403);
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      '[auth] Mobile-device block could not durably revoke the refresh family',
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
   });
 
 });
@@ -1697,7 +1861,8 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
   });
 

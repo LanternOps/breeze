@@ -2,6 +2,20 @@ import { jsPDF } from 'jspdf';
 import autoTable, { type CellHookData } from 'jspdf-autotable';
 import type { PostureControls, PostureProduct, PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
+import type { HardwareLifecycleSummary } from '../types/hardwareLifecycleReport';
+import { renderHardwareLifecycleReport } from './hardwareLifecyclePdf';
+import type { ThreatDetectionSummary } from '../types/threatDetectionReport';
+import type { IdentityAccessSummary } from '../types/identityAccessReport';
+// Namespace import, not a named one: the arm below must be observable by a
+// `vi.spyOn(threat, 'renderThreatDetectionReport')` in
+// reportPdf.threatDetection.test.ts. A type with no arm falls silently through
+// to renderGenericReport, and that spy is the only thing that catches it.
+import * as threatDetectionPdf from './threatDetectionPdf';
+import type { EndpointManagementSummary } from '../types/endpointManagementReport';
+import { renderEndpointManagementReport } from './endpointManagementPdf';
+import type { VulnerabilityManagementSummary } from '../types/vulnerabilityManagementReport';
+import { renderVulnerabilityManagementReport } from './vulnerabilityManagementPdf';
+import * as identityAccessPdf from './identityAccessPdf';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -9,6 +23,12 @@ import {
   NARRATIVE_SECTION_TITLES,
   type OrgNarrativeReportSummary,
 } from '../types/orgNarrativeReport';
+import {
+  FLEET_DESIGN_SECTION_KEYS,
+  FLEET_DESIGN_SECTION_TITLES,
+  FLEET_DESIGN_TEXT_MAX_CHARS,
+  type FleetDesignReportSummary,
+} from '../types/fleetDesign';
 
 /**
  * Branded PDF design system for Breeze reports.
@@ -27,7 +47,7 @@ type RGB = [number, number, number];
 
 // Palette derived from the web theme tokens (apps/web/src/styles/globals.css),
 // converted from HSL to the sRGB tuples jsPDF expects.
-const C = {
+const BASE_C = {
   ink: [17, 19, 24] as RGB, //            foreground
   primary: [47, 85, 198] as RGB, //       --primary  hsl(225 62% 48%)
   primaryDeep: [33, 58, 138] as RGB, //   header band shade
@@ -44,6 +64,72 @@ const C = {
   bandText: [224, 231, 250] as RGB, //    secondary text on the band
 } satisfies Record<string, RGB>;
 
+type Palette = { [K in keyof typeof BASE_C]: RGB };
+
+/**
+ * The active palette. `buildReportPdf` swaps in the partner's brand colours
+ * for the duration of one synchronous build and restores the Breeze default
+ * afterwards, so every drawing helper keeps reading `C.primary` unchanged.
+ */
+let C: Palette = BASE_C;
+
+// --- Brand colour derivation --------------------------------------------------
+
+const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+export function parseHexColor(value: string | null | undefined): RGB | null {
+  const v = (value ?? '').trim();
+  if (!HEX_COLOR.test(v)) return null;
+  const h = v.length === 4 ? `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}` : v;
+  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+}
+
+function relativeLuminance([r, g, b]: RGB): number {
+  const lin = (c: number) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function contrastRatio(a: RGB, b: RGB): number {
+  const la = relativeLuminance(a);
+  const lb = relativeLuminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+function mix(a: RGB, b: RGB, t: number): RGB {
+  return [0, 1, 2].map((i) => Math.round(a[i]! + (b[i]! - a[i]!) * t)) as RGB;
+}
+
+/** Darken until the colour reads as text on white and carries white text on a band (≥4.5:1). */
+function ensureTextContrast(color: RGB): RGB {
+  let c = color;
+  for (let i = 0; i < 20 && contrastRatio(c, BASE_C.white) < 4.5; i += 1) c = mix(c, BASE_C.ink, 0.12);
+  return c;
+}
+
+/**
+ * Partner brand colours applied to the report chrome. The primary carries the
+ * band, subtitle, table heads and bullets; the accent carries the ribbon and
+ * section ticks. Status colours (green/amber/red) never change — they mean
+ * something. A brand primary too light for white text is darkened, not
+ * rejected, so the deliverable stays recognisably the partner's.
+ */
+export function paletteForBranding(branding?: ReportBranding | null): Palette {
+  const primary = parseHexColor(branding?.primaryColor);
+  if (!primary) return BASE_C;
+  const safePrimary = ensureTextContrast(primary);
+  const accent = parseHexColor(branding?.accentColor) ?? mix(primary, BASE_C.white, 0.45);
+  return {
+    ...BASE_C,
+    primary: safePrimary,
+    primaryDeep: mix(safePrimary, BASE_C.ink, 0.3),
+    teal: accent,
+    bandText: mix(safePrimary, BASE_C.white, 0.85),
+  };
+}
+
 export type ReportBranding = {
   /** Partner display name; falls back to "Breeze" when null. */
   name: string | null;
@@ -51,6 +137,13 @@ export type ReportBranding = {
   logoDataUrl: string | null;
   /** Logo intrinsic aspect ratio (width / height); used to size without distortion. */
   logoAspect: number | null;
+  /** Partner brand primary as a hex string; null keeps the Breeze palette. */
+  primaryColor?: string | null;
+  /** Partner brand accent (ribbon, section ticks); derived from the primary when null. */
+  accentColor?: string | null;
+  /** Partner contact for the closing "to approve or discuss" line; null hides it. */
+  contactEmail?: string | null;
+  contactName?: string | null;
 };
 
 export type BuildOpts = {
@@ -59,7 +152,7 @@ export type BuildOpts = {
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary;
+  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -85,6 +178,12 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   security_compliance_posture: 'Security & Compliance Posture',
   ai_org_narrative: 'Weekly AI Operations Narrative',
   ai_agent_impact: 'AI Agent Impact',
+  ai_fleet_design: 'Fleet Design',
+  identity_access_review: 'Identity & Access Review',
+  hardware_lifecycle: 'Hardware Lifecycle',
+  threat_detection_review: 'Threat Detection Review',
+  endpoint_management_review: 'Endpoint Management Review',
+  vulnerability_management: 'Vulnerability Management',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -155,19 +254,24 @@ function drawHeaderBand(doc: jsPDF, opts: BuildOpts): void {
   // vector mark + partner/Breeze name. A failed embed degrades to the mark+name.
   let drewLogo = false;
   if (branding?.logoDataUrl) {
-    const logoH = 9;
+    // Fit the logo inside a 9 mm × 60 mm box, preserving its aspect: a tall
+    // mark fills the height, a wide wordmark fills the width and shrinks.
+    const maxH = 9;
+    const maxW = 60;
     const aspect = branding.logoAspect && branding.logoAspect > 0 ? branding.logoAspect : 3;
-    const logoW = Math.min(logoH * aspect, 46);
+    const scale = Math.min(maxH, maxW / aspect) / maxH;
+    const logoH = maxH * scale;
+    const logoW = logoH * aspect;
     const pad = 2;
     const chipW = logoW + pad * 2;
-    const chipH = logoH + pad * 2;
+    const chipH = maxH + pad * 2;
     const chipY = yMid - chipH / 2;
     // White safe-area chip so a dark or transparent partner logo always reads on
     // the brand-colour band (letterhead convention).
     set.fill(doc, C.white);
     doc.roundedRect(PAGE.mx, chipY, chipW, chipH, 1.6, 1.6, 'F');
     try {
-      doc.addImage(branding.logoDataUrl, 'PNG', PAGE.mx + pad, chipY + pad, logoW, logoH, undefined, 'FAST');
+      doc.addImage(branding.logoDataUrl, 'PNG', PAGE.mx + pad, chipY + pad + (maxH - logoH) / 2, logoW, logoH, undefined, 'FAST');
       drewLogo = true;
     } catch {
       // Erase the empty chip and fall back to the Breeze mark + name.
@@ -1067,6 +1171,401 @@ function renderNarrativeReport(doc: jsPDF, narrative: NarrativeSnapshot, opts: B
 }
 
 // ----------------------------------------------------------------------------
+// Fleet Design: title block + one heading per section (server-fixed
+// FLEET_DESIGN_SECTION_KEYS order, FLEET_DESIGN_SECTION_TITLES — never a
+// stored title, never an unknown key), bullets for prose-shaped sections and
+// autoTable grids for tabular ones. Every field of
+// `FleetDesignReportSummary['fleetDesign']` (and everything nested under its
+// optional `outcome`) is optional/defensively read: a legacy or partial
+// snapshot must render without throwing, drawing only what it has.
+//
+// Like `renderNarrativeReport`, this arm draws its OWN chrome per page as it
+// paginates (model/table volume is unbounded up to the schema caps) —
+// `buildReportPdf` does not draw header/footer again after calling it.
+// ----------------------------------------------------------------------------
+
+/** Everything under `FleetDesignReportSummary.fleetDesign`, non-optional. */
+type FleetDesignSnapshot = NonNullable<FleetDesignReportSummary['fleetDesign']>;
+
+function drawFleetDesignFootnote(doc: jsPDF): void {
+  set.text(doc, C.faint);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.text('Proposals only — nothing here is live until a technician applies it.', PAGE.mx, PAGE.footY - 2);
+}
+
+/** Finish the outgoing page's chrome, start a fresh one, and return its content-start y. */
+function fleetDesignPageBreak(doc: jsPDF, opts: BuildOpts): number {
+  drawHeaderBand(doc, opts);
+  drawFooter(doc, opts);
+  drawFleetDesignFootnote(doc);
+  doc.addPage();
+  return PAGE.bandH + 10;
+}
+
+/** Page-break-aware vertical budget check, mirroring `ensureNarrativeRoom` but
+ * with the Fleet Design footnote drawn on the outgoing page. */
+function ensureFleetDesignRoom(doc: jsPDF, opts: BuildOpts, y: number, neededH: number): number {
+  return y + neededH > NARRATIVE_CONTENT_BOTTOM ? fleetDesignPageBreak(doc, opts) : y;
+}
+
+/** `jspdf-autotable` stamps `doc.lastAutoTable.finalY` at runtime but does not
+ * declare it in its shipped types (dist/index.d.ts has no such export). */
+function fleetDesignAutoTableFinalY(doc: jsPDF, fallback: number): number {
+  const t = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
+  return typeof t?.finalY === 'number' ? t.finalY : fallback;
+}
+
+/** Sanitize a possibly-non-string, possibly-absent field the same way a
+ * narrative bullet is sanitized before it can reach jsPDF. */
+function fdText(value: unknown, max = NARRATIVE_BULLET_MAX_CHARS): string {
+  return sanitizeNarrativeText(value, max);
+}
+
+/** Map+sanitize+drop-empty over a value that should be an array but — coming
+ * from an unvalidated jsonb blob (legacy/hand-built snapshots included) —
+ * might not be. */
+function fdList(arr: unknown, mapper: (item: unknown) => string): string[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.map(mapper).filter((s) => s.length > 0);
+}
+
+function fmtPct(n: unknown): string {
+  return typeof n === 'number' && Number.isFinite(n) ? `${Math.round(n * 100)}%` : '—';
+}
+
+/** Shared bullet-list renderer for the Fleet Design report's prose sections
+ * (found/baseline/unsure/automation) — same shape as the narrative bullet
+ * loop: sanitize, wrap, page-break-aware, teal marker dot. */
+function drawFleetDesignBullets(doc: jsPDF, opts: BuildOpts, lines: string[], y: number): number {
+  for (const raw of lines) {
+    const text = fdText(raw);
+    if (!text) continue;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    const wrapped = doc.splitTextToSize(text, PAGE.w - PAGE.mx * 2 - NARRATIVE_BULLET_INDENT) as string[];
+    const blockH = wrapped.length * NARRATIVE_LINE_H;
+    y = ensureFleetDesignRoom(doc, opts, y, blockH);
+    set.fill(doc, C.teal);
+    doc.circle(PAGE.mx + 1.2, y - 1.4, 0.9, 'F');
+    set.text(doc, C.ink);
+    doc.text(wrapped, PAGE.mx + NARRATIVE_BULLET_INDENT, y);
+    y += blockH + NARRATIVE_BULLET_GAP;
+  }
+  return y;
+}
+
+/** Shared autoTable option block for the Fleet Design report's grids — the
+ * posture table's style block (:1319-1340 pre-edit) minus `didParseCell`
+ * (posture-specific cell colouring; nothing here needs it). */
+function drawFleetDesignTable(doc: jsPDF, opts: BuildOpts, head: string[][], body: string[][], y: number): number {
+  autoTable(doc, {
+    startY: y,
+    margin: { top: PAGE.bandH + 6, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
+    head,
+    body,
+    theme: 'grid',
+    rowPageBreak: 'avoid',
+    styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle' },
+    headStyles: { fillColor: C.primary, textColor: C.white, fontStyle: 'bold', fontSize: 7.5, lineColor: C.white, lineWidth: 0.15 },
+    alternateRowStyles: { fillColor: C.zebra },
+    didDrawPage: () => {
+      drawHeaderBand(doc, opts);
+      drawFooter(doc, opts);
+      drawFleetDesignFootnote(doc);
+    },
+  });
+  return fleetDesignAutoTableFinalY(doc, y) + 6;
+}
+
+function drawFleetDesignSubheading(doc: jsPDF, text: string, y: number): number {
+  set.text(doc, C.primary);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.text(text, PAGE.mx, y);
+  return y + 4.5;
+}
+
+function fleetDesignFoundBullets(found: unknown): string[] {
+  const f = (found ?? {}) as { summary?: unknown; findings?: unknown };
+  return [
+    ...fdList(f.summary, (s) => fdText(s)),
+    ...fdList(f.findings, (item) => {
+      const finding = item as { title?: unknown; deviceCount?: unknown; evidence?: unknown };
+      const title = fdText(finding.title);
+      if (!title) return '';
+      const count = typeof finding.deviceCount === 'number' ? finding.deviceCount : null;
+      const countPart = count == null ? '' : ` (${count} device${count === 1 ? '' : 's'})`;
+      const evidence = fdList(finding.evidence, (e) => fdText(e)).join('; ');
+      return evidence ? `${title}${countPart} — ${evidence}` : `${title}${countPart}`;
+    }),
+  ];
+}
+
+function drawFleetDesignFunctionsTable(doc: jsPDF, opts: BuildOpts, functions: unknown, y: number): number {
+  if (!Array.isArray(functions) || functions.length === 0) return y;
+  const body = functions.map((item) => {
+    const f = item as { functionKey?: unknown; label?: unknown; deviceIds?: unknown; confidence?: unknown; evidence?: unknown };
+    const label = fdText(f.label) || fdText(f.functionKey) || '—';
+    const deviceCount = Array.isArray(f.deviceIds) ? f.deviceIds.length : 0;
+    const evidence = fdList(f.evidence, (e) => fdText(e)).join('; ') || '—';
+    return [label, String(deviceCount), fmtPct(f.confidence), evidence];
+  });
+  return drawFleetDesignTable(doc, opts, [['Function', 'Devices', 'Confidence', 'Evidence']], body, y);
+}
+
+function drawFleetDesignMonitoringSection(doc: jsPDF, opts: BuildOpts, monitoring: unknown, y: number): number {
+  if (!Array.isArray(monitoring) || monitoring.length === 0) return y;
+  for (const item of monitoring) {
+    const m = item as { functionKey?: unknown; watches?: unknown; alertRules?: unknown };
+    const label = fdText(m.functionKey) || '—';
+    y = ensureFleetDesignRoom(doc, opts, y, 6);
+    y = drawFleetDesignSubheading(doc, label, y);
+
+    const watches = Array.isArray(m.watches) ? m.watches : [];
+    if (watches.length > 0) {
+      const body = watches.map((w) => {
+        const watch = w as { watchType?: unknown; name?: unknown; alertOnStop?: unknown; autoRestart?: unknown; rationale?: unknown };
+        return [
+          fdText(watch.watchType) || '—',
+          fdText(watch.name) || '—',
+          watch.alertOnStop ? 'Yes' : 'No',
+          watch.autoRestart ? 'Yes' : 'No',
+          fdText(watch.rationale, FLEET_DESIGN_TEXT_MAX_CHARS) || '—',
+        ];
+      });
+      y = drawFleetDesignTable(doc, opts, [['Type', 'Name', 'Alert on stop', 'Auto-restart', 'Rationale']], body, y);
+    }
+
+    const rules = Array.isArray(m.alertRules) ? m.alertRules : [];
+    if (rules.length > 0) {
+      const body = rules.map((r) => {
+        const rule = r as { name?: unknown; severity?: unknown; cooldownMinutes?: unknown; paging?: unknown; rationale?: unknown };
+        return [
+          fdText(rule.name) || '—',
+          fdText(rule.severity) || '—',
+          typeof rule.cooldownMinutes === 'number' ? `${rule.cooldownMinutes}m` : '—',
+          fdText(rule.paging) || '—',
+          fdText(rule.rationale, FLEET_DESIGN_TEXT_MAX_CHARS) || '—',
+        ];
+      });
+      y = drawFleetDesignTable(doc, opts, [['Name', 'Severity', 'Cooldown', 'Paging', 'Rationale']], body, y);
+    }
+  }
+  return y;
+}
+
+function drawFleetDesignRetiredTable(doc: jsPDF, opts: BuildOpts, retired: unknown, y: number): number {
+  if (!Array.isArray(retired) || retired.length === 0) return y;
+  const body = retired.map((item) => {
+    const r = item as { kind?: unknown; itemName?: unknown; policyName?: unknown; reason?: unknown };
+    return [fdText(r.kind) || '—', fdText(r.itemName) || '—', fdText(r.policyName) || '—', fdText(r.reason, FLEET_DESIGN_TEXT_MAX_CHARS) || '—'];
+  });
+  return drawFleetDesignTable(doc, opts, [['Kind', 'Item', 'Policy', 'Reason']], body, y);
+}
+
+function drawFleetDesignAutomationBullets(automation: unknown): string[] {
+  if (!Array.isArray(automation)) return [];
+  const bullets: string[] = [];
+  for (const item of automation) {
+    const a = item as { functionKey?: unknown; playbooks?: unknown; scripts?: unknown };
+    const fk = fdText(a.functionKey) || '—';
+    for (const pb of Array.isArray(a.playbooks) ? a.playbooks : []) {
+      const p = (pb ?? {}) as { builtInName?: unknown; custom?: unknown };
+      if (typeof p.builtInName === 'string') {
+        const name = fdText(p.builtInName);
+        if (name) bullets.push(`${fk}: playbook "${name}"`);
+      } else if (p.custom && typeof p.custom === 'object') {
+        const c = p.custom as { name?: unknown; description?: unknown };
+        const name = fdText(c.name);
+        const desc = fdText(c.description, FLEET_DESIGN_TEXT_MAX_CHARS);
+        if (name) bullets.push(desc ? `${fk}: custom playbook "${name}" — ${desc}` : `${fk}: custom playbook "${name}"`);
+      }
+    }
+    for (const sc of Array.isArray(a.scripts) ? a.scripts : []) {
+      const s = (sc ?? {}) as { name?: unknown; purpose?: unknown };
+      const name = fdText(s.name);
+      const purpose = fdText(s.purpose, FLEET_DESIGN_TEXT_MAX_CHARS);
+      if (name) bullets.push(purpose ? `${fk}: script "${name}" — ${purpose}` : `${fk}: script "${name}"`);
+    }
+  }
+  return bullets;
+}
+
+function drawFleetDesignLegacyTable(doc: jsPDF, opts: BuildOpts, legacy: unknown, y: number): number {
+  if (!Array.isArray(legacy) || legacy.length === 0) return y;
+  const body = legacy.map((item) => {
+    const l = item as { scriptName?: unknown; bucket?: unknown; coveredBy?: unknown; intent?: unknown };
+    return [fdText(l.scriptName) || '—', fdText(l.bucket) || '—', fdText(l.coveredBy) || '—', fdText(l.intent, FLEET_DESIGN_TEXT_MAX_CHARS) || '—'];
+  });
+  return drawFleetDesignTable(doc, opts, [['Script', 'Bucket', 'Covered by', 'Intent']], body, y);
+}
+
+function fleetDesignBaselineBullets(baseline: unknown): string[] {
+  const b = (baseline ?? {}) as { notes?: unknown; numbers?: unknown };
+  const numbers = (b.numbers ?? {}) as { alertsPer100EndpointsPerMonth?: unknown; ticketsPerMonth?: unknown; precursors?: unknown };
+  const bullets: string[] = [];
+  if (typeof numbers.alertsPer100EndpointsPerMonth === 'number') {
+    bullets.push(`Alerts per 100 endpoints per month: ${numbers.alertsPer100EndpointsPerMonth}`);
+  }
+  if (typeof numbers.ticketsPerMonth === 'number') {
+    bullets.push(`Tickets per month: ${numbers.ticketsPerMonth}`);
+  }
+  bullets.push(...fdList(numbers.precursors, (p) => {
+    const precursor = (p ?? {}) as { condition?: unknown; deviceCount?: unknown };
+    const condition = fdText(precursor.condition);
+    if (!condition) return '';
+    const label = titleCase(condition);
+    const count = typeof precursor.deviceCount === 'number' ? precursor.deviceCount : null;
+    return count == null ? label : `${label}: ${count} device${count === 1 ? '' : 's'}`;
+  }));
+  bullets.push(...fdList(b.notes, (n) => fdText(n)));
+  return bullets;
+}
+
+function fleetDesignUnsureBullets(unsure: unknown): string[] {
+  const u = (unsure ?? {}) as {
+    lowConfidenceFunctions?: unknown; unreachableDevices?: unknown; needsHuman?: unknown; roleCorrections?: unknown;
+  };
+  const bullets: string[] = [];
+  bullets.push(...fdList(u.lowConfidenceFunctions, (item) => {
+    const f = (item ?? {}) as { functionKey?: unknown; label?: unknown; deviceIds?: unknown; confidence?: unknown; evidence?: unknown };
+    const label = fdText(f.label) || fdText(f.functionKey);
+    if (!label) return '';
+    const count = Array.isArray(f.deviceIds) ? f.deviceIds.length : 0;
+    const evidence = fdList(f.evidence, (e) => fdText(e)).join('; ');
+    return `Low-confidence function: ${label} — ${count} device${count === 1 ? '' : 's'}, confidence ${fmtPct(f.confidence)}${evidence ? ` — ${evidence}` : ''}`;
+  }));
+  bullets.push(...fdList(u.unreachableDevices, (id) => {
+    const t = fdText(id);
+    return t ? `Unreachable device: ${t}` : '';
+  }));
+  bullets.push(...fdList(u.needsHuman, (n) => fdText(n)));
+  bullets.push(...fdList(u.roleCorrections, (item) => {
+    const r = (item ?? {}) as { deviceId?: unknown; currentRole?: unknown; proposedRole?: unknown; evidence?: unknown };
+    const deviceId = fdText(r.deviceId);
+    if (!deviceId) return '';
+    const current = fdText(r.currentRole) || '—';
+    const proposed = fdText(r.proposedRole) || '—';
+    const evidence = fdList(r.evidence, (e) => fdText(e)).join('; ');
+    return `Role correction: device ${deviceId} ${current} -> ${proposed}${evidence ? ` — ${evidence}` : ''}`;
+  }));
+  return bullets;
+}
+
+/**
+ * W05 (#5655): the server-computed drift between the approved (applied)
+ * design and the live fleet. Drawn FIRST — before the eight sections — because
+ * on a scheduled re-run it is the finding a technician opens the report for.
+ * Rows are read defensively (persisted jsonb) exactly like the sections.
+ */
+function drawFleetDesignDriftSection(doc: jsPDF, opts: BuildOpts, drift: unknown, y: number): number {
+  if (!drift || typeof drift !== 'object') return y;
+  const d = drift as { appliedAt?: unknown; missing?: unknown; extra?: unknown; changed?: unknown };
+  const missing = Array.isArray(d.missing) ? d.missing : [];
+  const extra = Array.isArray(d.extra) ? d.extra : [];
+  const changed = Array.isArray(d.changed) ? d.changed : [];
+  const appliedAt = fdText(d.appliedAt, 10);
+
+  y = ensureFleetDesignRoom(doc, opts, y, 5 + NARRATIVE_LINE_H);
+  y = drawSectionHeading(doc, 'Drift since the approved design', y);
+  const summaryLine = `Design applied ${appliedAt || '—'}: ${missing.length} missing, ${extra.length} extra, ${changed.length} changed.`;
+  y = drawFleetDesignBullets(doc, opts, [summaryLine], y);
+
+  const body: string[][] = [];
+  for (const item of missing) {
+    const m = (item ?? {}) as { functionKey?: unknown; kind?: unknown; name?: unknown };
+    body.push(['Missing', fdText(m.kind) || '—', fdText(m.name) || '—', fdText(m.functionKey) || '—', '—']);
+  }
+  for (const item of changed) {
+    const c = (item ?? {}) as { functionKey?: unknown; kind?: unknown; name?: unknown; field?: unknown; approved?: unknown; live?: unknown };
+    body.push(['Changed', fdText(c.kind) || '—', fdText(c.name) || '—', fdText(c.functionKey) || '—', `${fdText(c.field)}: ${fdText(c.approved)} -> ${fdText(c.live)}`]);
+  }
+  for (const item of extra) {
+    const e = (item ?? {}) as { policyName?: unknown; kind?: unknown; name?: unknown; deviceCount?: unknown };
+    const count = typeof e.deviceCount === 'number' ? `${e.deviceCount} device${e.deviceCount === 1 ? '' : 's'}` : '—';
+    body.push(['Extra', fdText(e.kind) || '—', fdText(e.name) || '—', fdText(e.policyName) || '—', count]);
+  }
+  if (body.length) y = drawFleetDesignTable(doc, opts, [['Drift', 'Kind', 'Item', 'Function / policy', 'Detail']], body, y);
+  return y + NARRATIVE_SECTION_GAP;
+}
+
+function renderFleetDesignReport(doc: jsPDF, fd: FleetDesignSnapshot, opts: BuildOpts): void {
+  const orgName = fdText(fd.orgName, NARRATIVE_NAME_MAX_CHARS);
+  const agentName = fdText(fd.agentName, NARRATIVE_NAME_MAX_CHARS);
+  const siteName = fdText(fd.siteName, NARRATIVE_NAME_MAX_CHARS);
+
+  const metaParts = [`Generated ${opts.generatedAt}`];
+  if (agentName) metaParts.push(`Agent: ${agentName}`);
+  if (siteName) metaParts.push(`Site: ${siteName}`);
+
+  let y = drawTitleBlock(doc, 'Fleet Design', orgName, metaParts.join('   ·   '), PAGE.bandH + 8);
+
+  // Provenance line: a section whose loader failed was never measured, so a
+  // reader must not take a 0 in the baseline as a finding.
+  const unavailable = Array.isArray(fd.unavailable)
+    ? fd.unavailable.map((s) => fdText(s, NARRATIVE_NAME_MAX_CHARS)).filter(Boolean)
+    : [];
+  if (unavailable.length) {
+    set.text(doc, C.faint);
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(8);
+    doc.text(`Not measured: ${unavailable.join(', ')}`, PAGE.mx, y);
+    y += NARRATIVE_LINE_H + 2;
+  }
+
+  // W05: drift first, when present. Not one of the eight submission sections.
+  if (fd.drift) y = drawFleetDesignDriftSection(doc, opts, fd.drift, y);
+
+  // Closed, exhaustive iteration over FLEET_DESIGN_SECTION_KEYS (never a
+  // stored key order) is what makes an unknown/renamed key structurally
+  // unrenderable. `sections` itself is only present when `outcome` is —
+  // an outcome-less snapshot (old/partial persisted summary) renders just
+  // the title block above, which is the intended degraded-but-safe result.
+  const sections = fd.outcome?.sections;
+  if (sections) {
+    for (const key of FLEET_DESIGN_SECTION_KEYS) {
+      y = ensureFleetDesignRoom(doc, opts, y, 5 + NARRATIVE_LINE_H);
+      y = drawSectionHeading(doc, FLEET_DESIGN_SECTION_TITLES[key], y);
+      switch (key) {
+        case 'found':
+          y = drawFleetDesignBullets(doc, opts, fleetDesignFoundBullets(sections.found), y);
+          break;
+        case 'functions':
+          y = drawFleetDesignFunctionsTable(doc, opts, sections.functions, y);
+          break;
+        case 'monitoring':
+          y = drawFleetDesignMonitoringSection(doc, opts, sections.monitoring, y);
+          break;
+        case 'retired':
+          y = drawFleetDesignRetiredTable(doc, opts, sections.retired, y);
+          break;
+        case 'automation':
+          y = drawFleetDesignBullets(doc, opts, drawFleetDesignAutomationBullets(sections.automation), y);
+          break;
+        case 'legacy':
+          y = drawFleetDesignLegacyTable(doc, opts, sections.legacy, y);
+          break;
+        case 'baseline':
+          y = drawFleetDesignBullets(doc, opts, fleetDesignBaselineBullets(sections.baseline), y);
+          break;
+        case 'unsure':
+          y = drawFleetDesignBullets(doc, opts, fleetDesignUnsureBullets(sections.unsure), y);
+          break;
+      }
+      y += NARRATIVE_SECTION_GAP;
+    }
+  }
+
+  // Chrome for the final page — every earlier page got its chrome from
+  // fleetDesignPageBreak()/drawFleetDesignTable()'s didDrawPage when we
+  // rolled off of it.
+  drawHeaderBand(doc, opts);
+  drawFooter(doc, opts);
+  drawFleetDesignFootnote(doc);
+}
+
+// ----------------------------------------------------------------------------
 // Per-device detail table (curated columns + per-cell colour for posture).
 // ----------------------------------------------------------------------------
 
@@ -1436,8 +1935,30 @@ function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: 
  * band + footer) is applied to every page.
  */
 export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
+  C = paletteForBranding(opts.branding);
+  try {
+    return buildReportPdfWithPalette(rows, opts);
+  } finally {
+    C = BASE_C;
+  }
+}
+
+function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
   const doc = new jsPDF({ orientation: 'landscape' });
   const records = rows as Record<string, unknown>[];
+  // Document metadata: the title a reader sees in their viewer tab and the
+  // language a screen reader announces. Cheap, and the only structure jsPDF
+  // can give an assistive reader.
+  const orgName = (opts.summary as { org?: { name?: string } } | undefined)?.org?.name?.trim();
+  if (typeof doc.setProperties === 'function') {
+    doc.setProperties({
+      title: orgName ? `${reportTypeLabel(opts.reportType)} report for ${orgName}` : `${reportTypeLabel(opts.reportType)} report`,
+      subject: `${reportTypeLabel(opts.reportType)} report prepared ${opts.generatedAt}`,
+      author: opts.branding?.name?.trim() || 'Breeze',
+      creator: 'Breeze RMM',
+    });
+  }
+  if (typeof doc.setLanguage === 'function') doc.setLanguage('en-US');
 
   // SAFE guard is intentionally asymmetric: a summary carrying an exec shape
   // ('devices' key) must not enter the posture cover, but we don't require any
@@ -1479,6 +2000,168 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
     // schema caps and may paginate; buildReportPdf must not draw a second,
     // conflicting header/footer over whatever page rendering left current.
     renderNarrativeReport(doc, (opts.summary as OrgNarrativeReportSummary).narrative!, opts);
+  } else if (
+    opts.reportType === 'ai_fleet_design'
+    && opts.summary
+    && (opts.summary as FleetDesignReportSummary).fleetDesign
+  ) {
+    // Same self-contained-chrome rationale as the narrative arm above:
+    // section/table volume is unbounded up to the schema caps and may
+    // paginate on its own.
+    renderFleetDesignReport(doc, (opts.summary as FleetDesignReportSummary).fleetDesign!, opts);
+  } else if (
+    opts.reportType === 'hardware_lifecycle'
+    && opts.summary
+    && Array.isArray((opts.summary as HardwareLifecycleSummary).rows)
+  ) {
+    // Self-contained chrome: the plan table paginates on its own (didDrawPage)
+    // and the sections after it add pages as needed.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    renderHardwareLifecycleReport(
+      doc,
+      opts.summary as HardwareLifecycleSummary,
+      { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null, contactEmail: opts.branding?.contactEmail ?? null, contactName: opts.branding?.contactName ?? null },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'threat_detection_review'
+    && opts.summary
+    // `!= null` FIRST: `typeof null === 'object'`, so a summary carrying an
+    // explicit `coverage: null` would otherwise enter the arm and render the
+    // reassuring "covers the whole of this period" default — worse than
+    // falling through to the generic renderer, which at least does not claim
+    // coverage it cannot vouch for.
+    && (opts.summary as ThreatDetectionSummary).coverage != null
+    && typeof (opts.summary as ThreatDetectionSummary).coverage === 'object'
+  ) {
+    // Self-contained chrome: the detection table paginates on its own
+    // (didDrawPage) and the sections after it add pages as needed.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    threatDetectionPdf.renderThreatDetectionReport(
+      doc,
+      opts.summary as ThreatDetectionSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'endpoint_management_review'
+    && opts.summary
+    && Array.isArray((opts.summary as EndpointManagementSummary).rows)
+  ) {
+    // #5784 W03. Self-contained chrome for the same reason as the arm above:
+    // the device, trend and licence tables paginate on their own.
+    //
+    // A type with NO arm here silently falls through to renderGenericReport,
+    // which drops the entire designed summary and prints a plain row table —
+    // a plausible-looking, wrong PDF on both the portal (renderRunPdf) and the
+    // scheduled-email path. reportPdf.endpointManagement.test.ts is what
+    // catches that regression.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    renderEndpointManagementReport(
+      doc,
+      opts.summary as EndpointManagementSummary,
+      { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'vulnerability_management'
+    && opts.summary
+    && typeof (opts.summary as VulnerabilityManagementSummary).open === 'object'
+  ) {
+    // #5784 W04. WITHOUT this arm the type falls through to
+    // `renderGenericReport` below, which prints the rows as a plain table and
+    // silently drops the whole designed summary — the exceptions section
+    // included. Self-contained chrome: both tables paginate on their own.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    renderVulnerabilityManagementReport(
+      doc,
+      opts.summary as VulnerabilityManagementSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'identity_access_review'
+    && opts.summary
+    // #5784 W06. `!= null` FIRST, for the same reason as the W02 arm above:
+    // `typeof null === 'object'`, so a snapshot carrying an explicit
+    // `coverage: null` would otherwise enter the arm and render the reassuring
+    // "covers the whole of this period" default. Falling through to the generic
+    // renderer at least claims no coverage it cannot vouch for.
+    //
+    // A type with NO arm here falls through to renderGenericReport, which prints
+    // the rows as a plain table and DROPS the whole designed summary. On a
+    // PII-bearing identity artifact that is not merely an ugly PDF: the caveats
+    // that keep it honest disappear while the sign-in rows remain.
+    && (opts.summary as IdentityAccessSummary).coverage != null
+    && typeof (opts.summary as IdentityAccessSummary).coverage === 'object'
+  ) {
+    // Self-contained chrome: the admin sign-in table paginates on its own
+    // (didDrawPage) and the sections after it add pages as needed.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    identityAccessPdf.renderIdentityAccessReport(
+      doc,
+      opts.summary as IdentityAccessSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
   } else {
     renderGenericReport(doc, records, opts);
   }

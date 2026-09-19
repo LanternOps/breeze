@@ -57,8 +57,8 @@ describe('m365ConsentSessions schema', () => {
     const cfg = getTableConfig(m365ConsentSessions);
     expect(cfg.columns.map((c) => c.name).sort()).toEqual([
       'code_verifier', 'connection_id', 'consent_attempt_id', 'created_at',
-      'expires_at', 'id', 'nonce', 'org_id', 'phase', 'profile', 'state_hash',
-      'tenant_hint_hash', 'user_id',
+      'expires_at', 'id', 'nonce', 'org_id', 'phase', 'profile', 'purpose',
+      'state_hash', 'tenant_hint_hash', 'user_id',
     ].sort());
     expect(cfg.columns.find((c) => c.name === 'state_hash')?.notNull).toBe(true);
     expect(cfg.columns.find((c) => c.name === 'profile')?.notNull).toBe(true);
@@ -78,6 +78,7 @@ describe('m365ConsentSessions schema', () => {
       'm365_consent_sessions_phase_check',
       'm365_consent_sessions_phase_fields_check',
       'm365_consent_sessions_profile_check',
+      'm365_consent_sessions_purpose_check',
     ]);
   });
 });

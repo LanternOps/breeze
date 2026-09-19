@@ -19,7 +19,7 @@ export const networkErrorsHandler: ConditionHandler = {
     const metrics = await getRecentMetrics(deviceId, windowMinutes);
 
     if (metrics.length === 0) {
-      return { passed: false, description: 'No metrics available for network errors' };
+      return { passed: false, description: 'No metrics available for network errors', dataAvailable: false };
     }
 
     // Sum errors across all metrics in the window

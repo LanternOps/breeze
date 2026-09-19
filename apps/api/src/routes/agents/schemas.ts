@@ -346,6 +346,7 @@ export const heartbeatSchema = z.object({
     // tolerant contract: a malformed value drops this field alone, since the
     // route treats anything other than exactly 1 as "not capable".
     revocationLeaseProtocolVersion: z.number().int().optional().catch(undefined),
+    desktopFenceProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),
@@ -396,6 +397,13 @@ export const heartbeatSchema = z.object({
   // 400 the heartbeat), but changes here are offer-load-bearing.
   agentEdition: z.enum(['hosted', 'self-host']).optional().catch(undefined),
   migrationRequired: z.boolean().optional().catch(undefined),
+  // Bare-metal recovery W04a: the rebuild engine leaves a marker on the
+  // restored disk; the agent sends it until the server acknowledges the
+  // check-in (recoveryMarkerAck: true in the response), then deletes it.
+  recoveryMarker: z.object({
+    recoveryId: z.string().uuid(),
+    nonce: z.string().regex(/^[0-9a-f]{64}$/),
+  }).optional().catch(undefined),
 });
 
 // ============================================

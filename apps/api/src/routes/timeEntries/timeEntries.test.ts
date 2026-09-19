@@ -173,6 +173,15 @@ describe('POST /bulk-approve', () => {
 });
 
 describe('PATCH /:id and DELETE /:id', () => {
+  it('rejects billed as an invoice-only lifecycle state before the update service', async () => {
+    const res = await timeEntriesRoutes.request(`/${TIME_ENTRY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ billingStatus: 'billed' })
+    });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.updateTimeEntry).not.toHaveBeenCalled();
+  });
   it('PATCH /:id passes the parsed update body and actor to the service', async () => {
     serviceMocks.updateTimeEntry.mockResolvedValue({ id: TIME_ENTRY_ID, description: 'fixed' });
     const res = await timeEntriesRoutes.request(`/${TIME_ENTRY_ID}`, {
@@ -218,6 +227,22 @@ describe('PATCH /:id and DELETE /:id', () => {
     const res = await timeEntriesRoutes.request(`/${TIME_ENTRY_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ code: 'ENTRY_NOT_FOUND' });
+  });
+});
+
+describe('POST /time-entries billed-state admission', () => {
+  it('rejects billed before the create service', async () => {
+    const res = await timeEntriesRoutes.request('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        startedAt: '2026-06-11T09:00:00Z',
+        endedAt: '2026-06-11T09:30:00Z',
+        billingStatus: 'billed'
+      })
+    });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.createTimeEntry).not.toHaveBeenCalled();
   });
 });
 

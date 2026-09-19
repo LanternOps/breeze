@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// #5645: every inline release hands the handler the released intent's decision
+// record (`approvalScope` + `decidedVia`) on the execution context — the same
+// bag the durable worker builds. The default mocked intent row below carries
+// this record, so the terminal return of a won release is asserted against it.
+const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
+const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { db } from '../db';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
+import { checkTenantToolRateLimit } from './toolSources/guardrails';
+import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
@@ -75,6 +84,14 @@ vi.mock('./aiGuardrails', () => ({
   checkGuardrails: vi.fn(),
   checkToolPermission: vi.fn(),
   checkToolRateLimit: vi.fn(),
+  checkPermissionRequirements: vi.fn(),
+}));
+
+// Real guardrailCheckForTenantTool/tenantToolPermissionRequirement (pure,
+// no side effects) — only checkTenantToolRateLimit (redis) is mocked.
+vi.mock('./toolSources/guardrails', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./toolSources/guardrails')>()),
+  checkTenantToolRateLimit: vi.fn(),
 }));
 
 const mockWriteAuditEvent = vi.fn();
@@ -158,6 +175,13 @@ const mockRequiresDurableRelease = vi.fn((_name: string) => false);
 vi.mock('./actionIntents/durableRelease', () => ({
   requiresDurableRelease: (name: string) => mockRequiresDurableRelease(name),
   DURABLE_RELEASE_ONLY_TOOLS: new Set<string>(),
+}));
+
+// W04 (#5612): the lane's restore-checkpoint release precondition, mocked so
+// its transitive scriptDispatch/schema imports never reach the partial
+// schema mock in this file.
+vi.mock('./actionIntents/laneCheckpoint', () => ({
+  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
 }));
 
 vi.mock('./actionIntents/revalidateRelease', () => ({
@@ -285,8 +309,29 @@ function makeActiveSession(overrides: Record<string, unknown> = {}) {
     toolUseIdQueue: ['tool-use-1'],
     auditSnapshot: null,
     allowedTools: undefined,
+    tenantTools: new Map(),
     ...overrides,
   } as any;
+}
+
+function makeTenantToolDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
+  return {
+    id: 'tool-1',
+    sourceId: 'source-1',
+    sourceName: 'Hudu',
+    sourceKind: 'mcp',
+    ownerRef: { orgId: 'org-1', partnerId: null },
+    qualifiedName: 'hudu__get_asset',
+    name: 'get_asset',
+    description: 'Get an asset',
+    inputSchema: { type: 'object' },
+    tier: 1,
+    revision: 'rev-1',
+    rateLimitPerMinute: 60,
+    validate: () => ({ success: true }),
+    definition: { name: 'hudu__get_asset', description: 'Get an asset', input_schema: { type: 'object' } },
+    ...overrides,
+  };
 }
 
 // Typed as the real snapshot so an omitted field is a COMPILE error rather
@@ -643,21 +688,10 @@ describe('runPreFlightChecks', () => {
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth);
   });
 
-  // --- Remaining budget ---
+  // --- Durable budget handoff ---
 
-  it('returns remaining budget as maxBudgetUsd', async () => {
+  it('does not return an advisory remaining-budget snapshot', async () => {
     mockGetRemainingBudgetUsd.mockResolvedValue(42.5);
-
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.maxBudgetUsd).toBe(42.5);
-    }
-  });
-
-  it('sets maxBudgetUsd to undefined when remaining budget is null', async () => {
-    mockGetRemainingBudgetUsd.mockResolvedValue(null);
 
     const result = await runPreFlightChecks('session-1', 'hello', auth);
 
@@ -665,14 +699,7 @@ describe('runPreFlightChecks', () => {
     if (result.ok) {
       expect(result.maxBudgetUsd).toBeUndefined();
     }
-  });
-
-  it('returns error when getRemainingBudgetUsd throws', async () => {
-    mockGetRemainingBudgetUsd.mockRejectedValue(new Error('DB timeout'));
-
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result).toEqual({ ok: false, error: 'Unable to verify spending budget. Please try again later.' });
+    expect(mockGetRemainingBudgetUsd).not.toHaveBeenCalled();
   });
 
   // --- Successful result ---
@@ -690,7 +717,7 @@ describe('runPreFlightChecks', () => {
       expect(result.session).toEqual(session);
       expect(result.sanitizedContent).toBe('clean input');
       expect(result.systemPrompt).toBeDefined();
-      expect(result.maxBudgetUsd).toBe(25.0);
+      expect(result.maxBudgetUsd).toBeUndefined();
       expect(result.resolved).toEqual({
         source: 'platform',
         apiKey: 'platform-key',
@@ -732,6 +759,156 @@ describe('createSessionPreToolUse', () => {
       status: 'executing',
     }));
     expect(waitForApproval).not.toHaveBeenCalled();
+  });
+
+  describe('Task A10: tenant (BYO MCP) tools', () => {
+    beforeEach(() => {
+      vi.mocked(checkPermissionRequirements).mockResolvedValue(null);
+      vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
+    });
+
+    it('a non-registered, non-tenant tool name is denied as Unknown tool', async () => {
+      const session = makeActiveSession();
+      const result = await createSessionPreToolUse(session)('not_a_real_tool', {});
+      expect(result).toEqual({ allowed: false, error: 'Unknown tool: not_a_real_tool' });
+    });
+
+    it('allows a tier-1 tenant tool after checkPermissionRequirements resolves null', async () => {
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+      const session = makeActiveSession({ tenantTools: new Map([[descriptor.qualifiedName, descriptor]]) });
+
+      const result = await createSessionPreToolUse(session)('hudu__get_asset', { id: 'a-1' });
+
+      expect(result).toEqual({ allowed: true, intentId: undefined, context: undefined });
+      expect(checkPermissionRequirements).toHaveBeenCalledWith(
+        session.auth,
+        [{ resource: 'external_tools', action: 'use' }],
+      );
+      expect(checkTenantToolRateLimit).toHaveBeenCalledWith(descriptor, session.auth.user.id);
+      // Never routed through the core-tool RBAC/rate-limit checks.
+      expect(checkToolPermission).not.toHaveBeenCalled();
+      expect(checkToolRateLimit).not.toHaveBeenCalled();
+    });
+
+    it('denies a tenant tool when checkPermissionRequirements returns a denial string', async () => {
+      vi.mocked(checkPermissionRequirements).mockResolvedValue('Insufficient permissions: requires external_tools.use');
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+      const session = makeActiveSession({ tenantTools: new Map([[descriptor.qualifiedName, descriptor]]) });
+
+      const result = await createSessionPreToolUse(session)('hudu__get_asset', {});
+
+      expect(result).toEqual({ allowed: false, error: 'Insufficient permissions: requires external_tools.use' });
+    });
+
+    // Tool catalog W01 PR B (#5216), Task B4: a tier-3 tenant tool takes the
+    // durable action-intents flow, carrying the external binding so release
+    // revalidation can reload the exact row + revision the approver saw.
+    describe('tier-3 tenant tools route through action intents (PR B)', () => {
+      beforeEach(() => {
+        // Same release-path scaffolding as the 'Tier 3: durable action-intents
+        // backing' suite below (revalidation mocked ok; the inline
+        // release-win system read returns a non-null row).
+        mockCreateActionIntent.mockReset();
+        mockWaitForIntentDecision.mockReset();
+        mockTransitionIntent.mockReset();
+        mockRevalidateApprovedIntentForRelease.mockReset();
+        mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} } as IntentReleaseRevalidation);
+        const selectChain: Record<string, unknown> = {
+          from: vi.fn(() => selectChain),
+          where: vi.fn(() => selectChain),
+          limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
+        };
+        vi.mocked(db.select).mockReturnValue(selectChain as any);
+      });
+
+      const tier3 = () => makeTenantToolDescriptor({
+        id: 'tool-3',
+        qualifiedName: 'hudu__create_asset',
+        name: 'create_asset',
+        tier: 3,
+        revision: 'rev-7',
+        sourceName: 'Hudu',
+      });
+
+      it('mints a chat intent with the externalTool binding and denies when the approver rejects', async () => {
+        const descriptor = tier3();
+        mockInsertReturning({ id: 'exec-ext-1' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-ext-1', approvalRequestIds: ['appr-ext-1'] }));
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+        const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+        vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+        const session = makeActiveSession({
+          approvalMode: 'auto_approve',
+          tenantTools: new Map([[descriptor.qualifiedName, descriptor]]),
+        });
+
+        const result = await createSessionPreToolUse(session)('hudu__create_asset', { name: 'Printer 3' });
+
+        expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+        expect(mockCreateActionIntent).toHaveBeenCalledWith(session.auth, expect.objectContaining({
+          toolName: 'hudu__create_asset',
+          input: { name: 'Printer 3' },
+          source: 'chat',
+          orgId: 'org-1',
+          reason: 'hudu__create_asset — external tool from Hudu',
+          externalTool: { toolSourceToolId: 'tool-3', revision: 'rev-7', sourceName: 'Hudu' },
+        }));
+        // Never the core classifier / RBAC for a qualified name.
+        expect(checkGuardrails).not.toHaveBeenCalled();
+        expect(checkToolPermission).not.toHaveBeenCalled();
+        expect(checkPermissionRequirements).toHaveBeenCalledWith(session.auth, [{ resource: 'external_tools', action: 'write' }]);
+        expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+          type: 'approval_required',
+          executionId: 'exec-ext-1',
+          approvalRequestId: 'appr-ext-1',
+          toolName: 'hudu__create_asset',
+          approvalScope: 'supervised',
+          intentBacked: true,
+        }));
+      });
+
+      it('allows the call once the intent is approved and the session wins the release CAS', async () => {
+        const descriptor = tier3();
+        mockInsertReturning({ id: 'exec-ext-2' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-ext-2', approvalRequestIds: ['appr-ext-2'] }));
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+        vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+        const session = makeActiveSession({
+          approvalMode: 'per_step',
+          tenantTools: new Map([[descriptor.qualifiedName, descriptor]]),
+        });
+
+        const result = await createSessionPreToolUse(session)('hudu__create_asset', { name: 'Printer 3' });
+
+        expect(result).toEqual({ allowed: true, intentId: 'intent-ext-2', context: RELEASED_CONTEXT });
+        expect(mockTransitionIntent).toHaveBeenCalledWith(
+          'intent-ext-2', 'approved', 'executing',
+          expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+          { requireNotExpired: 'release' },
+        );
+        expect(mockRevalidateApprovedIntentForRelease).toHaveBeenCalled();
+      });
+
+      it('never passes externalTool for a core tool', async () => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
+        } as any);
+        mockInsertReturning({ id: 'exec-core' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-core', approvalRequestIds: ['appr-core'] }));
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+        const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+        vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+        const session = makeActiveSession({ approvalMode: 'per_step', tenantTools: new Map([[tier3().qualifiedName, tier3()]]) });
+
+        await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+        const input = mockCreateActionIntent.mock.calls[0]?.[1] as Record<string, unknown>;
+        expect(input.toolName).toBe('execute_command');
+        expect(input).not.toHaveProperty('externalTool');
+      });
+    });
   });
 
   describe('#3130: read-only Tier 2 auto-executes under per_step', () => {
@@ -929,7 +1106,7 @@ describe('createSessionPreToolUse', () => {
       const selectChain: Record<string, unknown> = {
         from: vi.fn(() => selectChain),
         where: vi.fn(() => selectChain),
-        limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+        limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
       };
       vi.mocked(db.select).mockReturnValue(selectChain as any);
     });
@@ -1139,7 +1316,7 @@ describe('createSessionPreToolUse', () => {
       // The tier-3 branch now threads the created intent id back on the
       // terminal return (Task 6) — this is what lets postToolUse seal
       // against the right intent without relying solely on the WeakMap.
-      expect(result).toEqual({ allowed: true, intentId: 'intent-2' });
+      expect(result).toEqual({ allowed: true, intentId: 'intent-2', context: RELEASED_CONTEXT });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: 'release' });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
@@ -1278,7 +1455,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true, intentId: 'intent-6' });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-6', context: RELEASED_CONTEXT });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -1330,7 +1507,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const pre = await createSessionPreToolUse(session)('execute_command', {});
-      expect(pre).toEqual({ allowed: true, intentId: opts.intentId });
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
 
       // Only the TERMINAL CAS loses.
       mockTransitionIntent.mockClear();
@@ -1439,7 +1616,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
       const pre = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
-      expect(pre).toEqual({ allowed: true, intentId: opts.intentId });
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
 
       await createSessionPostToolUse(session)(
         'execute_command',
@@ -1535,7 +1712,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true, intentId: 'intent-7' });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-7', context: RELEASED_CONTEXT });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -1883,7 +2060,8 @@ describe('createSessionPreToolUse', () => {
       expect(result).toEqual({ allowed: true });
       // Only the allowlist check moved to the exposed name. Tier, RBAC and the
       // audit row still describe the capability that actually runs.
-      expect(checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: 'script-1' });
+      // Third arg is the proposal guardrail context — undefined for a library run.
+      expect(checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: 'script-1' }, undefined);
       expect(checkToolPermission).toHaveBeenCalledWith(
         'run_script',
         { scriptId: 'script-1' },
@@ -2476,7 +2654,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent-legacy', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent-legacy', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     mockInsertReturning({ id: 'exec-legacy' });
@@ -2490,7 +2668,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
 
     // Proves the tier-3 branch genuinely ran (created a real intent and won
     // the release CAS) rather than being refused as an unknown tool.
-    expect(preResult).toEqual({ allowed: true, intentId: 'intent-legacy' });
+    expect(preResult).toEqual({ allowed: true, intentId: 'intent-legacy', context: RELEASED_CONTEXT });
     expect(mockCreateActionIntent).toHaveBeenCalled();
 
     mockTransitionIntent.mockClear();
@@ -2961,7 +3139,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     vi.mocked(db.update).mockReturnValue({
@@ -2990,7 +3168,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
 
-    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-adv' });
+    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-adv', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
       type: 'plan_step_start',
@@ -3429,6 +3607,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
           actionName: 'execute_command',
           arguments: { command: 'whoami' },
           effectDigest: null,
+          approvalScope: 'supervised',
+          decidedVia: 'session_tap',
         },
       ]),
     };
@@ -3441,12 +3621,17 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
 
-    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-digest-null' });
+    // #5645: the inline release, like the durable worker, ALWAYS hands the
+    // handler the released intent's decision record (approval_method is
+    // derived from it) — but nothing was verified, so no verified material.
+    expect(result).toEqual({
+      allowed: true,
+      intentId: 'intent-plan-digest-null',
+      context: { releaseDecision: { approvalScope: 'supervised', decidedVia: 'session_tap' } },
+    });
     expect(session.currentPlanStepIndex).toBe(1);
     expect(mockComputeEffectDigest).not.toHaveBeenCalled();
-    // Nothing was verified, so nothing is handed to the handler — the
-    // no-context path must stay byte-identical for every unpinned tool call.
-    expect((result as { context?: unknown }).context).toBeUndefined();
+    expect((result as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript).toBeUndefined();
     // No content_changed CAS — only the approved -> executing CAS ran.
     expect(mockTransitionIntent).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -3484,6 +3669,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
           actionName: 'execute_command',
           arguments: { command: 'whoami' },
           effectDigest: 'stored-digest-abc',
+          approvalScope: 'four_eyes',
+          decidedVia: 'webauthn_platform',
         },
       ]),
     };
@@ -3510,6 +3697,9 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // resolved, so a re-read cannot masquerade as the verified one.
     expect((result as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript)
       .toBe(verifiedRunScript);
+    // #5645: the decision record rides ALONGSIDE the verified material.
+    expect((result as { context?: { releaseDecision?: unknown } }).context?.releaseDecision)
+      .toEqual({ approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' });
   });
 
   // Regression guards restored from PR #2853. Task 1 necessarily inverted the
@@ -3541,7 +3731,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // Step 0: effective tier 3 — goes through the durable intent, wins the
     // release CAS, and is authorized. The index must land on 1.
     const first = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
-    expect(first).toEqual({ allowed: true, intentId: 'intent-plan-seq-0' });
+    expect(first).toEqual({ allowed: true, intentId: 'intent-plan-seq-0', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
 
     // Step 1: effective tier 2, non-secret — eligible for the plan shortcut.
@@ -3593,7 +3783,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     });
 
     const preResult = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
-    expect(preResult).toEqual({ allowed: true, intentId: 'intent-plan-end' });
+    expect(preResult).toEqual({ allowed: true, intentId: 'intent-plan-end', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
 
     mockTransitionIntent.mockClear();
@@ -3649,7 +3839,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     vi.mocked(db.update).mockReturnValue({

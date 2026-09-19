@@ -8,6 +8,8 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_PAGE_COUNT = 20;
 const DEFAULT_MAX_ITEM_COUNT = 1_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024;
+const DEFAULT_SYNC_REQUEST_TIMEOUT_MS = 30_000;
+const RETRYABLE_STATUS = new Set([429, 503]);
 
 export type GraphClientErrorCode =
   | 'graph_request_invalid'
@@ -37,6 +39,32 @@ export interface GraphTenantObservation {
   readonly observedGrants: readonly CanonicalAppRoleAssignment[] | null;
 }
 
+export type GraphSyncStopReason = 'complete' | 'max_pages' | 'max_items' | 'paused' | 'deadline';
+
+export interface GraphSyncRetryPolicy {
+  maxAttempts: number;        // total attempts per page, including the first
+  cumulativeBudgetMs: number; // total time spent sleeping across one page set
+  fixedBackoffMs?: number;    // when set, ignore Retry-After (CA policies)
+}
+
+export interface GraphSyncLimits {
+  maxItems: number;
+  maxPages: number;
+  maxResponseBytes: number;
+  deadlineAt: number;             // epoch ms — hard cancellation point
+  perRequestTimeoutMs?: number;   // default 30_000
+  retry?: GraphSyncRetryPolicy;   // default { maxAttempts: 3, cumulativeBudgetMs: 60_000 }
+}
+
+export interface GraphSyncPageSet {
+  items: Record<string, unknown>[];
+  stopReason: GraphSyncStopReason;
+  nextLink?: string;              // present whenever stopReason !== 'complete' and Graph offered one
+  pages: number;
+}
+
+const DEFAULT_SYNC_RETRY: GraphSyncRetryPolicy = { maxAttempts: 3, cumulativeBudgetMs: 60_000 };
+
 export interface MicrosoftGraphClient {
   probeTenant(input: {
     tenantId: string;
@@ -55,6 +83,14 @@ export interface MicrosoftGraphClient {
     maxItems: number;
     maxPages: number;
   }): Promise<{ items: Record<string, unknown>[]; truncated: boolean }>;
+  readSyncCollection(input: {
+    accessToken: OpaqueAccessToken;
+    path: string;                   // '/users' — also the expected nextLink path
+    query?: Record<string, string>;
+    startUrl?: string;              // resume point from a decrypted continuation
+    limits: GraphSyncLimits;
+    beforePage?: () => boolean;     // false ⇒ stop now, hand back nextLink (the sign-in limiter)
+  }): Promise<GraphSyncPageSet>;
 }
 
 interface GraphClientConfig {
@@ -67,6 +103,8 @@ interface GraphClientConfig {
 
 interface GraphClientDependencies {
   fetch?: typeof fetch;
+  now?: () => number;
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 interface RequestBudget {
@@ -289,6 +327,79 @@ export function createMicrosoftGraphClient(
       throw failure('graph_transport_failed');
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  const nowMs = dependencies.now ?? (() => Date.now());
+  const sleepImpl = dependencies.sleep ?? ((ms, signal) => new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(failure('graph_request_timeout')); return; }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(failure('graph_request_timeout'));
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  }));
+
+  interface SyncRequestOptions {
+    maxResponseBytes: number;
+    perRequestTimeoutMs: number;
+    retry: GraphSyncRetryPolicy;
+    deadlineAt: number;
+    deadlineSignal: AbortSignal;
+  }
+
+  /**
+   * One page fetch under the sync profile: retries 429/503 while a policy
+   * budget allows, composes the per-request timeout with the whole-call
+   * deadline signal so an expiring deadline cancels the in-flight fetch, and
+   * charges bytes against the caller's cumulative budget (NOT the client-wide
+   * 512 KiB interactive one).
+   */
+  async function syncRequest(
+    url: string,
+    accessToken: OpaqueAccessToken,
+    budget: RequestBudget,
+    limits: SyncRequestOptions,
+    throttleSpentMs: { value: number },
+  ): Promise<unknown> {
+    for (let attempt = 1; ; attempt += 1) {
+      const timeout = AbortSignal.timeout(limits.perRequestTimeoutMs);
+      const signal = AbortSignal.any([timeout, limits.deadlineSignal]);
+      let response: Response;
+      try {
+        response = await fetchImpl(url, {
+          method: 'GET',
+          redirect: 'error',
+          headers: { authorization: `Bearer ${accessToken}` },
+          signal,
+        });
+      } catch (error) {
+        if (error instanceof GraphClientError) throw error;
+        throw failure(signal.aborted ? 'graph_request_timeout' : 'graph_transport_failed');
+      }
+
+      if (RETRYABLE_STATUS.has(response.status)) {
+        // Do not charge a throttle body against the byte budget.
+        await response.body?.cancel().catch(() => {});
+        const waitMs = limits.retry.fixedBackoffMs ?? retryAfterSecondsFromHeader(response) * 1_000;
+        const outOfAttempts = attempt >= limits.retry.maxAttempts;
+        const outOfBudget = throttleSpentMs.value + waitMs > limits.retry.cumulativeBudgetMs;
+        const pastDeadline = nowMs() + waitMs + limits.perRequestTimeoutMs > limits.deadlineAt;
+        if (outOfAttempts || outOfBudget || pastDeadline) {
+          throw new GraphClientError('graph_throttled', Math.min(300, Math.max(1, Math.ceil(waitMs / 1_000))));
+        }
+        throttleSpentMs.value += waitMs;
+        await sleepImpl(waitMs, limits.deadlineSignal);
+        continue;
+      }
+
+      const responseBody = await readBoundedBody(response, budget, limits.maxResponseBytes);
+      if (!response.ok) throw readFailure(response, responseBody);
+      return parseJson(responseBody);
     }
   }
 
@@ -516,6 +627,85 @@ export function createMicrosoftGraphClient(
           : fixedCollectionNextLink(page.nextLink, expectedPath);
       }
       return { items, truncated };
+    },
+
+    async readSyncCollection(input) {
+      const { limits } = input;
+      if (!configValid
+        || typeof input.accessToken !== 'string'
+        || !input.accessToken
+        || !input.path.startsWith('/')
+        || !positiveInteger(limits.maxItems)
+        || !positiveInteger(limits.maxPages)
+        || !positiveInteger(limits.maxResponseBytes)
+        || !Number.isSafeInteger(limits.deadlineAt)) {
+        throw failure('graph_request_invalid');
+      }
+      const expectedPath = `/v1.0${input.path}`;
+      const perRequestTimeoutMs = limits.perRequestTimeoutMs ?? DEFAULT_SYNC_REQUEST_TIMEOUT_MS;
+      const retry = limits.retry ?? DEFAULT_SYNC_RETRY;
+      const budget: RequestBudget = { bytes: 0, requests: 0, items: 0 };
+      const throttleSpentMs = { value: 0 };
+      const deadline = new AbortController();
+      // The OS timer that actually enforces the deadline against an in-flight
+      // request MUST be driven by the real wall clock — setTimeout cannot take
+      // an injected fake clock — even when `dependencies.now` is overridden
+      // for the pre-page check below. In production the two coincide.
+      const remaining = limits.deadlineAt - Date.now();
+      const deadlineTimer = setTimeout(() => deadline.abort(), Math.max(0, remaining));
+      const options: SyncRequestOptions = {
+        maxResponseBytes: limits.maxResponseBytes,
+        perRequestTimeoutMs,
+        retry,
+        deadlineAt: limits.deadlineAt,
+        deadlineSignal: deadline.signal,
+      };
+
+      const items: Record<string, unknown>[] = [];
+      let pages = 0;
+      let url: string | undefined = input.startUrl === undefined
+        ? graphUrl(input.path, input.query)
+        : fixedCollectionNextLink(input.startUrl, expectedPath);
+      let stopReason: GraphSyncStopReason = 'complete';
+
+      try {
+        while (url !== undefined) {
+          if (pages >= limits.maxPages) { stopReason = 'max_pages'; break; }
+          // Soft precheck only: "don't start another page once the deadline
+          // has passed." The hard backstop for a request already in flight
+          // when the deadline arrives is the AbortController deadlineSignal
+          // threaded through syncRequest, not a margin added here.
+          if (nowMs() >= limits.deadlineAt) { stopReason = 'deadline'; break; }
+          if (input.beforePage !== undefined && !input.beforePage()) { stopReason = 'paused'; break; }
+
+          const page = parseCollectionPage(await syncRequest(url, input.accessToken, budget, options, throttleSpentMs));
+          pages += 1;
+          let overflowed = false;
+          for (const value of page.value) {
+            if (!isRecord(value)) throw failure('graph_response_invalid');
+            if (items.length >= limits.maxItems) { overflowed = true; break; }
+            items.push(value);
+          }
+          if (overflowed) {
+            stopReason = 'max_items';
+            url = page.nextLink === undefined ? undefined : fixedCollectionNextLink(page.nextLink, expectedPath);
+            break;
+          }
+          url = page.nextLink === undefined
+            ? undefined
+            : fixedCollectionNextLink(page.nextLink, expectedPath);
+        }
+      } finally {
+        clearTimeout(deadlineTimer);
+      }
+
+      // `url` is the un-fetched resume point whenever we stopped early. In the
+      // "paused before the first page" case it is the *initial* URL, not a
+      // Graph-minted nextLink — omit it there so the API cannot resume a
+      // page-1 URL through the continuation codec.
+      if (stopReason === 'complete') return { items, stopReason, pages };
+      const resumeLink = pages === 0 && input.startUrl === undefined ? undefined : url;
+      return { items, stopReason, pages, ...(resumeLink === undefined ? {} : { nextLink: resumeLink }) };
     },
   };
 }

@@ -1,3 +1,4 @@
+export * from './errorCodes';
 // Permission registry (resource:action grants) + derived literal-union types.
 export * from './permissions';
 
@@ -11,6 +12,9 @@ export * from './notificationTypes';
 // Agent file-transfer caps mirrored from the Go agent, so the web layer can
 // pre-flight a transfer instead of learning the limit from a failed round trip.
 export * from './agentFileTransfer';
+// HP CMSL licence identifier — the thing a warranty feature link's recorded
+// consent is compared against (#5511 D2). Leaf module, no imports.
+export * from './hpCmsl';
 
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;

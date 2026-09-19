@@ -211,7 +211,8 @@
       "actionPlan": "Aktionsplan",
       "autoApprove": "Automatisch genehmigen",
       "hybridPlan": "Hybridplan"
-    }
+    },
+    "overridesOrgTab": "Die hier festgelegten Felder überschreiben und sperren dasselbe Feld auf der KI-Registerkarte jeder Organisation."
   },
   "aiBudgetThresholds": {
     "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
@@ -547,7 +548,8 @@
       },
       "ticketing": {
         "label": "Ticketverkauf",
-        "description": "Status, SLAs, Exporte"
+        "description": "Status, SLAs, Kategorien, Formulare",
+        "linkCta": "Ticketing-Einstellungen verwalten →"
       },
       "aiBudgets": {
         "label": "KI-Budgets",
@@ -564,6 +566,10 @@
       "loginBranding": {
         "label": "Login-Branding",
         "description": "Erscheinungsbild der Anmeldeseite"
+      },
+      "modules": {
+        "label": "Module",
+        "description": "Service Desk & Abrechnung ein/aus"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -896,7 +902,10 @@
     },
     "customCss": {
       "title": "Benutzerdefiniertes CSS (erweitert)",
-      "description": "Verwenden Sie benutzerdefinierte Stile, um Abstände, Typografie oder Layout zu optimieren."
+      "description": "Verwenden Sie benutzerdefinierte Stile, um Abstände, Typografie oder Layout zu optimieren.",
+      "saveError": "Benutzerdefiniertes CSS konnte nicht gespeichert werden.",
+      "loadError": "Das aktuell gespeicherte benutzerdefinierte CSS konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis dies geladen ist.",
+      "saveBlockedByLoadError": "Benutzerdefiniertes CSS wurde nicht gespeichert: Der aktuelle Wert konnte nicht überprüft werden. Laden Sie die Seite neu und versuchen Sie es erneut."
     },
     "preview": {
       "action": "Vorschau",
@@ -1130,6 +1139,10 @@
       "description": "Wählen Sie aus, welche Servicedaten dieser Kunde im Portal sehen kann.",
       "enableAll": "Alle Sichtbarkeiten aktivieren",
       "toggles": {
+        "enableDevices": {
+          "label": "Geräte",
+          "description": "Die Geräteseite anzeigen. Self-Service gewährt ebenfalls Zugriff auf diese Seite."
+        },
         "enableDashboard": {
           "label": "Übersicht",
           "description": "Zeigt beim Anmelden eine Übersicht des Servicestatus an."
@@ -1149,6 +1162,18 @@
         "enableSupportUsage": {
           "label": "Support-Nutzung",
           "description": "Zeigt die abrechenbare Supportzeit des Monats bis heute an."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Zeigt geplante Leistungen, Erbrachtes und wichtige Termine."
+        },
+        "enableDocuments": {
+          "label": "Dokumente",
+          "description": "Ermöglicht Kunden den Download freigegebener Dokumente."
+        },
+        "enableLifecycle": {
+          "label": "Hardware-Lebenszyklus",
+          "description": "Zeigt den aktuellen Austauschplan für die Geräte Ihres Kunden."
         }
       }
     },
@@ -1429,7 +1454,7 @@
     "completeReview": "Überprüfung abschließen"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "KI-Nutzung und Budget",
+    "aIUsageBudget": "KI-Nutzung",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Überwachen Sie die Nutzung des KI-Assistenten und konfigurieren Sie Budgetgrenzen",
     "budgetConfiguration": "Budgetkonfiguration",
     "aIEnabled": "KI aktiviert",
@@ -1479,7 +1504,19 @@
     "untitled": "Ohne Titel",
     "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
     "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}}: die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
-    "creditsRemaining": "Verbleibendes Breeze-KI-Guthaben"
+    "creditsRemaining": "Verbleibendes Breeze-KI-Guthaben",
+    "defaultValue": "Standard ({{value}})",
+    "viewPartnerWideBudgets": "Partnerweite KI-Budgets",
+    "monitorAIAssistantUsage": "KI-Assistenten-Nutzung überwachen",
+    "effectiveBudget": "Geltendes Budget",
+    "effectiveBudgetHelp": "Die derzeit für diese Organisation geltenden Grenzwerte und wo jeder davon festgelegt wurde.",
+    "effectiveBudgetUnavailable": "Das effektive Budget konnte nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "sourcePartner": "Vom Partner festgelegt",
+    "sourceOrganization": "Von der Organisation festgelegt",
+    "sourceDefault": "Standard",
+    "selectOrgForEffectiveBudget": "Wählen Sie eine Organisation aus, um deren geltendes Budget zu sehen, oder bearbeiten Sie die partnerweiten Standardwerte.",
+    "editPartnerWideDefaults": "Partnerweite Standardwerte bearbeiten",
+    "thresholdsOff": "Aus"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1502,13 +1539,26 @@
       "timezone": "Zeitzone",
       "kinds": {
         "sweep": "Prüflauf",
-        "narrative": "Wochenbericht"
+        "narrative": "Wochenbericht",
+        "design": "Flottendesign",
+        "patch": "Patch-Plan"
       },
       "kindsLabel": "Auszuführende Prüfungen",
       "kind": "Zeitplantyp",
       "weeklyOnlyHint": "Ein Wochenbericht wird genau einmal pro Woche ausgelöst: feste Minute und Stunde, * für Tag-des-Monats und Monat sowie ein einzelner Wochentag von 0 bis 6. Beispiel: 0 7 * * 1 läuft jeden Montag um 07:00 Uhr.",
+      "monthlyOrRarerHint": "Ein Flottendesign wird höchstens einmal im Monat ausgelöst: feste Minute, Stunde und Tag-des-Monats (1–28), Monat als * oder eine durch Kommas getrennte Liste fester Monate, sowie * für den Wochentag. Beispiel: 0 6 1 1,4,7,10 * läuft vierteljährlich am 1. um 06:00 Uhr.",
+      "dailyOrRarerHint": "Ein Patch-Plan wird höchstens einmal am Tag ausgelöst: feste Minute und Stunde sowie * oder eine literale Liste für Tag-des-Monats, Monat und Wochentag. Beispiel: 0 2 * * * läuft jede Nacht um 02:00 Uhr.",
       "kindsRequired": "Wählen Sie mindestens eine Prüfung aus.",
       "enabled": "Aktiviert",
+      "actMode": {
+        "label": "Aktionsmodus",
+        "hint": "Wenn aktiviert, kann dieser Zeitplan bestimmte Korrekturen automatisch anwenden, anstatt auf eine Genehmigung zu warten.",
+        "deploymentDisabledHint": "Der Aktionsmodus ist nicht verfügbar, da BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED für diese Bereitstellung deaktiviert ist. Wenden Sie sich zur Aktivierung an Ihren Administrator.",
+        "disabledHint": "Zum Aktivieren des Aktionsmodus ist vollständiger Partnerzugriff auf alle Organisationen erforderlich.",
+        "scopeNote": "Unbeaufsichtigte Korrekturen beschränken sich auf den Neustart eines gestoppten Dienstes, und das nur auf Geräten, deren Organisation bereits die Berechtigung manage_services:restart erhalten hat. Alles andere wartet weiterhin auf eine Genehmigung.",
+        "disableForOrg": "Aktionsmodus für diese Organisation deaktivieren",
+        "disableForOrgHint": "Diese Organisation übernimmt immer die Aktionsmodus-Einstellung der Partner-Basis, sofern sie hier nicht deaktiviert wird — sie kann ihn niemals unabhängig aktivieren."
+      },
       "override": "Für diese Organisation überschreiben",
       "editOverride": "Ausnahme dieser Organisation bearbeiten",
       "overrideHint": "Die Ausnahme dieser Organisation zur Partner-Basis. Sie läuft immer im Takt der Basis.",
@@ -1527,7 +1577,8 @@
         "pending_reboots": "Ausstehende Neustarts",
         "failed_backups": "Fehlgeschlagene Backups",
         "service_down": "Dienst ausgefallen",
-        "unpatched_critical": "Kritische ungepatchte Schwachstellen"
+        "unpatched_critical": "Kritische ungepatchte Schwachstellen",
+        "expiring_certs": "Ablaufende Zertifikate"
       },
       "toasts": {
         "saved": "Zeitplan gespeichert",
@@ -1546,8 +1597,11 @@
         "baselineAgentMismatch": "Diese Basis gehört zu einem anderen Agenten.",
         "agentNotPartnerWide": "Sweep-Zeitpläne erfordern einen partnerweiten Agenten.",
         "agentKindNotTriage": "Nur ein Triage-Agent kann geplant werden.",
+        "agentKindNotDesigner": "Ein Flottendesign-Zeitplan muss auf einen Flottendesigner-Agenten abzielen.",
+        "agentKindNotPatch": "Ein Patch-Plan-Zeitplan muss auf einen Patch-Agenten abzielen.",
         "kindsNotEmpty": "Ein Wochenbericht-Zeitplan führt keine Prüfungen aus. Entfernen Sie die ausgewählten Prüfungen vor dem Speichern.",
-        "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag."
+        "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag.",
+        "actModeOrgCannotArm": "Der Aktionsmodus ist in der Partner-Basis aktiviert; eine Ausnahme der Organisation kann ihn nur deaktivieren, niemals aktivieren."
       }
     },
     "title": "KI-Agenten",
@@ -1556,7 +1610,8 @@
     "kindHints": {
       "triage": "Untersucht neue Warnungen und schlägt vor, was zu tun ist.",
       "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
-      "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor."
+      "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
+      "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker."
     },
     "emptyState": {
       "title": "Noch keine Agenten",
@@ -1571,7 +1626,10 @@
       "shadowConsequence": "Beobachtet und schlägt vor; ein Mensch genehmigt alles.",
       "act": "Aktion",
       "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
-      "actUnavailable": "Für diesen Agenten noch nicht verfügbar."
+      "actUnavailable": "Für diesen Agenten noch nicht verfügbar.",
+      "designerAct": "Ein",
+      "designerActConsequence": "Läuft nach Zeitplan oder auf Abruf und schreibt ein Fleet Design. Ändert nie ein Gerät.",
+      "shadowApprovalNotice": "Vorschläge landen im Genehmigungsposteingang; wer einen genehmigt, führt ihn tatsächlich aus — kein Testlauf."
     },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
@@ -1579,7 +1637,14 @@
     "stateDisabled": "Deaktiviert",
     "runningBadge": {
       "running": "Läuft",
-      "notRunning": "Läuft nicht"
+      "notRunning": "Läuft nicht",
+      "inactive": "Aktiviert (inaktiv)"
+    },
+    "subsystemDisabled": {
+      "title": "KI-Agenten sind auf diesem Server deaktiviert",
+      "envFlag": "Setzen Sie {{flag}}, damit Agenten ausgeführt werden. Bis dahin wird jeder Auslöser übersprungen.",
+      "killSwitch": "Der Not-Aus der Plattform ist aktiviert. Agenten werden erst ausgeführt, wenn ein Administrator ihn aufhebt.",
+      "skips": "{{total}} Auslöser kürzlich übersprungen — {{reasons}}"
     },
     "reenableNote": "Wiederhergestellt, aber ausgeschaltet. Prüfen Sie zuerst die Richtlinie, bevor Sie ihn einschalten.",
     "chipLabels": {
@@ -1598,6 +1663,8 @@
       "never": "Nie ausgeführt",
       "at": "Letzte Ausführung {{at}}"
     },
+    "nextOccurrence": "Nächster Lauf {{at}}",
+    "runNowNoOrg": "Wählen Sie eine Organisation aus, um einen Patch-Plan auszuführen.",
     "disableDialog": {
       "title": "{{name}} deaktivieren?",
       "message": "Künftige Ausführungen werden gestoppt, angehängte Zeitpläne lösen nicht mehr aus, und Organisations-Überschreibungen dieses Agenten gelten nicht mehr. Eine bereits laufende Ausführung läuft bis zu ihrem Zeitlimit weiter.",
@@ -1629,6 +1696,7 @@
       "invalidSupervisedActionKeys": "Eine oder mehrere ausgewählte Aktionen können nicht per Richtlinie autorisiert werden.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Dieser Agent ist bereits aktiv.",
+      "noPatchAgent": "Für diese Organisation gilt kein Patch-Agent.",
       "actRecipientsUnreachable": "Die ausgewählten Benachrichtigungsrollen haben keine aktiven Mitglieder, sodass niemand gefragt werden könnte. Wählen Sie eine Rolle mit Mitgliedern, bevor Sie den Handlungsmodus aktivieren.",
       "invalidScriptIds": "Ein oder mehrere Skripte können für diesen Agenten nicht autorisiert werden.",
       "scriptRejected": "Skript {{id}}: {{reason}}",
@@ -1646,7 +1714,8 @@
       "disable": "Deaktivieren",
       "confirmDisable": "Deaktivierung bestätigen",
       "reenable": "Wieder aktivieren",
-      "runs": "Ausführungen"
+      "runs": "Ausführungen",
+      "runNow": "Jetzt ausführen"
     },
     "toasts": {
       "saved": "Agent gespeichert",
@@ -1654,7 +1723,9 @@
       "disabled": "Agent deaktiviert",
       "disableFailed": "Der Agent konnte nicht deaktiviert werden.",
       "reenabled": "Agent wieder aktiviert",
-      "reenableFailed": "Der Agent konnte nicht wieder aktiviert werden."
+      "reenableFailed": "Der Agent konnte nicht wieder aktiviert werden.",
+      "runNowQueued": "Patch-Plan-Lauf eingereiht",
+      "runNowFailed": "Der Patch-Plan-Lauf konnte nicht gestartet werden."
     },
     "issues": {
       "name": "Geben Sie dem Agenten einen Namen.",
@@ -1685,7 +1756,8 @@
     "kinds": {
       "triage": "Alarm-Triage",
       "patch": "Patch-Verwaltung",
-      "helpdesk": "Helpdesk"
+      "helpdesk": "Helpdesk",
+      "designer": "Flottendesigner"
     },
     "modes": {
       "off": "Aus",
@@ -1742,6 +1814,9 @@
       "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
       "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
       "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
+      "alertCategories": "Alarmkategorien",
+      "alertCategoriesHint": "Nur Alarme, deren Vorlagenkategorie hier aufgeführt ist, wecken diesen Agenten. Leer lassen für jede Kategorie. Patch-Alarme tragen „patching“.",
+      "alertCategoriesPlaceholder": "z. B. patching, monitor",
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
       "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
       "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
@@ -1820,7 +1895,8 @@
       "profile": {
         "sweep": "Prüflauf",
         "narrative": "Wochenbericht",
-        "triage": "Ticket-Triage"
+        "triage": "Ticket-Triage",
+        "design": "Flottendesign"
       },
       "sweep": {
         "title": "Ergebnisse des Prüflaufs",
@@ -1828,6 +1904,20 @@
         "empty": "Keine Befunde gemeldet.",
         "evidenceTruncated": "Die Belege wurden gekürzt — dem Agenten wurde nicht jede passende Zeile gezeigt.",
         "proposalCreated": "Genehmigung angefordert",
+        "actSummary": "Unbeaufsichtigt auf {{acted}} von {{proposed}} Geräten ausgeführt — der Rest wartet auf Freigabe.",
+        "outcomes": {
+          "auto_executing": "Läuft unbeaufsichtigt",
+          "executed": "Abgeschlossen",
+          "failed": "Fehlgeschlagen",
+          "declined": "Abgelehnt",
+          "expired": "Abgelaufen",
+          "unknown": "Ergebnis unbekannt"
+        },
+        "stoppedBy": {
+          "fleet_cap": "Tageslimit für die Flotte erreicht",
+          "day_cap": "Tageslimit für Aktionen erreicht",
+          "occurrence_cap": "Gerätelimit pro Durchlauf erreicht"
+        },
         "columns": {
           "kind": "Prüfung",
           "severity": "Schweregrad",
@@ -1842,7 +1932,8 @@
           "pending_reboots": "Ausstehende Neustarts",
           "failed_backups": "Fehlgeschlagene Sicherungen",
           "service_down": "Dienst gestoppt",
-          "unpatched_critical": "Ungepatchte kritische Schwachstellen"
+          "unpatched_critical": "Ungepatchte kritische Schwachstellen",
+          "expiring_certs": "Bald ablaufende Zertifikate"
         },
         "severities": {
           "critical": "Kritisch",
@@ -1853,11 +1944,90 @@
         },
         "reasons": {
           "device_not_in_evidence": "Gerät nicht in den Belegen des Prüflaufs",
+          "subject_not_in_evidence": "Objekt nicht in den Belegen des Prüflaufs",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation",
           "not_allowlisted": "Werkzeug für diesen Agenten nicht freigegeben",
           "no_eligible_approvers": "Keine berechtigten Genehmiger",
           "intent_error": "Genehmigung konnte nicht erstellt werden",
-          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht"
+          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht",
+          "intent_invalid_provenance": "Genehmigung konnte nicht validiert werden (interner Fehler)"
+        }
+      },
+      "patch": {
+        "title": "Patch-Plan",
+        "empty": "Der Agent hat keine Patch-Arbeit vorgeschlagen.",
+        "evidenceTruncated": "Die Belege wurden gekürzt — dem Agenten wurde nicht jede passende Zeile gezeigt.",
+        "posture": "{{compliance}}% konform · {{count}} Gerät gefährdet",
+        "posture_other": "{{compliance}}% konform · {{count}} Geräte gefährdet",
+        "patchCount": "{{count}} Update",
+        "patchCount_other": "{{count}} Updates",
+        "refused": "Nicht erfasst: {{reason}}",
+        "unconfirmed": "Dieser Plan wurde nie bestätigt — der Agent konnte seine Einträge nicht erneut mit den Belegen abgleichen, daher wurde nichts davon unten validiert.",
+        "unconfirmedItem": "Nicht bestätigt — dieser Eintrag wurde nie erneut geprüft.",
+        "intentCreated": "Genehmigung ausstehend — Karte öffnen",
+        "suppressed": "Bereits vorgeschlagen: {{reason}}",
+        "capReached": "Nicht vorgeschlagen: {{reason}}",
+        "intentError": "Genehmigungskarte konnte nicht erstellt werden: {{reason}}",
+        "dropped": "{{count}} Update wurde nicht in die Karte aufgenommen",
+        "dropped_other": "{{count}} Updates wurden nicht in die Karte aufgenommen",
+        "counts": "{{created}} zur Genehmigung ausstehend · {{suppressed}} bereits vorgeschlagen",
+        "failureClass": "Fehlerklasse: {{label}}",
+        "attempts": "{{count}} fehlgeschlagener Versuch",
+        "attempts_other": "{{count}} fehlgeschlagene Versuche",
+        "rebootWindow": "Zeitfenster: {{start}} – {{end}}",
+        "redundancyGroup": "Redundanzgruppe: {{group}}",
+        "escalation": "Erfordert eine Person – dies wird nicht automatisch wiederholt.",
+        "escalations": "{{count}} Eskalation",
+        "escalations_other": "{{count}} Eskalationen",
+        "classes": {
+          "install": "Installation",
+          "approval_advisory": "Genehmigungsempfehlung",
+          "reboot_plan": "Neustartplan",
+          "chase": "Fehlernachverfolgung",
+          "escalation": "Eskalation"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Gerät nicht in den Patch-Belegen",
+          "device_not_in_org": "Gerät gehört nicht zu dieser Organisation",
+          "patch_not_in_evidence": "Update nicht in den Patch-Belegen",
+          "window_not_resolved": "Wartungsfenster konnte nicht aufgelöst werden",
+          "job_result_not_in_evidence": "Patch-Job-Ergebnis nicht in den Belegen",
+          "no_eligible_patches": "Für dieses Gerät ist derzeit kein Update geeignet",
+          "not_allowlisted": "Der Agent darf keine Installationen vorschlagen",
+          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht",
+          "no_eligible_approvers": "Niemand kann diese Aktion genehmigen",
+          "intent_error": "Die Genehmigung konnte nicht erstellt werden",
+          "live_intent_exists": "Für dieses Update ist bereits eine Genehmigungskarte offen",
+          "recently_rejected": "Dieses Update wurde kürzlich abgelehnt",
+          "recently_cancelled": "Die Karte dieses Updates wurde kürzlich storniert",
+          "recently_completed": "Dieses Update wurde kürzlich installiert",
+          "failure_class_mismatch": "Die angegebene Fehlerklasse stimmt nicht mit den Belegen überein",
+          "class_not_retryable": "Diese Art von Fehler wird nie automatisch wiederholt",
+          "chase_attempts_exhausted": "Das Wiederholungslimit für dieses Update wurde erreicht – stattdessen eskaliert",
+          "attempt_count_mismatch": "Die angegebene Versuchsanzahl stimmt nicht mit den Belegen überein",
+          "failure_history_truncated": "Der Fehlerverlauf war unvollständig, daher war die Anzahl der Wiederholungen nicht verlässlich",
+          "reboot_policy_not_window_gated": "Die Neustartrichtlinie des Geräts startet außerhalb von Wartungsfenstern neu, daher würde ein Zeitfensterplan nicht eingehalten",
+          "redundancy_unknown": "Die Redundanzgruppe des Geräts ist unbekannt, daher konnte die Reihenfolge nicht überprüft werden",
+          "redundancy_collision": "Ein anderes Gerät derselben Redundanzgruppe ist für dieses Zeitfenster bereits eingeplant"
+        },
+        "ineligible": {
+          "not_outstanding": "Auf diesem Gerät nicht ausstehend",
+          "superseded": "Durch ein neueres Update ersetzt",
+          "blocked_by_source": "Durch die Update-Quellen der Richtlinie ausgeschlossen",
+          "held_by_deferral": "Durch das Aufschubfenster zurückgehalten",
+          "blocked_by_category": "Durch die Kategorieregeln des Rings ausgeschlossen",
+          "blocked_by_app_rule": "Durch eine App-Regel blockiert",
+          "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
+          "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
+          "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
+        },
+        "failureClasses": {
+          "transient": "Vorübergehend",
+          "needs_reboot": "Neustart erforderlich",
+          "disk_space": "Speicherplatz",
+          "store_corrupt": "Update-Speicher beschädigt",
+          "permanent": "Dauerhaft",
+          "unknown": "Unbekannt"
         }
       },
       "narrative": {
@@ -1866,7 +2036,25 @@
         "truncatedNote": "Der Kontext des Agenten wurde gekürzt — diese Zusammenfassung hat nicht die ganze Woche gesehen.",
         "openReport": "Bericht öffnen",
         "download": "PDF herunterladen",
-        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden."
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden.",
+        "delivery": {
+          "sent": "Per E-Mail an {{sent}} von {{total}} Empfängern gesendet",
+          "refused_one": "{{count}} Empfänger erhielt keine E-Mail — Berichtsberechtigung, fehlende Adresse oder der Anbieter hat abgelehnt.",
+          "refused_other": "{{count}} Empfänger erhielten keine E-Mail — Berichtsberechtigung, fehlende Adresse oder der Anbieter hat abgelehnt.",
+          "pending_one": "{{count}} Zustellung wurde noch nicht gesendet — sie wird erneut versucht.",
+          "pending_other": "{{count}} Zustellungen wurden noch nicht gesendet — sie werden erneut versucht.",
+          "unknown_one": "{{count}} Zustellung konnte nicht bestätigt werden — der E-Mail-Anbieter gab keine eindeutige Antwort.",
+          "unknown_other": "{{count}} Zustellungen konnten nicht bestätigt werden — der E-Mail-Anbieter gab keine eindeutige Antwort.",
+          "recipientsUnresolved": "Die Empfängersuche ist fehlgeschlagen, daher wurde diese Zusammenfassung an niemanden gesendet. Der Bericht selbst wurde gespeichert."
+        }
+      },
+      "fleetDesign": {
+        "title": "Flottendesign",
+        "counts": "{{functions}} Funktionen · {{watches}} Überwachungen · {{rules}} Alarmregeln",
+        "openReport": "Bericht öffnen",
+        "download": "PDF herunterladen",
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden.",
+        "truncatedNote": "Die Nachweise wurden gekürzt — dieses Design hat nicht die gesamte Flotte gesehen."
       },
       "noAgent": "Unbekannter Agent",
       "loading": "Läufe werden geladen…",
@@ -1900,7 +2088,9 @@
           "startedAt": "Gestartet",
           "finishedAt": "Beendet",
           "turnCount": "Runden",
-          "summary": "Zusammenfassung"
+          "summary": "Zusammenfassung",
+          "computeCost": "Rechenkosten",
+          "computeEstimated": "(geschätzt)"
         },
         "flags": {
           "budgetExceeded": "Budget überschritten",
@@ -1932,6 +2122,34 @@
             "skipped": "Verifizierung übersprungen"
           },
           "viewApproval": "In Genehmigungen prüfen"
+        },
+        "artifacts": {
+          "title": "Von diesem Lauf erzeugte Dateien",
+          "download": "Herunterladen",
+          "preview": "Vorschau",
+          "attachToTicket": "Als interne Notiz anhängen",
+          "attach": "{{name}} als interne Notiz anhängen",
+          "ticketIdPlaceholder": "Ticket-ID",
+          "attachedToTicket": "Als interne Notiz an das Ticket angehängt",
+          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden",
+          "attachedButCommentFailed": "Die Datei wurde angehängt, aber die Notiz konnte nicht zum Ticket hinzugefügt werden",
+          "downloadExpired": "Diese Datei ist abgelaufen und kann nicht mehr heruntergeladen werden."
+        },
+        "workspace": {
+          "title": "Was in der Sandbox ausgeführt wurde",
+          "region": "Region",
+          "status": "Sandbox",
+          "cpu": "CPU-Zeit",
+          "steps": "Schritte",
+          "script": "Skript",
+          "stdout": "Ausgabe",
+          "exitCode": "Exit",
+          "timedOut": "Zeitüberschreitung",
+          "noExitCode": "kein Exit-Code",
+          "artifactExpired": "abgelaufen"
+        },
+        "progress": {
+          "title": "Fortschritt"
         },
         "ledger": {
           "title": "Tool-Ausführungen",
@@ -2033,6 +2251,7 @@
       "emptyState": {
         "title": "Noch keine KI-Ergebnisse in diesem Zeitraum",
         "description": "Ergebnisse erscheinen hier, sobald Ihre KI-Agenten im Beobachtungs- oder Aktionsmodus eine Warnmeldung bewerten, ein Ticket sortieren oder eine Behebung ausführen. Erweitern Sie oben den Berichtszeitraum, oder richten Sie einen Agenten ein, um loszulegen.",
+        "descriptionWidestWindow": "Ergebnisse erscheinen hier, sobald Ihre KI-Agenten im Beobachtungs- oder Aktionsmodus eine Warnmeldung bewerten, ein Ticket sortieren oder eine Behebung ausführen. Selbst beim längsten Berichtszeitraum liegen noch zu wenig Daten vor – richten Sie einen Agenten ein, um loszulegen.",
         "action": "Agenten einrichten"
       },
       "tileGroups": {
@@ -2129,6 +2348,7 @@
           "fixWatchesHeld": "Gehaltene Behebungsüberwachungen",
           "fixWatchesRecurred": "Wiederkehrende Behebungsüberwachungen",
           "narrativesDelivered": "Gelieferte Wöchentliche Berichte",
+          "fleetDesignsDelivered": "Gelieferte Fleet Designs",
           "estTimeSaved": "Geschätzte Zeitersparnis",
           "llmSpend": "LLM-Ausgaben",
           "window": "Berichtszeitraum (Tage)",
@@ -2137,6 +2357,31 @@
         },
         "weightRowLabel": "{{label}} (angerechnete Minuten)",
         "neverRebuilt": "Nie neu erstellt"
+      },
+      "measured": {
+        "heading": "Gemessen (korrelativ)",
+        "caption": "KI-berührte gegen unberührte Arbeit derselben Art, im selben Zeitraum. Kein Vorher-Nachher-Vergleich und keine Kausalaussage — die KI erreicht in der Regel zuerst die einfacheren Fälle.",
+        "alertResolution": "Alarmbehebung, nach Regel",
+        "ticketFirstResponse": "Erste Ticket-Antwort, nach Priorität und Kategorie",
+        "technicianMinutes": "Erfasste Technikerminuten",
+        "armAiTouched": "KI-berührt",
+        "armUntouched": "Unberührt",
+        "withinHorizonAlerts": "Innerhalb von 24 Std. behoben",
+        "withinHorizonTickets": "Erste Antwort innerhalb von 4 Std.",
+        "cohortSize": "{n} in der Kohorte",
+        "percentileP50": "p50: {minutes} Min.",
+        "percentileP90": "p90: {minutes} Min.",
+        "recordedMinutesValue": "{minutes} Min. Median",
+        "loggingCoverage": "Zeit erfasst bei {ai} der KI-berührten Tickets und {untouched} der unberührten. Ein Median über teilweise erfasste Tickets ist kein Median des Aufwands.",
+        "censoredNote": "Angezeigte Perzentile sind rechtszensiert: noch offene Fälle gelten als unerledigt und werden nicht verworfen.",
+        "loading": "Gemessener Vergleich wird geladen…",
+        "error": "Der gemessene Vergleich konnte nicht geladen werden.",
+        "omitted": {
+          "insufficientData": "Zu wenig Daten: keine Gruppe vergleichbarer Arbeit hat mindestens 20 Vorgänge je Seite.",
+          "insufficientFollowup": "Dieser Zeitraum ist zu kurz, um das Ergebnis für genügend Vorgänge zu beobachten. Bitte einen längeren Zeitraum wählen.",
+          "insufficientAuthority": "Ihnen fehlt die Berechtigung für Zeiterfassung, um erfasste Technikerminuten zu sehen.",
+          "siteRestricted": "Bei standortbeschränktem Zugriff wird der gemessene Vergleich nicht angezeigt, da er über eine gesamte Organisation aggregiert."
+        }
       }
     },
     "graduation": {
@@ -2194,7 +2439,8 @@
         "below_threshold": "Noch nicht genug bestätigte Ausführungen.",
         "too_recent": "Die erste bestätigte Ausführung liegt noch nicht lange genug zurück.",
         "has_failures": "In diesem Zeitraum wurde ein Fehlschlag oder ein erneutes Auftreten erfasst.",
-        "not_policy_decidable": "Dieser Vorgang kann niemals vorab genehmigt werden."
+        "not_policy_decidable": "Dieser Vorgang kann niemals vorab genehmigt werden.",
+        "below_sweep_threshold": "Es braucht mehr bestätigte Behebungen, bei denen ein geplanter Durchlauf das Ziel ausgewählt hat."
       },
       "confirm": {
         "title": "Vorabgenehmigung beantragen",
@@ -2235,6 +2481,10 @@
         "scripts_commands": {
           "label": "Skripte und Befehle",
           "description": "Skripte, Playbooks und Systembefehle ausführen und die dabei betroffenen Prozesse, geplanten Aufgaben und Registrierungseinträge verwalten."
+        },
+        "author_scripts": {
+          "label": "Skripte verfassen",
+          "description": "Ein neues Skript als Vorschlag für eine unabhängige Prüfung schreiben. Nichts, was ein Agent verfasst, wird ausgeführt, bevor es geprüft und freigegeben wurde."
         },
         "tickets": {
           "label": "Helpdesk-Tickets",
@@ -2279,6 +2529,10 @@
         "tenancy": {
           "label": "Mandantenverwaltung",
           "description": "Organisationen, Standorte und mandantenübergreifende Integrationen verwalten."
+        },
+        "workspace": {
+          "label": "Sandbox für Datenanalysen",
+          "description": "Flottendatensätze exportieren und Analysecode in einer isolierten Sandbox ohne Netzwerk- und ohne Gerätezugriff ausführen. Ergebnisse kommen als Vorschläge zurück, die eine Technikerin oder ein Techniker freigibt."
         }
       },
       "tools": {
@@ -2685,7 +2939,8 @@
       "loggedProposalCount_other": "{{count}} protokollierte Vorschläge",
       "unattendedCount_one": "{{count}} unbeaufsichtigt",
       "unattendedCount_other": "{{count}} unbeaufsichtigt",
-      "scriptGateNote": "Bleibt eine Genehmigungsanfrage, bis ein Skript für diesen Agenten autorisiert ist."
+      "scriptGateNote": "Bleibt eine Genehmigungsanfrage, bis ein Skript für diesen Agenten autorisiert ist.",
+      "designerReadOnly": "Der Flottendesigner erreicht jedes schreibgeschützte Werkzeug und ein Berichtswerkzeug. Er hat keine veränderbaren Funktionen zur Auswahl."
     },
     "summary": {
       "edit": "Bearbeiten",
@@ -2786,6 +3041,11 @@
           "blurb": "Bearbeitet Tickets, sobald sie erstellt, beantwortet oder gelöst werden.",
           "runsWhen": "ein Ticket erstellt wird, seine erste Antwort erhält oder als gelöst markiert wird",
           "recommended": "Dienste neu starten und Speicherplatz freigeben, um häufige Anfragen zu lösen"
+        },
+        "designer": {
+          "blurb": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
+          "runsWhen": "Sie ein Flottendesign für eine Organisation starten oder nach einem vierteljährlichen Zeitplan",
+          "recommended": "eine Neueinrichtung von Grund auf oder ein vierteljährliches Konfigurationsaudit"
         }
       },
       "kindCard": {
@@ -2808,6 +3068,11 @@
       "searchPlaceholder": "Skripte durchsuchen…",
       "selectedCount_one": "{{count}} Skript autorisiert",
       "selectedCount_other": "{{count}} Skripte autorisiert"
+    },
+    "designerNote": {
+      "title": "Dieser Agent liest nur und schreibt Berichte",
+      "body": "Ein Fleet Designer führt nie etwas auf einem Gerät aus. „Ein“ bedeutet, dass er laufen und seine Designs an die von Ihnen gewählten Empfänger liefern darf.",
+      "ack": "Ich verstehe, dass dieser Agent unbeaufsichtigt läuft und Fleet Designs liefert."
     }
   },
   "apiKeyForm": {
@@ -2939,7 +3204,9 @@
     "loadingApproverDevices": "Genehmigergeräte werden geladen…",
     "tryAgain": "Versuchen Sie es erneut",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Es sind noch keine genehmigenden Geräte registriert. Melden Sie sich auf Ihrem Telefon bei der mobilen Breeze-App an und sie wird hier automatisch angezeigt, oder registrieren Sie diesen Browser unten, um die Genehmigung mit einer Biometrie zu erhalten.",
-    "platformBound": "Plattformgebunden",
+    "hardwareAttested": "Hardware-attestiert",
+    "notAttested": "Nicht attestiert",
+    "notAttestedTooltip": "Kritische Freigaben sind auf diesem Gerät erst verfügbar, nachdem es mit einem attestierten App-Build neu registriert wurde.",
     "registered": "Registriert",
     "lastUsed": "Zuletzt verwendet",
     "cancel": "Abbrechen",
@@ -3148,7 +3415,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Produktkatalog",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Der Produktkatalog ist nur für Partnerkonten verfügbar.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Verwalten Sie Hardware, Software und Serviceartikel, die in Angeboten, Verträgen und Rechnungen verwendet werden. Verbinden Sie Distributoren (Pax8, TD SYNNEX) unter Integrationen → Distributoren."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Verwalten Sie Hardware, Software und Serviceartikel, die in Angeboten, Verträgen und Rechnungen verwendet werden. Verbinden Sie Distributoren (Pax8, TD SYNNEX) unter Integrationen → Distributoren.",
+    "distributorsLink": "Distributorverbindungen verwalten →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Aktuelles Passwort ist erforderlich",
@@ -3793,6 +4061,7 @@
     "languageLoadFailed": "Präferenz gespeichert, aber die Sprache konnte nicht geladen werden – Englisch wird angezeigt. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Standard-Zeiteintrag (Minuten)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA Minuten und Stundensatz müssen Zahlen sein.",
     "categoryUpdated": "Kategorie aktualisiert",
     "ticketing": "Ticketverkauf",
@@ -3894,7 +4163,10 @@
     "inboundEmail": "Eingehende E-Mail",
     "cannedResponses": "Vorgefertigte Antworten",
     "checkingAccess": "Zugriff wird geprüft...",
-    "timeTracking": "Zeiterfassung"
+    "timeTracking": "Zeiterfassung",
+    "email": "E-Mail",
+    "templates": "Vorlagen",
+    "timeCapture": "Zeiterfassung"
   },
   "ticketFormsCard": {
     "heading": "Aufnahmeformulare",
@@ -4048,6 +4320,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "KI-Budget",
+    "description": "Ausgabengrenzen, Ratenbegrenzungen und Freigabemodus für den KI-Assistenten in dieser Organisation. Vom Partner festgelegte Felder werden hier angezeigt, können aber nur im Partner-Tab geändert werden.",
+    "selectOrganization": "Wählen Sie eine Organisation aus, um ihr KI-Budget zu konfigurieren."
+  },
   "orgSettingsPage": {
     "loading": "Organisationseinstellungen werden geladen...",
     "confirmDiscard": "Sie haben in diesem Abschnitt nicht gespeicherte Änderungen. Beim Wechsel werden sie verworfen. Weitermachen?",
@@ -4101,7 +4378,9 @@
       "notifications": "Benachrichtigungen",
       "notificationsDescription": "E-Mail, Slack, Webhooks",
       "ticketing": "Ticketverkauf",
-      "ticketingDescription": "SLA und Abrechnungsüberschreibungen"
+      "ticketingDescription": "SLA und Abrechnungsüberschreibungen",
+      "ai": "KI",
+      "aiDescription": "Budget, Ratenbegrenzungen und Freigabemodus für den KI-Assistenten"
     },
     "overview": {
       "title": "Organisationsübersicht",
@@ -4122,6 +4401,12 @@
       "organizationId": "Organisations-ID",
       "copyOrganizationId": "Organisations-ID kopieren",
       "organizationIdHelp": "Verwenden Sie diese ID, wenn Sie Benutzer einladen oder Integrationen konfigurieren."
+    },
+    "ai": {
+      "externalProcessing": "Sandbox-KI-Analyse zulassen",
+      "externalProcessingDescription": "Ermöglicht es KI-Analyseläufen, für diese Organisation Code in einer isolierten Sandbox ohne Netzwerkzugriff auszuführen, gehostet in der Region dieser Organisation. Standardmäßig deaktiviert.",
+      "externalProcessingSaved": "Gespeichert",
+      "externalProcessingSaveFailed": "Diese Einstellung konnte nicht geändert werden"
     },
     "breadcrumbs": {
       "settings": "Einstellungen",
@@ -4374,27 +4659,10 @@
       "suspended": "Suspendiert",
       "churned": "Aufgewühlt",
       "offboarding": "Abmeldung läuft"
+    },
+    "help": {
+      "slug": "Wird aus dem Namen erzeugt. Innerhalb Ihres Kontos eindeutig; von der API und Integrationen verwendet."
     }
-  },
-  "organizationList": {
-    "title": "Organisationen",
-    "count": "{{filtered}} von {{total}} Organisationen",
-    "searchPlaceholder": "Organisationen suchen",
-    "allStatuses": "Alle Status",
-    "status": {
-      "active": "Aktiv",
-      "trial": "Prozess",
-      "suspended": "Suspendiert",
-      "churned": "Aufgewühlt",
-      "offboarding": "Abmeldung läuft",
-      "merging": "Zusammenführung läuft",
-      "archived": "Archiviert",
-      "purging": "Löschung läuft"
-    },
-    "columns": {
-      "devices": "Geräte"
-    },
-    "empty": "Keine Organisationen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen."
   },
   "bulkOrgImport": {
     "title": "Massenimport",
@@ -4458,23 +4726,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Organisationen werden geladen...",
-    "title": "Organisationen und Standorte",
-    "description": "Verwalten Sie Organisationen und ihre Standorte.",
     "actions": {
-      "addOrganization": "Organisation hinzufügen",
-      "tryAgain": "Versuchen Sie es erneut",
-      "editOrganization": "Organisation bearbeiten",
-      "archiveOrganization": "Organisation archivieren",
-      "deleting": "Löschen...",
-      "openRecord": "Datensatz öffnen",
-      "openSettings": "Einstellungen"
+      "tryAgain": "Versuchen Sie es erneut"
     },
     "errors": {
-      "fetchOrganizations": "Organisationen konnten nicht abgerufen werden",
       "generic": "Es ist ein Fehler aufgetreten",
-      "saveOrder": "Organisationsreihenfolge konnte nicht gespeichert werden",
-      "saveOrganization": "Die Organisation konnte nicht gespeichert werden",
       "saveSite": "Standort konnte nicht gespeichert werden ({{status}})",
       "deleteSite": "Die Standort konnte nicht gelöscht werden",
       "loadSites": "Die Standorte dieser Organisation konnten nicht geladen werden."
@@ -4489,25 +4745,8 @@
       "archived": "Archiviert",
       "purging": "Löschung läuft"
     },
-    "deviceCount": "{{count}} Geräte",
-    "list": {
-      "title": "Organisationen",
-      "searchPlaceholder": "Suchen...",
-      "empty": "Keine Organisationen gefunden.",
-      "noMatches": "Keine Organisationen entsprechen Ihrer Suche.",
-      "dragToReorder": "Zum Neuanordnen ziehen"
-    },
     "sites": {
       "loading": "Seiten werden geladen..."
-    },
-    "emptySelection": {
-      "title": "Keine Organisation ausgewählt",
-      "description": "Wählen Sie eine Organisation aus der Liste aus, um deren Standorte anzuzeigen."
-    },
-    "add": {
-      "title": "Organisation hinzufügen",
-      "description": "Erstellen Sie eine neue Organisation mit den unten aufgeführten Details.",
-      "submit": "Organisation schaffen"
     },
     "siteModal": {
       "editTitle": "Standort bearbeiten",
@@ -4523,11 +4762,11 @@
     },
     "deleteSite": {
       "title": "Standort löschen",
-      "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
-      "messageSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
+      "message": "{{name}} löschen? Der Standort wird dauerhaft entfernt; dies kann nicht rückgängig gemacht werden.",
+      "blockedMessage_one": "{{name}} hat noch {{count}} Gerät. Verschieben Sie es an einen anderen Standort, bevor Sie diesen löschen.",
+      "blockedMessage_other": "{{name}} hat noch {{count}} Geräte. Verschieben Sie sie an einen anderen Standort, bevor Sie diesen löschen."
     },
     "merge": {
-      "openButton": "In eine andere Organisation zusammenführen",
       "title": "Organisation zusammenführen",
       "description": "Verschieben Sie die Daten von {{name}} in eine bestehende Organisation. {{name}} wird danach dauerhaft stillgelegt und kann nicht wiederhergestellt werden.",
       "survivorLabel": "Zusammenführen mit",
@@ -4594,36 +4833,6 @@
       "errors": {
         "archive": "Organisation konnte nicht archiviert werden",
         "mfaRequired": "Das Archivieren von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
-      }
-    },
-    "archived": {
-      "sectionTitle": "Archiviert",
-      "loading": "Archivierte Organisationen werden geladen...",
-      "empty": "Keine archivierten Organisationen.",
-      "noMatches": "Keine archivierten Organisationen entsprechen Ihrer Suche.",
-      "badge": "Archiviert",
-      "archivingBadge": "Wird archiviert…",
-      "keptIndefinitely": "Wird unbegrenzt aufbewahrt",
-      "purgeToday": "Wird heute endgültig gelöscht",
-      "purgeCountdown_one": "Wird in {{count}} Tag endgültig gelöscht",
-      "purgeCountdown_other": "Wird in {{count}} Tagen endgültig gelöscht",
-      "truncatedNote": "Zeigt die ersten {{count}} archivierten Organisationen. Suchen Sie, um die Liste einzugrenzen.",
-      "readOnlyNotice": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um den normalen Zugriff fortzusetzen.",
-      "drainNotice": "Diese Organisation wird archiviert — ihre Agenten werden entfernt, und sie bleibt schreibgeschützt, bis der Vorgang abgeschlossen ist. Stellen Sie sie wieder her, um dies abzubrechen und sie zurückzuholen.",
-      "errors": {
-        "fetch": "Archivierte Organisationen konnten nicht geladen werden"
-      }
-    },
-    "restore": {
-      "action": "Wiederherstellen",
-      "restoring": "Wird wiederhergestellt...",
-      "success": "{{name}} wiederhergestellt — Status: {{status}}.",
-      "recreateRequiredNote": "Bevor sie wieder vollständig nutzbar ist: {{items}}",
-      "suspendedNote": "Sie war vor der Archivierung gesperrt, daher wurde sie als gesperrt wiederhergestellt — beheben Sie dies, bevor sie den normalen Zugriff wieder aufnimmt.",
-      "errors": {
-        "restore": "Die Organisation konnte nicht wiederhergestellt werden",
-        "mfaRequired": "Das Wiederherstellen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut.",
-        "purging": "Diese Organisation wird bereits endgültig gelöscht und kann nicht mehr wiederhergestellt werden."
       }
     }
   },
@@ -4722,7 +4931,9 @@
     "count": "{{filtered}} von {{total}} Standorte",
     "searchPlaceholder": "Standorte suchen",
     "actions": {
-      "add": "Standort hinzufügen"
+      "add": "Standort hinzufügen",
+      "editSite": "{{name}} bearbeiten",
+      "deleteSite": "{{name}} löschen"
     },
     "columns": {
       "timezone": "Zeitzone",
@@ -4930,7 +5141,15 @@
     "columns": {
       "email": "E-Mail",
       "role": "Rolle",
-      "lastLogin": "Letzter Login"
+      "lastLogin": "Letzter Login",
+      "mfaStatus": "MFA-Status"
+    },
+    "mfaStatus": {
+      "enrolled": "Registriert",
+      "pending": "Ausstehend",
+      "pendingByDate": "Ausstehend — registrieren bis {{date}}",
+      "overdue": "Überfällig",
+      "notRequired": "Nicht erforderlich"
     },
     "status": {
       "active": "Aktiv",
@@ -5049,6 +5268,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Suche in der TD SYNNEX Preisdatei fehlgeschlagen (ungültige Antwort)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organisationsspezifische Variablen werden unter der jeweiligen Organisation aufgeführt.",
     "title": "Variablen",
     "description": "Definieren Sie einen Wert einmal – ein Anbieter-Site-Token, eine interne Repository-URL – und verweisen Sie in Skripten darauf, statt ihn pro Kunde fest einzutragen.",
     "loading": "Variablen werden geladen …",
@@ -5088,6 +5308,16 @@
     "empty": {
       "title": "Noch keine Variablen",
       "description": "Legen Sie eine an, damit Sie dasselbe Token nicht mehr in die Skripte jedes Kunden kopieren müssen."
+    },
+    "filters": {
+      "searchLabel": "Variablen durchsuchen",
+      "searchPlaceholder": "Nach Schlüssel oder Beschreibung suchen",
+      "scopeGroupLabel": "Nach Geltungsbereich filtern",
+      "scopeAll": "Alle Geltungsbereiche"
+    },
+    "noMatches": {
+      "title": "Keine Variablen entsprechen Ihren Filtern",
+      "description": "Versuchen Sie einen anderen Suchbegriff oder entfernen Sie den Geltungsbereichsfilter."
     },
     "errors": {
       "load": "Variablen konnten nicht geladen werden."
@@ -5305,5 +5535,95 @@
       "conflict": "Konflikt",
       "orgNotFound": "Organisation nicht gefunden"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Skripterstellung",
+    "subtitle": "Lassen Sie den Assistenten und Ihre Agenten Skripte schreiben, prüfen und – wenn Sie es zulassen – ohne Karte ausführen.",
+    "partnerCard": {
+      "title": "Partner-Obergrenze",
+      "description": "Die weiteste Einstellung, die eine Organisation dieses Partners verwenden darf. Einzelne Organisationen können sie nur einschränken.",
+      "readOnly": "Nur ein Partneradministrator mit vollem Organisationszugriff kann die Obergrenze ändern.",
+      "missing": "Ihr Partner hat noch keine Obergrenze festgelegt, daher kann die unbeaufsichtigte Ausführung hier nicht aktiviert werden."
+    },
+    "orgCard": {
+      "title": "Diese Organisation",
+      "description": "Eine ausdrückliche Freigabe. Die unbeaufsichtigte Ausführung bleibt deaktiviert, bis sowohl die Partner-Obergrenze als auch dieser Schalter es erlauben.",
+      "noOrgSelected": "Wählen Sie eine Organisation aus, um deren Einstellungen für die Skripterstellung zu verwalten."
+    },
+    "fields": {
+      "proposingEnabled": "Der KI erlauben, Skripte vorzuschlagen",
+      "unattendedAllowed": "Organisationen die unbeaufsichtigte Ausführung erlauben",
+      "unattendedEnabled": "Genehmigte risikoarme Skripte ohne Genehmigungskarte ausführen",
+      "maxRiskTier": "Höchste unbeaufsichtigt erlaubte Risikostufe",
+      "allowedClasses": "Worauf ein unbeaufsichtigtes Skript zugreifen darf",
+      "perHour": "Maximale unbeaufsichtigte Ausführungen pro Stunde",
+      "reviewerModel": "Prüfmodell",
+      "reviewerModelHint": "Leer lassen, um die Plattformvorgabe zu verwenden.",
+      "protectedResources": "Diese niemals anfassen",
+      "protectedServices": "Dienste",
+      "protectedPaths": "Pfade",
+      "protectedRegistryKeys": "Registrierungsschlüssel",
+      "protectedDeviceTags": "Geräte-Tags"
+    },
+    "tier": {
+      "low": "Niedrig",
+      "medium": "Mittel"
+    },
+    "class": {
+      "registry": "Registrierung",
+      "services": "Dienste",
+      "processes": "Prozesse",
+      "files_system": "Systemdateien",
+      "files_user": "Benutzerdateien",
+      "temp_files": "Temporäre Dateien",
+      "network_egress": "Ausgehender Netzwerkverkehr",
+      "firewall": "Firewall",
+      "credentials": "Anmeldedaten",
+      "users_groups": "Benutzer und Gruppen",
+      "packages": "Pakete",
+      "scheduled_tasks": "Geplante Aufgaben",
+      "disk": "Datenträger",
+      "boot": "Startkonfiguration",
+      "security_tooling": "Sicherheitstools",
+      "dns_cache": "DNS-Cache",
+      "printing": "Drucken",
+      "browser": "Browser",
+      "shell_eval": "Dynamischer Code"
+    },
+    "windowsOnly": "Nur Windows",
+    "hardDenied": "Unbeaufsichtigt nie verfügbar, unabhängig von der Obergrenze.",
+    "aboveCeiling": "Ihr Partner erlaubt dies nicht.",
+    "lane": {
+      "closedTitle": "Die unbeaufsichtigte Ausführung läuft normal",
+      "openTitle": "Die unbeaufsichtigte Ausführung ist pausiert",
+      "openBody": "{{reason}} Unbeaufsichtigte Ausführungen werden verweigert, bis ein Genehmiger die Ausführung zurücksetzt. Genehmigungen funktionieren weiterhin normal.",
+      "reset": "Ausführung zurücksetzen",
+      "resetStepUpBody": "Das Zurücksetzen der unbeaufsichtigten Spur erfordert eine erneute Sicherheitsprüfung.",
+      "resetSuccess": "Die unbeaufsichtigte Ausführung läuft wieder.",
+      "resetFailed": "Die Ausführung konnte nicht zurückgesetzt werden."
+    },
+    "stepUp": {
+      "title": "Bestätigen Sie, dass Sie es sind",
+      "body": "Das Aktivieren unbeaufsichtigter Ausführungen erfordert eine erneute Sicherheitsprüfung."
+    },
+    "save": "Speichern",
+    "saving": "Wird gespeichert…",
+    "saved": "Einstellungen zur Skripterstellung gespeichert.",
+    "saveFailed": "Diese Einstellungen konnten nicht gespeichert werden.",
+    "loading": "Wird geladen…",
+    "loadFailed": "Die Einstellungen zur Skripterstellung konnten nicht geladen werden."
+  },
+  "ticketingHubPage": {
+    "heading": "Ticketing-Einstellungen",
+    "description": "Status, SLAs, Kategorien, Erfassungsformulare, E-Mail, Vorlagen und Zeiterfassung — für alle Organisationen."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog-Standardwerte",
+    "description": "Wird verwendet, um Katalogimporte und die automatische Angebotsausfüllung vorzubefüllen — diese wirken sich nicht direkt auf die Preisermittlung aus.",
+    "loading": "Katalog-Standardwerte werden geladen...",
+    "loadError": "Katalog-Standardwerte konnten nicht geladen werden.",
+    "saveError": "Katalog-Standardwerte konnten nicht gespeichert werden",
+    "saveSuccess": "Katalog-Standardwerte gespeichert",
+    "saveButton": "Speichern"
   }
 }

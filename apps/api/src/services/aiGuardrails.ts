@@ -11,15 +11,17 @@
  */
 
 import type { AiApprovalScope } from '@breeze/shared/types/ai';
-import type { AiAgentMode, AiAgentProtectedResources } from '@breeze/shared';
+import type { AiAgentMode, AiAgentProtectedResources, RiskTier } from '@breeze/shared';
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
 import { getRedis } from './redis';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
+import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
+import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -112,6 +114,12 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
+  // SR5-01 (2026-09-17 audit §2.4): registry reads are privileged agent
+  // executions, not device reads — Tier 1 gave them no approval gate AND no
+  // MFA. Raised alongside their devices:execute mapping below. Deliberately
+  // NOT added to TIER2_READONLY_ACTIONS: unlike file_operations.list these
+  // return VALUES, so they keep the per-step prompt.
+  registry_operations: ['read_key', 'get_value'],
   // scan downgraded from Tier 3 (2026-07-20): discovery, not mutation —
   // consistent with approve/decline/defer here. install/rollback stay Tier 3.
   manage_patches: ['approve', 'decline', 'defer', 'bulk_approve', 'scan'],
@@ -167,11 +175,30 @@ export const TIER2_READONLY_TOOLS = new Set<string>([
   'get_invoice',
   'get_quote',
   'list_contracts',
+  // Deliverable template sets W05 (#5573): a pure read, like list_contracts.
+  'list_deliverable_templates',
   'list_invoices',
+  'list_org_documents',
   'list_quotes',
   'lookup_distributor_product',
   'search_catalog',
 ]);
+
+/**
+ * Execution plane W04 (spec §5.3). The four sandbox-workspace tools are
+ * Tier 1 — they execute nothing on the fleet — but they are NOT read-only:
+ * they spend compute, write files into a sandbox, and are opt-in per agent.
+ * `isReadOnlyResolution` treats every Tier-1 tool as read-only, which would
+ * (a) make the capability picker list them as "always on" and never write
+ * them to the allowlist, and (b) skip the allowlist gate in
+ * `checkAgentGuardrails`. This set is the ONE exclusion that makes them
+ * allowlist-gated; the carve-out in `checkAgentGuardrails` then keeps them
+ * `allow` (never `propose`/`act`, allowed on device-less runs) once the
+ * allowlist and protected-resource checks pass. Pinned by
+ * aiGuardrails.workspace.contract.test.ts.
+ */
+export { WORKSPACE_TOOL_NAMES, type WorkspaceToolName } from './workspace/workspaceToolNames';
+export const TIER1_NON_READONLY_TOOLS: ReadonlySet<string> = new Set<string>(WORKSPACE_TOOL_NAMES);
 
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
@@ -190,6 +217,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // `list` was deliberately downgraded to Tier 2 (2026-07-20) — recon-only.
   file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
+  // Applying a deliverable template set arms unattended ticket creation for
+  // every future period of every applied item — same class as
+  // manage_software_policies create/update (#3552). W05 (#5573).
+  manage_deliverables: ['apply_template'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
   manage_startup_items: ['disable', 'enable'],
@@ -224,7 +255,15 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // action on real endpoints with no human in the loop:
   //   - software policies: `enforceMode` + `remediationOptions.autoUninstall`
   //     turn a detect-only allowlist into fleet-wide auto-uninstall (the #3381
-  //     mass-uninstall failure mode).
+  //     mass-uninstall failure mode). `remediationOptions.autoInstall` (#5505
+  //     desired-state install) is NOT gated the same way as the fields above —
+  //     it is never accepted from the AI at all. The four handler write sites
+  //     in aiToolsCompliance.ts/aiToolsPolicyPrereqs.ts refuse an
+  //     autoInstall:true outright, regardless of tier or approval, because
+  //     only a human operator holding devices.execute + MFA may arm software
+  //     installation (contract-A D4). Tier-3 approval on this tool remains
+  //     for enforceMode/autoUninstall; it is not the mechanism that protects
+  //     autoInstall.
   //   - update rings: `autoApprove` + `deadlineDays` + `gracePeriodHours` arm
   //     unattended patch installs with FORCED reboots — the standing-rule form
   //     of manage_patches:install, which already requires approval.
@@ -416,6 +455,23 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
  */
 export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_ai_agents',
+  // Execution plane (spec §5.5). FULLY DEREGISTERED as of #6086 — chat-to-agent
+  // delegation is withdrawn until caller authorization can be preserved for the
+  // length of a run, so no tier, schema, handler or MCP declaration remains.
+  // Kept here anyway, and pinned by workspaceLaunchTool.registration.test.ts:
+  // an agent that could launch analysis runs could launch runs that launch
+  // runs, so if the name is ever re-wired this deny (unconditional, above the
+  // allowlist in `checkAgentGuardrails`) must already be in place rather than
+  // being something the re-wiring has to remember. A HUMAN asks for analysis.
+  //
+  // This entry is ALSO load-bearing for the workspace_stage/run/collect/cancel
+  // permission mapping (2026-09-17 ROLE audit §2.7): those four are flat
+  // `ai_agents:read`, which is only defensible while no chat caller can obtain
+  // a run-bearing principal. Re-wiring launch without first raising them to an
+  // execute-class permission hands arbitrary code execution to every
+  // `ai_agents:read` holder. See the LANDMINE note at their TOOL_PERMISSIONS
+  // entries, and aiGuardrails.workspaceToolSurface.contract.test.ts.
+  'workspace_launch_analysis',
 ]);
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
@@ -434,6 +490,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
+  // W05 (#5573). `supervised`, not four_eyes: applying a template set creates
+  // ordinary org config (a recurring obligation schedule) that a tech can
+  // deactivate afterwards. Nothing here is externally binding, financial, or
+  // state-destroying — the four_eyes classes above.
+  manage_deliverables: ['apply_template'],
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['install', 'setup_auto_approval'],
   manage_groups: ['create', 'update', 'delete'],
@@ -487,6 +548,11 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   'take_screenshot', 'analyze_screen',
   'apply_cis_remediation', 'manage_hyperv_vm', 'manage_peripheral_policy',
   'manage_software_policy', 'manage_browser_policy',
+  // Monitor definitions (#5289 Task 8): ordinary config-object CRUD (create/
+  // update/delete/enable/disable/attach/detach), same class as the software/
+  // browser/peripheral policy tools above — no identity, tenant-destruction,
+  // or restore/rewind action in its surface.
+  'manage_monitor_definitions',
   'network_discovery', 'remediate_sensitive_data',
   'remediate_software_violation', 'remediate_vulnerability',
   'execute_playbook', 'execute_containment',
@@ -510,6 +576,8 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // monitoring-suppression source, so authoring one is a different class of
   // act from authoring any other link — but only the INPUT says which it is,
   // so it cannot be classified by (tool, action) in the static tables.
+  // #5511 W02: same reasoning for a warranty link that switches on device-side
+  // HP CMSL collection — the pair is unchanged, the predicate gained an arm.
   'manage_policy_feature_link:add',
   'manage_policy_feature_link:update',
 ]);
@@ -520,25 +588,39 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
  * ask the SAME question — a second copy of this predicate is how a tier and
  * its scope drift apart.
  *
- * Strict `=== 'maintenance'`: a non-string featureType stays at the base tier,
- * which is safe here because the handler writes exactly the featureType it was
- * given, so a value that is not the literal 'maintenance' cannot create a
- * maintenance link either. The handler's own principal check (D9.3) is the
- * belt to this brace for `update`, where featureType is not a required input.
+ * Two arms, both on manage_policy_feature_link's add/update:
+ *
+ *  - `featureType === 'maintenance'` (RMM-QA-176 D9). Strict `===`: a
+ *    non-string featureType stays at the base tier, which is safe here because
+ *    the handler writes exactly the featureType it was given, so a value that
+ *    is not the literal 'maintenance' cannot create a maintenance link either.
+ *    The handler's own principal check (D9.3) is the belt to this brace for
+ *    `update`, where featureType is not a required input.
+ *
+ *  - an inlineSettings payload that would leave HP CMSL warranty collection
+ *    ON (#5511 W02, contract D4). Enabling it installs HP's CMSL module on
+ *    every HP endpoint the policy reaches, which is a software deployment —
+ *    gated behind devices.execute + MFA on the HTTP routes, and this tool
+ *    reaches addFeatureLink without passing through any of them. Keyed on the
+ *    SETTINGS CONTENT rather than on featureType precisely because featureType
+ *    is not a required input on `update`, which is the call that turns
+ *    collection on for an existing link. A warranty link carrying only alert
+ *    thresholds installs nothing and deliberately stays at the base tier.
  *
  * The action guard is not decoration: without it a read (`list`) carrying a
- * stray featureType argument would be escalated into an approval that the MCP
- * transport then denies outright.
+ * stray featureType or inlineSettings argument would be escalated into an
+ * approval that the MCP transport then denies outright.
  */
 export function isInputAwareTier3(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>,
 ): boolean {
+  if (toolName !== 'manage_policy_feature_link') return false;
+  if (action !== 'add' && action !== 'update') return false;
   return (
-    toolName === 'manage_policy_feature_link' &&
-    (action === 'add' || action === 'update') &&
     input.featureType === 'maintenance'
+    || warrantyHpCmslRequested(input.inlineSettings)
   );
 }
 
@@ -550,13 +632,44 @@ export function isInputAwareTier3(
  */
 export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
   's1_isolate_device',
+  // run_script { proposalId }: scope comes from the proposal's REVIEWED risk
+  // tier, handed in through GuardrailContext (AI script authoring, spec §4.5).
+  'run_script',
 ]);
+
+/**
+ * Optional, DB-FREE context a caller may hand to the guardrail so an
+ * input-aware decision can read persisted state without this module importing
+ * the schema (aiGuardrails.imports.contract.test.ts).
+ *
+ * Loaded by `loadProposalGuardrailContext`
+ * (services/scriptProposals/guardrailContext.ts) — which is the only producer,
+ * so the risk tier here is always the tier a completed review actually wrote.
+ */
+export interface GuardrailContext {
+  proposal?: { riskTier: RiskTier; strictHits: string[] };
+}
+
+/** A `run_script` call that names a proposal instead of a library script. */
+function isProposalRunScript(toolName: string, input: Record<string, unknown>): boolean {
+  return toolName === 'run_script' && typeof input.proposalId === 'string' && input.proposalId.length > 0;
+}
 
 export function resolveApprovalScope(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>,
+  context?: GuardrailContext,
 ): AiApprovalScope {
+  if (isProposalRunScript(toolName, input)) {
+    // Spec §4.5. No context ⇒ four_eyes, the module's own fail-safe default —
+    // checkGuardrails refuses the call outright a moment later, so this value
+    // is only ever read by a caller that skipped the tier check. Placed BEFORE
+    // the generic TIER3_SUPERVISED_TOOLS hit, which would otherwise resolve
+    // `supervised` for every tier.
+    const tier = context?.proposal?.riskTier;
+    return tier === 'low' || tier === 'medium' ? 'supervised' : 'four_eyes';
+  }
   // Input-aware overrides (spec §3.1) — scope depends on argument CONTENT,
   // not just the tool/action name, so these cannot live in the static
   // TIER3_*_ACTIONS / TIER3_*_TOOLS tables above. Checked first since neither
@@ -574,7 +687,8 @@ export function resolveApprovalScope(
     // the way to the per-TOOL `four_eyes` fail-safe at the bottom of this
     // function. `supervised` matches the #3552/835f7eb3d policy-prerequisite
     // escalations and manage_configuration_policy's own create/update/delete —
-    // authoring policy configuration, not an externally binding act.
+    // authoring policy configuration, not an externally binding act. The
+    // #5511 hpCmsl arm resolves here too, for the same reason.
     return 'supervised';
   }
   if (toolName === 's1_isolate_device') {
@@ -604,14 +718,20 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_device_details: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
-  remediate_vulnerability: { resource: 'patches', action: 'execute' },
+  // routes/patches/operations.ts:29 (/scan) and :171 (/:id/rollback) both
+  // require DEVICES_EXECUTE; `patches` is not a catalog resource.
+  remediate_vulnerability: { resource: 'devices', action: 'execute' },
   analyze_metrics: { resource: 'devices', action: 'read' },
-  get_s1_status: { resource: 'organizations', action: 'read' },
+  get_s1_status: { resource: 'devices', action: 'read' },
   get_s1_threats: { resource: 'devices', action: 'read' },
   s1_isolate_device: { resource: 'devices', action: 'execute' },
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
+  // Authoring is inert, but it is still script work: whoever may read the
+  // library may read a proposal, and whoever may run a script may write one.
+  propose_script: { resource: 'scripts', action: 'execute' },
+  get_script_proposal: { resource: 'scripts', action: 'read' },
   // Same permission the HTTP cancel route requires (PERMISSIONS.SCRIPTS_EXECUTE):
   // whoever may start a script may stop it, and nobody else.
   cancel_script_execution: { resource: 'scripts', action: 'execute' },
@@ -701,6 +821,38 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     resume: { resource: 'contracts', action: 'manage' },
     cancel: { resource: 'contracts', action: 'manage' },
   },
+  // Service deliverables W02 (#5573 spec §10). `contracts`, not a new resource:
+  // the REST routes for deliverables AND key dates gate on contracts:read /
+  // contracts:write, and the AI door must not disagree with the HTTP door.
+  list_deliverables: { resource: 'contracts', action: 'read' },
+  list_deliverable_templates: { resource: 'contracts', action: 'read' },
+  manage_deliverables: {
+    create: { resource: 'contracts', action: 'write' },
+    update: { resource: 'contracts', action: 'write' },
+    deactivate: { resource: 'contracts', action: 'write' },
+    deliver: { resource: 'contracts', action: 'write' },
+    waive: { resource: 'contracts', action: 'write' },
+    reopen: { resource: 'contracts', action: 'write' },
+    reschedule: { resource: 'contracts', action: 'write' },
+    link_evidence: { resource: 'contracts', action: 'write' },
+    // `manage`, not `write`: applying a template stands up a whole schedule at
+    // once, matching the contracts lifecycle actions above.
+    apply_template: { resource: 'contracts', action: 'manage' },
+  },
+  manage_key_dates: {
+    list: { resource: 'contracts', action: 'read' },
+    create: { resource: 'contracts', action: 'write' },
+    update: { resource: 'contracts', action: 'write' },
+    delete: { resource: 'contracts', action: 'write' },
+  },
+  // Org document library (service deliverables W03): its own resource, not
+  // `contracts` — a technician may file documents without billing authority.
+  list_org_documents: { resource: 'documents', action: 'read' },
+  manage_org_documents: {
+    update_metadata: { resource: 'documents', action: 'write' },
+    set_portal_visibility: { resource: 'documents', action: 'write' },
+    supersede: { resource: 'documents', action: 'write' },
+  },
   list_quotes: { resource: 'quotes', action: 'read' },
   get_quote: { resource: 'quotes', action: 'read' },
   manage_quotes: {
@@ -771,46 +923,70 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   analyze_screen: { resource: 'devices', action: 'execute' },
   computer_control: { resource: 'devices', action: 'execute' },
   // Fleet tools — RBAC mappings
+  // Mirrors routes/deployments.ts exactly: GET / and GET /:id and
+  // GET /:id/devices -> requireDeploymentRead (DEVICES_READ, L20/225/346/740);
+  // POST / -> requireDeploymentWrite (DEVICES_WRITE, L21/276); and
+  // /:id/{start,pause,resume,cancel} -> requireDeploymentExecute
+  // (DEVICES_EXECUTE, L22/531/585/635/685). The previous `deployments:*`
+  // resource does not exist in the canonical catalog (#6103 / 2026-09-17 audit
+  // §2.6) so these actions were reachable only by an `*:*` grant.
   manage_deployments: {
-    list: { resource: 'deployments', action: 'read' },
-    get: { resource: 'deployments', action: 'read' },
-    device_status: { resource: 'deployments', action: 'read' },
-    create: { resource: 'deployments', action: 'write' },
-    start: { resource: 'deployments', action: 'write' },
-    pause: { resource: 'deployments', action: 'write' },
-    resume: { resource: 'deployments', action: 'write' },
-    cancel: { resource: 'deployments', action: 'write' },
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    device_status: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    start: { resource: 'devices', action: 'execute' },
+    pause: { resource: 'devices', action: 'execute' },
+    resume: { resource: 'devices', action: 'execute' },
+    cancel: { resource: 'devices', action: 'execute' },
   },
+  // Mirrors routes/patches/*: GET /compliance and GET /approvals ->
+  // DEVICES_READ (compliance.ts:43, approvals.ts:37); /scan and /:id/rollback
+  // -> DEVICES_EXECUTE (operations.ts:29, 171); /bulk-approve, /:id/approve,
+  // /:id/decline, /:id/defer -> DEVICES_EXECUTE (approvals.ts:87, 156, 217,
+  // 308). `setup_auto_approval` writes standing approval authority into a
+  // configuration policy, so it rides with the approve family on
+  // DEVICES_EXECUTE rather than the weaker DEVICES_WRITE of the policy CRUD
+  // route. GET /patches itself carries no requirePermission (list.ts:34-36,
+  // scope-only); DEVICES_READ is used here so the tool is never WEAKER than
+  // its sibling reads. The previous `patches:*` resource is not in the
+  // canonical catalog (2026-09-17 audit §2.6).
   manage_patches: {
-    list: { resource: 'patches', action: 'read' },
-    compliance: { resource: 'patches', action: 'read' },
-    scan: { resource: 'patches', action: 'execute' },
-    approve: { resource: 'patches', action: 'approve' },
-    decline: { resource: 'patches', action: 'approve' },
-    defer: { resource: 'patches', action: 'approve' },
-    bulk_approve: { resource: 'patches', action: 'approve' },
-    install: { resource: 'patches', action: 'execute' },
-    rollback: { resource: 'patches', action: 'execute' },
-    setup_auto_approval: { resource: 'patches', action: 'approve' },
+    list: { resource: 'devices', action: 'read' },
+    compliance: { resource: 'devices', action: 'read' },
+    scan: { resource: 'devices', action: 'execute' },
+    approve: { resource: 'devices', action: 'execute' },
+    decline: { resource: 'devices', action: 'execute' },
+    defer: { resource: 'devices', action: 'execute' },
+    bulk_approve: { resource: 'devices', action: 'execute' },
+    install: { resource: 'devices', action: 'execute' },
+    rollback: { resource: 'devices', action: 'execute' },
+    setup_auto_approval: { resource: 'devices', action: 'execute' },
   },
+  // Mirrors routes/groups.ts:25-26 — requireGroupRead = DEVICES_READ,
+  // requireGroupWrite = DEVICES_WRITE (DELETE /:id also uses
+  // requireGroupWrite, L781-784). `groups` is not a catalog resource.
   manage_groups: {
-    list: { resource: 'groups', action: 'read' },
-    get: { resource: 'groups', action: 'read' },
-    preview: { resource: 'groups', action: 'read' },
-    membership_log: { resource: 'groups', action: 'read' },
-    create: { resource: 'groups', action: 'write' },
-    update: { resource: 'groups', action: 'write' },
-    delete: { resource: 'groups', action: 'write' },
-    add_devices: { resource: 'groups', action: 'write' },
-    remove_devices: { resource: 'groups', action: 'write' },
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    preview: { resource: 'devices', action: 'read' },
+    membership_log: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'write' },
+    add_devices: { resource: 'devices', action: 'write' },
+    remove_devices: { resource: 'devices', action: 'write' },
   },
+  // Mirrors routes/maintenance.ts:25-26 — requireMaintenanceRead =
+  // DEVICES_READ, requireMaintenanceWrite = DEVICES_WRITE. `maintenance`
+  // is not a catalog resource.
   manage_maintenance_windows: {
-    list: { resource: 'maintenance', action: 'read' },
-    get: { resource: 'maintenance', action: 'read' },
-    active_now: { resource: 'maintenance', action: 'read' },
-    create: { resource: 'maintenance', action: 'write' },
-    update: { resource: 'maintenance', action: 'write' },
-    delete: { resource: 'maintenance', action: 'write' },
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    active_now: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'write' },
   },
   manage_automations: {
     list: { resource: 'automations', action: 'read' },
@@ -821,7 +997,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete: { resource: 'automations', action: 'write' },
     enable: { resource: 'automations', action: 'write' },
     disable: { resource: 'automations', action: 'write' },
-    run: { resource: 'automations', action: 'execute' },
+    // routes/automations.ts:1615-1617 — POST /:id/run gates on
+    // requireAutomationWrite (AUTOMATIONS_WRITE). `automations:execute` is
+    // not a registered action on the `automations` resource.
+    run: { resource: 'automations', action: 'write' },
   },
   manage_alert_rules: {
     list_templates: { resource: 'alerts', action: 'read' },
@@ -834,12 +1013,20 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     list_channels: { resource: 'alerts', action: 'read' },
     alert_summary: { resource: 'alerts', action: 'read' },
   },
+  // Mirrors routes/monitoring.ts:26 — requireMonitoringRead = DEVICES_READ.
+  // `monitoring` is not a catalog resource.
   manage_service_monitors: {
-    list: { resource: 'monitoring', action: 'read' },
+    list: { resource: 'devices', action: 'read' },
   },
   generate_report: {
     list: { resource: 'reports', action: 'read' },
-    generate: { resource: 'reports', action: 'write' },
+    // routes/reports/generate.ts:24 gates POST /reports/generate on
+    // REPORTS_EXPORT, not REPORTS_WRITE — rendering a report materialises org
+    // data into a downloadable artifact. The seeded `Org Technician` holds
+    // reports:read/reports:write and NOT reports:export (db/seed.ts:444), so
+    // the old mapping let a seeded role generate reports it cannot generate
+    // over HTTP (2026-09-17 audit §2.5).
+    generate: { resource: 'reports', action: 'export' },
     data: { resource: 'reports', action: 'read' },
     create: { resource: 'reports', action: 'write' },
     update: { resource: 'reports', action: 'write' },
@@ -856,43 +1043,93 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   resolve_device_context: { resource: 'devices', action: 'write' },
   // Agent log tools
   search_agent_logs: { resource: 'devices', action: 'read' },
+  // Execution plane W04 — sandbox workspace tools. They only function inside
+  // an `analysis` run (chat/MCP calls return `workspace_requires_run`); the
+  // mapping exists so the chat path reports that typed error rather than
+  // "No RBAC permission mapping".
+  //
+  // LANDMINE (2026-09-17 AI tool ROLE audit §2.7). Flat `ai_agents:read` is a
+  // LOW-BAR grant — seeded Org Admin holds it — and `workspace_run` executes
+  // arbitrary bash / python / node. It is safe ONLY because no chat or MCP
+  // caller can ever reach a workspace: `resolveWorkspace`
+  // (workspace/workspaceTools.ts) derives the run id from the caller identity
+  // alone (`auth.principal.kind === 'ai_agent'` + `runId`), there is no
+  // `runId` tool input, and chat-initiated launch is withdrawn (#6086,
+  // `workspace_launch_analysis` in AGENT_HUMAN_ONLY_TOOLS below). Agent
+  // principals bypass this table entirely, so it is never the control for a
+  // legitimate run.
+  //
+  // RE-ENABLING chat-initiated launch hands a CHAT caller a run-bearing
+  // principal, and at that moment this table becomes the ONLY gate. These four
+  // entries MUST be raised to an execute-class permission in the same change.
+  // Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
+  workspace_stage: { resource: 'ai_agents', action: 'read' },
+  workspace_run: { resource: 'ai_agents', action: 'read' },
+  workspace_collect: { resource: 'ai_agents', action: 'read' },
+  workspace_cancel: { resource: 'ai_agents', action: 'read' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
   capture_agent_pprof: { resource: 'devices', action: 'execute' },
   // Event log tools
   search_logs: { resource: 'devices', action: 'read' },
   get_log_trends: { resource: 'devices', action: 'read' },
   detect_log_correlations: { resource: 'devices', action: 'read' },
+  // Execution plane
+  export_dataset: { resource: 'devices', action: 'read' },
   // Configuration policy tools
-  list_configuration_policies: { resource: 'policies', action: 'read' },
-  get_configuration_policy: { resource: 'policies', action: 'read' },
+  list_configuration_policies: { resource: 'devices', action: 'read' },
+  get_configuration_policy: { resource: 'devices', action: 'read' },
   manage_configuration_policy: {
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
-    activate: { resource: 'policies', action: 'write' },
-    deactivate: { resource: 'policies', action: 'write' },
-    delete: { resource: 'policies', action: 'write' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    activate: { resource: 'devices', action: 'write' },
+    deactivate: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'write' },
   },
   configuration_policy_compliance: {
-    summary: { resource: 'policies', action: 'read' },
-    status: { resource: 'policies', action: 'read' },
+    summary: { resource: 'devices', action: 'read' },
+    status: { resource: 'devices', action: 'read' },
   },
   get_effective_configuration: { resource: 'devices', action: 'read' },
   preview_configuration_change: { resource: 'devices', action: 'read' },
   manage_policy_feature_link: {
-    list: { resource: 'policies', action: 'read' },
-    add: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
-    remove: { resource: 'policies', action: 'write' },
+    list: { resource: 'devices', action: 'read' },
+    add: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    remove: { resource: 'devices', action: 'write' },
   },
+  // Monitor definition tools (#5289 Task 8) — same permission the HTTP routes
+  // require (PERMISSIONS.ALERTS_READ / ALERTS_WRITE, routes/monitorDefinitions.ts).
+  // NOTE: the write tool is manage_monitor_definitions, NOT manage_monitors —
+  // that name is already taken by the unrelated network-monitor CRUD tool
+  // (see the "Monitoring tools" RBAC mappings below).
+  list_monitors: { resource: 'alerts', action: 'read' },
+  get_monitor: { resource: 'alerts', action: 'read' },
+  // #5290 (W03): get_monitor_activity is read-only (episode/state history);
+  // reset_monitor_escalation mutates the escalation latch, so it needs write.
+  get_monitor_activity: { resource: 'alerts', action: 'read' },
+  reset_monitor_escalation: { resource: 'alerts', action: 'write' },
+  manage_monitor_definitions: {
+    create: { resource: 'alerts', action: 'write' },
+    update: { resource: 'alerts', action: 'write' },
+    delete: { resource: 'alerts', action: 'write' },
+    enable: { resource: 'alerts', action: 'write' },
+    disable: { resource: 'alerts', action: 'write' },
+    attach: { resource: 'alerts', action: 'write' },
+    detach: { resource: 'alerts', action: 'write' },
+  },
+  // Mirrors routes/backup/profiles.ts — reads gate on BACKUP_READ, writes on
+  // BACKUP_WRITE (profiles.ts:91/135/149/208/256; configs.ts:227/246/
+  // 339/362/504/541). NOT the generic device/policy grants: backup
+  // profile and config writes arm retention and storage credentials.
   manage_backup_profiles: {
-    list: { resource: 'policies', action: 'read' },
-    get: { resource: 'policies', action: 'read' },
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
-    delete: { resource: 'policies', action: 'write' },
+    list: { resource: 'backup', action: 'read' },
+    get: { resource: 'backup', action: 'read' },
+    create: { resource: 'backup', action: 'write' },
+    update: { resource: 'backup', action: 'write' },
+    delete: { resource: 'backup', action: 'write' },
   },
-  apply_configuration_policy: { resource: 'policies', action: 'write' },
-  remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
+  apply_configuration_policy: { resource: 'devices', action: 'write' },
+  remove_configuration_policy_assignment: { resource: 'devices', action: 'write' },
   // Playbook tools
   list_playbooks: { resource: 'devices', action: 'read' },
   execute_playbook: { resource: 'devices', action: 'execute' },
@@ -917,14 +1154,31 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   query_custom_fields: { resource: 'devices', action: 'read' },
   registry_operations: {
-    read_key: { resource: 'devices', action: 'read' },
-    get_value: { resource: 'devices', action: 'read' },
+    // SR5-01 precedent, applied (2026-09-17 audit §2.4). These are not device
+    // reads: the handler dispatches a real agent command
+    // (aiToolsScripts.ts, aiExecuteCommand(auth, 'registry_operations', …)),
+    // and the HTTP path for agent commands requires DEVICES_EXECUTE plus
+    // requireMfa() (routes/devices/commands.ts:49). Registry values are the
+    // same exfiltration class the comment at the top of this file names for
+    // file_read and list_services — autologon DefaultPassword, service
+    // configs, connection strings — off a root/LocalSystem agent. Matches the
+    // treatment file_operations.list/.read already received above.
+    // Tier: both are in TIER2_ACTIONS, and the tool's base registration was
+    // raised 1 -> 2 in aiToolsScripts.ts so an unclassified action cannot land
+    // on Tier 1.
+    read_key: { resource: 'devices', action: 'execute' },
+    get_value: { resource: 'devices', action: 'execute' },
     set_value: { resource: 'devices', action: 'execute' },
     create_key: { resource: 'devices', action: 'execute' },
     delete_key: { resource: 'devices', action: 'execute' },
   },
   // Documentation tools
-  search_documentation: { resource: 'general', action: 'read' },
+  // `general` was never a catalog resource. The documentation index is
+  // static product content, not tenant data, and the only surface that
+  // reaches this tool is the AI chat route, which already requires
+  // ORGS_READ (routes/ai.ts:167) — so mirroring that is exactly "what the
+  // route requires" and nothing weaker.
+  search_documentation: { resource: 'organizations', action: 'read' },
   // Script library tools
   search_script_library: { resource: 'scripts', action: 'read' },
   list_scripts: { resource: 'scripts', action: 'read' },
@@ -933,29 +1187,36 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_script_execution_history: { resource: 'scripts', action: 'read' },
   get_script_execution: { resource: 'scripts', action: 'read' },
   // Backup & DR tools
-  query_backups: { resource: 'devices', action: 'read' },
-  get_backup_status: { resource: 'devices', action: 'read' },
-  browse_snapshots: { resource: 'devices', action: 'read' },
+  // Backup/vault/Hyper-V/MSSQL reads mirror their routes, which own these
+  // surfaces on `organizations:*` and `backup:*` rather than the device grants
+  // the data's shape suggests (2026-09-17 audit §2.5 — one decision, nine
+  // tools). Route evidence is cited per line.
+  query_backups: { resource: 'organizations', action: 'read' },   // routes/backup/jobs.ts:61
+  get_backup_status: { resource: 'organizations', action: 'read' },   // routes/backup/jobs.ts:147
+  browse_snapshots: { resource: 'backup', action: 'read' },   // routes/backup/snapshots.ts:200, 273
   trigger_backup: { resource: 'devices', action: 'execute' },
   restore_snapshot: { resource: 'devices', action: 'execute' },
   restore_as_vm: { resource: 'devices', action: 'execute' },
   instant_boot_vm: { resource: 'devices', action: 'execute' },
-  get_vm_restore_estimate: { resource: 'devices', action: 'read' },
-  query_mssql_instances: { resource: 'devices', action: 'read' },
-  get_mssql_backup_status: { resource: 'devices', action: 'read' },
+  get_vm_restore_estimate: { resource: 'backup', action: 'read' },   // routes/backup/vmrestore.ts:501
+  query_mssql_instances: { resource: 'organizations', action: 'read' },   // routes/backup/mssql.ts:67
+  get_mssql_backup_status: { resource: 'organizations', action: 'read' },   // routes/backup/mssql.ts:94, 127
   trigger_mssql_backup: { resource: 'devices', action: 'execute' },
   restore_mssql_database: { resource: 'devices', action: 'execute' },
   verify_mssql_backup: { resource: 'devices', action: 'execute' },
-  query_hyperv_vms: { resource: 'devices', action: 'read' },
-  get_hyperv_vm_details: { resource: 'devices', action: 'read' },
+  query_hyperv_vms: { resource: 'organizations', action: 'read' },   // routes/backup/hyperv.ts:52
+  get_hyperv_vm_details: { resource: 'organizations', action: 'read' },   // routes/backup/hyperv.ts:94, 124
   manage_hyperv_vm: { resource: 'devices', action: 'execute' },
   trigger_hyperv_backup: { resource: 'devices', action: 'execute' },
   restore_hyperv_vm: { resource: 'devices', action: 'execute' },
   manage_hyperv_checkpoints: { resource: 'devices', action: 'execute' },
-  query_vaults: { resource: 'devices', action: 'read' },
-  get_vault_status: { resource: 'devices', action: 'read' },
-  trigger_vault_sync: { resource: 'devices', action: 'execute' },
-  configure_vault: { resource: 'devices', action: 'write' },
+  query_vaults: { resource: 'organizations', action: 'read' },   // routes/backup/vault.ts:100
+  get_vault_status: { resource: 'organizations', action: 'read' },   // routes/backup/vault.ts:371
+  trigger_vault_sync: { resource: 'devices', action: 'execute' },   // routes/backup/vault.ts:272 — unchanged, already parity
+  // WRITES storage/credential configuration; routes/backup/vault.ts:135, 186,
+  // 231 all require ORGS_WRITE. The seeded Org Technician holds devices:write
+  // and no organizations:*, so the old mapping was a seeded-role write escalation.
+  configure_vault: { resource: 'organizations', action: 'write' },
   m365_query_users: { resource: 'organizations', action: 'read' },
   m365_query_signins: { resource: 'organizations', action: 'read' },
   m365_query_intune_devices: { resource: 'organizations', action: 'read' },
@@ -996,8 +1257,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_remote_sessions: { resource: 'devices', action: 'read' },
   create_remote_session: { resource: 'devices', action: 'execute' },
   // Compliance policy tools
-  query_compliance_policies: { resource: 'policies', action: 'read' },
-  get_compliance_status: { resource: 'policies', action: 'read' },
+  query_compliance_policies: { resource: 'devices', action: 'read' },
+  get_compliance_status: { resource: 'devices', action: 'read' },
   // Notification channel tools
   manage_notification_channels: {
     list: { resource: 'alerts', action: 'read' },
@@ -1024,41 +1285,45 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_user_risk_scores: { resource: 'users', action: 'read' },
   get_user_risk_detail: { resource: 'users', action: 'read' },
   assign_security_training: { resource: 'users', action: 'write' },
-  get_backup_health: { resource: 'devices', action: 'read' },
-  run_backup_verification: { resource: 'devices', action: 'execute' },
-  get_recovery_readiness: { resource: 'devices', action: 'read' },
-  // M365 helpdesk tools (Delegant-backed)
-  m365_lookup_user: { resource: 'm365', action: 'read' },
-  m365_recent_signins: { resource: 'm365', action: 'read' },
-  m365_list_group_memberships: { resource: 'm365', action: 'read' },
-  m365_disable_user: { resource: 'm365', action: 'execute' },
-  m365_reset_password: { resource: 'm365', action: 'execute' },
-  // Google Workspace helpdesk tools (DWD service-account-backed)
-  google_lookup_user: { resource: 'google', action: 'read' },
-  google_reset_password: { resource: 'google', action: 'execute' },
-  google_suspend_user: { resource: 'google', action: 'execute' },
-  google_restore_user: { resource: 'google', action: 'execute' },
-  google_signout: { resource: 'google', action: 'execute' },
-  google_set_forwarding: { resource: 'google', action: 'execute' },
-  google_disable_forwarding: { resource: 'google', action: 'execute' },
-  google_set_vacation: { resource: 'google', action: 'execute' },
-  google_update_user: { resource: 'google', action: 'execute' },
-  google_share_calendar: { resource: 'google', action: 'execute' },
-  google_offboard_user: { resource: 'google', action: 'execute' },
-  google_wipe_mobile_device: { resource: 'google', action: 'execute' },
-  google_security_drift: { resource: 'google', action: 'read' },
-  google_email_report: { resource: 'google', action: 'read' },
-  google_list_user_groups: { resource: 'google', action: 'read' },
-  google_add_to_group: { resource: 'google', action: 'execute' },
-  google_remove_from_group: { resource: 'google', action: 'execute' },
-  google_move_ou: { resource: 'google', action: 'execute' },
-  google_rename_user: { resource: 'google', action: 'execute' },
-  google_reset_2sv: { resource: 'google', action: 'execute' },
-  google_add_mail_delegate: { resource: 'google', action: 'execute' },
-  google_remove_mail_delegate: { resource: 'google', action: 'execute' },
-  google_list_licenses: { resource: 'google', action: 'read' },
-  google_assign_license: { resource: 'google', action: 'execute' },
-  google_remove_license: { resource: 'google', action: 'execute' },
+  // M365 helpdesk tools (Delegant-backed). These Graph operations have no
+  // per-operation first-party REST route; the whole M365 surface is gated on
+  // ORGS_READ / ORGS_WRITE at its connection routes (m365.ts:29-30,
+  // m365CustomerGraphRead.ts:47-51, m365CustomerGraphActions.ts:44-48), and
+  // the sibling m365_query_* tools already use those. `m365:*` / `google:*`
+  // were never catalog resources (2026-09-17 audit §2.6).
+  m365_lookup_user: { resource: 'organizations', action: 'read' },
+  m365_recent_signins: { resource: 'organizations', action: 'read' },
+  m365_list_group_memberships: { resource: 'organizations', action: 'read' },
+  m365_disable_user: { resource: 'organizations', action: 'write' },
+  m365_reset_password: { resource: 'organizations', action: 'write' },
+  // Google Workspace helpdesk tools (DWD service-account-backed). Same
+  // reasoning as the M365 block above; routes/google.ts:29-30 gates the
+  // Google surface on ORGS_READ / ORGS_WRITE.
+  google_lookup_user: { resource: 'organizations', action: 'read' },
+  google_reset_password: { resource: 'organizations', action: 'write' },
+  google_suspend_user: { resource: 'organizations', action: 'write' },
+  google_restore_user: { resource: 'organizations', action: 'write' },
+  google_signout: { resource: 'organizations', action: 'write' },
+  google_set_forwarding: { resource: 'organizations', action: 'write' },
+  google_disable_forwarding: { resource: 'organizations', action: 'write' },
+  google_set_vacation: { resource: 'organizations', action: 'write' },
+  google_update_user: { resource: 'organizations', action: 'write' },
+  google_share_calendar: { resource: 'organizations', action: 'write' },
+  google_offboard_user: { resource: 'organizations', action: 'write' },
+  google_wipe_mobile_device: { resource: 'organizations', action: 'write' },
+  google_security_drift: { resource: 'organizations', action: 'read' },
+  google_email_report: { resource: 'organizations', action: 'read' },
+  google_list_user_groups: { resource: 'organizations', action: 'read' },
+  google_add_to_group: { resource: 'organizations', action: 'write' },
+  google_remove_from_group: { resource: 'organizations', action: 'write' },
+  google_move_ou: { resource: 'organizations', action: 'write' },
+  google_rename_user: { resource: 'organizations', action: 'write' },
+  google_reset_2sv: { resource: 'organizations', action: 'write' },
+  google_add_mail_delegate: { resource: 'organizations', action: 'write' },
+  google_remove_mail_delegate: { resource: 'organizations', action: 'write' },
+  google_list_licenses: { resource: 'organizations', action: 'read' },
+  google_assign_license: { resource: 'organizations', action: 'write' },
+  google_remove_license: { resource: 'organizations', action: 'write' },
 
   // Bootstrap authTools (MCP-OAUTH-11). These dispatch outside the main aiTools
   // registry (see mcpServer.ts dispatchBootstrapAuthTool) but MUST still carry a
@@ -1084,16 +1349,20 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
 
   // Policy-prereq family (analogy: manage_backup_profiles per-action map)
   manage_update_rings: {
-    list: { resource: 'policies', action: 'read' },
-    get: { resource: 'policies', action: 'read' },
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
   },
+  // Mirrors routes/backup/configs.ts — reads gate on BACKUP_READ, writes on
+  // BACKUP_WRITE (profiles.ts:91/135/149/208/256; configs.ts:227/246/
+  // 339/362/504/541). NOT the generic device/policy grants: backup
+  // profile and config writes arm retention and storage credentials.
   manage_backup_configs: {
-    list: { resource: 'policies', action: 'read' },
-    get: { resource: 'policies', action: 'read' },
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
+    list: { resource: 'backup', action: 'read' },
+    get: { resource: 'backup', action: 'read' },
+    create: { resource: 'backup', action: 'write' },
+    update: { resource: 'backup', action: 'write' },
   },
 
   // Device reads (analogy: analyze_boot_performance, query_change_log)
@@ -1127,42 +1396,83 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
 
   // Compliance / software / peripheral (analogy: query_compliance_policies policies:read;
   // manage_configuration_policy map)
-  get_software_compliance: { resource: 'policies', action: 'read' },
+  get_software_compliance: { resource: 'devices', action: 'read' },
   manage_software_policies: {
-    list: { resource: 'policies', action: 'read' },
-    get: { resource: 'policies', action: 'read' },
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
   },
   manage_software_policy: {
-    list: { resource: 'policies', action: 'read' },
-    get: { resource: 'policies', action: 'read' },
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
-    delete: { resource: 'policies', action: 'write' },
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'write' },
   },
   remediate_software_violation: { resource: 'devices', action: 'execute' },  // analogy: apply_cis_remediation
+  // Mirrors routes/peripheralControl.ts — reads gate on DEVICES_READ
+  // (L333, 427, 479), writes on ORGS_WRITE (L492, 637, 701).
   manage_peripheral_policies: {
-    list: { resource: 'policies', action: 'read' },
-    get: { resource: 'policies', action: 'read' },
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    create: { resource: 'organizations', action: 'write' },
+    update: { resource: 'organizations', action: 'write' },
   },
+  // Mirrors routes/peripheralControl.ts — reads gate on DEVICES_READ
+  // (L333, 427, 479), writes on ORGS_WRITE (L492, 637, 701).
   manage_peripheral_policy: {
-    create: { resource: 'policies', action: 'write' },
-    update: { resource: 'policies', action: 'write' },
-    disable: { resource: 'policies', action: 'write' },
-    add_exception: { resource: 'policies', action: 'write' },
-    remove_exception: { resource: 'policies', action: 'write' },
+    create: { resource: 'organizations', action: 'write' },
+    update: { resource: 'organizations', action: 'write' },
+    disable: { resource: 'organizations', action: 'write' },
+    add_exception: { resource: 'organizations', action: 'write' },
+    remove_exception: { resource: 'organizations', action: 'write' },
   },
   get_peripheral_activity: { resource: 'devices', action: 'read' },
 
   // Network (mirror backing REST routes: networkChanges.ts uses devices:read + alerts:acknowledge;
   // networkBaselines.ts uses devices:write)
   get_network_changes: { resource: 'devices', action: 'read' },
+  get_network_asset_reachability: { resource: 'devices', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };
+
+export /**
+ * MFA — what substitutes for the routes' `requireMfa()` (2026-09-17 audit §2.5).
+ *
+ * Several routes mirrored here add `requireMfa()` on top of their permission
+ * gate: remote sessions (routes/remote/index.ts:16), device commands
+ * (routes/devices/commands.ts:49), ticket move_org (routes/tickets/moveOrg.ts:23),
+ * group delete (routes/groups.ts:784). This file has NO MFA concept and
+ * deliberately does not invent one — there is no per-tool MFA hook anywhere on
+ * the chat or MCP tool path.
+ *
+ * VERIFIED, and it is not the tier gate:
+ *  - CHAT is already MFA-gated at its own entry point. Every tool call rides
+ *    `POST /ai/sessions/:id/messages`, which carries `requireMfa()`
+ *    (routes/ai.ts:654), as does session creation (:190). `requireMfa` passes
+ *    only when the JWT carries `mfa === true` — i.e. the token was minted after
+ *    MFA verification — or when 2FA is disabled deployment-wide
+ *    (`hasSatisfiedMfa`, middleware/auth.ts:936-939). So a chat tool call is
+ *    exactly as MFA-verified as a direct call to the equivalent route, and the
+ *    parity these routes ask for is already satisfied. Nothing needs adding to
+ *    `create_remote_session` or `manage_tickets.move_org` on this axis.
+ *  - MCP is NOT MFA-gated: `routes/mcpServer.ts` authenticates API keys and
+ *    contains no `requireMfa` / `hasSatisfiedMfa` call. What stands in there is
+ *    the TIER gate — a Tier 3 tool is denied outright over MCP because that
+ *    transport has no interactive approval surface (`isMcpApprovalRequired`,
+ *    mcpServer.ts:994) — plus per-tier scopes. That is a different control, not
+ *    the same one: it proves the key's authority, not possession of a second
+ *    factor. Every MFA-carrying route mirrored above maps to a Tier 3 tool, so
+ *    the tools are unreachable over MCP rather than reachable without MFA.
+ *
+ * The one place this reasoning had a hole was a tool whose route requires MFA
+ * while the tool sat at Tier 1 — reachable over MCP with no gate of either
+ * kind. That was `registry_operations` read_key/get_value, fixed above (§2.4).
+ * Keep the invariant: a tool mirroring a `requireMfa()` route must be at least
+ * Tier 2, and Tier 3 if the route mutates.
+ */
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {
   // configure_defaults (MCP-OAUTH-11): primary organizations.write in
@@ -1178,6 +1488,39 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
   restore_mssql_database: [{ resource: 'backup', action: 'read' }],
   verify_mssql_backup: [{ resource: 'backup', action: 'read' }],
   restore_hyperv_vm: [{ resource: 'backup', action: 'read' }],
+  // routes/remote/index.ts:16 applies `requirePermission(REMOTE_ACCESS)` (and
+  // requireMfa()) to the WHOLE remote router with `.use('*', …)`, so every
+  // child route — sessions.ts included — inherits it. The device-side grant
+  // below stays: remote:access alone must not be enough (2026-09-17 audit
+  // §2.5). computer_control rides an established remote session and so
+  // inherits the same gate.
+  create_remote_session: [{ resource: 'remote', action: 'access' }],
+  list_remote_sessions: [{ resource: 'remote', action: 'access' }],
+  computer_control: [{ resource: 'remote', action: 'access' }],
+};
+
+/**
+ * Per-ACTION extra permissions, for a multiplexed tool where only ONE action's
+ * route carries a second `requirePermission`. `TOOL_EXTRA_PERMISSIONS` is
+ * whole-tool and would over-gate the other 16 `manage_tickets` actions.
+ *
+ * This belongs in the map rather than in the handler: `requiredPermissionsForTool`
+ * is what approver-eligibility (`intentApprovers`, `decideApprovalRequest`) reads
+ * to decide whether a human may approve an agent's proposal. A check that lives
+ * only in a handler is invisible to that path, so an approver could approve into
+ * an authority they do not hold.
+ */
+export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
+  string,
+  Record<string, { resource: string; action: string }[]>
+> = {
+  manage_tickets: {
+    // routes/tickets/moveOrg.ts:21-23 — TICKETS_WRITE *and* ORGS_WRITE (plus
+    // requireMfa(); see the MFA note above). Moving a ticket between orgs
+    // rewrites tenant ownership of the ticket and every child row, so the
+    // organizations grant is the real authority being exercised.
+    move_org: [{ resource: 'organizations', action: 'write' }],
+  },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -1201,7 +1544,6 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   take_screenshot: { limit: 10, windowSeconds: 300 },
   analyze_screen: { limit: 10, windowSeconds: 300 },
   computer_control: { limit: 20, windowSeconds: 300 },
-  run_backup_verification: { limit: 10, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
@@ -1218,6 +1560,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   search_logs: { limit: 30, windowSeconds: 300 },
   get_log_trends: { limit: 20, windowSeconds: 300 },
   detect_log_correlations: { limit: 10, windowSeconds: 300 },
+  // One export is a full table scan's worth of work — far below search_logs'
+  // 30/5min on purpose.
+  export_dataset: { limit: 5, windowSeconds: 300 },
   // Agent log tools
   set_agent_log_level: { limit: 5, windowSeconds: 600 },
   capture_agent_pprof: { limit: 3, windowSeconds: 600 },
@@ -1337,6 +1682,9 @@ export function isReadOnlyResolution(
   toolName: string,
   check: Pick<GuardrailCheck, 'tier' | 'readOnly'>,
 ): boolean {
+  // Execution plane W04: the one exclusion from "tier 1 implies read-only".
+  // See TIER1_NON_READONLY_TOOLS.
+  if (TIER1_NON_READONLY_TOOLS.has(toolName)) return false;
   return check.tier === 1
     || (check.tier === 2 && (check.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
 }
@@ -1383,7 +1731,8 @@ export function resolveActionForTool(toolName: string, input: Record<string, unk
  */
 export function checkGuardrails(
   toolName: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  context?: GuardrailContext,
 ): GuardrailCheck {
   // Tier 4: Blocked
   if (BLOCKED_TOOLS.has(toolName)) {
@@ -1402,6 +1751,19 @@ export function checkGuardrails(
       allowed: false,
       requiresApproval: false,
       reason: `Unknown tool: ${toolName}`
+    };
+  }
+
+  // Fail CLOSED on a proposal-backed run with no loaded context. The scope this
+  // call needs is derived from a persisted review, and a missing context means
+  // the proposal is absent, cross-org, or unreviewed — none of which may run.
+  // Placed after the blocked/unknown denies so those keep their own reasons.
+  if (isProposalRunScript(toolName, input) && !context?.proposal) {
+    return {
+      tier: 4,
+      allowed: false,
+      requiresApproval: false,
+      reason: 'proposal_context_missing: run_script with a proposalId requires a reviewed proposal in the caller\'s organization',
     };
   }
 
@@ -1428,7 +1790,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1438,7 +1800,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1461,7 +1823,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1534,6 +1896,20 @@ const DEVICE_TAG_INPUT_KEYS = ['deviceTag', 'tag', 'tagName'];
 const DEVICE_TAG_ARRAY_INPUT_KEYS = ['deviceTags', 'tags'];
 const SITE_INPUT_KEYS = ['siteId', 'site_id', 'targetSiteId'];
 const SITE_ARRAY_INPUT_KEYS = ['siteIds', 'site_ids'];
+
+/**
+ * The OTHER way a tool input names a site: a discriminator key whose value is
+ * `'site'`, paired with an id (or ids) under a generic `target*` key.
+ *
+ * `{ level: 'site', targetId }` (apply_configuration_policy,
+ * preview_configuration_change), `{ targetType: 'site', targetIds: [...] }`
+ * (manage_software_policies, manage_browser_policy) and
+ * `{ target_type: 'site', target_ids: { siteIds: [...] } }` (the peripheral
+ * policy tools) all name a site with no site-shaped KEY anywhere, so the
+ * site-named lookup above sees nothing at all. 2026-09-17 audit §2.8.
+ */
+const SITE_TARGET_DISCRIMINATOR_KEYS = ['targetType', 'target_type', 'level'];
+const SITE_TARGET_ID_KEYS = ['targetId', 'target_id', 'targetIds', 'target_ids'];
 
 /** Tools whose real tier depends on an `action` argument. */
 function isActionMultiplexedTool(toolName: string): boolean {
@@ -1646,11 +2022,29 @@ function registryKeyIsProtected(candidate: string, protectedKey: string): boolea
   );
 }
 
-function touchesProtected(
-  input: Record<string, unknown>,
+/**
+ * Protected-resource matcher over EXPLICIT name lists.
+ *
+ * Split out of `touchesProtected` for the AI script lane (#5612 W04): the
+ * agent path derives names from NAMED INPUT FIELDS (`serviceName`, path keys,
+ * registry keys — this module has never inspected script content), while the
+ * lane derives them from the shared scanner's `ScriptScanResult.touchedNames`.
+ * Same comparison semantics, one implementation — the path/registry
+ * hierarchy normalisation is exactly the part that must not be duplicated.
+ *
+ * Stays a pure function with no DB or registry import
+ * (`aiGuardrails.imports.contract.test.ts`).
+ */
+export function touchesProtectedNames(
+  names: {
+    services?: readonly string[];
+    paths?: readonly string[];
+    registryKeys?: readonly string[];
+    deviceTags?: readonly string[];
+  },
   protectedResources: AiAgentProtectedResources,
 ): string | null {
-  for (const serviceName of leafValuesFor(input, SERVICE_INPUT_KEYS)) {
+  for (const serviceName of names.services ?? []) {
     if (protectedResources.services.some(
       (protectedService) => protectedService.toLowerCase() === serviceName.toLowerCase(),
     )) {
@@ -1658,13 +2052,13 @@ function touchesProtected(
     }
   }
 
-  for (const path of leafValuesFor(input, PATH_INPUT_KEYS)) {
+  for (const path of names.paths ?? []) {
     if (protectedResources.paths.some((protectedPath) => pathIsProtected(path, protectedPath))) {
       return `path "${path}" is protected`;
     }
   }
 
-  for (const registryKey of leafValuesFor(input, REGISTRY_INPUT_KEYS)) {
+  for (const registryKey of names.registryKeys ?? []) {
     if (protectedResources.registryKeys.some(
       (protectedKey) => registryKeyIsProtected(registryKey, protectedKey),
     )) {
@@ -1672,11 +2066,7 @@ function touchesProtected(
     }
   }
 
-  const deviceTags = [
-    ...leafValuesFor(input, DEVICE_TAG_INPUT_KEYS),
-    ...leafValuesFor(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
-  ];
-  for (const deviceTag of deviceTags) {
+  for (const deviceTag of names.deviceTags ?? []) {
     // Case-insensitive, matching services/paths/registry. 'Production' vs
     // 'production' passed before.
     if (protectedResources.deviceTags.some(
@@ -1687,6 +2077,24 @@ function touchesProtected(
   }
 
   return null;
+}
+
+function touchesProtected(
+  input: Record<string, unknown>,
+  protectedResources: AiAgentProtectedResources,
+): string | null {
+  return touchesProtectedNames(
+    {
+      services: leafValuesFor(input, SERVICE_INPUT_KEYS),
+      paths: leafValuesFor(input, PATH_INPUT_KEYS),
+      registryKeys: leafValuesFor(input, REGISTRY_INPUT_KEYS),
+      deviceTags: [
+        ...leafValuesFor(input, DEVICE_TAG_INPUT_KEYS),
+        ...leafValuesFor(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
+      ],
+    },
+    protectedResources,
+  );
 }
 
 function isAgentGuardrailPolicy(
@@ -1726,6 +2134,49 @@ function siteScopeDenial(
     selectedSiteIds.push(...value);
   }
 
+  // Discriminated target shape — see SITE_TARGET_DISCRIMINATOR_KEYS.
+  const siteDiscriminator = SITE_TARGET_DISCRIMINATOR_KEYS.find(
+    (key) => typeof input[key] === 'string' && (input[key] as string).toLowerCase() === 'site',
+  );
+  if (siteDiscriminator) {
+    let sawTargetKey = false;
+    for (const key of SITE_TARGET_ID_KEYS) {
+      if (!(key in input)) continue;
+      sawTargetKey = true;
+      const value = input[key];
+      if (typeof value === 'string') {
+        selectedSiteIds.push(value);
+        continue;
+      }
+      if (Array.isArray(value)) {
+        if (!value.every((siteId) => typeof siteId === 'string')) {
+          return `site selector "${key}" is invalid`;
+        }
+        selectedSiteIds.push(...(value as string[]));
+        continue;
+      }
+      // Peripheral tools nest the ids: { target_ids: { siteIds: [...] } }.
+      if (value && typeof value === 'object') {
+        const nested = (value as Record<string, unknown>)['siteIds']
+          ?? (value as Record<string, unknown>)['site_ids'];
+        if (nested === undefined) {
+          // A `site`-typed target whose ids we cannot read is not something to
+          // wave through — fail closed rather than silently unscoped.
+          return `site selector "${key}" is invalid`;
+        }
+        if (!Array.isArray(nested) || !nested.every((siteId) => typeof siteId === 'string')) {
+          return `site selector "${key}" is invalid`;
+        }
+        selectedSiteIds.push(...(nested as string[]));
+        continue;
+      }
+      return `site selector "${key}" is invalid`;
+    }
+    // `targetType:'site'` with no id key at all is an incoherent selector for a
+    // device-bound run; deny rather than assume it means "my own site".
+    if (!sawTargetKey) return `site selector "${siteDiscriminator}" names a site with no target id`;
+  }
+
   if (selectedSiteIds.length === 0) return null;
   if (!deviceSiteId) return 'run device site is unavailable';
   const outsideSite = selectedSiteIds.find((siteId) => siteId !== deviceSiteId);
@@ -1740,8 +2191,9 @@ export function checkAgentGuardrails(
   toolName: string,
   input: Record<string, unknown>,
   policy: AgentGuardrailPolicy | null | undefined,
+  context?: GuardrailContext,
 ): AgentGuardrailCheck {
-  const base = checkGuardrails(toolName, input);
+  const base = checkGuardrails(toolName, input, context);
   const deny = (reason: string): AgentGuardrailCheck =>
     ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 
@@ -1814,7 +2266,14 @@ export function checkAgentGuardrails(
   // every OTHER `manage_tickets` call with no ticket scope, still denies
   // exactly as before — this is not a blanket device-less carve-out.
   const ticketScoped = toolName === 'manage_tickets' && !!policy.scope?.ticketId;
-  if (!readOnly && policy.deviceId === null && !ticketScoped) {
+  // Execution plane W04 exemption: a workspace tool's "mutation" is bounded
+  // to the run's own sandbox and its frozen `staged_inputs`, not to a device
+  // — the device-less rule exists to keep an ORG-WIDE mutation from being
+  // proposed, and there is nothing org-wide here (the sandbox is inert and
+  // reachable only by this run). It is still allowlist- and
+  // protected-resource-gated below.
+  const workspaceTool = TIER1_NON_READONLY_TOOLS.has(toolName);
+  if (!readOnly && policy.deviceId === null && !ticketScoped && !workspaceTool) {
     return deny(`Tool "${toolName}" mutates and the run is not device-bound`);
   }
 
@@ -1826,6 +2285,15 @@ export function checkAgentGuardrails(
 
   const protectedHit = touchesProtected(input, policy.protectedResources);
   if (protectedHit) return deny(`Denied: ${protectedHit}`);
+
+  // Execution plane W04: allowlisted + not protected ⇒ a workspace tool
+  // executes. Never `propose` (there is nothing a human could approve — the
+  // sandbox is inert) and never `act` (not in the act manifest). Placed AFTER
+  // every structural deny above and BEFORE the mode branches, so shadow mode
+  // cannot turn `workspace_stage` into a recorded proposal.
+  if (workspaceTool) {
+    return { ...base, allowed: true, requiresApproval: false, disposition: 'allow' };
+  }
 
   // Act mode (wave 4 Part B): a manifest-matched, rule-equivalent mutation
   // executes (through the normal tool path — the pre/post hooks in
@@ -1985,9 +2453,11 @@ function resolveToolPermissionRequirements(
     };
   }
 
+  const actionExtras = action ? (TOOL_ACTION_EXTRA_PERMISSIONS[toolName]?.[action] ?? []) : [];
+
   return {
     ok: true,
-    requirements: [required, ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? [])],
+    requirements: [required, ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? []), ...actionExtras],
   };
 }
 
@@ -2327,6 +2797,12 @@ function buildApprovalDescription(
     case 'manage_policy_feature_link':
       parts.push(`${action?.toUpperCase()} ${String(input.featureType ?? 'feature')} link`);
       parts.push(`on config policy ${(input.configPolicyId as string)?.slice(0, 8) ?? 'unknown'}...`);
+      // #5511 W02: an `update` need not carry featureType, so without this an
+      // approver sees "UPDATE feature link" for a change that installs HP
+      // software on every HP endpoint the policy reaches. Say what it does.
+      if (warrantyHpCmslRequested(input.inlineSettings)) {
+        parts.push('— enables HP CMSL warranty collection (installs HP software on HP devices)');
+      }
       break;
 
     case 'remove_configuration_policy_assignment':
@@ -2415,13 +2891,6 @@ function buildApprovalDescription(
       else if (action === 'delete') parts.push(`Delete monitor ${(input.monitorId as string)?.slice(0, 8)}...`);
       else parts.push(`Monitor ${action}: ${(input.monitorId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
-    case 'run_backup_verification': {
-      const verificationType = typeof input.verificationType === 'string' ? input.verificationType : 'integrity';
-      parts.push(`Run ${verificationType} backup verification`);
-      if (input.deviceId) parts.push(`on device ${String(input.deviceId).slice(0, 8)}...`);
-      if (input.backupJobId) parts.push(`job ${String(input.backupJobId).slice(0, 8)}...`);
-      break;
-    }
 
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);

@@ -46,6 +46,9 @@ export type Alert = {
   deviceName: string;
   ruleId?: string;
   ruleName?: string;
+  // Non-null when this alert was raised by a rule compiled from a monitor
+  // definition (#5287) — AlertDetails links back to the monitor from here.
+  monitorId?: string | null;
   triggeredAt: string;
   acknowledgedAt?: string;
   acknowledgedBy?: string;

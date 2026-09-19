@@ -1,0 +1,362 @@
+{
+  "managed": {
+    "readOnly": "Gestionado por un monitor",
+    "description": "Este registro se genera a partir de un monitor y no se puede editar directamente. Adminístrelo desde el monitor.",
+    "open": "Abrir monitor",
+    "badge": "Gestionado por monitor",
+    "badgeHint": "Gestionado por un monitor: edítelo desde el monitor en su lugar.",
+    "monitorLabel": "Monitor"
+  },
+  "hub": {
+    "title": "Monitoreo y automatización",
+    "tabs": {
+      "monitors": "Monitores",
+      "network": "Red",
+      "delivery": "Entrega",
+      "legacyRules": "Reglas heredadas"
+    },
+    "ariaLabel": "Secciones de monitoreo"
+  },
+  "list": {
+    "title": "Monitores",
+    "description": "Observe una condición, responda en el dispositivo, notifique y escale cuando siga ocurriendo.",
+    "new": "Nuevo monitor",
+    "empty": "Aún no hay monitores.",
+    "columns": {
+      "name": "Nombre",
+      "kind": "Tipo",
+      "severity": "Severidad",
+      "deployedTo": "Desplegado en",
+      "enabled": "Habilitado",
+      "owner": "Responsable"
+    },
+    "allOrgs": "Todas las orgs",
+    "policiesCount_one": "{{count}} política",
+    "policiesCount_other": "{{count}} políticas",
+    "notDeployed": "No desplegado",
+    "errors": {
+      "fetch": "No se pudieron cargar los monitores",
+      "delete": "No se pudo eliminar el monitor",
+      "toggle": "No se pudo actualizar el monitor"
+    },
+    "deleteConfirm": "¿Eliminar el monitor {{name}}? También se eliminarán su regla de alerta y la automatización de respuesta.",
+    "builtIn": "Integrado",
+    "builtInHint": "Aprovisionado por Breeze. Edita los umbrales, desactívalo o elimínalo; no volverá a aparecer."
+  },
+  "editor": {
+    "titleNew": "Nuevo monitor",
+    "titleEdit": "Editar monitor",
+    "breadcrumb": {
+      "monitors": "Monitores",
+      "new": "Nuevo monitor"
+    },
+    "sections": {
+      "watch": "Qué observar",
+      "noise": "Severidad y ruido",
+      "respond": "Responder",
+      "notify": "Notificar",
+      "escalate": "Escalar a una persona",
+      "deployed": "Desplegado en"
+    },
+    "tabs": {
+      "settings": "Configuración",
+      "activity": "Actividad"
+    },
+    "fields": {
+      "name": "Nombre",
+      "description": "Descripción",
+      "kind": "Tipo",
+      "severity": "Severidad",
+      "cooldownMinutes": "Enfriamiento (minutos)",
+      "autoResolve": "Resolver automáticamente cuando la condición se normalice",
+      "deliveryMode": "Entrega",
+      "channels": "Canales",
+      "escalationPolicy": "Política de escalamiento",
+      "recurrenceThreshold": "Escalar después de",
+      "recurrenceWindowDays": "episodios dentro de (días)",
+      "pauseResponses": "Pausar las respuestas automáticas hasta que una persona las restablezca",
+      "aiAgent": "Agente de IA (habilita respuestas de triaje con IA)"
+    },
+    "deliveryModes": {
+      "inherit": "Usar reglas de enrutamiento",
+      "channels": "Reglas de enrutamiento más estos canales",
+      "none": "No notificar"
+    },
+    "agentDeliveredHint": "Esta observación se ejecuta en el dispositivo y, hasta que eso se unifique, también debe existir en la pestaña de monitoreo de servicios y procesos de la política.",
+    "responsesHint": "Las respuestas se ejecutan en orden en el dispositivo que incumplió la condición.",
+    "recurrenceHint": "Se cuenta en episodios de incumplimiento: un episodio nuevo comienza solo después de que la condición se haya recuperado.",
+    "ownerScope": {
+      "legend": "Propietario",
+      "partner": "Todas las organizaciones (en todo el socio)",
+      "organization": "Solo esta organización"
+    },
+    "actions": {
+      "save": "Guardar monitor",
+      "saving": "Guardando…",
+      "create": "Crear monitor",
+      "test": "Probar en un dispositivo",
+      "deploy": "Desplegar en…",
+      "delete": "Eliminar"
+    },
+    "errors": {
+      "load": "No se pudo cargar el monitor",
+      "save": "No se pudo guardar el monitor",
+      "delete": "No se pudo eliminar el monitor",
+      "test": "Prueba fallida",
+      "generic": "Algo salió mal"
+    },
+    "saved": "Monitor guardado",
+    "deleted": "Monitor eliminado",
+    "detached": "Monitor separado",
+    "loading": "Cargando monitor…",
+    "noAttachments": "Aún no está desplegado en ninguna política.",
+    "testResult": {
+      "triggered": "Condición cumplida en {{device}}",
+      "notTriggered": "Condición no cumplida en {{device}}"
+    },
+    "testDialog": {
+      "title": "Probar en un dispositivo",
+      "selectDevice": "Dispositivo",
+      "run": "Ejecutar prueba"
+    }
+  },
+  "kinds": {
+    "cpu": "Uso de CPU",
+    "memory": "Uso de memoria",
+    "disk": "Uso de disco",
+    "offline": "Dispositivo sin conexión",
+    "event_log": "Registro de eventos",
+    "patch_compliance": "Cumplimiento de parches",
+    "service": "Servicio detenido",
+    "process": "Proceso detenido",
+    "process_resource": "Recurso del proceso",
+    "cert_expiry": "Vencimiento del certificado",
+    "bandwidth": "Ancho de banda",
+    "disk_io": "E/S de disco",
+    "network_errors": "Errores de red",
+    "antivirus": "Software antivirus",
+    "software_presence": "Presencia de software",
+    "backup_continuity": "Continuidad de respaldo",
+    "script": "Verificación de script",
+    "network_check": "Verificación de red"
+  },
+  "fields": {
+    "operator": "Comparación",
+    "value": "Valor",
+    "durationMinutes": "Durante al menos (minutos)",
+    "category": "Categoría",
+    "level": "Nivel",
+    "sourcePattern": "El origen coincide con",
+    "messagePattern": "El mensaje coincide con",
+    "countThreshold": "Ocurrencias",
+    "windowMinutes": "Dentro de (minutos)",
+    "serviceName": "Nombre del servicio",
+    "processName": "Nombre del proceso",
+    "consecutiveFailures": "Fallos consecutivos",
+    "resource": "Recurso",
+    "withinDays": "Vence dentro de (días)",
+    "direction": "Dirección",
+    "errorType": "Dirección del error",
+    "interfaceName": "Interfaz (opcional)",
+    "check": "Verificación",
+    "staleAfterDays": "Desactualizado después de (días)",
+    "minThreatCount": "Cantidad mínima de amenazas",
+    "softwareName": "Nombre del software",
+    "vendor": "Proveedor (opcional)",
+    "presence": "Presencia",
+    "version": "Versión",
+    "backupCheck": "Verificación",
+    "maxAgeHours": "Antigüedad máxima (horas)",
+    "failureCount": "Cantidad de fallos",
+    "script": "Script a ejecutar",
+    "scriptSelectPlaceholder": "Seleccionar un script…",
+    "scriptLoadError": "No se pudieron cargar los scripts",
+    "intervalMinutes": "Ejecutar cada (minutos)",
+    "timeoutSeconds": "Tiempo de espera (segundos)",
+    "breachOnNonZeroExit": "Incumplimiento si el código de salida no es cero",
+    "checkType": "Tipo de verificación",
+    "target": "Destino",
+    "port": "Puerto",
+    "expectStatus": "Código de estado esperado",
+    "pollingIntervalSeconds": "Consultar cada (segundos)"
+  },
+  "operators": {
+    "gt": "mayor que",
+    "gte": "al menos",
+    "lt": "menor que",
+    "lte": "como máximo",
+    "eq": "igual a",
+    "neq": "distinto de"
+  },
+  "severities": {
+    "critical": "Crítico",
+    "high": "Alto",
+    "medium": "Medio",
+    "low": "Bajo",
+    "info": "Información"
+  },
+  "eventCategories": {
+    "security": "Seguridad",
+    "hardware": "Hardware",
+    "application": "Aplicación",
+    "system": "Sistema"
+  },
+  "eventLevels": {
+    "warning": "Advertencia",
+    "error": "Error",
+    "critical": "Crítico"
+  },
+  "resources": {
+    "cpu": "CPU",
+    "memory": "Memoria"
+  },
+  "directions": {
+    "in": "Entrada",
+    "out": "Salida",
+    "read": "Lectura",
+    "write": "Escritura",
+    "total": "Total"
+  },
+  "antivirusChecks": {
+    "not_protected": "Sin protección",
+    "definitions_stale": "Definiciones desactualizadas",
+    "realtime_disabled": "Protección en tiempo real desactivada",
+    "threats_present": "Amenazas presentes"
+  },
+  "presences": {
+    "installed": "Instalado",
+    "not_installed": "No instalado",
+    "version_below": "Versión inferior a"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Sin respaldo exitoso",
+    "consecutive_failures": "Fallos consecutivos"
+  },
+  "checkTypes": {
+    "icmp_ping": "Ping ICMP",
+    "tcp_port": "Puerto TCP",
+    "http_check": "Verificación HTTP",
+    "dns_check": "Verificación DNS"
+  },
+  "deploy": {
+    "title": "Desplegar monitor",
+    "existingPolicy": "Adjuntar a una política de configuración existente",
+    "newPolicy": "Crear una política para",
+    "levels": {
+      "organization": "esta organización",
+      "site": "un sitio",
+      "device_group": "un grupo de dispositivos"
+    },
+    "selectPolicy": "Política de configuración",
+    "selectTarget": "Destino",
+    "noOrgSelected": "Selecciona una organización para desplegar.",
+    "policyName": "Nombre de la política",
+    "attach": "Adjuntar",
+    "attached": "Monitor adjuntado",
+    "cancel": "Cancelar",
+    "detachConfirm": "¿Separar de {{policy}}?",
+    "errors": {
+      "attach": "No se pudo adjuntar el monitor",
+      "detach": "No se pudo separar el monitor"
+    }
+  },
+  "policyTab": {
+    "title": "Monitores",
+    "description": "Monitores adjuntos a esta política. Las filas deshabilitadas desactivan un monitor para el alcance de esta política; las anulaciones cambian sus umbrales.",
+    "attachExisting": "Adjuntar existente",
+    "createNew": "Crear monitor",
+    "empty": "No hay monitores adjuntos.",
+    "columns": {
+      "monitor": "Monitor",
+      "kind": "Tipo",
+      "enabled": "Habilitado",
+      "overrides": "Anulaciones",
+      "source": "Origen"
+    },
+    "inherited": "Heredado del nivel superior",
+    "overrideEditor": {
+      "title": "Anulación para esta política",
+      "clear": "Quitar anulaciones"
+    },
+    "save": "Guardar",
+    "errors": {
+      "save": "No se pudieron guardar los monitores"
+    }
+  },
+  "legacy": {
+    "title": "Reglas de alerta heredadas",
+    "description": "Reglas de alerta independientes que no son gestionadas por un monitor. Conviértalas para obtener respuestas, entrega y escalamiento en un solo lugar.",
+    "empty": "No hay reglas heredadas.",
+    "columns": {
+      "name": "Nombre",
+      "template": "Plantilla",
+      "target": "Objetivo",
+      "owner": "Responsable",
+      "active": "Activo"
+    },
+    "convert": "Convertir en monitor",
+    "converted": "Convertida",
+    "notConvertible": "Las condiciones de esta regla no se pueden expresar como un solo monitor.",
+    "errors": {
+      "fetch": "No se pudieron cargar las reglas de alerta",
+      "convert": "No se pudo convertir la regla"
+    }
+  },
+  "devices": {
+    "title": "Dispositivos",
+    "columns": {
+      "device": "Dispositivo",
+      "enabled": "Habilitado",
+      "overrides": "Anulaciones",
+      "source": "Política de origen"
+    },
+    "empty": "Todavía no hay dispositivos cubiertos por este monitor.",
+    "errors": {
+      "fetch": "No se pudieron cargar los dispositivos"
+    }
+  },
+  "activity": {
+    "title": "Actividad",
+    "columns": {
+      "device": "Dispositivo",
+      "state": "Estado",
+      "openSince": "Abierto desde",
+      "episodesInWindow": "Episodios en la ventana",
+      "escalated": "Escalado",
+      "responses": "Respuestas"
+    },
+    "state": {
+      "ok": "Saludable",
+      "breach": "Incumplimiento",
+      "unknown": "Desconocido"
+    },
+    "responses": {
+      "active": "Activas",
+      "paused": "Respuestas en pausa hasta restablecer"
+    },
+    "reset": {
+      "button": "Restablecer escalamiento",
+      "confirm": "¿Restablecer el escalamiento para {{device}}? Esto reinicia el contador de recurrencia y reanuda las respuestas automáticas. No cierra el episodio abierto ni resuelve la alerta.",
+      "success": "Escalamiento restablecido",
+      "error": "No se pudo restablecer el escalamiento"
+    },
+    "empty": {
+      "title": "Aún no hay actividad",
+      "body": "Este monitor todavía no ha evaluado ningún dispositivo."
+    },
+    "episodes": {
+      "title": "Episodios",
+      "endReason": {
+        "recovered": "Recuperado",
+        "monitorDetached": "Monitor desvinculado"
+      },
+      "outcome": {
+        "queued": "En cola",
+        "completed": "Completado",
+        "failed": "Fallido",
+        "skippedPaused": "Omitido (respuestas en pausa)",
+        "skippedNoResponse": "Omitido (sin respuesta configurada)"
+      }
+    }
+  }
+}

@@ -1,10 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { captureExceptionMock, resolveLlmConfigMock, checkBudgetMock } = vi.hoisted(() => ({
+const {
+  captureExceptionMock,
+  resolveLlmConfigMock,
+  checkBudgetMock,
+  reserveAiBudgetMock,
+  releaseUnusedAiBudgetMock,
+} = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
   resolveLlmConfigMock: vi.fn(),
   checkBudgetMock: vi.fn(),
+  reserveAiBudgetMock: vi.fn(),
+  releaseUnusedAiBudgetMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -69,6 +77,7 @@ vi.mock('../../services/helperAiAgent', () => ({
 
 vi.mock('../../services/streamingSessionManager', () => ({
   streamingSessionManager: {
+    get: vi.fn(() => undefined),
     getOrCreate: vi.fn(),
     tryTransitionToProcessing: vi.fn(),
     startTurnTimeout: vi.fn(),
@@ -87,6 +96,11 @@ vi.mock('../../services/screenshotStorage', () => ({
 vi.mock('../../services/aiCostTracker', () => ({
   checkBudget: (...args: unknown[]) => checkBudgetMock(...args),
   getRemainingBudgetUsd: vi.fn(),
+}));
+
+vi.mock('../../services/aiBudgetReservations', () => ({
+  reserveAiBudget: (...args: unknown[]) => reserveAiBudgetMock(...args),
+  releaseUnusedAiBudgetReservation: (...args: unknown[]) => releaseUnusedAiBudgetMock(...args),
 }));
 
 vi.mock('../../services', () => ({
@@ -176,6 +190,13 @@ describe('helper routes permission derivation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reserveAiBudgetMock.mockResolvedValue({
+      kind: 'unlimited',
+      reservationId: '11111111-1111-4111-8111-111111111111',
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
     resolveLlmConfigMock.mockResolvedValue({
       source: 'partner',
       partnerId: 'partner-1',
@@ -465,6 +486,13 @@ describe('helper client-declared session tools', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reserveAiBudgetMock.mockResolvedValue({
+      kind: 'unlimited',
+      reservationId: '11111111-1111-4111-8111-111111111111',
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
     resolveLlmConfigMock.mockResolvedValue({
       source: 'partner',
       partnerId: 'partner-1',

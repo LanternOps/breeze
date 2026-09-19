@@ -963,6 +963,9 @@ describe('agent routes', () => {
           { file_path: '/etc/ssh/sshd_config', config_key: 'PermitRootLogin' }
         ],
         patch_source_settings: { exclusiveWindowsUpdate: false },
+        // #5511 W02: a resolved absent warranty policy delivers an explicit
+        // false (the revoke-on-unassign contract), exactly like patch_source.
+        warranty_settings: { hp_cmsl_enabled: false },
         // Security remediation Wave 6, Task 9 — always sent (true or false),
         // mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID. Sending the explicit
         // false is what makes the switch reversible: an omitted key is a no-op
@@ -1082,6 +1085,7 @@ describe('agent routes', () => {
         policy_registry_state_probes: [],
         policy_config_state_probes: [],
         patch_source_settings: { exclusiveWindowsUpdate: false },
+        warranty_settings: { hp_cmsl_enabled: false },
         require_manifest_signing_key_id: false
       });
       expect(insertValues).toHaveBeenCalledWith(

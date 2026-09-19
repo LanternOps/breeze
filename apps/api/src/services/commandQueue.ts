@@ -59,6 +59,9 @@ export const SEND_RETRY_DELAY_MS = 500;
 // existing `import { CommandTypes } from './commandQueue'` keeps working.
 export { CommandTypes, type CommandType } from './commandTypes';
 import { CommandTypes, type CommandType } from './commandTypes';
+import type { AiOriginRef } from '@breeze/shared';
+import { aiOriginColumns } from './aiOriginColumns';
+import { createAuditLogAsync } from './auditService';
 
 export interface CommandPayload {
   [key: string]: unknown;
@@ -96,36 +99,73 @@ export interface QueuedCommand {
   result: CommandResult | null;
 }
 
-type CommandQueueTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type CommandQueueTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/** Persist a command inside a caller-owned transaction without dispatch side effects. */
-export async function insertQueuedCommandInTransaction(
-  tx: CommandQueueTx,
-  input: {
-    id: string;
-    deviceId: string;
-    type: CommandType;
-    payload: CommandPayload;
-    /**
-     * `device_commands.created_by` is a NULLABLE uuid. Pass `null` for a
-     * synthetic principal that `resolveCommandCreatedBy` degraded — NOT `''`,
-     * which Postgres rejects with `22P02 invalid input syntax for type uuid`
-     * and which rolls back the caller's whole transaction (#3525 W02b).
-     */
-    createdBy: string | null;
-  },
-): Promise<QueuedCommand> {
-  const [command] = await tx.insert(deviceCommands).values({
-    id: input.id,
-    deviceId: input.deviceId,
-    type: input.type,
-    payload: input.payload,
-    status: 'pending',
-    createdBy: input.createdBy,
-  }).returning();
-  if (!command) throw new Error('failed to persist queued command');
-  return command as QueuedCommand;
+
+
+/** Matches scriptDispatch.ts's sentinel — audit_logs.actor_id is NOT NULL. */
+const SYSTEM_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * The `ai.command.executed` audit row (#5022 W01).
+ *
+ * Written for EVERY command dispatched with an `aiOrigin`, independent of
+ * `AUDITED_COMMANDS`: that set answers "is this command type interesting in
+ * general"; the device page asks "what touched this machine", which is a
+ * different question.
+ *
+ * Field contract (do not vary it):
+ *  - `actorType`/`actorId` derive from the PRINCIPAL and are always mutually
+ *    consistent. `ai_agent` only when the origin says so.
+ *  - `resourceType`/`resourceId`/`resourceName` match `ai.script.executed`, so
+ *    the device events feed's RESOURCE arm (audit_logs_device_feed_resource_idx,
+ *    predicate actor_type <> 'agent') serves it. Every actor type used here
+ *    satisfies that predicate.
+ *  - `details.deviceId` is set as well, so the feed's DETAILS arm can also find
+ *    it if the resource id is ever repurposed.
+ *
+ * Fire-and-forget, like every other audit caller in this file: a lost row must
+ * never fail a dispatch that already succeeded. This is BEST EFFORT and the UI
+ * copy says so (spec OD-10 A); a completeness guarantee would need a durable
+ * outbox, which is a platform follow-up.
+ */
+function writeAiCommandAudit(input: {
+  aiOrigin: AiOriginRef;
+  orgId: string;
+  deviceId: string;
+  hostname: string | null;
+  commandId: string;
+  commandType: string;
+  actorId: string | null;
+}): void {
+  const principalIsAgent = input.aiOrigin.kind === 'ai_agent';
+  void createAuditLogAsync({
+    orgId: input.orgId,
+    actorType: principalIsAgent ? 'ai_agent' : 'user',
+    actorId: input.actorId ?? SYSTEM_ACTOR_ID,
+    action: 'ai.command.executed',
+    resourceType: 'device',
+    resourceId: input.deviceId,
+    ...(input.hostname ? { resourceName: input.hostname } : {}),
+    initiatedBy: 'ai',
+    result: 'dispatched',
+    details: {
+      deviceId: input.deviceId,
+      commandId: input.commandId,
+      commandType: input.commandType,
+      ...aiOriginColumns(input.aiOrigin),
+    },
+  }).catch(() => {
+    // Already retried + Sentry-captured inside createAuditLogAsync.
+  });
 }
+
+// The transaction-scoped insert chokepoint lives in its own leaf module so
+// that `services/peripheralPolicyState.ts` can reach it WITHOUT pulling this
+// file (and therefore `routes/agentWs.ts`) into two global-placement worker
+// closures — see the header of commandQueueInsert.ts. Re-exported here so
+// every existing importer keeps working.
+export { insertQueuedCommandInTransaction } from './commandQueueInsert';
 
 // Use the directly-imported runOutsideDbContext, NOT db.runOutsideDbContext.
 // The `db` proxy delegates property lookups to the active transaction when
@@ -440,7 +480,12 @@ const INTERACTIVE_COMMAND_TYPES: Set<string> = new Set([
  */
 export async function resolveCommandCreatedBy(
   deviceId: string,
-  userId?: string | null
+  userId?: string | null,
+  /**
+   * #5022 W01 — the caller's AI origin, when it has one. Used ONLY to label
+   * the degrade warning below; never written here.
+   */
+  aiOrigin?: AiOriginRef,
 ): Promise<string | null> {
   const candidateUserId = userId && userId !== deviceId ? userId : null;
   if (!candidateUserId) {
@@ -469,7 +514,39 @@ export async function resolveCommandCreatedBy(
       // actor="system" instead of actor="user" on the existing
       // `commandsDispatchedTotal` counter. A spike there is the signal; a log
       // line per command is not.
-      return userRow ? candidateUserId : null;
+      if (userRow) return candidateUserId;
+      // #5022 W01: the probe is CORRECT to return null -- created_by is an FK
+      // to `users` and an ai_agents.id is not a users row. What was wrong is
+      // that the drop was SILENT, which left agent-issued device work with no
+      // actor at all. The row now carries ai_initiator_kind / ai_agent_run_id
+      // and the audit row carries actor_type='ai_agent' + the agent id, so
+      // this is a NARROWING of attribution, not a loss -- log it once so a
+      // future lane that loses BOTH is visible.
+      //
+      // The block above explains why this was deliberately NOT logged before:
+      // without the caller's principal kind, an expected agent degrade and an
+      // anomalous one (a stale or deleted user id) were indistinguishable, and
+      // a warn per dispatch was the cry-wolf shape. `hasAiOrigin` is exactly
+      // that missing discriminator, which is what makes the line worth
+      // emitting now.
+      const hasAiOrigin = Boolean(aiOrigin);
+      console.warn('[commandQueue] created_by degraded to NULL: actor is not a users row', {
+        candidateUserId,
+        deviceId,
+        hasAiOrigin,
+        aiInitiatorKind: aiOrigin?.kind ?? null,
+      });
+      // `hasAiOrigin: false` means this degrade was NOT the expected
+      // ai_agent/synthetic-principal case above -- the caller claimed a plain
+      // user id, and it does not resolve to a users row (stale or deleted
+      // user). That is anomalous enough to want triage, not just a log line
+      // nobody greps for.
+      if (!hasAiOrigin) {
+        captureException(
+          new Error('[commandQueue] created_by degraded to NULL for a non-AI dispatch: candidate user id does not resolve to a users row'),
+        );
+      }
+      return null;
     })
   );
 }
@@ -491,7 +568,21 @@ export async function queueCommand(
   // enqueue, compared at claim time to cancel rows whose device has since moved
   // org. Both are optional so legacy callers keep today's semantics
   // (deliver_by NULL = the reaper's created_at + execution-timeout rule).
-  options: { commandId?: string; deliverBy?: Date | null; submittedOrgId?: string } = {}
+  options: {
+    commandId?: string;
+    deliverBy?: Date | null;
+    submittedOrgId?: string;
+    /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+    aiOrigin?: AiOriginRef;
+    /**
+     * #5022 W01 — suppress the `ai.command.executed` audit row for this
+     * dispatch because the CALLER already writes one for the same mutation
+     * (scriptDispatch writes `ai.script.executed` for the script_executions
+     * row and then queues its command through here). Keeps the
+     * one-row-per-dispatched-mutation property W02's count depends on.
+     */
+    suppressAiCommandAudit?: boolean;
+  } = {}
 ): Promise<QueuedCommand> {
   // #4093 — agent-binary updates must not be created here. This insert site
   // cannot set target_role (the row would default to 'agent', which has no
@@ -512,7 +603,7 @@ export async function queueCommand(
 
   // Never stamp `userId` verbatim — it may be a synthetic-auth id with no
   // `users` row, which would fail the created_by FK with 23503 (#3978).
-  const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
+  const safeUserId = await resolveCommandCreatedBy(deviceId, userId, options.aiOrigin);
 
   // Insert under a system context (device_commands has no RLS, but a bare-pool
   // write with no access context trips the #1375 contextless-write guard, which
@@ -532,6 +623,7 @@ export async function queueCommand(
         createdBy: safeUserId,
         ...(options.deliverBy ? { deliverBy: options.deliverBy } : {}),
         ...(options.submittedOrgId ? { submittedOrgId: options.submittedOrgId } : {}),
+        ...aiOriginColumns(options.aiOrigin),
       })
       .returning(),
   );
@@ -556,6 +648,51 @@ export async function queueCommand(
   const dispatchActor: 'user' | 'system' = safeUserId ? 'user' : 'system';
   if (!AUDITED_COMMANDS.has(type)) {
     recordCommandDispatch(type, dispatchActor);
+  }
+
+  // #5022 W01: an AI-initiated mutation is audited regardless of whether the
+  // command type is in AUDITED_COMMANDS. `suppressAiCommandAudit` is how
+  // scriptDispatch keeps this to ONE `ai.` row per dispatched mutation: it
+  // already writes `ai.script.executed` for the script_executions row and then
+  // queues the command through here. W02's Overview count depends on that
+  // one-row-per-mutation property.
+  //
+  // The device lookup is its own read rather than reusing the AUDITED_COMMANDS
+  // block below, because that block only runs for audited types and this must
+  // run for all of them. System scope for the same reason the block below
+  // explains: BullMQ callers hold no request context, so an org-scoped devices
+  // SELECT would be rejected by RLS and silently no-op.
+  if (command && options.aiOrigin && !options.suppressAiCommandAudit) {
+    const aiOrigin = options.aiOrigin;
+    const aiCommandId = command.id;
+    const aiActorId = safeUserId ?? (userId ?? null);
+    runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [device] = await db
+          .select({ orgId: devices.orgId, hostname: devices.hostname })
+          .from(devices)
+          .where(eq(devices.id, deviceId))
+          .limit(1);
+        if (!device) return;
+        writeAiCommandAudit({
+          aiOrigin,
+          orgId: device.orgId,
+          deviceId,
+          hostname: device.hostname,
+          commandId: aiCommandId,
+          commandType: type,
+          actorId: aiActorId,
+        });
+      }),
+    ).catch((err) => {
+      console.error('Failed to write ai.command.executed audit log', {
+        commandId: aiCommandId,
+        deviceId,
+        type,
+        error: err,
+      });
+      captureException(err);
+    });
   }
 
   if (command && AUDITED_COMMANDS.has(type)) {
@@ -698,12 +835,7 @@ export async function waitForCommandResult(
  * Queue a command and attempt immediate dispatch to the agent websocket.
  *
  * #5128: this is now a thin adapter over `dispatchDeviceCommand`, the single
- * enqueue seam. Every caller of this function hard-rejected offline devices
- * before #5128, so it passes `previouslyRejected: true` — the
- * DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED flag (default ON since W4; set it to
- * `false` to opt out) is what decides whether their offline devices reject as
- * they used to or queue with a deadline. The error strings are unchanged, so
- * callers that surface `error` verbatim behave identically with the flag off.
+ * enqueue seam. Offline delivery follows the command type registry.
  */
 export async function queueCommandForExecution(
   deviceId: string,
@@ -715,6 +847,8 @@ export async function queueCommandForExecution(
     expectedOrgId?: string;
     /** Explicit override; wins over the registry default and the flag. */
     offlinePolicy?: OfflinePolicy;
+    /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+    aiOrigin?: AiOriginRef;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
   const res = await dispatchDeviceCommand({
@@ -722,10 +856,10 @@ export async function queueCommandForExecution(
     type,
     payload,
     ...(options.userId !== undefined ? { userId: options.userId } : {}),
+    ...(options.aiOrigin !== undefined ? { aiOrigin: options.aiOrigin } : {}),
     ...(options.preferHeartbeat !== undefined ? { preferHeartbeat: options.preferHeartbeat } : {}),
     ...(options.expectedOrgId !== undefined ? { expectedOrgId: options.expectedOrgId } : {}),
     ...(options.offlinePolicy !== undefined ? { offlinePolicy: options.offlinePolicy } : {}),
-    previouslyRejected: true,
   });
 
   if (!res.ok) {
@@ -823,6 +957,14 @@ export interface ExecuteCommandOptions {
    * timeoutMs than they would for an agent command.
    */
   targetRole?: 'agent' | 'watchdog';
+  /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+  aiOrigin?: AiOriginRef;
+  /**
+   * #5022 W01 — suppress the `ai.command.executed` row because the CALLER
+   * already writes one for the same mutation. See the twin field on
+   * `queueCommand`'s options.
+   */
+  suppressAiCommandAudit?: boolean;
 }
 
 /**
@@ -1126,7 +1268,7 @@ async function dispatchPreparedCommand(
     // to warn about (queueCommand/queueCommandForExecution stamping verbatim,
     // breaking the hyperv/backup/vault/mssql/incident/agent-logs tools) is
     // closed: both insert sites now go through that one helper (#3978).
-    const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
+    const safeUserId = await resolveCommandCreatedBy(deviceId, userId, options.aiOrigin);
 
     // #3112: the caller's budget has to travel WITH the command, not merely bound
     // the server-side wait below. The agent's helper-IPC path used a hardcoded
@@ -1179,12 +1321,27 @@ async function dispatchPreparedCommand(
           // must stay off its allowlist so a real raw insert still trips it.)
           deliverBy: deliverByFor({ kind: 'reject' }),
           submittedOrgId: device.orgId,
+          ...aiOriginColumns(options.aiOrigin),
         })
         .returning(),
     );
 
     if (!command) {
       return { status: 'failed' as const, error: 'Failed to create command' };
+    }
+
+    // #5022 W01 — see the twin in `queueCommand`. This path already holds the
+    // device row from step 1, so no extra lookup is needed.
+    if (options.aiOrigin && !options.suppressAiCommandAudit) {
+      writeAiCommandAudit({
+        aiOrigin: options.aiOrigin,
+        orgId: device.orgId,
+        deviceId,
+        hostname: device.hostname,
+        commandId: command.id,
+        commandType: type,
+        actorId: safeUserId ?? options.userId ?? null,
+      });
     }
 
     // Audit log for mutating commands (fire-and-forget).

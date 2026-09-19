@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "AI activity",
+    "count": "{{count}} actions dispatched in the last {{days}} days",
+    "tooltip": "Counts AI-dispatched scripts and commands recorded on this device. A cancel counts as its own action. Recorded on a best-effort basis."
+  },
   "deviceChangeHistoryTab": {
     "title": "Change History",
     "loading": "Loading change history…",
@@ -278,7 +283,21 @@
     "loadMore": "Load more",
     "couldnTLoadMore": "Couldn't load more.",
     "viewAllActivity2": "View all activity",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "View proposal",
+    "trigger": {
+      "manual": "Manual",
+      "schedule": "Schedule",
+      "sweep_finding": "Sweep finding",
+      "alert": "Alert",
+      "monitor": "Monitor",
+      "fleet_finding": "Fleet finding",
+      "policy": "Policy",
+      "automation": "Automation",
+      "ticket": "Ticket",
+      "anomaly": "Anomaly",
+      "api": "API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Failed to fetch alert history",
@@ -930,6 +949,23 @@
     "role": "Role",
     "changeRole": "Change role",
     "source": "Source",
+    "function": "Function",
+    "changeFunction": "Change function",
+    "functionNone": "Not assessed",
+    "functionSource": {
+      "ai": "AI",
+      "manual": "Manual"
+    },
+    "functionConfidence": "{{pct}}% confidence",
+    "functionEvidence": "Why the designer thinks so",
+    "functionEvidenceUnavailable": "Could not load the assessment details.",
+    "functionCustom": "Custom…",
+    "functionCustomSlug": "custom key (a-z, 0-9, -)",
+    "functionCustomLabel": "Label",
+    "functionClear": "Clear",
+    "functionSaved": "Device function saved",
+    "functionCleared": "Device function cleared",
+    "functionSaveFailed": "Failed to save device function",
     "operatingSystem": "Operating System",
     "osType": "OS Type",
     "osVersion": "OS Version",
@@ -1269,6 +1305,9 @@
     "tenantId": "Tenant ID:",
     "mdmEnrollment": "MDM Enrollment:",
     "detectionSource": "Detection source:",
+    "identityDetectionUnsupported": "Join Detection Not Supported",
+    "identityDetectionUnsupportedHint": "Breeze does not yet check directory or Intune/Entra enrollment on this device's operating system, so its join status is unknown — it has not been confirmed as unjoined.",
+    "flagUnknown": "{{label}}: Unknown",
     "detectedManagementTools": "Detected Management Tools",
     "tool": "tool",
     "s": "s",
@@ -1676,7 +1715,10 @@
     "saveChanges": "Save Changes",
     "site": "Site",
     "tags": "Tags",
-    "title": "Device Settings"
+    "title": "Device Settings",
+    "purchaseDate": "Purchase date",
+    "purchaseDateHelp": "Used by the Hardware Lifecycle report to plan replacement.",
+    "purchaseDateVendorHint": "Set from the manufacturer’s ship date. Enter a date to override it."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1881,7 +1923,7 @@
     "refresh": "Refresh",
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
-    "title": "Devices",
+    "title": "Devices & Assets",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
@@ -2271,18 +2313,248 @@
     "genericError": "Failed to start maintenance mode."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "Pending approval: nothing is monitored yet.",
+      "dismissedBanner": "Dismissed: hidden from device lists.",
+      "approve": "Approve",
+      "dismiss": "Dismiss",
+      "approvedAnnouncement": "Asset approved",
+      "dismissedAnnouncement": "Asset dismissed"
+    },
+    "reachability": {
+      "state": {
+        "responding": "Responding",
+        "notResponding": "Not responding",
+        "unverified": "Unverified"
+      },
+      "source": {
+        "networkCheck": "Network check",
+        "probe": "Probe",
+        "scan": "Scan",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "last seen by {{source}} {{relative}}",
+      "neverObserved": "never observed",
+      "detail": {
+        "check": {
+          "online": "Online",
+          "degraded": "Degraded",
+          "offline": "Offline"
+        },
+        "probe": {
+          "ok": "Answered",
+          "failed": "No answer",
+          "pending": "Waiting for the agent"
+        },
+        "snmp": {
+          "ok": "Polling",
+          "failing": "Failing",
+          "no_template": "No template",
+          "no_agent": "No agent in site",
+          "asset_moved": "Asset moved",
+          "never_polled": "Never polled"
+        },
+        "snmpFailures": "{{count}} consecutive failures",
+        "snmpNote": "An SNMP failure can mean the bridging agent rather than the device — failures are counted when the poll is dispatched.",
+        "scan": {
+          "seen": "Seen",
+          "missed": "Missed"
+        },
+        "emptyTitle": "Nothing has reported on this device",
+        "emptyDescription": "No scan, check, poll or manual probe has produced an observation yet."
+      }
+    },
+    "collection": {
+      "status": {
+        "ok": "Polling",
+        "failing": "Failing",
+        "noTemplate": "No template",
+        "noAgent": "No agent in site",
+        "assetMoved": "Asset moved",
+        "neverPolled": "Never polled",
+        "paused": "Paused",
+        "notConfigured": "Not configured"
+      },
+      "count": {
+        "collecting": "{{count}} collecting",
+        "unsupported": "{{count}} unsupported",
+        "stale": "{{count}} stale",
+        "unknown": "{{count}} unknown",
+        "neverPolled": "{{count}} never polled",
+        "noOids": "No OIDs in this template"
+      },
+      "viewOids": "View OIDs",
+      "oidState": {
+        "collecting": "Collecting",
+        "unsupported": "Unsupported",
+        "stale": "Stale",
+        "neverPolled": "Never polled",
+        "unknown": "Unknown"
+      },
+      "unknownNeedsAgentUpdate": "This agent version cannot read table values — update the agent on the bridging device.",
+      "partialRows": "Partial — the walk hit its row limit.",
+      "unsupportedWithCode": "The device answered {{code}} — this OID is not implemented on it."
+    },
+    "settings": {
+      "toasts": {
+        "identitySaved": "Identity saved",
+        "identitySaveFailed": "Couldn't save the identity changes",
+        "approved": "Asset approved",
+        "approveFailed": "Couldn't approve the asset",
+        "dismissed": "Asset dismissed",
+        "dismissFailed": "Couldn't dismiss the asset",
+        "assetDeleted": "Asset deleted",
+        "assetDeleteFailed": "Couldn't delete the asset",
+        "snmpSaved": "SNMP settings saved",
+        "snmpSaveFailed": "Couldn't save the SNMP settings",
+        "pollingPaused": "SNMP polling paused",
+        "pollingResumed": "SNMP polling resumed",
+        "monitoringDisabled": "Monitoring disabled for this asset",
+        "monitoringDisableFailed": "Couldn't disable monitoring",
+        "checkCreated": "Network check added",
+        "checkCreateFailed": "Couldn't add the network check",
+        "checkRemoved": "Network check removed",
+        "checkRemoveFailed": "Couldn't remove the network check"
+      },
+      "title": "{{name}} settings",
+      "subtitle": "Manage each section independently.",
+      "navLabel": "Asset settings sections",
+      "unsavedChanges": "Unsaved changes",
+      "refreshFailed": "Saved, but the page could not refresh. Reload to see the change.",
+      "sections": {
+        "identity": "Identity",
+        "monitoring": "Monitoring",
+        "link": "Link",
+        "danger": "Danger"
+      },
+      "identity": {
+        "description": "Choose how this asset is identified.",
+        "displayName": "Display name",
+        "type": "Device type",
+        "typeFixed": "This saved type cannot be selected again. You can choose a different type.",
+        "typeDetected": "Detected: {{type}}",
+        "typeConsequence": "Changes the suggested SNMP template and the device layout.",
+        "resetToDetected": "Reset to detected",
+        "tags": "Tags",
+        "tagsHint": "Separate tags with commas.",
+        "notes": "Notes",
+        "conflict": "This asset changed elsewhere. Review the latest values before saving again.",
+        "typeGroups": {
+          "endpoints": "Endpoints",
+          "networkGear": "Network gear",
+          "peripherals": "Peripherals",
+          "other": "Other"
+        }
+      },
+      "monitoring": {
+        "description": "Configure SNMP collection and network checks.",
+        "loadFailed": "Couldn't load monitoring settings. Try again.",
+        "checksLoadFailed": "Couldn't load network checks. Try again.",
+        "conflict": "Monitoring settings changed elsewhere. Review the latest values before saving again.",
+        "communityRequired": "Enter a community string to enable SNMP v1 or v2c.",
+        "usernameRequired": "Enter a username to enable SNMP v3.",
+        "invalidInterval": "Polling interval must be a whole number between 30 and 86400 seconds.",
+        "invalidPort": "Port must be a whole number between 1 and 65535.",
+        "pause": "Pause polling",
+        "resume": "Resume polling",
+        "disable": "Disable all monitoring",
+        "disableTitle": "Disable all monitoring?",
+        "disableMessage": "SNMP polling and network checks for this asset will be disabled.",
+        "checksTitle": "Network checks",
+        "noChecks": "No network checks configured.",
+        "addCheck": "Add check",
+        "removeCheck": "Remove check",
+        "removeCheckTitle": "Remove network check?",
+        "removeCheckMessage": "Remove the network check “{{name}}”? This cannot be undone.",
+        "never": "never",
+        "leaveBlankToKeep": "Stored — leave blank to keep the current value",
+        "snmpVersion": "SNMP version",
+        "pollingInterval": "Polling interval (seconds)",
+        "community": "Community string",
+        "username": "Username",
+        "authProtocol": "Authentication protocol",
+        "authPassword": "Authentication password",
+        "privacyProtocol": "Privacy protocol",
+        "privacyPassword": "Privacy password",
+        "port": "SNMP port",
+        "template": "SNMP template",
+        "templatesUnavailable": "Templates couldn't be loaded. The current template will be kept.",
+        "suggestionsUnavailable": "Suggestions unavailable",
+        "noTemplate": "No template",
+        "suggestion": "Suggested: {{template}} — {{reason}}",
+        "useSuggestion": "Use suggestion",
+        "noTemplateWarning": "No template assigned, so nothing is being polled.",
+        "collectionStatus": {
+          "ok": "Collecting",
+          "failing": "Collection failing",
+          "no_template": "No template assigned, so nothing is being polled",
+          "no_agent": "No agent available in this site",
+          "asset_moved": "Asset moved to another site",
+          "never_polled": "Never polled",
+          "paused": "Polling paused",
+          "warning": "Partial collection",
+          "offline": "No response to polling",
+          "unknown": "Collection state unknown"
+        },
+        "checkState": {
+          "responding": "Responding",
+          "degraded": "Degraded",
+          "notResponding": "Not responding",
+          "paused": "Paused",
+          "unverified": "Unverified"
+        },
+        "checkSource": {
+          "icmp_ping": "ping",
+          "tcp_port": "TCP port",
+          "http_check": "HTTP check",
+          "dns_check": "DNS check"
+        }
+      },
+      "link": {
+        "description": "Tie this discovered asset to the managed device that is the same machine.",
+        "unlinkHint": "Unlinking also stops auto-linking from re-creating this link on the next scan."
+      },
+      "danger": {
+        "description": "Approval state and permanent removal.",
+        "approvalTitle": "Approval",
+        "approvedExplainer": "This asset is approved and appears in device lists.",
+        "pendingExplainer": "Pending approval: nothing is monitored yet.",
+        "dismissedExplainer": "Dismissed: hidden from device lists.",
+        "approve": "Approve",
+        "dismiss": "Dismiss",
+        "deleteTitle": "Delete asset",
+        "deleteDescription": "Removes the asset and everything collected for it. Discovery will re-create it on the next scan if the device is still on the network.",
+        "deleteAsset": "Delete asset",
+        "deleteConfirmTitle": "Delete this asset?",
+        "deleteConfirmMessage": "\"{{name}}\" and everything below will be removed. This cannot be undone.",
+        "deleteConfirmPrompt": "Type {{name}} to confirm",
+        "cascade": {
+          "snmp": "Its SNMP polling configuration",
+          "metrics": "All collected metrics",
+          "thresholds": "Its SNMP alert thresholds",
+          "checks": "Every network check bound to this asset",
+          "topology": "Its saved position on the topology map"
+        }
+      },
+      "openMonitoringSettings": "Edit monitoring settings",
+      "openLinkSettings": "Manage this link"
+    },
     "backToDevices": "Back to devices",
-    "configurePrefix": "Configure SNMP polling and network monitors from the",
     "confirmUnlink": "Unlink this device?",
     "confirmUnlinkMessage": "The discovery asset and the managed device will be shown as separate items. Auto-linking stays off for this asset until you link it again.",
     "connecting": "Connecting",
-    "discoveryAssetView": "discovery asset view",
     "emptyPorts": "No open ports were found on the most recent scan.",
     "emptySnmp": "No SNMP data was collected — the device may not have responded, or SNMP was not probed. Check that the SNMP method is enabled and the community string is set on the discovery profile.",
     "errors": {
+      "unexpected": "Something went wrong. Please try again.",
       "load": "Couldn't load this network device. Check your connection and try again.",
       "malformed": "The server returned an unexpected response for this network device. Try again, and contact support if it keeps happening.",
-      "notFound": "Network device not found"
+      "notFound": "Network device not found",
+      "monitoringLoad": "Couldn't load this device's monitoring data. Try again.",
+      "checksLoad": "Failed to load network checks.",
+      "thresholdsLoad": "Failed to load threshold alerts.",
+      "templateLoad": "Failed to load the SNMP template."
     },
     "fields": {
       "assetType": "Type",
@@ -2301,7 +2573,20 @@
       "ping": "Ping",
       "snmpMonitoring": "SNMP monitoring",
       "status": "Status",
-      "tags": "Tags"
+      "tags": "Tags",
+      "bridgingAgent": "Bridging agent",
+      "ipAddress": "IP address",
+      "macAddress": "MAC address",
+      "nicVendor": "NIC vendor",
+      "nicVendorHint": "The MAC address's registered vendor, which differs from the device manufacturer when the network card is built by someone else.",
+      "site": "Site",
+      "sysObjectId": "sysObjectID (raw)",
+      "legacyScanVerdict": "Last scan verdict",
+      "legacyScanVerdictHint": "— what the last subnet sweep recorded, not live reachability",
+      "pollStatus": "Poll status",
+      "template": "Template",
+      "pollingInterval": "Polling interval",
+      "snmpTransport": "SNMP"
     },
     "goBack": "Go back",
     "live": {
@@ -2309,7 +2594,6 @@
       "refreshed": "Device details refreshed"
     },
     "loading": "Loading network device...",
-    "manageInDiscovery": "Manage in Discovery",
     "manuallySet": "Manually set",
     "manuallySetWithDetected": "Manually set · scan detected {{type}}",
     "networkDevice": "Network Device",
@@ -2335,17 +2619,43 @@
       "agentListFailed": "Couldn't load the agent list. Retry."
     },
     "resetToAutoDetected": "Reset to auto-detected",
-    "savingType": "Saving…",
-    "resettingType": "Resetting…",
     "sections": {
       "discovery": "Discovery",
       "identity": "Identity",
       "monitoringStatus": "Monitoring status",
       "openPorts": "Open ports",
-      "snmpData": "SNMP data"
+      "snmpData": "SNMP data",
+      "reachability": "Reachability",
+      "collection": "Collection",
+      "printerHealth": "Printer health",
+      "scanDetails": "All scan details",
+      "pollConfiguration": "Poll configuration",
+      "oids": "OIDs",
+      "networkChecks": "Network checks",
+      "thresholds": "SNMP threshold alerts",
+      "history": "History",
+      "deviceHealth": "Device health"
     },
     "stats": {
-      "asOf": "as of {{time}}"
+      "asOf": "as of {{time}}",
+      "lowestSupply": "Lowest supply",
+      "portsUp": "Ports up",
+      "portsUpValue": "{{up}} / {{total}}",
+      "reachability": "Reachability",
+      "lastPoll": "Last poll"
+    },
+    "probe": {
+      "checkNow": "Check now",
+      "checking": "Checking…",
+      "errors": {
+        "noAgentInSite": "No online agent at this site can reach the device. Bring an agent online here, then try again.",
+        "inFlight": "A check is already running for this device.",
+        "noIp": "This asset has no IP address to check.",
+        "timedOut": "The agent didn't answer within a minute. It may be offline or busy.",
+        "unknown": "Couldn't check this device right now.",
+        "noSite": "This asset has no site. Assign it to a site, then try again.",
+        "refreshFailed": "Saved, but the page could not read the result. Reload."
+      }
     },
     "tabs": {
       "overview": "Overview",
@@ -2387,7 +2697,101 @@
       "sysName": "System name",
       "sysDescr": "Description",
       "sysObjectId": "Object ID (OID)"
-    }
+    },
+    "header": {
+      "lastError": "Last error: {{error}}",
+      "settings": "Settings"
+    },
+    "editInSettings": "Edit in settings",
+    "health": {
+      "empty": {
+        "title": "Nothing is being monitored yet",
+        "action": "Set up monitoring",
+        "benefit": {
+          "printer": "Turn on SNMP to see toner and ink levels, paper trays, page counts and printer error states.",
+          "switch": "Turn on SNMP to see interface status, throughput per port and uptime.",
+          "generic": "Turn on SNMP to collect health data from this device, or add a ping or port check."
+        }
+      },
+      "noTemplate": "SNMP is on, but no template is assigned — so nothing is being polled.",
+      "pickTemplate": "Choose a template",
+      "viewAllOids": "View all {{count}} OIDs"
+    },
+    "printer": {
+      "low": "Low",
+      "supplyFallback": "Supply {{instance}}",
+      "pageCount": "Lifetime pages",
+      "sinceYesterday": "{{count}} since yesterday",
+      "sinceLastWeek": "{{count}} in the last week",
+      "notCollectedYet": "Printer health values have not been collected yet.",
+      "status": {
+        "other": "Other",
+        "unknown": "Unknown",
+        "idle": "Idle",
+        "printing": "Printing",
+        "warmup": "Warming up"
+      },
+      "deviceStatus": {
+        "unknown": "Unknown",
+        "running": "Running",
+        "warning": "Warning",
+        "testing": "Testing",
+        "down": "Down"
+      },
+      "errors": {
+        "lowPaper": "Paper low",
+        "noPaper": "Out of paper",
+        "lowToner": "Toner low",
+        "noToner": "Out of toner",
+        "doorOpen": "Door open",
+        "jammed": "Paper jam",
+        "offline": "Offline",
+        "serviceRequested": "Service required",
+        "inputTrayMissing": "Input tray missing",
+        "outputTrayMissing": "Output tray missing",
+        "markerSupplyMissing": "Supply missing",
+        "outputNearFull": "Output tray nearly full",
+        "outputFull": "Output tray full",
+        "inputTrayEmpty": "Input tray empty",
+        "overduePreventMaint": "Maintenance overdue"
+      }
+    },
+    "charts": {
+      "loadFailed": "Couldn’t load this metric’s history.",
+      "pickOids": "Chart",
+      "cap": "Showing the maximum of {{count}} charts — clear one to add another.",
+      "perBucket": "Change per {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 min",
+        "hour": "hour",
+        "day": "day"
+      },
+      "emptyTitle": "No OID is collecting yet",
+      "emptyDescription": "History appears once a poll returns a value for at least one OID.",
+      "truncated": "Only the first 64 instance series are shown."
+    },
+    "poll": {
+      "everySeconds": "every {{count}} sec",
+      "everyMinutes": "every {{count}} min",
+      "everyHours": "every {{count}} hr"
+    },
+    "checks": {
+      "emptyTitle": "No network checks on this device",
+      "emptyDescription": "A ping or port check gives this device a reachability verdict of its own, independent of the discovery scan.",
+      "add": "Add a check",
+      "paused": "Paused",
+      "status": {
+        "online": "Online",
+        "degraded": "Degraded",
+        "offline": "Offline",
+        "never": "Never checked"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "No SNMP threshold alerts are armed",
+      "emptyDescription": "Nothing on this device will raise an alert from a polled value yet."
+    },
+    "loadingMonitoring": "Loading monitoring data…"
   },
   "osIcons": {
     "linux": "Linux",
@@ -2769,7 +3173,8 @@
       "assignedContactPlaceholder": "Search contacts…",
       "tags": "Tags",
       "tagsPlaceholder": "Comma-separated",
-      "notes": "Notes"
+      "notes": "Notes",
+      "purchaseDate": "Purchase date"
     }
   },
   "addNetworkAssetModal": {

@@ -38,6 +38,12 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
+import {
+  assertDesktopStartIntentCurrent,
+  commitDesktopStartIntent,
+  formatDesktopGeneration,
+  startIntentDenialCode,
+} from '../../services/remoteDesktopStartIntent';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { captureException, captureMessage } from '../../services/sentry';
 import { ACTIVE_REMOTE_SESSION_STATUSES, teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
@@ -46,13 +52,19 @@ import { createRemoteSession, RemoteSessionDeniedError } from '../../services/re
 import {
   AGENT_UPGRADE_REQUIRED_CODE,
   AGENT_UPGRADE_REQUIRED_MESSAGE,
-  isRevocationLeaseCapable,
+  isDesktopStartCapable,
   prepareRevocationLeaseForStart,
   renewRevocationLease,
 } from '../../services/remoteRevocationLease';
 import { trustDenyBody } from '../../services/partnerTrust';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
+import {
+  buildStopDesktopCommand,
+  terminalIntentSet,
+  terminalSessionReturning,
+  toTerminalSessionRow,
+} from '../../services/remoteDesktopTerminalIntent';
 
 export const sessionRoutes = new Hono();
 
@@ -176,15 +188,11 @@ sessionRoutes.delete(
     // One UPDATE both rechecks and claims the exact stale rows. Splitting this
     // into SELECT ids + UPDATE ids lets a session become fresh/active or be
     // replaced after validation but before teardown.
-    const result = await db
+    const result = (await db
       .update(remoteSessions)
-      .set({ status: 'disconnected', endedAt: new Date() })
+      .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
       .where(and(...conditions))
-      .returning({
-        id: remoteSessions.id,
-        type: remoteSessions.type,
-        deviceId: remoteSessions.deviceId,
-      });
+      .returning(terminalSessionReturning())).map(toTerminalSessionRow);
 
     // Revoke viewer tokens AND signal each agent to stop the peer-to-peer
     // WebRTC stream / terminal PTY. Marking the row + revoking the token alone
@@ -237,20 +245,22 @@ sessionRoutes.post(
       }
     }
 
-    // Fail fast on an agent that cannot hold a revocation lease. The three
-    // desktop-start dispatch sites gate on this too (that is the authoritative
-    // fail-closed check); doing it here as well means the operator gets the
-    // "agent update required" answer on the click that started it, instead of
-    // a stranded session row and a confusing failure inside the viewer.
+    // Fail fast on an agent that cannot hold a revocation lease or (behind
+    // REMOTE_DESKTOP_FENCE_REQUIRED, SEC-038 W06) does not keep the durable
+    // start fence. The three desktop-start dispatch sites gate on this too
+    // (that is the authoritative fail-closed check); doing it here as well
+    // means the operator gets the "agent update required" answer on the click
+    // that started it, instead of a stranded session row and a confusing
+    // failure inside the viewer.
     if (data.type === 'desktop') {
-      let leaseCapable: boolean;
+      let startCapable: boolean;
       try {
-        leaseCapable = await isRevocationLeaseCapable(data.deviceId);
+        startCapable = await isDesktopStartCapable(data.deviceId);
       } catch (err) {
-        console.error('[remote] Failed to read revocation-lease capability for device', data.deviceId, err);
-        leaseCapable = false;
+        console.error('[remote] Failed to read desktop-start capability for device', data.deviceId, err);
+        startCapable = false;
       }
-      if (!leaseCapable) {
+      if (!startCapable) {
         return c.json({
           error: AGENT_UPGRADE_REQUIRED_MESSAGE,
           code: AGENT_UPGRADE_REQUIRED_CODE,
@@ -286,7 +296,7 @@ sessionRoutes.post(
     try {
       const staleUpdate = db
         .update(remoteSessions)
-        .set({ status: 'disconnected', endedAt: new Date() })
+        .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
         .where(
           and(
             eq(remoteSessions.deviceId, data.deviceId),
@@ -294,19 +304,11 @@ sessionRoutes.post(
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
         ) as unknown as Promise<unknown> & {
-          returning?: (fields: {
-            id: typeof remoteSessions.id;
-            type: typeof remoteSessions.type;
-            deviceId: typeof remoteSessions.deviceId;
-          }) => Promise<Array<{ id: string; type: string; deviceId: string }>>;
+          returning?: (fields: ReturnType<typeof terminalSessionReturning>) => Promise<Array<Parameters<typeof toTerminalSessionRow>[0]>>;
         };
 
       if (typeof staleUpdate.returning === 'function') {
-        const revoked = await staleUpdate.returning({
-          id: remoteSessions.id,
-          type: remoteSessions.type,
-          deviceId: remoteSessions.deviceId,
-        });
+        const revoked = (await staleUpdate.returning(terminalSessionReturning())).map(toTerminalSessionRow);
         // Revoke viewer tokens AND push the agent stop so a stale row for a
         // still-live desktop/terminal doesn't leave the stream running.
         await teardownDisconnectedSessions(revoked);
@@ -314,7 +316,12 @@ sessionRoutes.post(
         await staleUpdate;
       }
     } catch (err) {
+      // The UPDATE may already have committed when this fires (a row-shape
+      // error in the post-UPDATE mapping, for instance), which would leave
+      // rows terminal with no viewer revocation and no stop — so it is
+      // escalated, not just logged.
       console.error('[remote] Failed to terminate stale sessions for device', data.deviceId, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
 
     // Create session
@@ -464,6 +471,7 @@ sessionRoutes.get(
         userId: remoteSessions.userId,
         type: remoteSessions.type,
         status: remoteSessions.status,
+        terminationPhase: remoteSessions.terminationPhase,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -489,6 +497,7 @@ sessionRoutes.get(
         userId: s.userId,
         type: s.type,
         status: s.status,
+        terminationPhase: s.terminationPhase ?? 'none',
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -618,6 +627,7 @@ sessionRoutes.get(
         userId: remoteSessions.userId,
         type: remoteSessions.type,
         status: remoteSessions.status,
+        terminationPhase: remoteSessions.terminationPhase,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -644,6 +654,7 @@ sessionRoutes.get(
         userId: s.userId,
         type: s.type,
         status: s.status,
+        terminationPhase: s.terminationPhase ?? 'none',
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -718,6 +729,10 @@ sessionRoutes.get(
       userId: session.userId,
       type: session.type,
       status: session.status,
+      // SEC-038 W06: 'pending' = a terminal decision committed server-side but
+      // the agent has not yet acknowledged the stop. The web UI must not
+      // render such a session as connected.
+      terminationPhase: session.terminationPhase ?? 'none',
       webrtcOffer: session.webrtcOffer,
       webrtcAnswer: session.webrtcAnswer,
       iceCandidates: session.iceCandidates,
@@ -985,34 +1000,44 @@ sessionRoutes.post(
     const promptMode = prompt?.mode === 'consent' || prompt?.mode === 'notify' ? prompt.mode : 'off';
     const startCommandId = createDesktopStartCommandId(sessionId);
 
-    // Publish the offer, prompt mode and one-off command identity together.
+    // Publish the offer, prompt mode and one-off command identity together,
+    // under a row lock that also bumps the start generation (SEC-038 W02).
     // A later re-offer replaces the identity, so an answer from the superseded
-    // agent command cannot win the result compare-and-set.
-    const [updated] = await db
-      .update(remoteSessions)
-      .set({
-        webrtcOffer: data.offer,
-        webrtcAnswer: null,
-        desktopStartCommandId: startCommandId,
-        desktopPromptMode: promptMode,
-        status: 'connecting',
-        ...(session.status === 'active' ? { endedAt: null } : {}),
-      })
-      .where(and(
-        eq(remoteSessions.id, sessionId),
-        inArray(remoteSessions.status, ['pending', 'connecting', 'active']),
-      ))
-      .returning();
+    // agent command cannot win the result compare-and-set; the generation is
+    // what orders this start against a terminal decision.
+    const startIntent = await commitDesktopStartIntent({
+      sessionId,
+      startCommandId,
+      promptMode,
+      offer: data.offer,
+    });
 
-    if (!updated) {
+    if (!startIntent.ok) {
+      if (startIntent.reason === 'not_found') {
+        return c.json({ error: 'Session not found' }, 404);
+      }
+      if (startIntent.reason === 'terminal') {
+        return c.json({
+          error: 'This session has already been ended',
+          code: 'SESSION_TERMINAL',
+        }, 409);
+      }
       return c.json({ error: 'Session state changed while submitting offer' }, 409);
     }
+
+    const startGeneration = startIntent.generation;
 
     await logSessionAudit(
       'session_offer_submitted',
       auth.user.id,
       device.orgId,
-      { sessionId, type: session.type, startCommandId, promptMode },
+      {
+        sessionId,
+        type: session.type,
+        startCommandId,
+        promptMode,
+        startGeneration: formatDesktopGeneration(startGeneration),
+      },
       getTrustedClientIpOrUndefined(c)
     );
 
@@ -1033,11 +1058,24 @@ sessionRoutes.post(
       }, 503);
     }
 
+    // Re-read generation + phase immediately before publication. An End that
+    // committed while the lease was being minted supersedes this start, and the
+    // command must not go out at all. This narrows the window to microseconds;
+    // the endpoint fence (W04/W05) is what closes it.
+    const stillCurrent = await assertDesktopStartIntentCurrent(sessionId, startGeneration);
+    if (!stillCurrent.ok) {
+      return c.json({
+        error: 'This session was ended while the stream was starting',
+        code: startIntentDenialCode(stillCurrent.reason),
+      }, 409);
+    }
+
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: startCommandId,
       type: 'start_desktop',
       payload: {
         sessionId,
+        startGeneration: formatDesktopGeneration(startGeneration),
         offer: data.offer,
         iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
         clipboard: desktopPolicy.clipboard,
@@ -1059,9 +1097,9 @@ sessionRoutes.post(
     }
 
     return c.json({
-      id: updated.id,
-      status: updated.status,
-      webrtcOffer: updated.webrtcOffer,
+      id: sessionId,
+      status: 'connecting',
+      webrtcOffer: data.offer,
     });
   }
 );
@@ -1245,15 +1283,20 @@ sessionRoutes.post(
     // resetting endedAt/durationSeconds. Guard on the live states so the
     // already-terminal case loses the write and is reported, not silently
     // clobbered.
+    //
+    // Through the terminal-intent contract (SEC-038 W03): the same guarded
+    // UPDATE also bumps the generation every start bumps, records it as the
+    // terminal one, and moves the phase to 'pending' until the agent's stop
+    // result lands. The live-status guard is the contract's own.
     const [updated] = await db
       .update(remoteSessions)
-      .set({
+      .set(terminalIntentSet({
         status: 'disconnected',
         endedAt,
         durationSeconds,
         bytesTransferred: body.bytesTransferred !== undefined ? BigInt(body.bytesTransferred) : session.bytesTransferred,
         recordingUrl: recordingUrl ?? session.recordingUrl
-      })
+      }, 'pending'))
       .where(and(
         eq(remoteSessions.id, sessionId),
         inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
@@ -1313,16 +1356,18 @@ sessionRoutes.post(
     // already terminal and the viewer token already revoked, so delivery is
     // best-effort by design; the trade is that the outcome cannot be reported
     // synchronously in the response, only logged and captured.
+    // The contract always writes the terminal generation with the terminal
+    // status; a null here would mean the UPDATE above bypassed it.
+    const terminalGeneration = toTerminalSessionRow(updated).terminalGeneration;
     if (session.type === 'desktop' && device.agentId) {
       // `dispatchCommandToAgent` RESOLVES with a status — it does not throw on
       // a failed delivery (see DispatchOutcome in services/agentCommandRelay).
       // A bare catch would therefore have been silent for every real
       // non-delivery, so branch on the status explicitly.
-      void dispatchCommandToAgent(device.agentId, {
-        id: `desk-stop-${sessionId}`,
-        type: 'stop_desktop',
-        payload: { sessionId },
-      }).then((outcome) => {
+      void dispatchCommandToAgent(
+        device.agentId,
+        buildStopDesktopCommand(sessionId, terminalGeneration),
+      ).then((outcome) => {
         if (outcome.status === 'sent') return;
         const detail = outcome.status === 'infrastructure_error' ? ` (${outcome.message})` : '';
         console.warn(
@@ -1369,12 +1414,18 @@ sessionRoutes.post(
       throw viewerRevocationError;
     }
 
+    // Still 200, not 202: callers that treat 200 as "ended" keep working. The
+    // phase is additive — 'pending' until the agent acknowledges the stop,
+    // 'confirmed' after — and the generation is a decimal string, never a
+    // JSON number (SEC-038 W03).
     return c.json({
       id: updated.id,
       status: updated.status,
       endedAt: updated.endedAt,
       durationSeconds: updated.durationSeconds,
-      bytesTransferred: updated.bytesTransferred ? Number(updated.bytesTransferred) : null
+      bytesTransferred: updated.bytesTransferred ? Number(updated.bytesTransferred) : null,
+      terminationPhase: updated.terminationPhase,
+      terminalGeneration: formatDesktopGeneration(terminalGeneration),
     });
   }
 );

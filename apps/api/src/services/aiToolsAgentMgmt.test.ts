@@ -18,6 +18,12 @@ vi.mock('./commandQueue', () => ({
   CommandTypes: new Proxy({}, { get: (_t, prop) => String(prop) }),
 }));
 
+// aiToolsAgentMgmt.ts reaches the queue through the mandatory-origin adapter,
+// not commandQueue directly.
+vi.mock('./aiDispatch', () => ({
+  aiExecuteCommand: vi.fn(),
+}));
+
 // The version-pin resolver (issue #2124) lives in the heartbeat helpers, a heavy
 // module; mock it so the tool's default-target path can be steered per test and
 // the real module's import graph is not pulled into this service test.
@@ -39,7 +45,7 @@ vi.mock('../routes/agents/helpers', () => ({
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { executeCommand } from './commandQueue';
+import { aiExecuteCommand } from './aiDispatch';
 import { registerAgentMgmtTools } from './aiToolsAgentMgmt';
 import { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget } from '../routes/agents/helpers';
 import { TOOL_PERMISSIONS } from './aiGuardrails';
@@ -102,6 +108,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -186,7 +193,7 @@ describe('trigger_agent_restart', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // executeCommand resolves a CommandResult; 'completed' = dispatched.
-    vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', result: {} } as any);
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'completed', result: {} } as any);
     tool = buildToolMap().get('trigger_agent_restart')!;
   });
 
@@ -209,8 +216,10 @@ describe('trigger_agent_restart', () => {
     const result = JSON.parse(raw);
 
     expect(result).toEqual({ requested: 1, queued: 1, action: 'restart_agent' });
-    expect(executeCommand).toHaveBeenCalledTimes(1);
-    expect(executeCommand).toHaveBeenCalledWith(
+    expect(aiExecuteCommand).toHaveBeenCalledTimes(1);
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      'trigger_agent_restart',
       DEVICE_ID,
       'restart_agent',
       {},
@@ -223,7 +232,7 @@ describe('trigger_agent_restart', () => {
     // handler must surface it in `errors` and NOT increment `queued` — this is
     // the regression guard for the silent-success bug.
     mockSelectSequence([[offlineDeviceRow()], [{ id: DEVICE_ID }]]);
-    vi.mocked(executeCommand).mockResolvedValue({
+    vi.mocked(aiExecuteCommand).mockResolvedValue({
       status: 'failed',
       error: 'Watchdog is not reporting; cannot dispatch watchdog command',
     } as any);
@@ -237,7 +246,7 @@ describe('trigger_agent_restart', () => {
 
   it('reports partial failure across multiple devices', async () => {
     mockSelectSequence([[offlineDeviceRow()], [{ id: DEVICE_ID }, { id: OTHER_DEVICE_ID }]]);
-    vi.mocked(executeCommand)
+    vi.mocked(aiExecuteCommand)
       .mockResolvedValueOnce({ status: 'completed', result: {} } as any)
       .mockResolvedValueOnce({ status: 'failed', error: 'Device not found' } as any);
 
@@ -251,7 +260,7 @@ describe('trigger_agent_restart', () => {
       action: 'restart_agent',
       errors: { [OTHER_DEVICE_ID]: 'Device not found' },
     });
-    expect(executeCommand).toHaveBeenCalledTimes(2);
+    expect(aiExecuteCommand).toHaveBeenCalledTimes(2);
   });
 
   it('denies a device inside the org but outside the caller site allowlist', async () => {
@@ -262,7 +271,7 @@ describe('trigger_agent_restart', () => {
     const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, siteScopedAuth));
 
     expect(result.error).toMatch(/not found or access denied/i);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
   it('refuses and dispatches nothing when a deviceId is outside the caller org', async () => {
@@ -274,14 +283,14 @@ describe('trigger_agent_restart', () => {
     const result = JSON.parse(raw);
 
     expect(result.error).toContain(OTHER_DEVICE_ID);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
   it('rejects an empty deviceIds list without touching the DB', async () => {
     const raw = await tool.handler({ deviceIds: [] }, makeAuth());
     expect(JSON.parse(raw).error).toMatch(/deviceIds/);
     expect(db.select).not.toHaveBeenCalled();
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 });
 
@@ -301,7 +310,7 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(executeCommand).mockResolvedValue({ status: 'completed', result: {} } as any);
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'completed', result: {} } as any);
     vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({
       settings: { policy: 'staged', maintenanceWindow: null },
       pins: { agent: null, watchdog: null },
@@ -329,8 +338,8 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     expect(resolvePinnedUpgradeTarget).toHaveBeenCalledWith(
       expect.objectContaining({ component: 'agent', pin: '0.80.0', platform: 'windows', architecture: 'amd64' }),
     );
-    expect(executeCommand).toHaveBeenCalledWith(
-      DEVICE_ID, 'update_agent', { version: '0.80.0' },
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
+      expect.anything(), 'trigger_agent_upgrade', DEVICE_ID, 'update_agent', { version: '0.80.0' },
       expect.objectContaining({ targetRole: 'watchdog' }),
     );
   });
@@ -349,8 +358,8 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     expect(resolvePinnedUpgradeTarget).toHaveBeenCalledWith(
       expect.objectContaining({ component: 'agent', pin: null, platform: 'windows', architecture: 'amd64' }),
     );
-    expect(executeCommand).toHaveBeenCalledWith(
-      DEVICE_ID, 'update_agent', { version: '0.88.0' },
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
+      expect.anything(), 'trigger_agent_upgrade', DEVICE_ID, 'update_agent', { version: '0.88.0' },
       expect.objectContaining({ targetRole: 'watchdog' }),
     );
   });
@@ -369,7 +378,7 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     // No doomed dispatch; the operator is told, not silently timed out.
     expect(result.error).toMatch(/No agent build resolved/i);
     expect(result.errors[DEVICE_ID]).toMatch(/has no build for this device/i);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
   it('an explicit targetVersion overrides any pin and is used verbatim', async () => {
@@ -389,8 +398,8 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     expect(result.targetVersion).toBe('0.90.0');
     // The org's pin config is never consulted when a version is explicitly given.
     expect(getOrgAgentUpdateConfig).not.toHaveBeenCalled();
-    expect(executeCommand).toHaveBeenCalledWith(
-      DEVICE_ID, 'update_agent', { version: '0.90.0' },
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
+      expect.anything(), 'trigger_agent_upgrade', DEVICE_ID, 'update_agent', { version: '0.90.0' },
       expect.objectContaining({ targetRole: 'watchdog' }),
     );
   });
@@ -412,7 +421,7 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     );
 
     expect(result.errors[DEVICE_ID]).toMatch(/has no build for this device/i);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
     // The explicit version IS resolved through the same fail-closed resolver
     // the pinned path uses, with this device's platform/arch.
     expect(resolvePinnedUpgradeTarget).toHaveBeenCalledWith(
@@ -433,14 +442,14 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
 
     expect(result.error).toMatch(/not found/i);
     expect(resolvePinnedUpgradeTarget).not.toHaveBeenCalled();
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
   // The artifact-edition gate itself lives at the dispatch chokepoint
   // (services/commandQueue.ts executeCommand, #4093). This asserts the tool
   // surfaces its refusal per device instead of counting it as queued.
   it('surfaces the dispatch-time edition refusal as a per-device error', async () => {
-    vi.mocked(executeCommand).mockResolvedValue({
+    vi.mocked(aiExecuteCommand).mockResolvedValue({
       status: 'failed',
       error: 'Agent update withheld (#4072): this server serves hosted-edition artifacts …',
     } as any);
@@ -480,9 +489,9 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     expect(result.queued).toBe(1);
     expect(result.errors[OTHER_DEVICE_ID]).toMatch(/Failed to resolve version pin/i);
     expect(result.targetVersions).toEqual(['0.80.0']);
-    expect(executeCommand).toHaveBeenCalledTimes(1);
-    expect(executeCommand).toHaveBeenCalledWith(
-      DEVICE_ID, 'update_agent', { version: '0.80.0' },
+    expect(aiExecuteCommand).toHaveBeenCalledTimes(1);
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
+      expect.anything(), 'trigger_agent_upgrade', DEVICE_ID, 'update_agent', { version: '0.80.0' },
       expect.objectContaining({ targetRole: 'watchdog' }),
     );
   });
@@ -522,7 +531,7 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
 
     expect(result.error).toMatch(/No agent build resolved/i);
     expect(result.errors[DEVICE_ID]).toMatch(/Failed to resolve version pin/i);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
   // The explicit-version probe is scoped to component='agent' AND this server's
@@ -557,6 +566,6 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
 
     expect(result.errors[DEVICE_ID]).toMatch(/no longer exists/i);
     expect(result.error).toMatch(/No agent build resolved/i);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 });

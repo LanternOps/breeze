@@ -88,7 +88,6 @@ async function seedFixture(): Promise<Fixture> {
         partnerId: partnerA.id,
         itemType: 'service',
         name: 'A-only service',
-        unitPrice: '10.00',
         costCurrency: 'USD',
       })
       .returning({ id: catalogItems.id });

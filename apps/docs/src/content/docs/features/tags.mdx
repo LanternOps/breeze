@@ -57,7 +57,7 @@ The update is validated with the Zod schema `z.array(z.string()).optional()`, so
 The `GET /api/v1/tags` endpoint returns every unique tag across all devices visible to your auth scope, along with the number of devices carrying each tag.
 
 <Aside type="note">
-  Manual assets (network gear, printers, and other equipment tracked without an agent) have their own separate `tags` array and are not counted here -- `GET /api/v1/tags` only aggregates tags from the `devices` table.
+  Manual assets (printers, monitors, and other equipment tracked without an agent) carry their own `tags` array and **are** included in the counts -- `deviceCount` counts every row of the unified Devices list, agent devices and manual assets alike. Retired manual assets, and manual assets already linked to a device or a discovered asset, are excluded so nothing is counted twice. Tags on discovered (network-scanned) assets are not yet included.
 </Aside>
 
 <Tabs>
@@ -113,20 +113,32 @@ curl "/api/v1/tags/devices?tag=production" \
   "data": [
     {
       "id": "d1e2f3a4-...",
+      "deviceClass": "agent",
       "hostname": "web-prod-01",
       "displayName": "Web Production 1",
       "status": "online",
       "osType": "linux",
       "tags": ["production", "web-server", "pci-scope"]
+    },
+    {
+      "id": "a9b8c7d6-...",
+      "deviceClass": "manual",
+      "hostname": "Reception Printer",
+      "displayName": "Reception Printer",
+      "status": "unknown",
+      "osType": null,
+      "tags": ["production", "printer"]
     }
   ],
-  "total": 1
+  "total": 2
 }
 ```
   </TabItem>
 </Tabs>
 
 The `tag` query parameter is required and must be a non-empty string. The endpoint uses the PostgreSQL `ANY()` array operator to match devices efficiently.
+
+Rows carry a `deviceClass` discriminator matching the unified Devices list: `agent` for devices running the Breeze agent, `manual` for manual assets. A manual asset has no reachability and no operating system, so its `status` is always `unknown` and its `osType` is `null`; its asset name stands in for both `hostname` and `displayName`.
 
 ---
 

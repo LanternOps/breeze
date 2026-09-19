@@ -1,12 +1,13 @@
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, exists, gte, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { TicketPriority } from '@breeze/shared';
 
 import { db } from '../db';
-import { mlFeedbackEvents, ticketCategories, tickets } from '../db/schema';
+import { devices, mlFeedbackEvents, ticketCategories, tickets } from '../db/schema';
 import { resolveMlFeatureFlagForOrg } from './mlFeatureFlags';
 
 const MODEL_VERSION = 'ticket-triage-rules-v0';
 const DAY_MS = 24 * 60 * 60 * 1000;
+const CANONICAL_UUID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 
 type TicketRow = typeof tickets.$inferSelect;
 type CategoryRow = Pick<typeof ticketCategories.$inferSelect, 'id' | 'name' | 'defaultPriority'>;
@@ -28,6 +29,12 @@ export interface TicketTriageSuggestionResult {
 
 export interface TicketTriageEvaluationInput {
   orgIds?: string[];
+  /**
+   * Undefined means the caller is not site-restricted. A defined array is a
+   * hard site ceiling; an empty array retains only deviceless, org-wide ticket
+   * feedback. The route copies this value from AuthContext.
+   */
+  allowedSiteIds?: readonly string[];
   labelWindowDays?: number;
 }
 
@@ -212,6 +219,49 @@ export async function evaluateTicketTriage(input: TicketTriageEvaluationInput = 
   ];
   if (input.orgIds && input.orgIds.length > 0) {
     conditions.push(inArray(mlFeedbackEvents.orgId, input.orgIds));
+  }
+  if (input.allowedSiteIds) {
+    const sourceTicketConditions: SQL[] = [
+      // source_id is varchar because the shared feedback table supports
+      // non-UUID source types. A guarded cast makes malformed ticket sources
+      // fail closed without throwing while retaining the tickets PK lookup.
+      sql`${tickets.id} = CASE
+        WHEN ${mlFeedbackEvents.sourceId} ~* ${CANONICAL_UUID_PATTERN}
+        THEN ${mlFeedbackEvents.sourceId}::uuid
+        ELSE NULL
+      END`,
+      eq(tickets.orgId, mlFeedbackEvents.orgId),
+      // Soft-deleted tickets are hidden from every staff list/detail path and
+      // must not remain inferable through this aggregate.
+      isNull(tickets.deletedAt),
+    ];
+
+    const allowed = input.allowedSiteIds;
+    if (allowed.length === 0) {
+      sourceTicketConditions.push(isNull(tickets.deviceId));
+    } else {
+      sourceTicketConditions.push(or(
+        // Deviceless tickets are org-wide, matching ticket list/stats scope.
+        isNull(tickets.deviceId),
+        inArray(
+          tickets.deviceId,
+          db
+            .select({ id: devices.id })
+            .from(devices)
+            .where(and(
+              eq(devices.orgId, tickets.orgId),
+              inArray(devices.siteId, allowed),
+            )),
+        ),
+      )!);
+    }
+
+    conditions.push(exists(
+      db
+        .select({ id: tickets.id })
+        .from(tickets)
+        .where(and(...sourceTicketConditions)),
+    ));
   }
 
   const rows = await db

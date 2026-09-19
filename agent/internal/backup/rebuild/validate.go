@@ -40,6 +40,9 @@ func validate(ctx context.Context, r *run) error {
 			if r.opts.Identity == IdentityNew && identityMutatedPaths[f.SourcePath] {
 				continue
 			}
+			if r.failedFiles[f.SourcePath] {
+				continue // known partial-restore failure, already a warning
+			}
 			withSum = append(withSum, f)
 		}
 	}

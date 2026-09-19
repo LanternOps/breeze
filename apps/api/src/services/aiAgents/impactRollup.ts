@@ -290,6 +290,21 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
         AND r.finished_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       GROUP BY 1
     ),
+    designs AS (
+      -- W05 (#5655): the Fleet Design sibling of narratives above — a completed
+      -- design run that produced a report (report_run_id set by
+      -- persistFleetDesignReport). Drift-only reruns count too: they are a
+      -- delivered design like any other.
+      SELECT (r.finished_at AT TIME ZONE 'UTC')::date AS day, count(*)::int AS fleet_designs_delivered
+      FROM ai_agent_runs r
+      WHERE r.org_id = ${orgId}::uuid
+        AND r.profile = 'design'
+        AND r.status = 'completed'
+        AND r.report_run_id IS NOT NULL
+        AND r.finished_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+        AND r.finished_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
+      GROUP BY 1
+    ),
     cost AS (
       -- ALL profiles and statuses, attributed by the immutable queued_at (the same
       -- column runService.ts:983-993 uses for the daily agent budget).
@@ -304,7 +319,7 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
     INSERT INTO ai_agent_impact_daily (
       org_id, day, alerts_judged, noise_flagged, suppressions_applied, tickets_triaged,
       drafts_sent, fixes_proposed, fixes_executed, fix_watches_held, fix_watches_recurred,
-      narratives_delivered, llm_cents, rebuilt_at
+      narratives_delivered, fleet_designs_delivered, llm_cents, rebuilt_at
     )
     SELECT
       ${orgId}::uuid, days.day,
@@ -313,6 +328,7 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
       COALESCE(dr.drafts_sent, 0), COALESCE(p.fixes_proposed, 0),
       COALESCE(e.fixes_executed, 0), COALESCE(w.fix_watches_held, 0),
       COALESCE(w.fix_watches_recurred, 0), COALESCE(n.narratives_delivered, 0),
+      COALESCE(fd.fleet_designs_delivered, 0),
       COALESCE(c.llm_cents, 0), now()
     FROM days
     LEFT JOIN verdicts     v  ON v.day  = days.day
@@ -323,6 +339,7 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
     LEFT JOIN executed     e  ON e.day  = days.day
     LEFT JOIN watches      w  ON w.day  = days.day
     LEFT JOIN narratives   n  ON n.day  = days.day
+    LEFT JOIN designs      fd ON fd.day = days.day
     LEFT JOIN cost         c  ON c.day  = days.day
     ON CONFLICT (org_id, day) DO UPDATE SET
       alerts_judged        = EXCLUDED.alerts_judged,
@@ -335,6 +352,7 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
       fix_watches_held     = EXCLUDED.fix_watches_held,
       fix_watches_recurred = EXCLUDED.fix_watches_recurred,
       narratives_delivered = EXCLUDED.narratives_delivered,
+      fleet_designs_delivered = EXCLUDED.fleet_designs_delivered,
       llm_cents            = EXCLUDED.llm_cents,
       rebuilt_at           = now()
   `));

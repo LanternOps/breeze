@@ -460,6 +460,11 @@
       "discardFailed": "No se pudo descartar el borrador de la IA.",
       "discarded": "Borrador descartado"
     },
+    "aiProposal": {
+      "postAsNote": "Publicar como nota privada",
+      "posted": "Publicado como nota privada",
+      "postFailed": "No se pudo publicar la nota"
+    },
     "resolve": {
       "noteLabel": "Nota de resolución (visible para el solicitante)",
       "submit": "Resolver ticket"

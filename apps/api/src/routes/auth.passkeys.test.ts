@@ -145,7 +145,7 @@ vi.mock('../services', () => {
   wasRefreshTokenJtiRecentlyRotated: vi.fn().mockResolvedValue(false),
   rememberJtiFamily: vi.fn().mockResolvedValue(undefined),
   getFamilyForJti: vi.fn().mockResolvedValue(null),
-  revokeFamily: vi.fn().mockResolvedValue(undefined),
+  revokeFamily: vi.fn().mockResolvedValue({ redis: 'confirmed', database: 'confirmed' }),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
   mintRefreshTokenFamily,
@@ -285,6 +285,10 @@ vi.mock('../services/ipAllowlist', () => ({
 // rename PATCH route) still take priority by pushing onto the queue first.
 const DEFAULT_EPOCH_ROW = [{ authEpoch: 1, mfaEpoch: 2, emailEpoch: 1, passwordResetEpoch: 1 }];
 
+vi.mock('../services/monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => {
   const dbMock: any = {
     select: vi.fn(() => dbState.makeSelectChain(dbState.selectQueue.shift() ?? [])),
@@ -536,7 +540,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
     dbState.selectQueue = [];
     dbState.updateSets = [];
@@ -768,7 +773,13 @@ describe('passkey MFA auth routes', () => {
       expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalled();
     });
 
-    it('register/options returns the opaque 400 for a passwordless account with an invalid/expired grant', async () => {
+    // #4050: the 400 STATUS stays uniform with every sibling rejection (that
+    // is the half of the opacity rule that still matters); only the BODY is
+    // distinguishable now. Reaching this branch already required the account
+    // to be passwordless, which the `enrollment_proof_required` branch
+    // discloses anyway, so nothing new leaks — see
+    // ENROLLMENT_GRANT_EXPIRED_CODE in ./auth/helpers.
+    it('register/options returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant', async () => {
       dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
       vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
@@ -781,9 +792,10 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
       });
       expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
     });
@@ -811,7 +823,7 @@ describe('passkey MFA auth routes', () => {
       );
     });
 
-    it('register/verify returns the opaque 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
+    it('register/verify returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
       dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
@@ -828,9 +840,10 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
       });
     });
   });
@@ -1120,7 +1133,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: false },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
 
     const res = await app.request('/auth/mfa/passkey/verify', {
@@ -1405,7 +1419,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
       required: true,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true },
+      pendingEnrollment: null,
+      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
     });
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],

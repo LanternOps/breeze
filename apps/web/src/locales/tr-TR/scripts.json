@@ -7,7 +7,7 @@
     },
     "loading": "Otomasyon yükleniyor...",
     "breadcrumb": {
-      "automations": "Otomasyonlar",
+      "automations": "İşler",
       "new": "Yeni Otomasyon",
       "edit": "Otomasyonu Düzenle"
     },
@@ -106,7 +106,8 @@
       "sendNotification": "Bildirim Gönder",
       "createAlert": "Uyarı Oluştur",
       "executeCommand": "Komutu Yürüt",
-      "deploySoftware": "Yazılımı Dağıtın"
+      "deploySoftware": "Yazılımı Dağıtın",
+      "aiTriage": "Yapay Zeka Triyajı"
     },
     "severity": {
       "critical": "Kritik",
@@ -133,7 +134,8 @@
       "saveAutomation": "Otomasyonu kaydet",
       "copyUrl": "URL'yi kopyala",
       "addCondition": "Koşul Ekle",
-      "addAction": "Eylem Ekle"
+      "addAction": "Eylem Ekle",
+      "removeAction": "Eylemi Kaldır"
     },
     "scope": {
       "title": "Kapsam",
@@ -204,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Yükseltilmiş yetkiler",
     "relativeTime": {
       "justNow": "Az önce",
       "minutesAgo": "{{count}}m önce",
@@ -341,8 +344,8 @@
       "delete": "Otomasyon silinemedi"
     },
     "loading": "Otomasyonlar yükleniyor...",
-    "title": "Otomasyonlar",
-    "description": "Otomatik iş akışları oluşturun ve yönetin.",
+    "title": "İşler",
+    "description": "Zamanlanmış, isteğe bağlı, webhook ve olay tabanlı otomasyonlar.",
     "actions": {
       "new": "Yeni Otomasyon",
       "deleting": "Siliniyor..."
@@ -351,6 +354,14 @@
       "title": "Otomasyonu Sil",
       "confirmPrefix": "Silmek istediğinizden emin misiniz?",
       "confirmSuffix": "Bu işlem geri alınamaz."
+    },
+    "tabs": {
+      "ariaLabel": "İş türleri",
+      "all": "Tümü",
+      "scheduled": "Zamanlanmış",
+      "on-demand": "İsteğe bağlı",
+      "webhooks": "Webhook'lar",
+      "event-rules": "Olay kuralları"
     }
   },
   "complianceDashboard": {
@@ -1332,6 +1343,11 @@
       "confirmSuffix": "Bu işlem geri alınamaz."
     },
     "library": {
+      "target": "İçe aktarma hedefi",
+      "allOrgs": "Tüm kuruluşlar (iş ortağı genelinde)",
+      "chooseOrg": "Bir kuruluş seçin",
+      "partnerPermission": "Tüm kuruluşlar için betik içe aktaramazsınız. Bunun yerine bir kuruluş seçin.",
+      "importSuccess": "“{{name}}” içe aktarıldı",
       "title": "Sistem Komut Dosyası Kitaplığı",
       "description": "Komut dosyalarını kuruluşunuza aktarın",
       "searchPlaceholder": "Sistem komut dosyalarını arayın...",
@@ -1370,6 +1386,8 @@
     "modeSkip": "Atla",
     "modeRename": "Yeni bir adla içe aktarın",
     "modeNewVersion": "Mevcut komut dosyasının yeni bir sürümü olarak ekle",
+    "tagLegacy": "Eski içe aktarma olarak etiketle",
+    "tagLegacyHint": "Bir Fleet Design'ın bu betiklerin ne için olduğunu envantere alabilmesi için legacy-import etiketini ekler.",
     "partnerWide": "Tüm kuruluşların kullanımına sunun (iş ortağı çapında)",
     "importCommit": "{{count}} komut dosyalarını içe aktar",
     "resultSummary": "{{imported}} içe aktarıldı, {{renamed}} yeniden adlandırıldı, {{versioned}} sürümü oluşturuldu, {{skipped}} atlandı, {{failed}} başarısız oldu",
@@ -1412,5 +1430,33 @@
       "pollFailed": "Çalıştırma sonucu okunamadı — silinmiş olabilir veya erişiminiz değişmiş olabilir."
     },
     "devicesLoadFailed": "Cihazlar yüklenemedi"
+  },
+  "provenance": {
+    "origin": "Köken",
+    "originHuman": "İnsan",
+    "originAiProposal": "Yapay zekâ önerisi",
+    "originImported": "İçe aktarıldı",
+    "originSystem": "Yerleşik",
+    "reviewed": "İncelendi",
+    "editedSinceReview": "İncelemeden sonra düzenlendi",
+    "notReviewed": "İncelenmedi",
+    "notReviewedDetail": "Yapay zekâ tarafından oluşturuldu ve bir kişi tarafından onaylandı, ancak bu sürüm üzerinde model incelemesi yapılmadı.",
+    "provenanceTitle": "Kaynak geçmişi",
+    "reviewSummary": "İnceleme özeti",
+    "approvedBy": "Onaylayan",
+    "evidenceErased": "İnceleme kanıtı silindi",
+    "allOrigins": "Tüm kökenler"
+  },
+  "scriptProposalDetail": {
+    "loading": "Yükleniyor…",
+    "loadError": "Bu öneri yüklenemedi.",
+    "evidenceErased": "Bu önerinin inceleme kanıtları silindi (kaynak organizasyon birleştirildi veya veri saklama süresi doldu). Bu öneriden doğan komut dosyası çalıştırması cihaz geçmişinde görünmeye devam ediyor.",
+    "statusLabel": "Durum",
+    "riskTierLabel": "Risk düzeyi",
+    "reviewSummaryLabel": "İnceleme özeti",
+    "riskLow": "Düşük",
+    "riskMedium": "Orta",
+    "riskHigh": "Yüksek",
+    "riskCritical": "Kritik"
   }
 }

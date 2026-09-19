@@ -392,6 +392,19 @@ export async function resolveRecoveryTokenPresentation(orgId: string, tokenId: s
   };
 }
 
+// Bare-metal recovery W04a: the binding echoed on `bootstrap.recovery` (both
+// the exchange and authenticate responses share this shape). `nonce` is only
+// ever populated by the exchange handler, which holds the plaintext nonce
+// in memory for the single response that generated it — it is never
+// persisted (only its hash is), so no later authenticate call can leak it.
+export interface AuthenticatedBootstrapRecovery {
+  id: string;
+  identity: 'original' | 'new';
+  deviceId: string;
+  snapshotId: string | null;
+  nonce?: string;
+}
+
 export function buildAuthenticatedBootstrapPayload(args: {
   tokenId: string;
   deviceId: string;
@@ -405,6 +418,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
   config: Record<string, unknown> | null | undefined;
   requestUrl?: string;
   tokenExpiresAt?: Date | string | null;
+  recovery?: AuthenticatedBootstrapRecovery | null;
 }) {
   const providerSnapshotId =
     getStringValue(asNullableRecord(args.snapshot), 'snapshotId') ?? args.snapshotId;
@@ -434,6 +448,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
           tokenExpiresAt: args.tokenExpiresAt,
         })
       : null,
+    ...(args.recovery ? { recovery: args.recovery } : {}),
   };
 
   return {
