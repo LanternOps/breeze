@@ -163,6 +163,39 @@ describe('tool sources API client', () => {
     await expect(testSourceTool(fetcher, 's-1', 't-1', {})).rejects.toBeInstanceOf(ActionError);
   });
 
+  it('unwraps the transport-error JSON the server wraps a failed remote call in (paper cut #9)', async () => {
+    // The backend deliberately stringifies `{ error: text }` for an `isError`
+    // result (apps/api/src/routes/toolSources.ts) so `runAction`'s
+    // success:false rule never reads it as a green result. The web client
+    // must surface the human-readable `error` string, not the raw JSON blob,
+    // on the thrown ActionError's message — that's what the drawer renders.
+    fetcher.mockResolvedValueOnce(
+      ok({
+        success: false,
+        data: {
+          result: '{"error":"MCP transport error: getaddrinfo ENOTFOUND example.test"}',
+          isError: true,
+          durationMs: 12,
+        },
+      }),
+    );
+
+    await expect(testSourceTool(fetcher, 's-1', 't-1', {})).rejects.toMatchObject({
+      message: 'MCP transport error: getaddrinfo ENOTFOUND example.test',
+    });
+  });
+
+  it('falls back to the raw text when the failed result is not the wrapped JSON shape', async () => {
+    // success:false with isError:false (an envelope-level refusal, not the
+    // executor's own JSON-wrapped verdict) ships plain text — unwrapping must
+    // not corrupt it by attempting a JSON.parse that was never promised.
+    fetcher.mockResolvedValueOnce(
+      ok({ success: false, data: { result: 'refused', isError: false, durationMs: 1 } }),
+    );
+
+    await expect(testSourceTool(fetcher, 's-1', 't-1', {})).rejects.toMatchObject({ message: 'refused' });
+  });
+
   it('resolves a successful test call with its result text and duration', async () => {
     fetcher.mockResolvedValueOnce(
       ok({ success: true, data: { result: '{"ok":true}', isError: false, durationMs: 12 } }),

@@ -162,6 +162,29 @@ export async function bulkTools(
  * and raised as an `ActionError` carrying the failure text so `runClientAction`
  * toasts it.
  */
+/**
+ * The backend wraps an `isError` executor result as `JSON.stringify({ error:
+ * text })` (apps/api/src/routes/toolSources.ts) so the success:false rule
+ * never reads a failed remote call as green. That's a wire-format detail the
+ * UI must undo, not a message to show verbatim — otherwise the test drawer
+ * renders the raw JSON blob instead of the human-readable reason (sweep
+ * paper cut #9). A `success:false` envelope with `isError:false` (a refusal
+ * at the route itself, not the executor's own verdict) ships plain text and
+ * is returned unchanged.
+ */
+function unwrapTransportError(result: string, isError: boolean): string {
+  if (!isError) return result;
+  try {
+    const parsed: unknown = JSON.parse(result);
+    if (parsed && typeof parsed === 'object' && typeof (parsed as { error?: unknown }).error === 'string') {
+      return (parsed as { error: string }).error;
+    }
+  } catch {
+    // Not the wrapped JSON shape — fall through to the raw text.
+  }
+  return result;
+}
+
 export async function testSourceTool(
   f: Fetcher,
   id: string,
@@ -194,7 +217,12 @@ export async function testSourceTool(
     throw new ActionError(`Unexpected response shape (${res.status}): missing data envelope`, res.status, undefined, body);
   }
   if (envelope.success === false || result.isError) {
-    throw new ActionError(result.result, res.status, 'tool_test_failed', body);
+    throw new ActionError(
+      unwrapTransportError(result.result, result.isError),
+      res.status,
+      'tool_test_failed',
+      body,
+    );
   }
   return result;
 }
