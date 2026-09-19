@@ -8,8 +8,17 @@
 // complete range table, so a URL could be accepted at config-save time and then
 // refused at connect time — or accepted by both, when the spelling used
 // (IPv4-mapped hex-pair, `inet_aton` decimal) matched neither prefix list.
+//
+// Note on layering: `new URL()` canonicalises a URL hostname itself, so a row
+// driven through `isSsrfSafe` reaches the guard already normalised and does not,
+// on its own, exercise `canonicalizeIpv4Literal` or the IPv6 group parse. That is
+// why every row is ALSO asserted directly against the classifiers with its raw
+// text (`bare`), and why `canonicalizeIpv4Literal` / `parseV6` have their own
+// accept/reject tables below: the classifiers are exported and called with
+// addresses that never passed through `URL` (`resolveSafeRecords`, DNS answers,
+// the webhook and log-forwarding validators).
 import { describe, expect, it, afterEach } from 'vitest';
-import { isSsrfSafe, type SsrfMode } from './ssrfGuard';
+import { checkSsrfSafe, isSsrfSafe, type SsrfMode } from './ssrfGuard';
 import {
   canonicalizeIpv4Literal,
   classifyBlockedIp,
@@ -21,6 +30,9 @@ import {
   SsrfBlockedError,
   __setLookupForTests,
 } from './urlSafety';
+// The hostname classifier is not part of urlSafety's surface — it lives with the
+// rest of the shared table.
+import { classifyNonRoutableHostname } from './ipRanges';
 
 const ALL_MODES: SsrfMode[] = ['strict-https', 'on-prem-http', 'on-prem-strict'];
 
@@ -180,6 +192,15 @@ const BLOCKED_ROWS: Row[] = [
     allowedIn: ONPREM,
     rfc1918OrUla: true,
   },
+  {
+    // The spelling `new URL()` produces for a mapped RFC1918 address: the
+    // leading zero of the group is stripped, so `0a00` becomes `a00`.
+    label: 'mapped RFC1918 hex-pair, URL-canonical ::ffff:a00:5',
+    host: '[::ffff:a00:5]',
+    bare: '::ffff:a00:5',
+    allowedIn: ONPREM,
+    rfc1918OrUla: true,
+  },
 
   // ---- Non-dotted-quad IPv4 literal forms (inet_aton) ------------------
   // getaddrinfo() accepts all of these spellings and they name 127.0.0.1 /
@@ -219,6 +240,24 @@ const ALLOWED_ROWS: Array<{ label: string; host: string }> = [
   { label: 'fb00:: (outside fc00::/7)', host: '[fb00::1]' },
   { label: '6to4 embedding a public IPv4', host: '[2002:5db8:d822::]' },
   { label: 'NAT64 prefix embedding a public IPv4', host: '[64:ff9b::5db8:d822]' },
+  // One adjacent-public address per remaining range, so widening any single
+  // octet test in the table fails here. Without these, broadening (say)
+  // 192.0.0.0/24 to all of 192.0.x.x, or 198.18.0.0/15 to 198.16.0.0/12,
+  // would pass every other row in this file.
+  { label: '126.255.255.255 just below loopback', host: '126.255.255.255' },
+  { label: '128.0.0.1 just above loopback', host: '128.0.0.1' },
+  { label: '1.0.0.0 just above 0.0.0.0/8', host: '1.0.0.0' },
+  { label: '169.253.255.255 just below link-local', host: '169.253.255.255' },
+  { label: '169.255.0.1 just above link-local', host: '169.255.0.1' },
+  { label: '192.0.1.1 just above 192.0.0.0/24', host: '192.0.1.1' },
+  { label: '192.0.3.1 just above 192.0.2.0/24', host: '192.0.3.1' },
+  { label: '198.17.255.255 just below 198.18.0.0/15', host: '198.17.255.255' },
+  { label: '198.20.0.1 just above 198.18.0.0/15', host: '198.20.0.1' },
+  { label: '198.51.99.1 just below 198.51.100.0/24', host: '198.51.99.1' },
+  { label: '198.51.101.1 just above 198.51.100.0/24', host: '198.51.101.1' },
+  { label: '203.0.112.1 just below 203.0.113.0/24', host: '203.0.112.1' },
+  { label: '203.0.114.1 just above 203.0.113.0/24', host: '203.0.114.1' },
+  { label: '223.255.255.255 just below multicast', host: '223.255.255.255' },
 ];
 
 describe('ssrfGuard blocklist ranges', () => {
@@ -294,6 +333,13 @@ describe('canonicalizeIpv4Literal follows inet_aton, not "looks numeric"', () =>
     // Out of range / malformed — the resolver treats each as a hostname.
     '4294967296',
     '0x100.0.0.1',
+    // A part other than the last must fit in one byte.
+    '300.1.2',
+    '1.300.2.3',
+    // The last part fills the remaining bytes and must fit in them.
+    '1.2.3.256',
+    '256.256',
+    '1.2.65536',
     '1.2.3.4.5',
     '127.0.0.256',
     '172.16.0.1.',
@@ -340,6 +386,87 @@ describe('embedded-IPv4 IPv6 prefixes are never plain appliance addresses', () =
     expect(isRfc1918OrUla('::ffff:10.0.0.5')).toBe(true);
     expect(isAlwaysBlockedIp('::ffff:10.0.0.5')).toBe(false);
   });
+});
+
+describe('non-routable hostnames, per mode', () => {
+  // Loopback aliases and instance-metadata names are refused in every mode. The
+  // local-network naming suffixes are refused only for a cloud-only vendor
+  // endpoint ('strict-https'); the on-prem modes exist to reach appliances that
+  // may legitimately carry one.
+  const ALWAYS_REFUSED = [
+    'localhost',
+    'ip6-localhost',
+    'ip6-loopback',
+    'db.localhost',
+    'metadata.google.internal',
+    'metadata.azure.com',
+    '100.100.100.200',
+  ];
+
+  for (const host of ALWAYS_REFUSED) {
+    for (const mode of ALL_MODES) {
+      it(`${mode}: rejects ${host}`, () => {
+        expect(isSsrfSafe(urlFor(host, mode), { mode })).toBe(false);
+      });
+    }
+  }
+
+  const LOCAL_NETWORK_NAMES = ['nas.local', 'pihole.local', 'es.corp.internal'];
+
+  for (const host of LOCAL_NETWORK_NAMES) {
+    it(`strict-https: rejects ${host}`, () => {
+      expect(isSsrfSafe(urlFor(host, 'strict-https'), { mode: 'strict-https' })).toBe(false);
+    });
+    it(`on-prem-http: accepts ${host}`, () => {
+      expect(isSsrfSafe(urlFor(host, 'on-prem-http'), { mode: 'on-prem-http' })).toBe(true);
+    });
+    it(`on-prem-strict: accepts ${host}`, () => {
+      expect(isSsrfSafe(urlFor(host, 'on-prem-strict'), { mode: 'on-prem-strict' })).toBe(true);
+    });
+  }
+
+  it('classifies each hostname kind', () => {
+    expect(classifyNonRoutableHostname('localhost')).toBe('loopback');
+    expect(classifyNonRoutableHostname('db.localhost')).toBe('loopback');
+    expect(classifyNonRoutableHostname('ip6-loopback')).toBe('loopback');
+    expect(classifyNonRoutableHostname('metadata.google.internal')).toBe('metadata');
+    expect(classifyNonRoutableHostname('metadata.azure.com')).toBe('metadata');
+    expect(classifyNonRoutableHostname('100.100.100.200')).toBe('metadata');
+    expect(classifyNonRoutableHostname('nas.local')).toBe('mdns-local');
+    expect(classifyNonRoutableHostname('es.corp.internal')).toBe('internal-tld');
+    expect(classifyNonRoutableHostname('api.example.com')).toBeNull();
+    // `.localhost` is a suffix rule, not a substring one.
+    expect(classifyNonRoutableHostname('localhost.example.com')).toBeNull();
+    expect(classifyNonRoutableHostname('notlocal.example.com')).toBeNull();
+  });
+
+  it('a metadata name is refused ahead of the more generic suffix rules', () => {
+    // `metadata.google.internal` ends with `.internal`, but the specific reason
+    // is the useful one and it must be refused in every mode, not just strict.
+    expect(classifyNonRoutableHostname('metadata.google.internal')).toBe('metadata');
+    expect(checkSsrfSafe('http://metadata.google.internal/', { mode: 'on-prem-http' })).toEqual({
+      ok: false,
+      reason: 'hostname metadata.google.internal is an instance-metadata endpoint',
+    });
+  });
+});
+
+describe('CGNAT is refused in every mode, including on-prem', () => {
+  // Behaviour change, and a deliberate one: the config-time guard used to run its
+  // private-range check only in the strict modes, so an 'on-prem-http' endpoint on
+  // 100.64/10 was accepted at save time — and then refused at request time, since
+  // `isAlwaysBlockedIp` (what `safeFetch` applies under `allowPrivateNetwork`) has
+  // always blocked CGNAT. Accepting it was the drift; the two now agree and the
+  // user gets an actionable error at save time instead of a failing sync.
+  it('is blocked by the connect-time policy under the private-network opt-in', () => {
+    expect(isAlwaysBlockedIp('100.64.0.5')).toBe(true);
+  });
+
+  for (const mode of ALL_MODES) {
+    it(`${mode}: rejects 100.64.0.5`, () => {
+      expect(isSsrfSafe(urlFor('100.64.0.5', mode), { mode })).toBe(false);
+    });
+  }
 });
 
 describe('resolve-then-check', () => {

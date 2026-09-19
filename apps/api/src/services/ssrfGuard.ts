@@ -11,7 +11,10 @@
 //   - 'on-prem-http'  — allow HTTP (some on-prem appliances ship http-only
 //                       admin interfaces) and allow RFC1918/ULA appliance
 //                       addresses; every other non-routable range stays
-//                       rejected.
+//                       rejected. Note this now includes CGNAT (100.64/10),
+//                       which this check used to accept in this mode while the
+//                       connect-time policy refused it — the endpoint saved and
+//                       then failed on first sync. The two now agree.
 //   - 'on-prem-strict'— same as on-prem-http but reject RFC1918/ULA too. Used
 //                       when the API host is hosted SaaS and an on-prem
 //                       address can't possibly be reachable from us anyway.
