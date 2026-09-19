@@ -110,15 +110,21 @@ vi.mock('../services/emailDomains/sendCap', () => ({
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
+const { evaluateAutoSuspendMock } = vi.hoisted(() => ({
+  evaluateAutoSuspendMock: vi.fn(async (_partnerId: string) => ({ outcome: 'below_thresholds', suspendedDomainIds: [] })),
+}));
+vi.mock('../services/emailDomains/autoSuspend', () => ({ evaluateAutoSuspension: evaluateAutoSuspendMock }));
+
 import { PartnerLaneSendFailure, ProviderManagementAuthError } from '../services/emailDomains/provider';
 import {
-  SENDING_DOMAINS_QUEUE, enqueueSyncDomain, enqueueTestSend,
+  SENDING_DOMAINS_QUEUE, enqueueAutoSuspendEvaluation, enqueueSyncDomain, enqueueTestSend,
   initializeSendingDomainsWorker, runDailyMaintenance, runSendingDomainsSweep, runTestSend,
   shutdownSendingDomainsWorker,
 } from './sendingDomainsWorker';
 
 const DOMAIN_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '44444444-4444-4444-8444-444444444444';
+const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
 
 beforeEach(async () => {
   await shutdownSendingDomainsWorker();
@@ -214,6 +220,35 @@ describe('worker registration', () => {
   it('records ok when the key can list domains', async () => {
     await initializeSendingDomainsWorker();
     expect(probeRecord).toHaveBeenCalledWith('ok');
+  });
+
+  // enqueueTestSend uses `attempts: 2` — the processor must compute finalAttempt
+  // from the job's own attemptsMade/opts.attempts, not a hardcoded constant, so
+  // a future change to the retry count stays correct without touching this
+  // file. An ambiguous send failure only writes last_test_* on the final
+  // attempt, so it distinguishes the two cases.
+  it.each([
+    [0, 2, false],
+    [1, 2, true],
+  ])('passes finalAttempt=%s for attemptsMade=%s of attempts=%s', async (attemptsMade, attempts, expectedFinal) => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
+    execRows.push([]);
+    providerMock.send.mockRejectedValue(
+      new PartnerLaneSendFailure({ kind: 'ambiguous', detail: 'connection timed out' } as never),
+    );
+
+    await initializeSendingDomainsWorker();
+    const [, processor] = workerCtor.mock.calls[0] as [string, (job: unknown) => Promise<unknown>, unknown];
+
+    await expect(processor({
+      name: 'test-send',
+      data: { domainId: DOMAIN_ID, userId: USER_ID },
+      attemptsMade,
+      opts: { attempts },
+    })).rejects.toThrow();
+
+    expect(updates.some((u) => u.lastTestStatus === 'failed')).toBe(expectedFinal);
   });
 });
 
@@ -381,6 +416,39 @@ describe('test send (spec §6.1)', () => {
     await expect(runTestSend(DOMAIN_ID, USER_ID)).rejects.toThrow();
 
     expect(updates.some((u) => u.lastTestStatus === 'failed')).toBe(false);
+  });
+
+  // On the LAST attempt there is no further BullMQ retry to swallow into —
+  // without a write here, nothing ever lands in last_test_* and the partner UI
+  // polls forever for a result that will never appear.
+  it('on the final attempt, records the ambiguous failure and still rethrows', async () => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
+    execRows.push([]);
+    providerMock.send.mockRejectedValue(
+      new PartnerLaneSendFailure({ kind: 'ambiguous', detail: 'connection timed out' } as never),
+    );
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID, { finalAttempt: true })).rejects.toThrow();
+
+    expect(updates.at(-1)).toMatchObject({
+      lastTestStatus: 'failed',
+      lastTestError: expect.stringContaining('connection timed out'),
+    });
+    expect(markStaticVerifiedMock).not.toHaveBeenCalled();
+  });
+
+  it('on a non-final attempt, leaves last_test_* untouched and still rethrows', async () => {
+    execRows.push([{ id: DOMAIN_ID, partnerId: 'p1', domain: 'mail.acme.test', status: 'verified' }]);
+    execRows.push([{ email: 'tech@acme.test', emailVerifiedAt: new Date() }]);
+    execRows.push([]);
+    providerMock.send.mockRejectedValue(
+      new PartnerLaneSendFailure({ kind: 'ambiguous', detail: 'connection timed out' } as never),
+    );
+
+    await expect(runTestSend(DOMAIN_ID, USER_ID, { finalAttempt: false })).rejects.toThrow();
+
+    expect(updates).toHaveLength(0);
   });
 
   // Spec §7: the test goes to the calling user's own VERIFIED address. Without
@@ -615,5 +683,53 @@ describe('daily maintenance', () => {
     const result = await runDailyMaintenance(new Date('2026-09-17T12:00:00Z'));
     expect(result.rechecked).toBe(2);
     expect(queueAdd).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('evaluate-auto-suspend', () => {
+  it('collapses a burst for one partner into ONE job by using the partner id as jobId', async () => {
+    laneConfigured.value = true;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    expect(queueAdd).toHaveBeenCalledWith(
+      'evaluate-auto-suspend',
+      { partnerId: PARTNER_ID },
+      expect.objectContaining({ jobId: `autosuspend:${PARTNER_ID}` }),
+    );
+  });
+
+  it('does not enqueue on an instance with no partner lane configured', async () => {
+    laneConfigured.value = false;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    expect(queueAdd).not.toHaveBeenCalled();
+  });
+
+  it('the worker processor routes the job to evaluateAutoSuspension', async () => {
+    laneConfigured.value = true;
+    await initializeSendingDomainsWorker();
+    const processor = workerCtor.mock.calls[0]![1] as (job: { name: string; data: unknown }) => Promise<unknown>;
+    await processor({ name: 'evaluate-auto-suspend', data: { partnerId: PARTNER_ID } });
+    expect(evaluateAutoSuspendMock).toHaveBeenCalledWith(PARTNER_ID);
+  });
+
+  // The evaluation makes no provider call, so a retry storm cannot burn the
+  // account's 10 req/s budget — but a failure should still be retried a couple
+  // of times rather than dropped, since it ends in a kill-switch decision.
+  it('is enqueued with bounded retries', async () => {
+    laneConfigured.value = true;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    expect(queueAdd.mock.calls[0]![2]).toMatchObject({ attempts: 3 });
+  });
+
+  // BullMQ refuses a later add() whose jobId still matches a RETAINED record,
+  // so keeping completed/failed jobs would silently drop every subsequent
+  // evaluation for that partner — the collapse-the-burst design turned into a
+  // permanent mute.
+  it('retains no job record, so a later evaluation for the same partner is not dropped', async () => {
+    laneConfigured.value = true;
+    await enqueueAutoSuspendEvaluation(PARTNER_ID);
+    expect(queueAdd.mock.calls[0]![2]).toMatchObject({
+      removeOnComplete: true,
+      removeOnFail: true,
+    });
   });
 });

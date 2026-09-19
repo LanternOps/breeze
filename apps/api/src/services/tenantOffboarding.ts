@@ -21,6 +21,12 @@ import {
   type TenantRevocationResult,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
+import {
+  lockTimeoutWasChanged,
+  tightenLockTimeout,
+  tightenStatementTimeout,
+} from '../db/lockTimeout';
+import { isTransientLockError } from '../utils/pgErrors';
 import { UNINSTALL_REASON_TENANT_OFFBOARDING } from './deviceUninstallDrain';
 import { isReusableState } from './bullmqUtils';
 import { envInt } from '../utils/envInt';
@@ -626,52 +632,255 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
  * `draining` for that org via the partner axis and the partner is still
  * churning. Reactivate the PARTNER to abort a partner-level drain.
  */
+/*
+ * #3996 — there is deliberately no `abortPartnerOffboarding` twin of this
+ * function any more. Every partner-axis caller also writes
+ * `partners.status`, and for those the cancel MUST be composed into the
+ * status write's transaction via `abortPartnerOffboardingAroundStatusChange`
+ * below; a bare partner abort exists only to be called after the flip, which
+ * is the bug. This org-axis form survives because `orgArchive`'s
+ * archive-restore path has a genuine use for it: it cancels BEFORE its own
+ * status CAS in the same transaction, so no post-flip window exists there.
+ */
 export async function abortOrganizationOffboarding(orgId: string): Promise<OffboardingAbortResult> {
   // Same #2877 structure as entry: the suspended/churned/active transition
   // routes (and DELETE /organizations/:id) call this right after UPDATEing the
   // same organizations row in the request transaction, so the stamp-clear must
   // run on that transaction, not a fresh connection.
+  return inCallerOrSystemDbContext({ orgId }, () => abortOrganizationDrainHere(orgId));
+}
+
+/** The org abort's DB work, on whatever context/transaction is already active. */
+async function abortOrganizationDrainHere(orgId: string): Promise<OffboardingAbortResult> {
+  const cleared = await db
+    .update(organizations)
+    .set({ offboardingStartedAt: null, updatedAt: new Date() })
+    .where(and(eq(organizations.id, orgId), isNotNull(organizations.offboardingStartedAt)))
+    .returning({ id: organizations.id });
+
+  if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+
+  const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
+    [orgId],
+    'organization_offboarding_aborted'
+  );
+  await invalidateAgentTenantCache([orgId]);
+  return { aborted: true, uninstallsCancelled };
+}
+
+/** The partner abort's DB work, on whatever context/transaction is already active. */
+async function abortPartnerDrainHere(partnerId: string): Promise<OffboardingAbortResult> {
+  const cleared = await db
+    .update(partners)
+    .set({ offboardingStartedAt: null, updatedAt: new Date() })
+    .where(and(eq(partners.id, partnerId), isNotNull(partners.offboardingStartedAt)))
+    .returning({ id: partners.id });
+
+  if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+
+  const orgRows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, partnerId));
+  const orgIds = orgRows.map((row) => row.id);
+
+  const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
+    orgIds,
+    'partner_offboarding_aborted'
+  );
+  await invalidateAgentTenantCache(orgIds);
+  return { aborted: true, uninstallsCancelled };
+}
+
+const NOT_ABORTED: OffboardingAbortResult = { aborted: false, uninstallsCancelled: 0 };
+
+/**
+ * Bounds for the drain-abort lock phase. Without them an abort inherits the
+ * caller's `lock_timeout` — which in a request transaction is Postgres's
+ * default of 0, i.e. wait forever — so contending with a wedged backend would
+ * hang an admin request with nothing logged and a pooled connection pinned.
+ * `lock_timeout` alone is not enough here: it applies per lock ACQUISITION,
+ * and the command-row select locks N rows, so its effective ceiling is N x the
+ * bound (see `db/lockTimeout.ts`). `statement_timeout` is the one that bounds
+ * the whole statement. Same shape as `partnerDeviceCapacity`'s admission lock.
+ *
+ * The values are generous relative to what they contend with (an agent
+ * heartbeat's claim transaction) — the point is a bound at all, not a tight
+ * one. Exceeding it raises 55P03/57014, which `isTransientLockError` already
+ * classifies as retriable, rather than hanging.
+ */
+export const DRAIN_ABORT_LOCK_TIMEOUT_MS = 3_000;
+export const DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS = 10_000;
+
+/**
+ * Run the lock phase of an abort under bounded lock waits, then put the
+ * caller's own timeouts back.
+ *
+ * Restoring ONLY on success is deliberate (the rule `db/lockTimeout.ts`
+ * states): on the failure path the transaction is already aborted, so a
+ * restoring `set_config` would itself raise 25P02 and mask the real error with
+ * an unrelated one. A tighter bound left in force on a dying transaction
+ * costs nothing.
+ *
+ * Scoped to the lock phase alone, not the whole composed operation: the status
+ * write and the cancel can only touch rows this phase already holds, so they
+ * cannot block, and the caller's remaining statements keep the request's
+ * normal timeouts.
+ */
+async function withBoundedLockWaits<T>(scope: string, fn: () => Promise<T>): Promise<T> {
+  const tx = db as unknown as { execute(q: unknown): Promise<unknown> };
+  const priorLock = await tightenLockTimeout(tx, DRAIN_ABORT_LOCK_TIMEOUT_MS);
+  const priorStatement = await tightenStatementTimeout(tx, DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS);
+
+  let result: T;
+  try {
+    result = await fn();
+  } catch (error) {
+    if (isTransientLockError(error)) {
+      // A bare 55P03 five frames up reads as a random database error. Name the
+      // wait so a spike here is attributable to drain-abort contention.
+      console.warn(
+        `[offboarding] drain-abort lock wait exceeded ${DRAIN_ABORT_LOCK_TIMEOUT_MS}ms/${DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS}ms for ${scope} — the queued uninstalls were NOT cancelled; retry the transition`
+      );
+    }
+    throw error;
+  }
+
+  if (lockTimeoutWasChanged(priorLock, DRAIN_ABORT_LOCK_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${priorLock}ms`}, true)`);
+  }
+  if (lockTimeoutWasChanged(priorStatement, DRAIN_ABORT_LOCK_STATEMENT_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('statement_timeout', ${`${priorStatement}ms`}, true)`);
+  }
+  return result;
+}
+
+/**
+ * #3996 — take the drain's own rows under lock BEFORE the caller flips the
+ * tenant status away from `offboarding`, and cancel them in the SAME
+ * transaction as that flip.
+ *
+ * The bug this closes: the drain narrowing is keyed on
+ * `organizations.status === 'offboarding'` (`getAgentTenantState`), so the
+ * moment the status write is visible the tenant is no longer draining and
+ * every agent under it authenticates on the ORDINARY path, where
+ * `claimPendingCommandsForDevice` is called with no type allowlist. A still
+ * `pending` `self_uninstall` is then an ordinary claimable command — and the
+ * blast radius is the tenant's whole fleet, not one endpoint. On the #2879
+ * suspended-lifecycle override path that window was genuinely COMMITTED: the
+ * status UPDATE ran in its own short system transaction and the cancel ran in
+ * a second one afterwards. This is the org/partner-scale sibling of the
+ * device-level bug fixed in #3986.
+ *
+ * Why locking, not just reordering. Atomicity alone does not close it (see
+ * the #3996 thread): while the abort transaction is open the last COMMITTED
+ * state is still `offboarding` + pending rows, so an agent request proceeds
+ * against that in its own transaction and claims the row. What does serialize
+ * the two is the lock: `claimPendingCommandsForDevice` selects candidates
+ * `FOR UPDATE SKIP LOCKED` (`commandDispatch.ts`), so a row this function has
+ * already locked is SKIPPED by a concurrent claim rather than delivered, for
+ * the whole remainder of the transaction. Taking the lock before the status
+ * write therefore leaves no window — committed or in-flight — in which the
+ * tenant reads as non-draining while its uninstalls are still claimable.
+ *
+ * Lock ORDER is deliberate and must not be reshuffled: tenant row first, then
+ * the command rows, matching entry (`beginOrganizationOffboarding` →
+ * `queueDrainUninstalls`, which UPDATEs `organizations` then locks `devices`
+ * before inserting). Locking the commands first would invert the order
+ * against a concurrent entry and make an abort/entry pair deadlockable.
+ *
+ * The cancel runs only if `applyStatusChange` reports the write landed
+ * (non-`undefined`). A 0-row status write means the caller lost a race — most
+ * sharply into the lifecycle-frozen set, where an `archived`/`merging` tenant
+ * may have a legitimately live archive drain — and cancelling that tenant's
+ * uninstalls would be wrong. The pure `FOR UPDATE` select mutates nothing, so
+ * the miss path leaves no trace beyond releasing its locks at commit.
+ *
+ * Cost: the lock select waits on any in-flight agent claim transaction for
+ * the same row (short-lived — a heartbeat handler). Waiting is the point: the
+ * abort then cancels a row that is `sent` rather than racing its delivery.
+ * The residual is an uninstall already on the wire, which the API cannot
+ * recall at all — that is #3995's agent-side pre-teardown fence, not this.
+ */
+export async function abortOrganizationOffboardingAroundStatusChange<T>(
+  orgId: string,
+  applyStatusChange: () => Promise<T | undefined>
+): Promise<{ statusChange: T | undefined; abort: OffboardingAbortResult }> {
   return inCallerOrSystemDbContext({ orgId }, async () => {
-    const cleared = await db
-      .update(organizations)
-      .set({ offboardingStartedAt: null, updatedAt: new Date() })
-      .where(and(eq(organizations.id, orgId), isNotNull(organizations.offboardingStartedAt)))
-      .returning({ id: organizations.id });
+    await withBoundedLockWaits(`organization ${orgId}`, async () => {
+      await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1)
+        .for('update');
+      await lockDrainUninstallsForOrgIds([orgId]);
+    });
 
-    if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+    const statusChange = await applyStatusChange();
+    if (statusChange === undefined) return { statusChange, abort: NOT_ABORTED };
 
-    const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
-      [orgId],
-      'organization_offboarding_aborted'
-    );
-    await invalidateAgentTenantCache([orgId]);
-    return { aborted: true, uninstallsCancelled };
+    return { statusChange, abort: await abortOrganizationDrainHere(orgId) };
   });
 }
 
-export async function abortPartnerOffboarding(partnerId: string): Promise<OffboardingAbortResult> {
+/** Partner-axis twin of `abortOrganizationOffboardingAroundStatusChange`. */
+export async function abortPartnerOffboardingAroundStatusChange<T>(
+  partnerId: string,
+  applyStatusChange: () => Promise<T | undefined>
+): Promise<{ statusChange: T | undefined; abort: OffboardingAbortResult }> {
   return inCallerOrSystemDbContext({ partnerId }, async () => {
-    const cleared = await db
-      .update(partners)
-      .set({ offboardingStartedAt: null, updatedAt: new Date() })
-      .where(and(eq(partners.id, partnerId), isNotNull(partners.offboardingStartedAt)))
-      .returning({ id: partners.id });
+    await withBoundedLockWaits(`partner ${partnerId}`, async () => {
+      await db
+        .select({ id: partners.id })
+        .from(partners)
+        .where(eq(partners.id, partnerId))
+        .limit(1)
+        .for('update');
+      const orgRows = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.partnerId, partnerId));
+      await lockDrainUninstallsForOrgIds(orgRows.map((row) => row.id));
+    });
 
-    if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+    const statusChange = await applyStatusChange();
+    if (statusChange === undefined) return { statusChange, abort: NOT_ABORTED };
 
-    const orgRows = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, partnerId));
-    const orgIds = orgRows.map((row) => row.id);
-
-    const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
-      orgIds,
-      'partner_offboarding_aborted'
-    );
-    await invalidateAgentTenantCache(orgIds);
-    return { aborted: true, uninstallsCancelled };
+    return { statusChange, abort: await abortPartnerDrainHere(partnerId) };
   });
+}
+
+/**
+ * Lock every non-terminal `self_uninstall` under these orgs for the rest of
+ * the current transaction. Predicate deliberately mirrors
+ * `cancelDrainUninstallsForOrgIds`'s strip step MINUS the `tenantOwned`
+ * conjunct: co-owned and abuse-queued rows are locked too (they are on the
+ * same devices and a claim does not care who owns the reason), but the cancel
+ * that follows still only terminalises rows this drain owns. Locking a
+ * superset is safe; locking a subset would leave a claimable row behind,
+ * which is the bug.
+ */
+async function lockDrainUninstallsForOrgIds(orgIds: string[]): Promise<void> {
+  if (orgIds.length === 0) return;
+  const deviceRows = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(inArray(devices.orgId, orgIds));
+  const deviceIds = deviceRows.map((row) => row.id);
+  if (deviceIds.length === 0) return;
+
+  await db
+    .select({ id: deviceCommands.id })
+    .from(deviceCommands)
+    .where(
+      and(
+        inArray(deviceCommands.deviceId, deviceIds),
+        eq(deviceCommands.type, 'self_uninstall'),
+        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .for('update');
 }
 
 /**

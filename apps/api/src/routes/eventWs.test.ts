@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => null),
   resolveRedisUrl: vi.fn(() => 'redis://localhost:6379'),
+  REDIS_CLIENT_BASE_OPTIONS: { protocol: 2 },
 }));
 
 const schemaTables = vi.hoisted(() => ({

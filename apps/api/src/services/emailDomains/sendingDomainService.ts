@@ -18,6 +18,7 @@ import { evaluateCapabilityContinuationForState } from '../partnerTrust';
 import { rateLimiter } from '../rate-limit';
 import { getRedis } from '../redis';
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
+import { STATS_WINDOW_DAYS, loadAllPartnerSendingWindowStats } from './deliveryStats';
 import { SendingDomainPolicyError, assertSendingDomainAllowed } from './domainPolicy';
 import { readProviderKeyProbe } from './keyProbe';
 import { getEmailDomainProvider } from './providerRegistry';
@@ -463,6 +464,64 @@ export async function listAllSendingDomains(opts: { limit: number }): Promise<Ar
   }, 'sendingDomainsAdminList'));
 }
 
+export interface SendingPartnerMetricsDto {
+  windowDays: number;
+  /** GREATEST(sent, delivered + bounced + failed) — see deliveryStats.ts. */
+  messages: number;
+  delivered: number;
+  bounced: number;
+  complained: number;
+  failed: number;
+  suppressed: number;
+  /** 0..1. */
+  bounceRate: number;
+}
+
+const ZERO_METRICS: SendingPartnerMetricsDto = Object.freeze({
+  windowDays: STATS_WINDOW_DAYS,
+  messages: 0, delivered: 0, bounced: 0, complained: 0, failed: 0, suppressed: 0, bounceRate: 0,
+});
+
+/**
+ * The platform-admin list with each partner's 7-day deliverability attached
+ * (spec §9.3).
+ *
+ * TWO queries total, whatever the page size: the domain list, then ONE grouped
+ * rollup over partner_sending_daily_stats for the whole fleet, joined in memory
+ * by partner id. Fetching per partner would be an N+1 on a page that exists to
+ * be scanned, and two domains of the same partner would fetch the same window
+ * twice.
+ */
+export async function listAllSendingDomainsWithMetrics(
+  opts: { limit: number },
+): Promise<Array<SendingDomainDto & { partnerId: string; partnerName: string; metrics: SendingPartnerMetricsDto }>> {
+  // SEQUENTIAL, not Promise.all: each call opens its own
+  // withSystemDbAccessContext transaction, so running them concurrently pins
+  // three pooled connections per admin GET (this request's plus both children)
+  // instead of two — the shape that hangs at concurrency >= pool size.
+  const domains = await listAllSendingDomains(opts);
+  const windowStats = await loadAllPartnerSendingWindowStats();
+  const byPartner = new Map(windowStats.map((s) => [s.partnerId, s]));
+  return domains.map((domain) => {
+    const stats = byPartner.get(domain.partnerId);
+    return {
+      ...domain,
+      metrics: stats
+        ? {
+            windowDays: STATS_WINDOW_DAYS,
+            messages: stats.messages,
+            delivered: stats.delivered,
+            bounced: stats.bounced,
+            complained: stats.complained,
+            failed: stats.failed,
+            suppressed: stats.suppressed,
+            bounceRate: stats.bounceRate,
+          }
+        : { ...ZERO_METRICS },
+    };
+  });
+}
+
 async function setAdminStatus(domainId: string, patch: Partial<typeof partnerSendingDomains.$inferInsert>): Promise<void> {
   const updated = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
     .update(partnerSendingDomains)
@@ -473,9 +532,27 @@ async function setAdminStatus(domainId: string, patch: Partial<typeof partnerSen
   await enqueueSyncDomain(domainId);
 }
 
-/** The kill switch (spec §9.1). Sending stops on the next send, because resolution reads the row. */
-export async function suspendSendingDomain(domainId: string): Promise<void> {
-  await setAdminStatus(domainId, { status: 'suspended', statusReason: 'platform_suspended', nextCheckAt: new Date() });
+/**
+ * The kill switch (spec §9.1). Sending stops on the next send, because
+ * resolution reads the row.
+ *
+ * `statusReason` defaults to `platform_suspended` — the admin route's meaning
+ * and W03's original behaviour, so that call site is unchanged. W06's
+ * automatic suspension passes `abuse_auto` (spec §9.3). The status reason is
+ * the ONLY difference between the two: both stop sending, both keep the
+ * provider domain, and neither can be undone by the partner.
+ *
+ * This function deliberately does NOT write an audit row or send the status
+ * notice. The admin route already writes its own `writeRouteAudit` with the
+ * human actor, and the automatic path writes a system audit row and mails from
+ * services/emailDomains/autoSuspend.ts, which is the only caller that has the
+ * partner id, the domain name and `created_by` in hand.
+ */
+export async function suspendSendingDomain(
+  domainId: string,
+  statusReason: 'platform_suspended' | 'abuse_auto' = 'platform_suspended',
+): Promise<void> {
+  await setAdminStatus(domainId, { status: 'suspended', statusReason, nextCheckAt: new Date() });
 }
 
 export async function unsuspendSendingDomain(domainId: string): Promise<void> {

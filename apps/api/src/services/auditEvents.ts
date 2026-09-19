@@ -43,6 +43,16 @@ export interface AuditEventInput {
   actorId?: string | null;
   actorEmail?: string | null;
   initiatedBy?: InitiatedByType;
+  /**
+   * Pre-resolved client IP / user-agent, for a service that audits on behalf of
+   * a request it no longer holds. Takes precedence over deriving them from `c`.
+   * Needed because `requestLikeFromSnapshot` carries no socket peer, so
+   * `getTrustedClientIp` on that shim fails the proxy-trust check in production
+   * (TRUSTED_PROXY_CIDRS set) and silently records no IP — plus a false
+   * `[proxy-trust] MISCONFIGURATION` warning (#5611 review).
+   */
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 function isUuid(value: string | null | undefined): value is string {
@@ -99,8 +109,8 @@ export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Pr
     resourceId,
     resourceName: event.resourceName ?? undefined,
     details: sanitizedDetails,
-    ipAddress: getTrustedClientIpOrUndefined(c),
-    userAgent: c.req.header('user-agent'),
+    ipAddress: event.ipAddress ?? getTrustedClientIpOrUndefined(c),
+    userAgent: event.userAgent ?? c.req.header('user-agent'),
     result: event.result ?? 'success',
     errorMessage: event.errorMessage,
     initiatedBy,

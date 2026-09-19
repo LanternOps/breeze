@@ -38,6 +38,9 @@ const { domainsConfigFixture } = vi.hoisted(() => ({
     denylist: [] as string[],
     staticAllowed: [],
     webhookSecret: null,
+    // W06 widened EmailDomainsConfig; senderResolution never reads it, but the
+    // fixture has to satisfy the type.
+    autoSuspend: { enabled: false, bounceRate: 0.08, minMessages: 50, complaints: 3 },
     ...over,
   }),
 }));

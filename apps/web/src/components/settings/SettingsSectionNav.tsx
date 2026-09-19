@@ -27,6 +27,12 @@ type SettingsSectionNavProps = {
   onNavigate: (key: string) => void;
   /** Unique id for the compact mobile select (label association). */
   selectId: string;
+  /**
+   * Optional prefix for a per-item `data-testid="<prefix>-tab-<key>"` on the
+   * desktop rail links, so callers (e.g. PartnerSettingsPage) can target a
+   * specific nav item without relying on its translated accessible name.
+   */
+  testIdPrefix?: string;
 };
 
 /**
@@ -35,7 +41,7 @@ type SettingsSectionNavProps = {
  * middle-click / copy-link work) and collapses to a compact select below lg —
  * the full rail would otherwise stack ~600px of nav above the content.
  */
-export default function SettingsSectionNav({ groups, activeKey, onNavigate, selectId }: SettingsSectionNavProps) {
+export default function SettingsSectionNav({ groups, activeKey, onNavigate, selectId, testIdPrefix }: SettingsSectionNavProps) {
   const { t } = useTranslation('settings');
   return (
     <div>
@@ -73,6 +79,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                   <li key={item.key}>
                     <a
                       href={`#${item.hash}`}
+                      data-testid={testIdPrefix ? `${testIdPrefix}-tab-${item.key}` : undefined}
                       aria-current={isActive ? 'page' : undefined}
                       aria-label={item.dirty ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
                       data-testid={`settings-nav-tab-${item.hash}`}

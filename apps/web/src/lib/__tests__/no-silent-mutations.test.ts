@@ -138,6 +138,7 @@ const TARGET_GLOBS = [
   'src/components/clientAi/SessionsTab.tsx',
   'src/components/clientAi/TemplatesTab.tsx',
   'src/components/settings/CatalogItemsTab.tsx',
+  'src/components/settings/CatalogDefaultsCard.tsx',
   'src/components/billing/InvoicesPage.tsx',
   'src/components/billing/InvoiceEditor.tsx',
   'src/components/billing/InvoiceDetail.tsx',
@@ -146,7 +147,7 @@ const TARGET_GLOBS = [
   // the books stay short an invoice, so this file is in the guarded set from
   // its first commit rather than after the first regression.
   'src/components/billing/AccountingSyncCard.tsx',
-  'src/components/billing/PartnerBillingSettings.tsx',
+  'src/components/billing/PartnerBillingSettingsPage.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
   'src/components/contracts/ContractEditor.tsx',
   'src/components/contracts/ContractDetail.tsx',
@@ -686,7 +687,10 @@ describe('no silent mutations in targeted set', () => {
     // #4050 adds settings/ProfilePage.tsx (account security): 142 → 143.
     // Partner sending domains W05 adds lib/api/sendingDomains.ts and
     // settings/PartnerSendingDomainTab.tsx: 143 → 145.
-    expect(absoluteFiles.length).toBe(145);
+    // W01 settings consolidation (#6224): PartnerBillingSettings.tsx ->
+    // PartnerBillingSettingsPage.tsx (net 0) then + CatalogDefaultsCard.tsx:
+    // 145 → 146.
+    expect(absoluteFiles.length).toBe(146);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

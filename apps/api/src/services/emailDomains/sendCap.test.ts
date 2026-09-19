@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getRedisMock, getConfigMock } = vi.hoisted(() => ({
+const { getRedisMock, getConfigMock, recordCapHitMock } = vi.hoisted(() => ({
   getRedisMock: vi.fn(),
   getConfigMock: vi.fn(),
+  recordCapHitMock: vi.fn((_partnerId: string) => undefined),
 }));
 
 vi.mock('../redis', () => ({ getRedis: getRedisMock }));
 vi.mock('./config', () => ({ getEmailDomainsConfig: getConfigMock }));
+vi.mock('./capHits', () => ({ recordCapHit: recordCapHitMock }));
 
 import { partnerLaneCapKey, tryCountPartnerLaneSend } from './sendCap';
 
@@ -102,5 +104,30 @@ describe('tryCountPartnerLaneSend (spec §9.1)', () => {
     getRedisMock.mockReturnValue(null);
     await tryCountPartnerLaneSend(PARTNER);
     expect(warn.mock.calls.flat().join(' ')).not.toContain('daily partner-lane cap');
+  });
+});
+
+describe('recordPartnerLaneCapHit wiring (W06)', () => {
+  it('records the hit for the abuse producer on a genuine over-cap count', async () => {
+    getConfigMock.mockReturnValue({ dailySendCap: 2000 });
+    getRedisMock.mockReturnValue(redisWithCount(2001));
+    await tryCountPartnerLaneSend(PARTNER);
+    expect(recordCapHitMock).toHaveBeenCalledWith(PARTNER);
+  });
+
+  // W04's invariant, re-pinned now that the hit has a consumer: an outage must
+  // never be able to manufacture an abuse signal against a partner.
+  it('records NOTHING when Redis is unavailable', async () => {
+    getConfigMock.mockReturnValue({ dailySendCap: 2000 });
+    getRedisMock.mockReturnValue(null);
+    await tryCountPartnerLaneSend(PARTNER);
+    expect(recordCapHitMock).not.toHaveBeenCalled();
+  });
+
+  it('records NOTHING for a send comfortably under the cap', async () => {
+    getConfigMock.mockReturnValue({ dailySendCap: 2000 });
+    getRedisMock.mockReturnValue(redisWithCount(3));
+    await tryCountPartnerLaneSend(PARTNER);
+    expect(recordCapHitMock).not.toHaveBeenCalled();
   });
 });

@@ -17,6 +17,7 @@
     "adminThirdPartyCatalog": "Catálogo de terceiros",
     "adminTrustAct": "Ação de confiança do parceiro",
     "adminTrustQueue": "Fila de confiança do parceiro",
+    "adminSendingDomains": "Domínios de envio do parceiro",
     "adminUsersDetailDevices": "Dispositivos do usuário",
     "aiAgentsImpact": "Impacto da IA",
     "aiAgentsRunsDetail": "Detalhes da execução",
@@ -166,7 +167,8 @@
     "agreementTemplates": "Modelos de acordo",
     "agreementTemplateDetail": "Modelo de acordo",
     "agreementTemplateNew": "Novo modelo de acordo",
-    "signedAgreements": "Acordos assinados"
+    "signedAgreements": "Acordos assinados",
+    "settingsTicketing": "Configurações de tickets"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

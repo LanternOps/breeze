@@ -95,7 +95,9 @@
     "aiRisk": "KI-Risiko",
     "deviceBackup": "Gerätesicherung",
     "sectionServiceDesk": "Service-Desk",
-    "serviceManagement": "Service-Management"
+    "serviceManagement": "Service-Management",
+    "ticketing": "Ticketing",
+    "deliverableTemplates": "Liefervorlagen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

@@ -7,8 +7,8 @@
 //
 // This module MUST be imported before any module that reads NODE_ENV at import
 // time (e.g. routes/metrics.ts, routes/docs.ts, routes/portal/schemas.ts) — it
-// is imported in index.ts immediately after `dotenv/config`, so .env is loaded
-// first and every later import observes the canonical value.
+// is imported in index.ts immediately after dotenv's config() call, so .env
+// is loaded first and every later import observes the canonical value.
 
 /**
  * Returns the canonical NODE_ENV for a raw value, or null if it is not a

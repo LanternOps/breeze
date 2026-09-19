@@ -72,6 +72,7 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
   ));
 }
 import type { AiTool } from './aiTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
@@ -128,7 +129,23 @@ import type {
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
-type FleetHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+type FleetHandler = (
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  context?: ToolExecutionContext,
+) => Promise<string>;
+
+/**
+ * #6200: the shared refusal for a user-owned release (see
+ * `USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) whose auth
+ * and named approver disagree. The row this branch is about to create carries
+ * a `users` FK, and who owns it is the one thing the branch must never get
+ * wrong — so refuse rather than trust either side. Mirrors
+ * `aiToolsTicketing.ts`'s `log_time_entry` guard exactly.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
 
 // ============================================
 // Helpers
@@ -563,11 +580,17 @@ async function narrowMonitorsToCallerReach<T extends { policyId: string | null }
   return rows.filter((r) => !!r.policyId && reachable.has(r.policyId));
 }
 
-/** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
+/** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing.
+ *
+ *  #6200: the third `context` argument is FORWARDED, not dropped. It used to
+ *  be truncated here (the trap `services/aiTools.ts`'s `CoreAiTool.handler`
+ *  doc calls out by name), which meant the user-owned-release branches below
+ *  could not see `context.approverRelease` at all and so could not refuse a
+ *  release whose auth and named approver disagree. */
 function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
-  return async (input, auth) => {
+  return async (input, auth, context) => {
     try {
-      return await fn(input, auth);
+      return await fn(input, auth, context);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal error';
       const code = pgErrorCode(err);
@@ -659,7 +682,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: safeHandler('manage_deployments', async (input, auth) => {
+    handler: safeHandler('manage_deployments', async (input, auth, context) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -821,6 +844,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
+        // #6200: `deployments.created_by` below is a `users` FK. An
+        // agent-originated intent is released as the APPROVER
+        // (USER_OWNED_RELEASE_ACTIONS), so the two must agree.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
         const [dep] = await db.insert(deployments).values({
           orgId,
@@ -1010,7 +1039,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: safeHandler('manage_patches', async (input, auth) => {
+    handler: safeHandler('manage_patches', async (input, auth, context) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -1295,6 +1324,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'install') {
+        // #6200: `patch_jobs.created_by` below is a `users` FK. An
+        // agent-originated intent is released as the APPROVER
+        // (USER_OWNED_RELEASE_ACTIONS), so the two must agree.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!Array.isArray(input.patchIds) || !Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'patchIds and deviceIds are required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
@@ -1331,6 +1366,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'rollback') {
+        // #6200: `patch_rollbacks.initiated_by` below is a `users` FK.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.patchId) return JSON.stringify({ error: 'patchId is required' });
         if (!Array.isArray(input.deviceIds) || input.deviceIds.length === 0) return JSON.stringify({ error: 'deviceIds is required for rollback' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });

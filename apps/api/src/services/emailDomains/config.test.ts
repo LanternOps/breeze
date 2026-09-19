@@ -5,7 +5,9 @@ const KEYS = [
   'IS_HOSTED', 'EMAIL_DOMAINS_PROVIDER', 'EMAIL_DOMAINS_STATIC_ALLOWED',
   'EMAIL_DOMAINS_RESEND_API_KEY', 'EMAIL_DOMAINS_RESEND_SENDING_KEY', 'EMAIL_DOMAINS_REGION',
   'EMAIL_DOMAINS_MAX_PER_PARTNER', 'EMAIL_DOMAINS_DAILY_SEND_CAP',
-  'EMAIL_DOMAINS_PARTNER_ALLOWLIST', 'EMAIL_DOMAINS_DENYLIST', 'EMAIL_DOMAINS_WEBHOOK_SECRET'
+  'EMAIL_DOMAINS_PARTNER_ALLOWLIST', 'EMAIL_DOMAINS_DENYLIST', 'EMAIL_DOMAINS_WEBHOOK_SECRET',
+  'EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE', 'EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES',
+  'EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS'
 ];
 const SAVED: Record<string, string | undefined> = {};
 beforeEach(() => { for (const k of KEYS) { SAVED[k] = process.env[k]; delete process.env[k]; } });
@@ -115,5 +117,68 @@ describe('isPartnerLaneConfigured', () => {
   it.each(['resend', 'static', 'fake'])('is true for %s', (provider) => {
     process.env.EMAIL_DOMAINS_PROVIDER = provider;
     expect(isPartnerLaneConfigured()).toBe(true);
+  });
+});
+
+describe('getEmailDomainsConfig — auto-suspension (spec §9.3)', () => {
+  it('is ON with the spec defaults when hosted and nothing is set', () => {
+    process.env.IS_HOSTED = 'true';
+    expect(getEmailDomainsConfig().autoSuspend).toEqual({
+      enabled: true, bounceRate: 0.08, minMessages: 50, complaints: 3,
+    });
+  });
+
+  // The load-bearing self-hosted guarantee: an upgrade must not start
+  // suspending an operator's only sending domain behind their back.
+  it('is OFF when self-hosted and nothing is set', () => {
+    process.env.IS_HOSTED = 'false';
+    expect(getEmailDomainsConfig().autoSuspend.enabled).toBe(false);
+  });
+
+  it('is ON self-hosted as soon as the operator sets any one threshold', () => {
+    process.env.IS_HOSTED = 'false';
+    process.env.EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS = '5';
+    const cfg = getEmailDomainsConfig().autoSuspend;
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.complaints).toBe(5);
+    // The two the operator did NOT set fall back to the published defaults.
+    expect(cfg.bounceRate).toBe(0.08);
+    expect(cfg.minMessages).toBe(50);
+  });
+
+  it('reads all three thresholds', () => {
+    process.env.IS_HOSTED = 'true';
+    process.env.EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE = '0.12';
+    process.env.EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES = '200';
+    process.env.EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS = '10';
+    expect(getEmailDomainsConfig().autoSuspend).toEqual({
+      enabled: true, bounceRate: 0.12, minMessages: 200, complaints: 10,
+    });
+  });
+
+  it('ignores a bounce rate outside (0, 1] and warns', () => {
+    process.env.IS_HOSTED = 'true';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE = '8';
+    expect(getEmailDomainsConfig().autoSuspend.bounceRate).toBe(0.08);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('ignores a non-numeric threshold and keeps the default', () => {
+    process.env.IS_HOSTED = 'true';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES = 'lots';
+    expect(getEmailDomainsConfig().autoSuspend.minMessages).toBe(50);
+    warn.mockRestore();
+  });
+
+  // 0 messages would make every partner with a single bounce suspendable.
+  it('refuses minMessages = 0 and keeps the default', () => {
+    process.env.IS_HOSTED = 'true';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES = '0';
+    expect(getEmailDomainsConfig().autoSuspend.minMessages).toBe(50);
+    warn.mockRestore();
   });
 });

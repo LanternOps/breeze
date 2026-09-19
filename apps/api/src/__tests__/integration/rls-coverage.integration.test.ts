@@ -331,6 +331,16 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Functional cross-partner forge proof: partnerSendingDomainsRls.integration.test.ts.
   ['partner_sending_domains', 'partner_id'],
   ['partner_sender_identities', 'partner_id'],
+  // partner_sending_daily_stats (spec 2026-09-17 §9.3, partner sending domains
+  // W06): per-partner, per-UTC-day delivery counters written by the Resend
+  // delivery webhook. Partner-axis (Shape 3) like its two siblings above, and
+  // deliberately without a domain_id dimension — the spec's bounce/complaint
+  // thresholds and the auto-suspension kill switch are both per PARTNER. No
+  // org_id means no cascade / export-policy / org-merge registration;
+  // cascadeDeletePartner's dynamic partner_id sweep erases it, and the GRANT
+  // includes DELETE for that sweep.
+  // Functional cross-partner forge proof: partnerSendingDailyStats.integration.test.ts.
+  ['partner_sending_daily_stats', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

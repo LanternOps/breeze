@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Ticketverkauf",
-        "description": "Status, SLAs, Exporte"
+        "description": "Status, SLAs, Kategorien, Formulare",
+        "linkCta": "Ticketing-Einstellungen verwalten →"
       },
       "sendingDomains": { "label": "Absenderadressen", "description": "E-Mails von Ihrer eigenen Domain senden" },
       "aiBudgets": {
@@ -566,6 +567,10 @@
       "loginBranding": {
         "label": "Login-Branding",
         "description": "Erscheinungsbild der Anmeldeseite"
+      },
+      "modules": {
+        "label": "Module",
+        "description": "Service Desk & Abrechnung ein/aus"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -1724,7 +1729,8 @@
       "act": "Aktion",
       "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
       "actUnavailable": "Für diesen Agenten noch nicht verfügbar.",
-      "shadowUnavailableForKind": "Dieser Agent liest und schreibt nur Berichte — es gibt nichts zu beobachten.",
+      "designerAct": "Ein",
+      "designerActConsequence": "Läuft nach Zeitplan oder auf Abruf und schreibt ein Fleet Design. Ändert nie ein Gerät.",
       "shadowApprovalNotice": "Vorschläge landen im Genehmigungsposteingang; wer einen genehmigt, führt ihn tatsächlich aus — kein Testlauf."
     },
     "allOrgs": "Alle Organisationen",
@@ -3164,6 +3170,11 @@
       "searchPlaceholder": "Skripte durchsuchen…",
       "selectedCount_one": "{{count}} Skript autorisiert",
       "selectedCount_other": "{{count}} Skripte autorisiert"
+    },
+    "designerNote": {
+      "title": "Dieser Agent liest nur und schreibt Berichte",
+      "body": "Ein Fleet Designer führt nie etwas auf einem Gerät aus. „Ein“ bedeutet, dass er laufen und seine Designs an die von Ihnen gewählten Empfänger liefern darf.",
+      "ack": "Ich verstehe, dass dieser Agent unbeaufsichtigt läuft und Fleet Designs liefert."
     }
   },
   "apiKeyForm": {
@@ -3506,7 +3517,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Produktkatalog",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Der Produktkatalog ist nur für Partnerkonten verfügbar.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Verwalten Sie Hardware, Software und Serviceartikel, die in Angeboten, Verträgen und Rechnungen verwendet werden. Verbinden Sie Distributoren (Pax8, TD SYNNEX) unter Integrationen → Distributoren."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Verwalten Sie Hardware, Software und Serviceartikel, die in Angeboten, Verträgen und Rechnungen verwendet werden. Verbinden Sie Distributoren (Pax8, TD SYNNEX) unter Integrationen → Distributoren.",
+    "distributorsLink": "Distributorverbindungen verwalten →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Aktuelles Passwort ist erforderlich",
@@ -4253,7 +4265,10 @@
     "inboundEmail": "Eingehende E-Mail",
     "cannedResponses": "Vorgefertigte Antworten",
     "checkingAccess": "Zugriff wird geprüft...",
-    "timeTracking": "Zeiterfassung"
+    "timeTracking": "Zeiterfassung",
+    "email": "E-Mail",
+    "templates": "Vorlagen",
+    "timeCapture": "Zeiterfassung"
   },
   "ticketFormsCard": {
     "heading": "Aufnahmeformulare",
@@ -5228,7 +5243,15 @@
     "columns": {
       "email": "E-Mail",
       "role": "Rolle",
-      "lastLogin": "Letzter Login"
+      "lastLogin": "Letzter Login",
+      "mfaStatus": "MFA-Status"
+    },
+    "mfaStatus": {
+      "enrolled": "Registriert",
+      "pending": "Ausstehend",
+      "pendingByDate": "Ausstehend — registrieren bis {{date}}",
+      "overdue": "Überfällig",
+      "notRequired": "Nicht erforderlich"
     },
     "status": {
       "active": "Aktiv",
@@ -5691,5 +5714,18 @@
     "saveFailed": "Diese Einstellungen konnten nicht gespeichert werden.",
     "loading": "Wird geladen…",
     "loadFailed": "Die Einstellungen zur Skripterstellung konnten nicht geladen werden."
+  },
+  "ticketingHubPage": {
+    "heading": "Ticketing-Einstellungen",
+    "description": "Status, SLAs, Kategorien, Erfassungsformulare, E-Mail, Vorlagen und Zeiterfassung — für alle Organisationen."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog-Standardwerte",
+    "description": "Wird verwendet, um Katalogimporte und die automatische Angebotsausfüllung vorzubefüllen — diese wirken sich nicht direkt auf die Preisermittlung aus.",
+    "loading": "Katalog-Standardwerte werden geladen...",
+    "loadError": "Katalog-Standardwerte konnten nicht geladen werden.",
+    "saveError": "Katalog-Standardwerte konnten nicht gespeichert werden",
+    "saveSuccess": "Katalog-Standardwerte gespeichert",
+    "saveButton": "Speichern"
   }
 }

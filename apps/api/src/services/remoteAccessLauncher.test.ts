@@ -133,8 +133,48 @@ describe('buildRemoteAccessLaunchUrl', () => {
       buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: '' } }, rustdeskSettings),
     ).toBeNull();
     expect(
-      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: 42 as unknown as string } }, rustdeskSettings),
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: { a: 1 } } }, rustdeskSettings),
     ).toBeNull();
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: null } }, rustdeskSettings),
+    ).toBeNull();
+  });
+
+  // #6191: Number-type custom fields are stored as JSON numbers.
+  it('accepts a numeric custom-field identifier and substitutes {id}', () => {
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: 294064193 } }, rustdeskSettings),
+    ).toBe('rustdesk://294064193?password=plain');
+    expect(
+      checkRemoteAccessLaunchAvailability({ customFields: { rustdesk_id: 294064193 } }, rustdeskSettings).available,
+    ).toBe(true);
+  });
+
+  it('accepts a numeric zero custom-field identifier (not falsy-missing)', () => {
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: 0 } }, rustdeskSettings),
+    ).toBe('rustdesk://0?password=plain');
+  });
+
+  it('accepts a boolean custom-field identifier as its string form', () => {
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: true } }, rustdeskSettings),
+    ).toBe('rustdesk://true?password=plain');
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: false } }, rustdeskSettings),
+    ).toBe('rustdesk://false?password=plain');
+  });
+
+  it('rejects non-finite numeric identifiers, via both entry points', () => {
+    expect(
+      buildRemoteAccessLaunchUrl({ customFields: { rustdesk_id: NaN } }, rustdeskSettings),
+    ).toBeNull();
+    const result = checkRemoteAccessLaunchAvailability(
+      { customFields: { rustdesk_id: NaN } },
+      rustdeskSettings,
+    );
+    expect(result.available).toBe(false);
+    expect(result.skipReason).toBe('missing_device_identifier');
   });
 
   it('returns null when urlTemplate is empty', () => {

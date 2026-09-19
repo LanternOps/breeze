@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Gestión de tickets",
-        "description": "Estados, SLA, exportaciones"
+        "description": "Estados, SLA, categorías, formularios",
+        "linkCta": "Administrar configuración de tickets →"
       },
       "sendingDomains": { "label": "Direcciones de envío", "description": "Envía correos desde tu propio dominio" },
       "aiBudgets": {
@@ -566,6 +567,10 @@
       "loginBranding": {
         "label": "Iniciar sesión",
         "description": "Apariencia de la página de inicio de sesión"
+      },
+      "modules": {
+        "label": "Módulos",
+        "description": "Mesa de servicio y facturación activadas/desactivadas"
       }
     },
     "saved": "Configuración de socio guardada",
@@ -1724,7 +1729,8 @@
       "act": "Actuación",
       "actConsequence": "Ejecuta las operaciones permitidas sin un clic. No hay reversión automática.",
       "actUnavailable": "Todavía no está disponible para este agente.",
-      "shadowUnavailableForKind": "Este agente solo lee y escribe informes: no hay nada que observar en modo sombra.",
+      "designerAct": "Activado",
+      "designerActConsequence": "Se ejecuta según programación o bajo demanda y escribe un Fleet Design. Nunca cambia un dispositivo.",
       "shadowApprovalNotice": "Las propuestas llegan a Aprobaciones; aprobar una la ejecuta de verdad, no es una simulación."
     },
     "allOrgs": "Todas las organizaciones",
@@ -3164,6 +3170,11 @@
       "searchPlaceholder": "Buscar scripts…",
       "selectedCount_one": "{{count}} script autorizado",
       "selectedCount_other": "{{count}} scripts autorizados"
+    },
+    "designerNote": {
+      "title": "Este agente solo lee y escribe informes",
+      "body": "Un Fleet Designer nunca ejecuta nada en un dispositivo. Activado significa que puede ejecutarse y entregar sus diseños a los destinatarios que elijas.",
+      "ack": "Entiendo que este agente se ejecuta sin supervisión y entrega Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -3506,7 +3517,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Catálogo de productos",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "El catálogo de productos está disponible únicamente para cuentas de socios.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Administre hardware, software y elementos de servicio utilizados en cotizaciones, contratos y facturas. Conecte distribuidores (Pax8, TD SYNNEX) en Integraciones → Distribuidores."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Administre hardware, software y elementos de servicio utilizados en cotizaciones, contratos y facturas. Conecte distribuidores (Pax8, TD SYNNEX) en Integraciones → Distribuidores.",
+    "distributorsLink": "Administrar conexiones de distribuidores →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Se requiere contraseña actual",
@@ -4253,7 +4265,10 @@
     "inboundEmail": "Correo electrónico entrante",
     "cannedResponses": "Respuestas enlatadas",
     "checkingAccess": "Verificando tu acceso...",
-    "timeTracking": "Seguimiento de tiempo"
+    "timeTracking": "Seguimiento de tiempo",
+    "email": "Correo electrónico",
+    "templates": "Plantillas",
+    "timeCapture": "Registro de tiempo"
   },
   "ticketFormsCard": {
     "heading": "Formularios de admisión",
@@ -5228,7 +5243,15 @@
     "columns": {
       "email": "Correo electrónico",
       "role": "Rol",
-      "lastLogin": "Último inicio de sesión"
+      "lastLogin": "Último inicio de sesión",
+      "mfaStatus": "Estado de MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Inscrito",
+      "pending": "Pendiente",
+      "pendingByDate": "Pendiente: inscribirse antes del {{date}}",
+      "overdue": "Atrasado",
+      "notRequired": "No requerido"
     },
     "status": {
       "active": "Activo",
@@ -5691,5 +5714,18 @@
     "saveFailed": "No se pudieron guardar esos ajustes.",
     "loading": "Cargando…",
     "loadFailed": "No se pudo cargar la configuración de creación de scripts."
+  },
+  "ticketingHubPage": {
+    "heading": "Configuración de tickets",
+    "description": "Estados, SLA, categorías, formularios de admisión, correo electrónico, plantillas y registro de tiempo, aplicados a todas tus organizaciones."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valores predeterminados del catálogo",
+    "description": "Se usan para prellenar las importaciones del catálogo y el autocompletado del editor de cotizaciones; no afectan directamente la resolución de precios.",
+    "loading": "Cargando valores predeterminados del catálogo...",
+    "loadError": "No se pudieron cargar los valores predeterminados del catálogo.",
+    "saveError": "No se pudieron guardar los valores predeterminados del catálogo",
+    "saveSuccess": "Valores predeterminados del catálogo guardados",
+    "saveButton": "Guardar"
   }
 }

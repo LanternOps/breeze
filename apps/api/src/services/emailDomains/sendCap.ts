@@ -1,4 +1,5 @@
 import { getRedis } from '../redis';
+import { recordCapHit } from './capHits';
 import { getEmailDomainsConfig } from './config';
 
 /**
@@ -41,6 +42,10 @@ export function partnerLaneCapKey(partnerId: string, now: number): string {
  */
 export function recordPartnerLaneCapHit(partnerId: string): void {
   console.warn('[emailDomains/sendCap] daily partner-lane cap reached', { partnerId });
+  // W06: make the hit readable by the abuse sweep (spec §9.2). Fire-and-forget
+  // into a Redis day-hash — this runs on the send path, which must not await a
+  // write and must not write a partner-axis table.
+  recordCapHit(partnerId);
 }
 
 export async function tryCountPartnerLaneSend(partnerId: string): Promise<boolean> {

@@ -272,7 +272,7 @@ export async function enqueueTestSend(domainId: string, userId: string): Promise
 Binding for every task. Do not relax any of them without changing the plan index
 in the same PR.
 
-- **Migration name `apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql`.**
+- **Migration name `apps/api/migrations/2026-10-20-130000-partner-sending-daily-stats.sql`.**
   Before committing, run `ls apps/api/migrations/*.sql | sort | tail -1`. If the
   newest committed migration sorts at or after `2026-10-20-100100`, rename this
   file upward so it sorts last, and update every reference to it in this plan's
@@ -339,7 +339,7 @@ in the same PR.
 
 | Path | Responsibility | Task |
 |---|---|---|
-| `apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql` | table, PK, index, RLS, grant | 1 |
+| `apps/api/migrations/2026-10-20-130000-partner-sending-daily-stats.sql` | table, PK, index, RLS, grant | 1 |
 | `apps/api/src/db/schema/emailSendingDomains.ts` | Drizzle `partnerSendingDailyStats` | 1 |
 | `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` | `PARTNER_TENANT_TABLES` entry | 1 |
 | `apps/api/src/services/emailDomains/deliveryStats.ts` (+ `.test.ts`) | atomic upsert-increment, 7-day rollups | 2 |
@@ -365,7 +365,7 @@ in the same PR.
 ## Task 1: Migration, Drizzle model and the RLS registration
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql`
+- Create: `apps/api/migrations/2026-10-20-130000-partner-sending-daily-stats.sql`
 - Modify: `apps/api/src/db/schema/emailSendingDomains.ts` (append below the
   `emailProviderDomainReleases` table and above the three `$inferSelect` type
   aliases at the end of the file; created by W02 Task 1)
@@ -386,7 +386,7 @@ Run:
 cd /Users/toddhebebrand/.herdr/worktrees/breeze/outbound-email-domain
 ls apps/api/migrations/*.sql | sort | tail -1
 ```
-Expected: a name sorting **before** `2026-10-20-100100-partner-sending-daily-stats.sql`
+Expected: a name sorting **before** `2026-10-20-130000-partner-sending-daily-stats.sql`
 (W02's `2026-10-20-100000-partner-sending-domains.sql` is the expected answer
 once W02 has merged). If not, rename this file upward — e.g.
 `2026-10-22-100100-partner-sending-daily-stats.sql` — and use the new name in
@@ -394,7 +394,7 @@ every step below.
 
 - [ ] **Step 2: Write the migration**
 
-Create `apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql`:
+Create `apps/api/migrations/2026-10-20-130000-partner-sending-daily-stats.sql`:
 
 ```sql
 -- Partner sending daily stats (spec 2026-09-17-partner-sending-domains-design
@@ -527,7 +527,7 @@ export type PartnerSendingDailyStat = typeof partnerSendingDailyStats.$inferSele
 Run:
 ```bash
 cd /Users/toddhebebrand/.herdr/worktrees/breeze/outbound-email-domain
-git add apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql
+git add apps/api/migrations/2026-10-20-130000-partner-sending-daily-stats.sql
 scripts/check-migration-naming.sh --staged
 cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts
 ```
@@ -581,7 +581,7 @@ drift.
 
 ```bash
 cd /Users/toddhebebrand/.herdr/worktrees/breeze/outbound-email-domain
-git add apps/api/migrations/2026-10-20-100100-partner-sending-daily-stats.sql apps/api/src/db/schema/emailSendingDomains.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts
+git add apps/api/migrations/2026-10-20-130000-partner-sending-daily-stats.sql apps/api/src/db/schema/emailSendingDomains.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts
 git commit -m "feat(db): partner sending daily stats table
 
 Per-partner, per-UTC-day delivery counters (spec §9.3), partner-axis RLS shape 3
@@ -5090,7 +5090,7 @@ Create `apps/api/src/__tests__/integration/partnerSendingDailyStats.integration.
  * correctness, and the delivery webhook end-to-end with NO ambient DB context
  * (spec §9.3, §14; CLAUDE.md "Tenant Isolation" step 6).
  *
- * The shipped policy (2026-10-20-100100-partner-sending-daily-stats.sql) is:
+ * The shipped policy (2026-10-20-130000-partner-sending-daily-stats.sql) is:
  *   partner_sending_daily_stats_partner_access  FOR ALL
  *     system OR breeze_has_partner_access(partner_id)
  *

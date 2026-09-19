@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Billetterie",
-        "description": "Statuts, SLA, exportations"
+        "description": "Statuts, ERS, catégories, formulaires",
+        "linkCta": "Gérer les paramètres de billetterie →"
       },
       "sendingDomains": { "label": "Adresses d'envoi", "description": "Envoyez vos courriels à partir de votre propre domaine" },
       "aiBudgets": {
@@ -566,6 +567,10 @@
       "loginBranding": {
         "label": "Connexion Branding",
         "description": "Apparence de la page de connexion"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Bureau de service et facturation activés/désactivés"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -1724,7 +1729,8 @@
       "act": "Action",
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
       "actUnavailable": "Pas encore disponible pour cet agent.",
-      "shadowUnavailableForKind": "Cet agent ne fait que lire et écrire des rapports — il n'y a rien à observer en mode ombre.",
+      "designerAct": "Activé",
+      "designerActConsequence": "S'exécute selon un planning ou à la demande et rédige un Fleet Design. Ne modifie jamais un appareil.",
       "shadowApprovalNotice": "Les propositions arrivent dans Approbations; approuver l'une d'elles l'exécute pour de vrai, ce n'est pas un essai."
     },
     "allOrgs": "Toutes les organisations",
@@ -3164,6 +3170,11 @@
       "searchPlaceholder": "Rechercher des scripts…",
       "selectedCount_one": "{{count}} script autorisé",
       "selectedCount_other": "{{count}} scripts autorisés"
+    },
+    "designerNote": {
+      "title": "Cet agent ne fait que lire et rédiger des rapports",
+      "body": "Un Fleet Designer n'exécute jamais rien sur un appareil. Activé signifie qu'il peut s'exécuter et remettre ses designs aux destinataires que vous choisissez.",
+      "ack": "Je comprends que cet agent s'exécute sans surveillance et remet des Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -3501,7 +3512,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Le catalogue de produits est disponible uniquement pour les comptes partenaires.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Gérez le matériel, les logiciels et les éléments de service utilisés lors des devis, contrats et factures. Connectez les distributeurs (Pax8, TD SYNNEX) sous la section Intégrations → Distributeurs.",
+    "distributorsLink": "Gérer les connexions aux distributeurs →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Un mot de passe actuel est requis",
@@ -4301,7 +4313,10 @@
     "inboundEmail": "Courriel entrant",
     "cannedResponses": "Réponses préfabriquées",
     "checkingAccess": "Vérification de votre accès...",
-    "timeTracking": "Suivi du temps"
+    "timeTracking": "Suivi du temps",
+    "email": "Courriel",
+    "templates": "Modèles",
+    "timeCapture": "Saisie du temps"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",
@@ -5276,7 +5291,15 @@
     "columns": {
       "email": "Courriel",
       "role": "Rôle",
-      "lastLogin": "Dernière connexion"
+      "lastLogin": "Dernière connexion",
+      "mfaStatus": "Statut MFA"
+    },
+    "mfaStatus": {
+      "enrolled": "Inscrit",
+      "pending": "En attente",
+      "pendingByDate": "En attente — à inscrire avant le {{date}}",
+      "overdue": "En retard",
+      "notRequired": "Non requise"
     },
     "status": {
       "active": "Actif",
@@ -5691,5 +5714,18 @@
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
     "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+  },
+  "ticketingHubPage": {
+    "heading": "Paramètres de billetterie",
+    "description": "Statuts, ERS, catégories, formulaires d'admission, courriel, modèles et saisie du temps, appliqués à toutes vos organisations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Valeurs par défaut du catalogue",
+    "description": "Utilisées pour préremplir les importations du catalogue et le remplissage automatique de l'éditeur de soumissions — sans effet direct sur la résolution des prix.",
+    "loading": "Chargement des valeurs par défaut du catalogue...",
+    "loadError": "Échec du chargement des valeurs par défaut du catalogue.",
+    "saveError": "Échec de l'enregistrement des valeurs par défaut du catalogue",
+    "saveSuccess": "Valeurs par défaut du catalogue enregistrées",
+    "saveButton": "Enregistrer"
   }
 }

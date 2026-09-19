@@ -57,19 +57,23 @@ export default function ModeChoice({
   const { t } = useTranslation('settings');
   const modeHeadingId = useId();
   const modeRefs = useRef<Partial<Record<AiAgentMode, HTMLButtonElement | null>>>({});
-  const kindDisallowsMode = (candidate: AiAgentMode) => !allowedModesForKind(kind).includes(candidate);
+  // #6214: a mode the KIND excludes is not offered at all, rather than shown
+  // greyed out. A designer has nothing to shadow, and a disabled Shadow card
+  // between Off and Act read as "this is broken" — the one mode that works
+  // then looked like the scary one. Tenant-level act eligibility is a
+  // different question (it can change), so that card stays, disabled, with
+  // its reason.
+  const visibleModes = MODE_ORDER.filter((candidate) => allowedModesForKind(kind).includes(candidate));
   const modeUnavailable = (candidate: AiAgentMode) =>
-    (candidate === 'act' && !actSupported) || kindDisallowsMode(candidate);
-  /** Why a disabled card is disabled — a kind-level exclusion (designer has
-   *  no shadow to offer) takes precedence over the tenant-level act
-   *  eligibility check, since the two can never both apply to the same
-   *  candidate (kind-disallowed modes are never `act`: `DESIGNER_ALLOWED_MODES`
-   *  keeps `act` itself). */
-  const unavailableReason = (candidate: AiAgentMode): string | null => {
-    if (kindDisallowsMode(candidate)) return t('aiAgentsPage.modeChoice.shadowUnavailableForKind');
-    if (candidate === 'act' && !actSupported) return t('aiAgentsPage.modeChoice.actUnavailable');
-    return null;
-  };
+    (candidate === 'act' && !actSupported) || !visibleModes.includes(candidate);
+  const unavailableReason = (candidate: AiAgentMode): string | null =>
+    candidate === 'act' && !actSupported ? t('aiAgentsPage.modeChoice.actUnavailable') : null;
+
+  // A designer's `act` is "produce designs", not "change devices"
+  // (`designProfile.ts` has no mutating tool) — so the card is labelled On,
+  // carries no warning tone, and the act panel below explains what it does
+  // instead of warning about unattended execution.
+  const designer = kind === 'designer';
 
   // Literal keys rather than a dynamic `t()` on the token: the closed
   // three-member union is worth spelling out so the keyUsage guard verifies
@@ -78,12 +82,12 @@ export default function ModeChoice({
   const MODE_LABEL: Record<AiAgentMode, string> = {
     off: t('aiAgentsPage.modeChoice.off'),
     shadow: t('aiAgentsPage.modeChoice.shadow'),
-    act: t('aiAgentsPage.modeChoice.act'),
+    act: designer ? t('aiAgentsPage.modeChoice.designerAct') : t('aiAgentsPage.modeChoice.act'),
   };
   const MODE_CONSEQUENCE: Record<AiAgentMode, string> = {
     off: t('aiAgentsPage.modeChoice.offConsequence'),
     shadow: t('aiAgentsPage.modeChoice.shadowConsequence'),
-    act: t('aiAgentsPage.modeChoice.actConsequence'),
+    act: designer ? t('aiAgentsPage.modeChoice.designerActConsequence') : t('aiAgentsPage.modeChoice.actConsequence'),
   };
 
   const selectMode = (next: AiAgentMode) => {
@@ -152,7 +156,7 @@ export default function ModeChoice({
   // still stores `mode: 'act'`) — falling back to the first ENABLED option
   // keeps the group reachable by Tab at all, rather than leaving every radio
   // at tabIndex -1.
-  const tabStopMode = modeUnavailable(mode) ? MODE_ORDER.find((candidate) => !modeUnavailable(candidate)) : mode;
+  const tabStopMode = modeUnavailable(mode) ? visibleModes.find((candidate) => !modeUnavailable(candidate)) : mode;
 
   return (
     <div className="md:col-span-2" data-testid="ai-agent-mode-field">
@@ -163,10 +167,10 @@ export default function ModeChoice({
         role="radiogroup"
         aria-labelledby={modeHeadingId}
         onKeyDown={onModeKeyDown}
-        className="mt-2 grid gap-2 sm:grid-cols-3"
+        className={`mt-2 grid gap-2 ${visibleModes.length === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}
         data-testid="ai-agent-mode"
       >
-        {MODE_ORDER.map((candidate) => {
+        {visibleModes.map((candidate) => {
           const selected = mode === candidate;
           const unavailable = modeUnavailable(candidate);
           return (
@@ -198,7 +202,7 @@ export default function ModeChoice({
               // reader scans across before choosing.
               className={`flex flex-col items-start rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                 selected
-                  ? candidate === 'act'
+                  ? candidate === 'act' && !designer
                     ? 'border-warning-strong bg-warning/10 ring-1 ring-warning-strong'
                     : 'border-primary bg-primary/10 ring-1 ring-primary'
                   : 'bg-background hover:border-primary/50 hover:bg-muted/40'
@@ -216,18 +220,18 @@ export default function ModeChoice({
                   aria-hidden="true"
                   className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
                     selected
-                      ? candidate === 'act' ? 'border-warning-strong' : 'border-primary'
+                      ? candidate === 'act' && !designer ? 'border-warning-strong' : 'border-primary'
                       : 'border-muted-foreground/50'
                   }`}
                 >
                   {selected && (
                     <span
-                      className={`h-2 w-2 rounded-full ${candidate === 'act' ? 'bg-warning-strong' : 'bg-primary'}`}
+                      className={`h-2 w-2 rounded-full ${candidate === 'act' && !designer ? 'bg-warning-strong' : 'bg-primary'}`}
                     />
                   )}
                 </span>
                 <span className="text-sm font-medium">{MODE_LABEL[candidate]}</span>
-                {candidate === 'act' && (
+                {candidate === 'act' && !designer && (
                   <AlertTriangle className="ml-auto h-4 w-4 shrink-0 text-warning-strong" aria-hidden="true" />
                 )}
               </span>
@@ -247,6 +251,31 @@ export default function ModeChoice({
         })}
       </div>
 
+      {/* #6214: the designer's act panel is an explanation, not a warning —
+          the five bullets below (unattended execution, no rollback, one
+          device per run) are all false for a kind with no mutating tool.
+          The acknowledgement stays: the caller's Next/Save gate keys off it. */}
+      {mode === 'act' && designer && (
+        <div
+          className="mt-2 space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3 text-sm"
+          data-testid="ai-agent-designer-act-note"
+        >
+          <p className="font-medium">{t('aiAgentsPage.designerNote.title')}</p>
+          <p className="text-muted-foreground">{t('aiAgentsPage.designerNote.body')}</p>
+          {enteringActMode && (
+            <label className="flex items-start gap-2 pt-1 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={actAck}
+                onChange={(e) => onActAckChange(e.target.checked)}
+                data-testid="ai-agent-act-ack"
+              />
+              <span>{t('aiAgentsPage.designerNote.ack')}</span>
+            </label>
+          )}
+        </div>
+      )}
+
       {/* #6202: an operator read "shadow" as "observe only, nothing to act
           on" and approved three cards expecting a dry run — shadow still
           mints real, executable Tier-3 approval cards. Attached to the
@@ -263,7 +292,7 @@ export default function ModeChoice({
 
       {/* Attached to the choice, not floated below the rest of the fields:
           the warning and its acknowledgement are what the act card MEANS. */}
-      {mode === 'act' && (
+      {mode === 'act' && !designer && (
         <div
           className="mt-2 space-y-2 rounded-lg border border-warning-strong/50 bg-warning/10 p-3 text-sm"
           data-testid="ai-agent-act-warning"

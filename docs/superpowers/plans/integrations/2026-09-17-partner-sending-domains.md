@@ -100,7 +100,7 @@ slots through `2026-10-19-100100`. These plans take the `2026-10-20-10` block.
 | File | Wave |
 |---|---|
 | `2026-10-20-100000-partner-sending-domains.sql` | W02 |
-| `2026-10-20-100100-partner-sending-daily-stats.sql` | W06 |
+| `2026-10-20-130000-partner-sending-daily-stats.sql` | W06 |
 
 Every executor re-checks `ls apps/api/migrations/*.sql | sort | tail -1` before
 committing and renames upward if main has moved past these names. W01, W03,

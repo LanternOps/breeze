@@ -88,13 +88,17 @@ const { evaluateMock } = vi.hoisted(() => ({
 }));
 vi.mock('../partnerTrust', () => ({ evaluateCapabilityContinuationForState: evaluateMock }));
 
+const { loadAllStatsMock } = vi.hoisted(() => ({ loadAllStatsMock: vi.fn(async () => [] as unknown[]) }));
+vi.mock('./deliveryStats', () => ({ STATS_WINDOW_DAYS: 7, loadAllPartnerSendingWindowStats: loadAllStatsMock }));
+
 const { enqueueSyncMock } = vi.hoisted(() => ({ enqueueSyncMock: vi.fn(async (_id: string) => undefined) }));
 vi.mock('../../jobs/sendingDomainsWorker', () => ({ enqueueSyncDomain: enqueueSyncMock }));
 
 import {
   DOMAIN_UNAVAILABLE_MESSAGE, SendingDomainServiceError, createSendingDomain, deleteSenderIdentity,
-  forceReleaseSendingDomain, getSendingDomainsCapability, listSendingDomains, requestDomainCheck,
-  listAllSendingDomains, requestDomainRemoval, suspendSendingDomain, unsuspendSendingDomain, upsertSenderIdentity,
+  forceReleaseSendingDomain, getSendingDomainsCapability, listAllSendingDomains, listAllSendingDomainsWithMetrics,
+  listSendingDomains, requestDomainCheck,
+  requestDomainRemoval, suspendSendingDomain, unsuspendSendingDomain, upsertSenderIdentity,
 } from './sendingDomainService';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -522,5 +526,62 @@ describe('platform admin actions (spec §9.1 kill switch)', () => {
         expect(contextCalls[i - 1], 'system scope elected without leaving the request context first').toBe('outside');
       }
     }
+  });
+});
+
+describe('listAllSendingDomainsWithMetrics', () => {
+  const D1 = '22222222-2222-4222-8222-222222222222';
+  const D2 = '33333333-3333-4333-8333-333333333333';
+  const P1 = '11111111-1111-4111-8111-111111111111';
+  const P2 = '44444444-4444-4444-8444-444444444444';
+
+  function domainRow(id: string, partnerId: string, partnerName: string) {
+    return {
+      domain: {
+        id, partnerId, domain: `${id}.test`, provider: 'resend', providerDomainId: 'pd',
+        providerManaged: true, status: 'verified', statusReason: null, dnsRecords: [],
+        verifiedAt: new Date('2026-09-01T00:00:00Z'), lastCheckedAt: null,
+        lastTestAt: null, lastTestStatus: null, lastTestError: null,
+        lastSendError: null, lastSendErrorAt: null, createdAt: new Date('2026-08-01T00:00:00Z'),
+        statusChangedAt: new Date('2026-09-01T00:00:00Z'),
+      },
+      partnerName,
+    };
+  }
+
+  it("attaches each partner's window metrics with ONE stats query for the whole page", async () => {
+    rows.push([domainRow(D1, P1, 'Acme MSP'), domainRow(D2, P2, 'Beta IT')]);
+    loadAllStatsMock.mockResolvedValue([
+      { partnerId: P1, sent: 1000, delivered: 900, bounced: 90, complained: 4, failed: 10, suppressed: 2, messages: 1000, bounceRate: 0.09 },
+    ]);
+
+    const result = await listAllSendingDomainsWithMetrics({ limit: 50 });
+
+    expect(loadAllStatsMock).toHaveBeenCalledTimes(1);
+    expect(result[0]!.metrics).toEqual({
+      windowDays: 7, messages: 1000, delivered: 900, bounced: 90,
+      complained: 4, failed: 10, suppressed: 2, bounceRate: 0.09,
+    });
+  });
+
+  // A partner with no events at all must render as zeros, not as a gap.
+  it('gives a partner with no stats an all-zero metrics block', async () => {
+    rows.push([domainRow(D2, P2, 'Beta IT')]);
+    loadAllStatsMock.mockResolvedValue([]);
+    const result = await listAllSendingDomainsWithMetrics({ limit: 50 });
+    expect(result[0]!.metrics).toEqual({
+      windowDays: 7, messages: 0, delivered: 0, bounced: 0,
+      complained: 0, failed: 0, suppressed: 0, bounceRate: 0,
+    });
+  });
+
+  it('shares one metrics object shape across two domains of the same partner (no N+1)', async () => {
+    rows.push([domainRow(D1, P1, 'Acme MSP'), domainRow(D2, P1, 'Acme MSP')]);
+    loadAllStatsMock.mockResolvedValue([
+      { partnerId: P1, sent: 10, delivered: 10, bounced: 0, complained: 0, failed: 0, suppressed: 0, messages: 10, bounceRate: 0 },
+    ]);
+    const result = await listAllSendingDomainsWithMetrics({ limit: 50 });
+    expect(loadAllStatsMock).toHaveBeenCalledTimes(1);
+    expect(result.map((r) => r.metrics.messages)).toEqual([10, 10]);
   });
 });

@@ -305,10 +305,28 @@ describe('EMAIL_DOMAINS_* env plumbing (partner sending domains W02)', () => {
     'EMAIL_DOMAINS_PARTNER_ALLOWLIST',
     'EMAIL_DOMAINS_DENYLIST',
     'EMAIL_DOMAINS_WEBHOOK_SECRET',
+    'EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE',
+    'EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES',
+    'EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS',
   ] as const;
 
   it.each(EMAIL_DOMAINS_VARS)('%s is declared in the validate.ts schema', (name) => {
     expect(ENV_SCHEMA_KEYS).toContain(name);
+  });
+
+  // The three thresholds must ship COMMENTED OUT (or empty). readAutoSuspendConfig
+  // treats any non-empty value as "the operator configured this", which turns
+  // auto-suspension ON for a self-hoster who merely copied the example file —
+  // the exact opposite of the off-by-default guarantee the same comment block
+  // promises them.
+  it.each([
+    ['.env.example'],
+    ['deploy/.env.example'],
+  ])('%s does not ship an ACTIVE auto-suspend threshold', (relPath) => {
+    const text = readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
+    const active = text.split('\n').filter((line) =>
+      /^\s*EMAIL_DOMAINS_AUTOSUSPEND_[A-Z_]+=\s*\S/.test(line));
+    expect(active, `active auto-suspend assignments in ${relPath}`).toEqual([]);
   });
 
   it.each(EMAIL_DOMAINS_VARS)('%s is documented in the root .env.example', (name) => {

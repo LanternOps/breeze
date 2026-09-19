@@ -2170,6 +2170,22 @@ describe('validateConfig', () => {
       });
     });
 
+    it('boots with the auto-suspension thresholds unset (upgrade is a no-op)', () => {
+      withEnv({ ...prodBase }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('never requires an auto-suspension threshold, even with the provider set', () => {
+      withEnv({
+        ...prodBase,
+        EMAIL_DOMAINS_PROVIDER: 'resend',
+        EMAIL_DOMAINS_RESEND_API_KEY: 're_partner_lane',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
     it('boots with EMAIL_DOMAINS_PROVIDER empty — compose maps optional vars as ${VAR:-}', () => {
       withEnv({ ...prodBase, EMAIL_DOMAINS_PROVIDER: '' }, () => {
         expect(() => validateConfig()).not.toThrow();

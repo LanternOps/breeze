@@ -453,6 +453,41 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // #6130 — the elevation-requests ingest route's per-device rateLimiter Redis
+  // round-trip ran inside the request-long wrap. The handler now opens its own
+  // org-scoped context after the limiter decides (routes/agents/elevationRequests.ts),
+  // so the middleware must NOT open one for it.
+  it('skips the request-long org wrap for the self-managed elevation-requests route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/elevation-requests' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  // Negative control for the anchoring: a same-named segment under an
+  // extension mount must still get the request-long wrap.
+  it('a crafted elevation-requests TAIL under an extension mount keeps the request DB context', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/elevation-requests',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   // The command RESULT route ends in `result`, not `commands` — it must keep
   // the request-long org wrap.
   it('keeps the request-long org wrap for the command result route', async () => {
@@ -773,7 +808,8 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
     '/api/v1/agents/agent-1/heartbeat',
     '/api/v1/agents/agent-1/commands',
     '/api/v1/agents/agent-1/commands/cmd-1/result',
-    '/api/v1/agents/agent-1/rotate-token',
+    // NOTE: `rotate-token` (the MINT half) is deliberately absent — #3997
+    // took it off the TENANT drain surface too. `rotate-token/confirm` stays.
     '/api/v1/agents/agent-1/rotate-token/confirm',
     '/api/v1/agents/agent-1/logs',
   ];
@@ -792,6 +828,8 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
   }
 
   const blockedPaths = [
+    // #3997 — the credential MINT is off the tenant drain surface.
+    '/api/v1/agents/agent-1/rotate-token',
     '/api/v1/agents/agent-1/hardware',
     '/api/v1/agents/agent-1/software',
     '/api/v1/agents/agent-1/config',
@@ -864,7 +902,7 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
 //   L1  — the auth gate itself (denied unless the shared predicate says drain)
 //   L1b — role: main agent only, never the watchdog credential
 //   L2  — the route surface a draining device gets (heartbeat/commands/result/
-//         logs/rotate-token, and NOTHING else — the layer that keeps
+//         logs, and NOTHING else — the layer that keeps
 //         recovery-key ingest, PAM elevation, inventory and every extension
 //         `<prefix>/agent/:id/*` route shut)
 //   L3  — one derived command-type allowlist on the agent context
@@ -1372,20 +1410,61 @@ describe('agentAuthMiddleware - rotate-token is off the device drain surface (#3
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  it('a TENANT drain keeps rotate-token (the #2774 surface is unchanged)', async () => {
-    // The two drain kinds have different action sets on purpose. An offboarding
-    // customer's machines are legitimately alive and still need rotations to
-    // complete; a removed machine does not.
+  it('a TENANT drain ALSO refuses rotate-token (#3997 — the mint is off both surfaces)', async () => {
+    // #3997: the device-axis reasoning applies verbatim to the tenant axis.
+    // Nothing revokes a credential minted inside the window — the abort paths
+    // (`abortOrganizationOffboarding` / `abortPartnerOffboarding`) cancel the
+    // queued uninstalls and never sever agent credentials — so a rotation
+    // performed during the drain becomes the LIVE credential set the moment
+    // the offboarding is aborted and the tenant comes back active.
     vi.mocked(getAgentTenantState).mockResolvedValue('draining');
     vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
     buildSelectMock([makeDevice({ status: 'online' })]);
 
     const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(403);
+    expect((result as any).body).toEqual({ error: 'tenant_offboarding' });
+  });
+
+  it('a TENANT drain still allows rotate-token/confirm (#3997 keeps #2774 mid-stage rotations unstranded)', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/rotate-token/confirm',
+    });
     const next = vi.fn().mockResolvedValue(undefined);
 
     await agentAuthMiddleware(c, next);
 
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('the two drain action sets are now identical, so their intersection is neither set narrowed away (#3997)', async () => {
+    // Guards the composition, not a path: BOTH_DRAINS_ALLOWED_ACTIONS is the
+    // intersection of two sets that are now equal, so a tenant-draining
+    // removed device keeps the full drain surface rather than collapsing to {}.
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    for (const path of [
+      '/api/v1/agents/agent-1/heartbeat',
+      '/api/v1/agents/agent-1/commands',
+      '/api/v1/agents/agent-1/logs',
+    ]) {
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn().mockResolvedValue(undefined);
+      await agentAuthMiddleware(c, next);
+      expect(next, path).toHaveBeenCalledTimes(1);
+    }
   });
 });
 
