@@ -63,6 +63,12 @@ func (noopTestSystem) Sync(context.Context) error {
 	panic("noopTestSystem: Sync should not be called for a preflight refusal")
 }
 func (noopTestSystem) Arch() string { return "amd64" }
+func (noopTestSystem) LookPath(string) (string, error) {
+	panic("noopTestSystem: LookPath should not be called for a preflight refusal")
+}
+func (noopTestSystem) FreeSpace(string) (int64, error) {
+	panic("noopTestSystem: FreeSpace should not be called for a preflight refusal")
+}
 
 var _ rebuild.System = noopTestSystem{}
 

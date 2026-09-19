@@ -38,7 +38,7 @@ func newRebuildCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "rebuild",
-		Short: "Rebuild a whole machine from a snapshot onto a disk or raw image (bare-metal recovery engine)",
+		Short: "Rebuild a whole machine from a snapshot onto a disk, raw image or VHDX (bare-metal recovery engine)",
 		// A rebuild failure (a real operational error — wrong disk, refused
 		// preflight, download fault) is common on recovery media; dumping the
 		// full cobra flag/usage listing after the error buries the actual
@@ -153,8 +153,8 @@ func newRebuildCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&snapshot, "snapshot", "", "snapshot id")
-	cmd.Flags().StringVar(&target, "target", "", "disk:/dev/sdX or image:/path/to/file.img")
-	cmd.Flags().StringVar(&imageSize, "image-size", "", "size for a new image file, e.g. 40G")
+	cmd.Flags().StringVar(&target, "target", "", "disk:/dev/sdX, image:/path/to/file.img or vhdx:/path/to/file.vhdx (needs qemu-img)")
+	cmd.Flags().StringVar(&imageSize, "image-size", "", "size for a new image or vhdx file, e.g. 40G")
 	cmd.Flags().StringVar(&providerConfig, "provider-config", "", "JSON file {provider, providerConfig}")
 	cmd.Flags().StringVar(&token, "token", "", "server-issued bare-metal recovery token (exchange a code for one via POST /bmr/recover/exchange)")
 	cmd.Flags().StringVar(&server, "server", "", "Breeze server URL (required with --token)")
@@ -263,18 +263,18 @@ func providerFromConfigFile(path string) (providers.BackupProvider, error) {
 	return provider, nil
 }
 
-// parseTargetFlag parses --target "disk:<device>" or "image:<file>" plus an
-// optional --image-size for the image form.
+// parseTargetFlag parses --target "disk:<device>", "image:<file>" or
+// "vhdx:<file>" plus an optional --image-size for the two file forms.
 func parseTargetFlag(v, size string) (rebuild.Target, error) {
 	kind, p, ok := strings.Cut(v, ":")
 	if !ok || p == "" {
-		return rebuild.Target{}, fmt.Errorf("--target must be disk:<device> or image:<file>, got %q", v)
+		return rebuild.Target{}, fmt.Errorf("--target must be disk:<device>, image:<file> or vhdx:<file>, got %q", v)
 	}
 	switch kind {
 	case "disk":
 		return rebuild.Target{Kind: rebuild.TargetDisk, Path: p}, nil
-	case "image":
-		t := rebuild.Target{Kind: rebuild.TargetImage, Path: p}
+	case "image", "vhdx":
+		t := rebuild.Target{Kind: rebuild.TargetKind(kind), Path: p}
 		if size != "" {
 			n, err := parseSize(size)
 			if err != nil {
@@ -284,7 +284,7 @@ func parseTargetFlag(v, size string) (rebuild.Target, error) {
 		}
 		return t, nil
 	}
-	return rebuild.Target{}, fmt.Errorf("unsupported target kind %q (disk|image)", kind)
+	return rebuild.Target{}, fmt.Errorf("unsupported target kind %q (disk|image|vhdx)", kind)
 }
 
 // parseSize parses a human size like "40G", "512M", "1T", or a plain byte

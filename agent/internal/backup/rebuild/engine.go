@@ -64,8 +64,8 @@ func targetKey(t Target) string {
 	return hex.EncodeToString(h[:])[:12]
 }
 
-// Run executes the seven phases (preflight, provision, restore, boot,
-// identity, encryption, validate). It returns (result, nil) on success and
+// Run executes the eight phases (preflight, provision, restore, boot,
+// identity, encryption, validate, convert). It returns (result, nil) on success and
 // (result, err) on refusal or failure — result is never nil once options
 // validate.
 func Run(ctx context.Context, opts Options) (*Result, error) {
@@ -73,7 +73,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.SnapshotID == "" || opts.Provider == nil {
 		return nil, errors.New("rebuild: snapshot id and provider are required")
 	}
-	if opts.Target.Kind != TargetDisk && opts.Target.Kind != TargetImage {
+	if opts.Target.Kind != TargetDisk && opts.Target.Kind != TargetImage && opts.Target.Kind != TargetVHDX {
 		return nil, fmt.Errorf("rebuild: unknown target kind %q", opts.Target.Kind)
 	}
 	if opts.Identity == "" {
@@ -107,6 +107,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	phases := []phaseFn{
 		{PhasePreflight, preflight}, {PhaseProvision, provision}, {PhaseRestore, restoreTree},
 		{PhaseBoot, boot}, {PhaseIdentity, identity}, {PhaseEncryption, encryption}, {PhaseValidate, validate},
+		{PhaseConvert, convert},
 	}
 	for _, p := range phases {
 		r.result.PhaseReached = p.phase
@@ -136,8 +137,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 			return r.fail(start, pr, err)
 		}
-		pr.Status = PhaseCompleted
-		r.result.Phases = append(r.result.Phases, pr)
+		if !r.recorded(p.phase) { // a phase that recordSkipped itself already owns its row
+			pr.Status = PhaseCompleted
+			r.result.Phases = append(r.result.Phases, pr)
+		}
 		r.state.Completed[p.phase] = true
 		if p.phase != PhasePreflight {
 			r.saveState()
@@ -164,6 +167,21 @@ func (r *run) fail(start time.Time, pr PhaseResult, err error) (*Result, error) 
 	r.result.DurationMs = time.Since(start).Milliseconds()
 	r.saveState() // keeps completed phases for resume
 	return r.result, err
+}
+
+// recordSkipped is how a phase function reports "nothing to do for this
+// target" without failing: it appends its own PhaseSkipped row so the
+// phase table keeps every entry of AllPhases for every caller, and the Run
+// loop (see recorded) then does not append a second, "completed" row.
+func (r *run) recordSkipped(ph Phase, msg string) {
+	now := time.Now().UTC()
+	r.result.Phases = append(r.result.Phases, PhaseResult{Phase: ph, Status: PhaseSkipped, StartedAt: now, CompletedAt: now, Message: msg})
+}
+
+// recorded reports whether the most recent phase row already belongs to ph.
+func (r *run) recorded(ph Phase) bool {
+	n := len(r.result.Phases)
+	return n > 0 && r.result.Phases[n-1].Phase == ph
 }
 
 func (r *run) progress(ph Phase, msg string, cur, total int64) {

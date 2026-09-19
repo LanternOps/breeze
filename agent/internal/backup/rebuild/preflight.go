@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
@@ -102,6 +103,27 @@ func preflight(ctx context.Context, r *run) error {
 		}
 		if targetSize <= 0 {
 			return &RefusalError{Reason: "image target needs a size (--image-size) when the file does not exist"}
+		}
+	case TargetVHDX:
+		// The raw staging file is created by attach() at ImageSizeBytes and
+		// the VHDX is written next to it by convert, so the host needs
+		// room for both — checked here, before anything is written.
+		targetSize = r.opts.Target.ImageSizeBytes
+		if fi, err := os.Stat(r.opts.Target.RawPath()); err == nil {
+			targetSize = fi.Size()
+		}
+		if targetSize <= 0 {
+			return &RefusalError{Reason: "vhdx target needs a size (--image-size) when the raw staging file does not exist"}
+		}
+		if _, err := r.sys.LookPath("qemu-img"); err != nil {
+			return &RefusalError{Reason: "qemu-img not installed on this host; install qemu-utils"}
+		}
+		free, err := r.sys.FreeSpace(filepath.Dir(r.opts.Target.Path))
+		if err != nil {
+			return err
+		}
+		if need := targetSize * 3 / 2; free < need {
+			return &RefusalError{Reason: fmt.Sprintf("not enough free space for raw image plus VHDX: need %d, have %d", need, free)}
 		}
 	}
 	sector := src.SectorSize

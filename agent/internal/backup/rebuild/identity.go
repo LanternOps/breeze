@@ -87,7 +87,8 @@ func stripEnrollment(agentYAML string) error {
 // encryption is a recorded no-op on the Linux engine: LUKS sources are
 // refused at preflight (layout.Assess's ReasonLUKS guard) and BitLocker is
 // the Windows engine's job (a later wave). The phase still appears in
-// Result.Phases so every platform reports the same seven phases.
+// Result.Phases (as skipped) so every platform reports the same phases.
 func encryption(_ context.Context, r *run) error {
+	r.recordSkipped(PhaseEncryption, "no encryption to re-apply on the Linux engine")
 	return nil
 }

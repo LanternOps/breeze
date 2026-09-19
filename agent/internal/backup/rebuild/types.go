@@ -20,15 +20,33 @@ type TargetKind string
 const (
 	TargetDisk  TargetKind = "disk"
 	TargetImage TargetKind = "image"
+	// TargetVHDX (W05a) stages a raw image at <Path>.raw, runs the seven
+	// W03 phases against it exactly like TargetImage, then the convert
+	// phase turns it into a dynamic VHDX at Path with qemu-img and deletes
+	// the raw file. Path should end in .vhdx.
+	TargetVHDX TargetKind = "vhdx"
 )
 
 // Target is where the engine provisions and restores the machine.
 type Target struct {
 	Kind TargetKind `json:"kind"`
 	Path string     `json:"path"`
-	// ImageSizeBytes is used only for TargetImage: the size to create the
-	// file at when it does not already exist (sparse).
+	// ImageSizeBytes is used for TargetImage and TargetVHDX: the size to
+	// create the (raw) file at when it does not already exist (sparse).
 	ImageSizeBytes int64 `json:"imageSizeBytes,omitempty"`
+}
+
+// RawPath is the file the engine actually attaches as a loop device: the
+// image itself for TargetImage, the raw staging file (Path + ".raw") for
+// TargetVHDX, and "" for TargetDisk (a block device is attached directly).
+func (t Target) RawPath() string {
+	switch t.Kind {
+	case TargetImage:
+		return t.Path
+	case TargetVHDX:
+		return t.Path + ".raw"
+	}
+	return ""
 }
 
 // IdentityMode selects whether the rebuilt machine keeps the source
@@ -47,8 +65,10 @@ type Marker struct {
 	Nonce      string `json:"nonce"`
 }
 
-// Phase is one of the seven engine phases, always run and reported in the
-// same order.
+// Phase is one of the eight engine phases, always run and reported in the
+// same order. The eighth (convert) only does work for TargetVHDX; every
+// other target records it as PhaseSkipped so the phase table stays
+// fixed-length for every caller.
 type Phase string
 
 const (
@@ -59,17 +79,18 @@ const (
 	PhaseIdentity   Phase = "identity"
 	PhaseEncryption Phase = "encryption"
 	PhaseValidate   Phase = "validate"
+	PhaseConvert    Phase = "convert" // raw staging image → VHDX (TargetVHDX only)
 )
 
 // AllPhases is the fixed phase order every rebuild.Run reports.
-var AllPhases = []Phase{PhasePreflight, PhaseProvision, PhaseRestore, PhaseBoot, PhaseIdentity, PhaseEncryption, PhaseValidate}
+var AllPhases = []Phase{PhasePreflight, PhaseProvision, PhaseRestore, PhaseBoot, PhaseIdentity, PhaseEncryption, PhaseValidate, PhaseConvert}
 
 // PhaseStatus is the outcome of one phase within a single Run call.
 type PhaseStatus string
 
 const (
 	PhaseCompleted PhaseStatus = "completed"
-	PhaseSkipped   PhaseStatus = "skipped" // resumed run: already done by an earlier call
+	PhaseSkipped   PhaseStatus = "skipped" // resumed run: already done by an earlier call; or a phase with nothing to do for this target
 	PhaseFailed    PhaseStatus = "failed"
 	PhaseRefused   PhaseStatus = "refused"
 )
