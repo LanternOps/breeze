@@ -65,6 +65,14 @@ describe('scriptBuilderContextSchema', () => {
     }
   });
 
+  it('should accept a null category (scripts imported from loose files have none — #import-null-category)', () => {
+    const result = scriptBuilderContextSchema.safeParse({
+      editorSnapshot: { category: null, content: 'Write-Host hi' },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.editorSnapshot?.category).toBeUndefined();
+  });
+
   it('should reject invalid script language', () => {
     const result = scriptBuilderContextSchema.safeParse({
       editorSnapshot: { language: 'ruby' },

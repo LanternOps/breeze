@@ -181,6 +181,16 @@ describe('upsertCustomer', () => {
     expect(ids[0]!.length).toBeLessThanOrEqual(50);
   });
 
+  it('returns customer addresses from a sparse update for importing into Breeze', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      Customer: { Id: '12', SyncToken: '8', BillAddr: { Line1: '1 Bill St' }, ShipAddr: { City: 'Dallas' } },
+    }), { status: 200 }));
+    const ref = await quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme', billingEmail: null, taxId: null, currencyCode: 'USD',
+    }, { remoteEntityId: '12', remoteSyncToken: '7' });
+    expect(ref).toMatchObject({ billAddr: { line1: '1 Bill St' }, shipAddr: { city: 'Dallas' } });
+  });
+
   it('creates a Customer without sparse-update fields', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       Customer: { Id: '12', SyncToken: '0' },

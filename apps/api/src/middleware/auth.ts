@@ -900,9 +900,26 @@ export function requirePermission(resource: string, action: string) {
 }
 
 /**
- * Require that the caller completed MFA for this session.
- * This is enforced via the JWT `mfa` claim which is set when tokens are minted
- * after MFA verification.
+ * Require an MFA-ASSURED session: the JWT `mfa` claim is true.
+ *
+ * Contract (read this before relying on it): `mfa: true` means the session
+ * satisfies the caller's EFFECTIVE MFA policy (services/mfaPolicy.ts — org /
+ * partner `security.requireMfa`, role `force_mfa`, the partner-admin force
+ * flag). Every mint site (password login, SSO, CF Access, refresh
+ * carry-forward) sets it from that policy:
+ *   - account has a factor enrolled  → true only after the factor is proven;
+ *   - no factor, policy requires MFA → false (session is locked to the
+ *     enrollment flow by the 428 gate in authMiddleware);
+ *   - no factor, policy does not require MFA → true. A tenant that has not
+ *     turned MFA on admits password-only sessions here BY DESIGN.
+ *
+ * So this gate is NOT proof that a second factor was presented. A route that
+ * must see a fresh, proven factor regardless of tenant policy (agent
+ * rollback, maintenance entry, factor management) uses the operation-bound
+ * step-up grant primitive instead (services/mfaStepUpGrant.ts +
+ * POST /auth/mfa/step-up), which denies accounts with no usable factor.
+ * Docs must describe this gate as "MFA when your MFA policy requires it",
+ * never as an unconditional MFA requirement.
  */
 export function requireMfa() {
   return async (c: Context, next: Next) => {
@@ -931,8 +948,9 @@ export function requireMfa() {
 }
 
 /**
- * Returns true when MFA is either disabled globally or has been satisfied
- * in the caller's authenticated token context.
+ * Returns true when MFA is either disabled globally or the session's `mfa`
+ * claim is true — i.e. the session satisfies the effective MFA policy (see
+ * {@link requireMfa} for the full contract). Not a factor-proof predicate.
  */
 export function hasSatisfiedMfa(auth: Pick<AuthContext, 'token'>): boolean {
   if (!ENABLE_2FA) return true;

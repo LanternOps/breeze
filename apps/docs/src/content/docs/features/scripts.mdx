@@ -111,7 +111,7 @@ Categories and tags travel by name and are created in the importing tenant when 
 </Steps>
 
 <Aside type="caution">
-  Creating and updating scripts requires MFA verification. The save action returns an error if the authenticated session has not completed MFA.
+  Creating and updating scripts requires an MFA-assured session: if your organization or partner MFA policy requires MFA, or your account has a factor enrolled, the save action returns an error until the session has completed MFA. Accounts without an enrolled factor in a tenant that does not require MFA are admitted with a password alone.
 </Aside>
 
 ### Duplicating a script
@@ -638,7 +638,7 @@ Read-only script operations (searching the library, viewing script details, chec
 
 ### MFA enforcement
 
-All script write and execute operations require MFA verification, whether triggered by a user directly or approved through the AI workflow. If the current session has not completed MFA, the API returns a `403` error. Complete MFA verification in your account settings before approving or executing scripts.
+All script write and execute operations require an MFA-assured session, whether triggered by a user directly or approved through the AI workflow. A session is MFA-assured when it has completed MFA, or when the account has no factor enrolled and the effective MFA policy (organization or partner **Require MFA** setting, or a role that forces MFA) does not require one. If the session is not assured, the API returns a `403` error with code `MFA_REQUIRED`. To make MFA mandatory for script execution across a tenant, turn on **Require MFA** in the organization or partner security settings; users without a factor are then routed to enrollment before they can run scripts.
 
 ### Viewing approval history
 
@@ -665,7 +665,7 @@ All script endpoints require authentication and the appropriate permission scope
 | POST | `/scripts/executions/:id/cancel` | `scripts:execute` | Cancel a pending, queued, or running execution |
 
 <Aside>
-  All write and execute endpoints require MFA verification. The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
+  All write and execute endpoints require an MFA-assured session (see [MFA enforcement](#mfa-enforcement)). The API enforces multi-tenant access control -- organization-scope users see only their org's scripts, partner-scope users see scripts across their managed organizations, and system-scope users see everything.
 </Aside>
 
 ---

@@ -627,6 +627,8 @@ export class QuickbooksProvider implements AccountingProvider {
       id: parsed.Customer.Id,
       syncToken: parsed.Customer.SyncToken,
       currencyCode: parsed.Customer.CurrencyRef?.value || undefined,
+      billAddr: mapQboAddress(parsed.Customer.BillAddr),
+      shipAddr: mapQboAddress(parsed.Customer.ShipAddr),
     };
   }
 

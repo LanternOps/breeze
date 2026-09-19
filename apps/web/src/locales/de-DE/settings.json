@@ -1279,6 +1279,20 @@
         }
       }
     },
+    "accent": {
+      "title": "Portal-Akzent",
+      "description": "Die Farbe der Schaltflächen und Links im Kundenportal. Statusfarben ändern sich nie.",
+      "options": {
+        "spruce": "Fichte",
+        "ink": "Tinte",
+        "oxblood": "Ochsenblut",
+        "navy": "Marineblau",
+        "plum": "Pflaume",
+        "bronze": "Antikbronze",
+        "teal": "Petrol",
+        "forest": "Waldgrün"
+      }
+    },
     "support": {
       "title": "Support-Kontakt",
       "description": "Wird den Kunden im Portal angezeigt.",

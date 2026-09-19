@@ -316,7 +316,7 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { inArray } from 'drizzle-orm';
-import { users, userPasskeys } from '../db/schema';
+import { users, userPasskeys, organizations } from '../db/schema';
 import { getRedis } from '../services/redis';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
@@ -772,6 +772,12 @@ describe('user routes', () => {
               where: vi.fn().mockResolvedValue([])
             })
           })
+        } as any)
+        // Partner-org ownership probe for the selected list (Finding 2).
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: '33333333-3333-3333-3333-333333333333' }])
+          })
         } as any);
 
       const txSelect = vi
@@ -832,6 +838,40 @@ describe('user routes', () => {
       expect(body.email).toBe('invitee@example.com');
       expect(body.status).toBe('invited');
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    });
+
+    it('rejects a selected-org invite naming an organization outside the caller partner before any write', async () => {
+      const MINE = '33333333-3333-3333-3333-333333333333';
+      const THEIRS = '66666666-6666-6666-6666-666666666666';
+      // Selects before the transaction, in order: scoped role, parent role,
+      // partner-wide gate membership, then the NEW partner-org ownership probe
+      // (returns only the org that belongs to partner-123).
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: '22222222-2222-2222-2222-222222222222', scope: 'partner', name: 'Admin', description: null, isSystem: true, partnerId: null, orgId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: MINE }]) }) } as any);
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'invitee@example.com',
+          name: 'Invitee',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'selected',
+          orgIds: [MINE, THEIRS]
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/organization/i);
+      // The foreign id must never reach partner_users.org_ids: no transaction opened.
+      expect(db.transaction).not.toHaveBeenCalled();
+      // The probe is scoped to the caller's partner, not a bare id lookup.
+      expect(vi.mocked(inArray)).toHaveBeenCalledWith(organizations.id, [MINE, THEIRS]);
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(organizations.partnerId, 'partner-123');
     });
 
     it('should require orgIds when orgAccess is selected', async () => {

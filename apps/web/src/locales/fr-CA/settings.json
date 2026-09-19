@@ -1279,6 +1279,20 @@
         }
       }
     },
+    "accent": {
+      "title": "Accent du portail",
+      "description": "La couleur des boutons et des liens dans le portail de vos clients. Les couleurs de statut ne changent jamais.",
+      "options": {
+        "spruce": "Épinette",
+        "ink": "Encre",
+        "oxblood": "Bordeaux",
+        "navy": "Marine",
+        "plum": "Prune",
+        "bronze": "Bronze antique",
+        "teal": "Sarcelle",
+        "forest": "Forêt"
+      }
+    },
     "support": {
       "title": "Contact support",
       "description": "Montré aux clients dans le portail.",

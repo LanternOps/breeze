@@ -37,7 +37,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, eq, isNull, ne } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import {
@@ -47,6 +47,7 @@ import {
   organizationExternalLinks,
   organizations,
   partners,
+  sites,
 } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
 import { getConnection } from './accountingConnectionService';
@@ -56,6 +57,18 @@ import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
 import { getRedis } from '../redis';
+// Narrow import: `../orgImport`'s barrel pulls in `services/tenantLifecycle.ts`,
+// which dynamically imports `routes/agentWs.ts` — several callers of this
+// module (quoteSendWorker, stripeReconcileSweep, invoiceWorker, contractWorker,
+// accountingSyncWorker, accountingReconcileWorker) are `global`-placement
+// workers whose closure must never reach socket-local dispatch (see
+// workerEntrypointClosure.contract.test.ts).
+import { billingAddressColumns } from '../orgImport/addressColumns';
+// Narrow import: `./quickbooksCustomerImport` transitively pulls in
+// `../orgImport` (for commitOrgImport/previewOrgImport), same reachability
+// concern as billingAddressColumns above.
+import { siteAddressFrom } from './addressMapping';
+import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import type {
   AccountingCustomerPayload,
@@ -909,6 +922,39 @@ export async function saveMappingDecision(
   return mappingResult(row, proposedRemoteName);
 }
 
+/** Fill only an empty address, rechecking at write time so a concurrent edit wins. */
+async function importMappedAddress(partnerId: string, orgId: string, remote: RemoteRef): Promise<boolean> {
+  const billing = billingAddressColumns(remote.billAddr);
+  const hasBilling = Object.values(billing).some((value) => value?.trim());
+  const address = siteAddressFrom(remote.shipAddr ?? remote.billAddr);
+  if (!hasBilling && !address) return false;
+  const [updated] = await db.update(organizations).set({ ...billing, updatedAt: new Date() }).where(and(
+    eq(organizations.id, orgId), eq(organizations.partnerId, partnerId),
+    isNull(organizations.deletedAt), notQuickSupportOrg(),
+    ...[
+      organizations.billingAddressLine1, organizations.billingAddressLine2, organizations.billingAddressCity,
+      organizations.billingAddressRegion, organizations.billingAddressPostalCode, organizations.billingAddressCountry,
+    ].map((column) => sql`coalesce(trim(${column}), '') = ''`),
+  )).returning({ id: organizations.id });
+  if (!updated) return false;
+
+  let siteImported = false;
+  if (address) {
+    // Sites have no isDefault flag. Use the oldest site (stable id tie-break),
+    // never another site's empty address when the default already has one.
+    const updatedSites = await db.update(sites).set({ address, updatedAt: new Date() }).where(and(
+      eq(sites.orgId, orgId),
+      sql`${sites.orgId} in (select id from ${organizations} where ${organizations.partnerId} = ${partnerId})`,
+      sql`${sites.id} = (select id from ${sites} where org_id = ${orgId} order by created_at, id limit 1)`,
+      sql`not exists (select 1 from jsonb_each_text(case when jsonb_typeof(${sites.address}) = 'object'
+        then ${sites.address} else '{}'::jsonb end) as entry where coalesce(trim(entry.value), '') <> '')`,
+      sql`(${sites.address} is null or jsonb_typeof(${sites.address}) = 'object')`,
+    )).returning({ id: sites.id });
+    siteImported = updatedSites.length > 0;
+  }
+  return hasBilling || siteImported;
+}
+
 /** Only the fields QBO omission (§11) needs: never send a raw org/item row across the seam. */
 function orgBillingAddress(org: OrgRow): RemoteAddress | undefined {
   const addr: RemoteAddress = {
@@ -919,7 +965,7 @@ function orgBillingAddress(org: OrgRow): RemoteAddress | undefined {
     postalCode: org.billingAddressPostalCode ?? undefined,
     country: org.billingAddressCountry ?? undefined,
   };
-  return Object.values(addr).some((v) => v !== undefined) ? addr : undefined;
+  return Object.values(addr).some((v) => v?.trim()) ? addr : undefined;
 }
 
 /**
@@ -1277,20 +1323,26 @@ async function syncMappedEntityUnderLease(
     throw new AccountingMappingError('quickbooks_error', 502, message);
   }
 
+  let addressImported = false;
+  let synced: MappingRow;
   try {
     // Phase 2 (success) — likewise its own short, self-committing context.
-    const row = await runInDbContext(() => persistRemoteRef({
-      mappingId: mapping.id,
-      partnerId,
-      remoteEntityId: remote.id,
-      remoteSyncToken: remote.syncToken ?? null,
-      // RemoteRef.currencyCode is only ever populated by upsertCustomer (types.ts)
-      // — a catalog_item sync's `remote` always carries none — but the explicit
-      // entity-type gate documents that this is a deliberate org-only field, not
-      // an accident of which provider methods happen to fill it in today.
-      remoteCurrencyCode: breezeEntityType === 'org' ? (remote.currencyCode ?? null) : null,
-    }));
-    return mappingResult(row, prep.kind === 'org' ? prep.payload.displayName : prep.payload.name);
+    synced = await runInDbContext(async () => {
+      if (prep.kind === 'org' && existingRef && !prep.payload.billAddr) {
+        addressImported = await importMappedAddress(partnerId, breezeEntityId, remote);
+      }
+      return persistRemoteRef({
+        mappingId: mapping.id,
+        partnerId,
+        remoteEntityId: remote.id,
+        remoteSyncToken: remote.syncToken ?? null,
+        // RemoteRef.currencyCode is only ever populated by upsertCustomer (types.ts)
+        // — a catalog_item sync's `remote` always carries none — but the explicit
+        // entity-type gate documents that this is a deliberate org-only field, not
+        // an accident of which provider methods happen to fill it in today.
+        remoteCurrencyCode: breezeEntityType === 'org' ? (remote.currencyCode ?? null) : null,
+      });
+    });
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingMappingService',
@@ -1308,4 +1360,18 @@ async function syncMappedEntityUnderLease(
     }
     throw new AccountingMappingError('record_failed', 502, message);
   }
+  if (addressImported) {
+    // Emit after the transaction commits, so the org Activity tab records only
+    // completed imports. Audit failure must not turn an accepted sync into a retry.
+    try {
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: breezeEntityId, actorType: 'system', initiatedBy: 'integration',
+        action: 'organization.update', resourceType: 'organization', resourceId: breezeEntityId,
+        details: { source: 'quickbooks', message: 'Address imported from QuickBooks' },
+      });
+    } catch (err) {
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  return mappingResult(synced, prep.kind === 'org' ? prep.payload.displayName : prep.payload.name);
 }

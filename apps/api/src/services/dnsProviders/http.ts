@@ -12,6 +12,12 @@ interface RequestJsonInit extends RequestInit {
    * metadata/loopback/link-local/CGNAT. Hosted SaaS leaves this unset (strict).
    */
   allowPrivateNetwork?: boolean;
+  /**
+   * Additionally permit a carrier-grade-NAT (100.64.0.0/10) target — the range
+   * an overlay network such as Tailscale assigns. Inert without
+   * `allowPrivateNetwork`, so hosted SaaS is unaffected.
+   */
+  allowCarrierNat?: boolean;
 }
 
 /**
@@ -53,6 +59,7 @@ export async function requestJson<T>(
     timeoutMs = DEFAULT_TIMEOUT_MS,
     maxRetries = DEFAULT_MAX_RETRIES,
     allowPrivateNetwork,
+    allowCarrierNat,
     ...fetchInit
   } = init;
 
@@ -94,6 +101,7 @@ export async function requestJson<T>(
         ...fetchInit,
         timeoutMs,
         allowPrivateNetwork,
+        allowCarrierNat,
         signal: controller.signal,
         headers: {
           Accept: 'application/json',
