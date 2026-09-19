@@ -10,6 +10,7 @@ import {
 import { requestLikeFromSnapshot, writeAuditEventAsync } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
+import { envInt } from '../utils/envInt';
 
 export const SCRIPT_VERIFY_RECONCILE_JOB_NAME = 'reconcile';
 const PAGE_SIZE = 200;
@@ -17,8 +18,8 @@ const TERMINAL_EXECUTIONS = new Set(['completed', 'failed', 'timeout', 'cancelle
 
 /** Cross-org recovery; short DB contexts never span a queue round-trip. */
 export async function sweepScriptVerifyProposals(): Promise<void> {
-  const configured = Number(process.env.SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES ?? 30);
-  const minutes = Number.isFinite(configured) && configured > 0 ? configured : 30;
+  const configured = envInt('SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES', 30);
+  const minutes = configured > 0 ? configured : 30;
   const cutoff = new Date(Date.now() - minutes * 60_000);
   let cursor: string | undefined;
   for (;;) {
