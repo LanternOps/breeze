@@ -11,7 +11,7 @@
 // Global Constraints ("DR step contract") and Tasks 7–8.
 import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { backupSnapshots } from '../db/schema';
+import { backupSnapshots } from '../db/schema/backup';
 import type { DrDb } from './bareMetalRecoveryService';
 
 export const DR_STEP_BARE_METAL_REBUILD = 'BARE_METAL_REBUILD';
