@@ -475,6 +475,11 @@ func TestDeleteFileContentsOnlyNeverFollowsLinks(t *testing.T) {
 	if len(payload.SkippedLinks) != 1 || filepath.Base(payload.SkippedLinks[0]) != "shortcut" {
 		t.Errorf("expected the skipped link to be reported, got %v", payload.SkippedLinks)
 	}
+	// A bin that still holds a link the operator asked to clear is not emptied.
+	// `deleted:true` with no failedChildren made the API call this `completed`.
+	if payload.Deleted {
+		t.Error("deleted must be false when a child link was skipped")
+	}
 	if _, err := os.Stat(filepath.Join(trash, "one")); !os.IsNotExist(err) {
 		t.Error("the nested subtree (including the deep symlink itself) should be gone")
 	}

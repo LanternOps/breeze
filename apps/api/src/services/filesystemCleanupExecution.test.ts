@@ -191,6 +191,14 @@ describe('mapFileDeleteStatus (spec §5.2 status vocabulary)', () => {
     ).toBe('failed');
   });
 
+  it('maps a skipped symlink child onto partial, never completed (spec §13 row 13)', () => {
+    expect(
+      mapFileDeleteStatus({ status: 'completed' }, {
+        deleted: false, bytesFreed: 2048, skippedLocked: [], skippedLinks: ['/trash/shortcut'], skippedRecent: [], failedChildren: [],
+      }),
+    ).toBe('partial');
+  });
+
   it('maps a child skipped as changed-since-preview onto partial (spec §13 row 2)', () => {
     // The contentsOnly container is exempt from the freshness check, so the
     // agent reports the per-child skips instead. A bin that kept a file the

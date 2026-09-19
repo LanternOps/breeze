@@ -899,8 +899,12 @@ func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.Fi
 	}
 
 	return NewSuccessResult(map[string]any{
-		"path":           cleanPath,
-		"deleted":        len(failedChildren) == 0 && len(skippedLocked) == 0,
+		"path": cleanPath,
+		// A link or a changed-since-preview child left behind means the
+		// directory is NOT emptied. Reporting deleted:true with an empty
+		// failedChildren made the API call the action `completed`.
+		"deleted": len(failedChildren) == 0 && len(skippedLocked) == 0 &&
+			len(skippedLinks) == 0 && len(skippedRecent) == 0,
 		"permanent":      true,
 		"contentsOnly":   true,
 		"bytesFreed":     bytesFreed,

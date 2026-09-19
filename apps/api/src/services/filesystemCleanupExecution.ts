@@ -206,9 +206,10 @@ export function mapFileDeleteStatus(
     // read as a clean success. Only a run that freed nothing at all is `failed`.
     return parsed.bytesFreed === 0 && parsed.skippedLocked.length === 0 ? 'failed' : 'partial';
   }
-  // A child kept back as changed-since-preview means the bin is not empty and
-  // the operator approved something that no longer matches what is on disk.
-  if (parsed.skippedRecent.length > 0) return 'partial';
+  // A link or a changed-since-preview child kept back means the bin is not
+  // empty: the operator asked for it cleared and it was not. `completed` here
+  // is the same lie as a silent failedChildren (§13 row 13).
+  if (parsed.skippedLinks.length > 0 || parsed.skippedRecent.length > 0) return 'partial';
   if (parsed.bytesFreed === 0 && parsed.skippedLocked.length > 0) return 'skipped_locked';
   return 'completed';
 }
