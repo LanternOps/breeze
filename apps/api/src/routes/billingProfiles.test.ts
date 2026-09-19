@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const { listWorkTypes, createWorkType, updateWorkType, archiveWorkType, authRef, permsRef, permissionCalls } = vi.hoisted(() => ({
   listWorkTypes: vi.fn(), createWorkType: vi.fn(), updateWorkType: vi.fn(), archiveWorkType: vi.fn(),
-  authRef: { current: { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111' } as { scope: string; partnerId: string | null } | null },
+  authRef: { current: { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111', partnerOrgAccess: 'all' } as { scope: string; partnerId: string | null; partnerOrgAccess?: 'all' | 'selected' | 'none' | null } | null },
   permsRef: { current: { permissions: [{ resource: 'billing_profiles', action: 'read' }, { resource: 'billing_profiles', action: 'write' }] } },
   // Appended by the requirePermission mock at MODULE LOAD (the middleware
   // factories run when billingProfiles.ts is imported), in registration order.
@@ -50,7 +50,36 @@ import { billingProfilesRoutes } from './billingProfiles';
 beforeEach(() => {
   vi.clearAllMocks();
   [listWorkTypes, createWorkType, updateWorkType, archiveWorkType].forEach((mock) => mock.mockReset());
-  authRef.current = { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111' };
+  authRef.current = { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111', partnerOrgAccess: 'all' };
+});
+
+// Work types are partner-wide config (epic #2135): a partner user whose org
+// access is 'selected' may READ them but must not write them, whatever their
+// role permissions say -- canManagePartnerWidePolicies() is the single gate.
+describe('partner-wide write gate', () => {
+  const PARTNER_WIDE_DENIED = 'Managing partner-wide state requires full partner org access (orgAccess must be "all")';
+  it.each([
+    ['POST', '/work-types', { name: 'Remote' }],
+    ['PATCH', '/work-types/33333333-3333-4333-8333-333333333333', { name: 'Onsite' }],
+    ['DELETE', '/work-types/33333333-3333-4333-8333-333333333333', undefined],
+  ])('%s %s is 403 for a selected-org partner user', async (method, path, body) => {
+    authRef.current = { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111', partnerOrgAccess: 'selected' };
+    const res = await billingProfilesRoutes.request(path, {
+      method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_DENIED });
+    expect(createWorkType).not.toHaveBeenCalled();
+    expect(updateWorkType).not.toHaveBeenCalled();
+    expect(archiveWorkType).not.toHaveBeenCalled();
+  });
+
+  it('GET /work-types stays readable for a selected-org partner user', async () => {
+    authRef.current = { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111', partnerOrgAccess: 'selected' };
+    listWorkTypes.mockResolvedValue([]);
+    const res = await billingProfilesRoutes.request('/work-types');
+    expect(res.status).toBe(200);
+  });
 });
 
 describe('GET /work-types', () => {
@@ -78,7 +107,7 @@ describe('POST /work-types', () => {
       body: JSON.stringify({ name: 'On-site' }),
     });
     expect(res.status).toBe(201);
-    expect(createWorkType).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', { name: 'On-site' });
+    expect(createWorkType).toHaveBeenCalledWith(expect.objectContaining({ scope: 'partner', partnerOrgAccess: 'all' }), '11111111-1111-4111-8111-111111111111', { name: 'On-site' });
   });
 
   it('rejects a blank name with 400 and never calls the service', async () => {
@@ -112,7 +141,7 @@ describe('DELETE /work-types/:id', () => {
     const res = await billingProfilesRoutes.request('/work-types/33333333-3333-4333-8333-333333333333', { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ workType: archived, clearedCategoryCount: 0 });
-    expect(archiveWorkType).toHaveBeenCalledWith('33333333-3333-4333-8333-333333333333', '11111111-1111-4111-8111-111111111111');
+    expect(archiveWorkType).toHaveBeenCalledWith(expect.objectContaining({ scope: 'partner', partnerOrgAccess: 'all' }), '33333333-3333-4333-8333-333333333333', '11111111-1111-4111-8111-111111111111');
   });
 
   // The UI has to be able to tell the tech that archiving also rewrote their
@@ -159,7 +188,7 @@ describe('PATCH /work-types/:id', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ workType });
-    expect(updateWorkType).toHaveBeenCalledWith(workTypeId, partnerId, { name: 'On-site', sortOrder: 2, isActive: true });
+    expect(updateWorkType).toHaveBeenCalledWith(expect.objectContaining({ scope: 'partner', partnerOrgAccess: 'all' }), workTypeId, partnerId, { name: 'On-site', sortOrder: 2, isActive: true });
   });
   it.each(['{}', '{', '{"name":" "}', '{"sortOrder":-1}', '{"isActive":"true"}'])('rejects invalid body %s', async (body) => {
     const res = await billingProfilesRoutes.request(`/work-types/${workTypeId}`, {
@@ -180,7 +209,7 @@ describe('service errors', () => {
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Work type not found', code: 'WORK_TYPE_NOT_FOUND' });
-    expect(service.mock.calls[0]?.slice(0, 2)).toEqual([workTypeId, partnerId]);
+    expect(service.mock.calls[0]?.slice(1, 3)).toEqual([workTypeId, partnerId]);
   });
 });
 

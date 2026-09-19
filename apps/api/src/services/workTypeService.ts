@@ -5,6 +5,23 @@ import { workTypes, type WorkType } from '../db/schema/workTypes';
 // ticketCategories lives in tickets.ts; ticketConfig.ts holds orgTicketSettings.
 import { ticketCategories } from '../db/schema/tickets';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import type { AuthContext } from '../middleware/auth';
+import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
+
+/** The slice of the caller the partner-wide gate needs; routes pass `c.get('auth')`. */
+export type WorkTypeCaller = Pick<AuthContext, 'scope' | 'partnerOrgAccess'>;
+
+/**
+ * Work types are partner-wide configuration (epic #2135): one row shapes every
+ * org under the MSP. Every mutator runs this gate BEFORE its first write, so a
+ * partner user with 'selected' org access -- who can read the list -- cannot
+ * change it, whatever role permissions they hold. The route returns 403 first;
+ * this is the belt that catches any future caller (AI tool, worker) that
+ * reaches the service without going through the route.
+ */
+function assertPartnerWideWriter(caller: WorkTypeCaller): void {
+  if (!canManagePartnerWidePolicies(caller)) throw new PartnerWideWriteDeniedError();
+}
 
 export const WORK_TYPE_NAME_MAX = 60;
 
@@ -34,9 +51,11 @@ export async function listWorkTypes(
 }
 
 export async function createWorkType(
+  caller: WorkTypeCaller,
   partnerId: string,
   input: { name: string; sortOrder?: number },
 ): Promise<WorkType> {
+  assertPartnerWideWriter(caller);
   try {
     const [row] = await db
       .insert(workTypes)
@@ -54,10 +73,12 @@ export async function createWorkType(
 }
 
 export async function updateWorkType(
+  caller: WorkTypeCaller,
   id: string,
   partnerId: string,
   input: { name?: string; sortOrder?: number; isActive?: boolean },
 ): Promise<WorkType> {
+  assertPartnerWideWriter(caller);
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (input.name !== undefined) set.name = input.name;
   if (input.sortOrder !== undefined) set.sortOrder = input.sortOrder;
@@ -95,9 +116,11 @@ export async function updateWorkType(
  * silently rewriting a technician's category configuration.
  */
 export async function archiveWorkType(
+  caller: WorkTypeCaller,
   id: string,
   partnerId: string,
 ): Promise<{ workType: WorkType; clearedCategoryCount: number }> {
+  assertPartnerWideWriter(caller);
   return db.transaction(async (tx) => {
     const [row] = await tx
       .update(workTypes)

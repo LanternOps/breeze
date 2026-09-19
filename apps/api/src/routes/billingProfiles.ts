@@ -18,6 +18,9 @@ import { createWorkTypeSchema, updateWorkTypeSchema } from '@breeze/shared';
 import {
   listWorkTypes, createWorkType, updateWorkType, archiveWorkType, WorkTypeServiceError,
 } from '../services/workTypeService';
+import {
+  canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError,
+} from '../services/partnerWideAccess';
 
 const app = new Hono();
 
@@ -31,8 +34,21 @@ function fail(c: Context, err: unknown) {
   if (err instanceof WorkTypeServiceError) {
     return c.json({ error: err.message, code: err.code }, err.status as 400);
   }
+  if (err instanceof PartnerWideWriteDeniedError) {
+    return c.json({ error: err.message }, 403);
+  }
   throw err;
 }
+
+// Work types are partner-wide config (epic #2135). Reads need only the
+// permission; every write ALSO needs full partner org access -- a 'selected'
+// partner user must not reshape every org's pickers. Same gate in the service.
+const partnerWideWrite = async (c: Context, next: () => Promise<void>) => {
+  if (!canManagePartnerWidePolicies(c.get('auth'))) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+  await next();
+};
 
 app.get('/work-types', readPerm, async (c) => {
   const auth = c.get('auth');
@@ -42,23 +58,23 @@ app.get('/work-types', readPerm, async (c) => {
   return c.json({ workTypes: rows });
 });
 
-app.post('/work-types', writePerm, async (c) => {
+app.post('/work-types', writePerm, partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const parsed = createWorkTypeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid work type', issues: parsed.error.issues }, 400);
   try {
-    return c.json({ workType: await createWorkType(auth.partnerId, parsed.data) }, 201);
+    return c.json({ workType: await createWorkType(auth, auth.partnerId, parsed.data) }, 201);
   } catch (err) { return fail(c, err); }
 });
 
-app.patch('/work-types/:id', writePerm, async (c) => {
+app.patch('/work-types/:id', writePerm, partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   const parsed = updateWorkTypeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid work type', issues: parsed.error.issues }, 400);
   try {
-    return c.json({ workType: await updateWorkType(c.req.param('id')!, auth.partnerId, parsed.data) });
+    return c.json({ workType: await updateWorkType(auth, c.req.param('id')!, auth.partnerId, parsed.data) });
   } catch (err) { return fail(c, err); }
 });
 
@@ -69,11 +85,11 @@ app.patch('/work-types/:id', writePerm, async (c) => {
 // how many ticket categories just lost it as their default (the service clears
 // those in the same transaction — otherwise the server would keep stamping a
 // work type the picker no longer offers).
-app.delete('/work-types/:id', writePerm, async (c) => {
+app.delete('/work-types/:id', writePerm, partnerWideWrite, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   try {
-    const { workType, clearedCategoryCount } = await archiveWorkType(c.req.param('id')!, auth.partnerId);
+    const { workType, clearedCategoryCount } = await archiveWorkType(auth, c.req.param('id')!, auth.partnerId);
     return c.json({ workType, clearedCategoryCount });
   } catch (err) { return fail(c, err); }
 });

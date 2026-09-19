@@ -31,8 +31,13 @@ vi.mock('../db', () => ({
 }));
 
 import { archiveWorkType, createWorkType, getActiveWorkType, updateWorkType, WorkTypeServiceError } from './workTypeService';
+import { PartnerWideWriteDeniedError } from './partnerWideAccess';
 
 const PARTNER = 'bbbbbbbb-2222-4222-8222-222222222222';
+// Every mutator takes the caller so the partner-wide gate lives in the service
+// too (the walk in partner-wide-write-coverage.test.ts requires it there).
+const ADMIN = { scope: 'partner', partnerOrgAccess: 'all' } as const;
+const SELECTED = { scope: 'partner', partnerOrgAccess: 'selected' } as const;
 const txUpdateCursor = { i: 0 };
 
 beforeEach(() => { selectQueue.length = 0; txUpdates.length = 0; txUpdateCursor.i = 0; updateSpy.mockClear(); insertSpy.mockClear(); vi.clearAllMocks(); });
@@ -43,11 +48,11 @@ describe('createWorkType', () => {
     (db.insert as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
       values: () => ({ returning: () => Promise.resolve([]) }),
     }));
-    await expect(createWorkType(PARTNER, { name: 'Remote' })).rejects.toThrow('Failed to create work type');
+    await expect(createWorkType(ADMIN, PARTNER, { name: 'Remote' })).rejects.toThrow('Failed to create work type');
   });
 
   it('stamps the acting partner id, never one from the input', async () => {
-    await createWorkType(PARTNER, { name: 'Remote' });
+    await createWorkType(ADMIN, PARTNER, { name: 'Remote' });
     expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ partnerId: PARTNER, name: 'Remote' }));
   });
 });
@@ -57,7 +62,7 @@ describe('archiveWorkType', () => {
 
   it('soft-deletes by setting isActive=false and NEVER issues a DELETE', async () => {
     txUpdates.push({ set: undefined, returning: [archivedRow] }, { set: undefined, returning: [] });
-    const result = await archiveWorkType('wt-1', PARTNER);
+    const result = await archiveWorkType(ADMIN, 'wt-1', PARTNER);
     expect(txUpdates[0]?.set).toMatchObject({ isActive: false });
     expect(result.workType).toMatchObject({ isActive: false });
     // db.delete is mocked to throw; reaching it would have failed the call above.
@@ -71,19 +76,19 @@ describe('archiveWorkType', () => {
       { set: undefined, returning: [archivedRow] },
       { set: undefined, returning: [{ id: 'cat-1' }, { id: 'cat-2' }] },
     );
-    const result = await archiveWorkType('wt-1', PARTNER);
+    const result = await archiveWorkType(ADMIN, 'wt-1', PARTNER);
     expect(txUpdates[1]?.set).toMatchObject({ defaultWorkTypeId: null });
     expect(result.clearedCategoryCount).toBe(2);
   });
 
   it('reports zero cleared categories when none referenced it', async () => {
     txUpdates.push({ set: undefined, returning: [archivedRow] }, { set: undefined, returning: [] });
-    await expect(archiveWorkType('wt-1', PARTNER)).resolves.toMatchObject({ clearedCategoryCount: 0 });
+    await expect(archiveWorkType(ADMIN, 'wt-1', PARTNER)).resolves.toMatchObject({ clearedCategoryCount: 0 });
   });
 
   it('404s without touching categories when the id is not this partner\'s', async () => {
     txUpdates.push({ set: undefined, returning: [] }, { set: undefined, returning: [{ id: 'cat-1' }] });
-    await expect(archiveWorkType('wt-1', PARTNER)).rejects.toMatchObject({ status: 404, code: 'WORK_TYPE_NOT_FOUND' });
+    await expect(archiveWorkType(ADMIN, 'wt-1', PARTNER)).rejects.toMatchObject({ status: 404, code: 'WORK_TYPE_NOT_FOUND' });
     // The second update must never have run: its `set` is still undefined.
     expect(txUpdates[1]?.set).toBeUndefined();
   });
@@ -95,7 +100,7 @@ describe('createWorkType duplicate handling', () => {
     (db.insert as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
       values: () => ({ returning: () => Promise.reject(Object.assign(new Error('duplicate key'), { code: '23505' })) }),
     }));
-    await expect(createWorkType(PARTNER, { name: 'Remote' })).rejects.toMatchObject({
+    await expect(createWorkType(ADMIN, PARTNER, { name: 'Remote' })).rejects.toMatchObject({
       status: 409, code: 'WORK_TYPE_NAME_TAKEN',
     });
   });
@@ -116,7 +121,7 @@ describe('createWorkType duplicate handling', () => {
         })),
       }),
     }));
-    await expect(createWorkType(PARTNER, { name: 'Remote' })).rejects.toMatchObject({
+    await expect(createWorkType(ADMIN, PARTNER, { name: 'Remote' })).rejects.toMatchObject({
       status: 409, code: 'WORK_TYPE_NAME_TAKEN',
     });
   });
@@ -144,8 +149,23 @@ describe('updateWorkType', () => {
     (db.update as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
       set: () => ({ where: () => ({ returning: () => Promise.resolve([]) }) }),
     }));
-    const err = await updateWorkType('wt-1', PARTNER, { name: 'Renamed' }).catch((e) => e);
+    const err = await updateWorkType(ADMIN, 'wt-1', PARTNER, { name: 'Renamed' }).catch((e) => e);
     expect(err).toBeInstanceOf(WorkTypeServiceError);
     expect(err).toMatchObject({ status: 404, code: 'WORK_TYPE_NOT_FOUND' });
+  });
+});
+
+describe('partner-wide write gate (service)', () => {
+  it('createWorkType refuses a selected-org caller before touching the db', async () => {
+    await expect(createWorkType(SELECTED, PARTNER, { name: 'Remote' })).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+  it('updateWorkType refuses a selected-org caller', async () => {
+    await expect(updateWorkType(SELECTED, 'wt-1', PARTNER, { name: 'x' })).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+  it('archiveWorkType refuses a selected-org caller', async () => {
+    await expect(archiveWorkType(SELECTED, 'wt-1', PARTNER)).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(txUpdates).toHaveLength(0);
   });
 });
