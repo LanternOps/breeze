@@ -1279,6 +1279,20 @@
         }
       }
     },
+    "accent": {
+      "title": "Acento del portal",
+      "description": "El color de los botones y enlaces en el portal de su cliente. Los colores de estado nunca cambian.",
+      "options": {
+        "spruce": "Abeto",
+        "ink": "Tinta",
+        "oxblood": "Granate",
+        "navy": "Azul marino",
+        "plum": "Ciruela",
+        "bronze": "Bronce",
+        "teal": "Petróleo",
+        "forest": "Verde bosque"
+      }
+    },
     "support": {
       "title": "Contacto de soporte",
       "description": "Mostrado a los clientes en el portal.",

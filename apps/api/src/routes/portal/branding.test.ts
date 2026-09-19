@@ -117,6 +117,16 @@ describe('GET /branding (authenticated)', () => {
     );
   });
 
+  it('returns chromeAccent for the authenticated org', async () => {
+    dbState.rows = [{ chromeAccent: 'navy' }];
+
+    const response = await authenticatedApp.request('/branding');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ branding: { chromeAccent: 'navy' } });
+    expect(Object.keys(dbState.selected ?? {})).toContain('chromeAccent');
+  });
+
   it('returns 404 when the authenticated org has no portal_branding row (default state)', async () => {
     dbState.rows = [];
 
@@ -216,6 +226,23 @@ describe('GET /branding/:domain (public)', () => {
     ]) {
       expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);
     }
+  });
+
+  it('returns chromeAccent for the public domain lookup', async () => {
+    dbState.rows = [{
+      customDomain: 'portal.example.test',
+      domainVerified: true,
+      chromeAccent: 'teal',
+    }];
+
+    const publicApp = new Hono();
+    publicApp.route('/', brandingRoutes);
+    const response = await publicApp.request('/branding/portal.example.test');
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.branding.chromeAccent).toBe('teal');
+    expect(Object.keys(dbState.selected ?? {})).toContain('chromeAccent');
   });
 
   it('returns 404 when the domain is unverified or unknown', async () => {

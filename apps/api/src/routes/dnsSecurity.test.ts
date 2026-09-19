@@ -269,6 +269,59 @@ describe('dns security routes', () => {
     expect(res.status).not.toBe(400);
   });
 
+  it('rejects a pihole apiEndpoint on carrier-grade NAT by default', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'pihole',
+        name: 'Pi-hole over Tailscale',
+        apiKey: 'api-key-123',
+        config: { apiEndpoint: 'http://100.100.5.6/admin' }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a pihole apiEndpoint on carrier-grade NAT with the explicit opt-in', async () => {
+    // The opt-in is honoured for the on-prem appliance provider; the connect-time
+    // factory additionally requires a self-hosted deployment, so this cannot
+    // widen egress on hosted. Validation acceptance is what we assert — the DB
+    // layer isn't mocked, so anything other than 400 means the URL passed.
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'pihole',
+        name: 'Pi-hole over Tailscale',
+        apiKey: 'api-key-123',
+        config: { apiEndpoint: 'http://100.100.5.6/admin', allowCarrierNatEgress: true }
+      })
+    });
+
+    expect(res.status).not.toBe(400);
+  });
+
+  it('ignores the carrier-NAT opt-in for a strict cloud provider', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'cloudflare',
+        name: 'Cloudflare DNS',
+        apiKey: 'api-key-123',
+        config: {
+          accountId: 'acct-123',
+          apiEndpoint: 'http://100.100.5.6/',
+          allowCarrierNatEgress: true
+        }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   // The next-gen Umbrella Reports API takes no organization id — the OAuth2
   // token's own `sub` claim scopes the request — so demanding one at creation
   // time rejects a perfectly usable credential (#4597).

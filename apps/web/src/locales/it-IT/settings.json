@@ -1279,6 +1279,20 @@
         }
       }
     },
+    "accent": {
+      "title": "Accento del portale",
+      "description": "Il colore dei pulsanti e dei link nel portale clienti. I colori di stato non cambiano mai.",
+      "options": {
+        "spruce": "Abete",
+        "ink": "Inchiostro",
+        "oxblood": "Bordeaux",
+        "navy": "Blu marino",
+        "plum": "Prugna",
+        "bronze": "Bronzo",
+        "teal": "Petrolio",
+        "forest": "Verde foresta"
+      }
+    },
     "support": {
       "title": "Contatto assistenza",
       "description": "Mostrato ai clienti nel portale.",

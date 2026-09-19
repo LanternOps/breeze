@@ -148,7 +148,7 @@ describe('buildAuditCsv', () => {
   it('escapes quotes, commas, and newlines per RFC 4180', () => {
     const csv = buildAuditCsv([decided]);
     const lines = csv.split('\n');
-    expect(lines[0]).toContain('id,requestedAt,status');
+    expect(lines[0]).toContain('"id","requestedAt","status"');
     expect(lines[1]).toContain('"Restart spooler, ""quoted"""');
     expect(lines[1]).toContain('run_script');
     expect(lines[1]).toContain('WS-CHARLIE');
@@ -162,7 +162,7 @@ describe('buildAuditCsv', () => {
   it('exports decider columns, preferring display names over user ids', () => {
     const csv = buildAuditCsv([decided]);
     const lines = csv.split('\n');
-    expect(lines[0]).toContain('approvedBy,deniedBy,revokedBy');
+    expect(lines[0]).toContain('"approvedBy","deniedBy","revokedBy"');
     expect(lines[1]).toContain('Jane Admin');
     expect(lines[1]).not.toContain('deadbeef');
 
@@ -191,11 +191,14 @@ describe('buildAuditCsv', () => {
   it('emits empty (quoted) provenance cells when null', () => {
     // Use a comma-free reason so a naive split lines up with the header.
     const csv = buildAuditCsv([{ ...decided, reason: 'Restart spooler' }]);
+    // Header cells are RFC-4180 quoted by the shared serializer too, so match
+    // the quoted column name.
     const header = csv.split('\n')[0].split(',');
     const row = csv.split('\n')[1].split(',');
     for (const col of ['decisionSource', 'matchedPolicyName', 'pamRuleName']) {
-      // Cells are RFC-4180 quoted by the shared serializer, so empty renders as "".
-      expect(row[header.indexOf(col)]).toBe('""');
+      const idx = header.indexOf(`"${col}"`);
+      expect(idx, `column ${col} missing from header`).toBeGreaterThanOrEqual(0);
+      expect(row[idx]).toBe('""');
     }
   });
 

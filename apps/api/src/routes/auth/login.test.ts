@@ -1566,6 +1566,83 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
 // #3696: per-refresh-token-FAMILY rate limiting. Every other describe block
 // in this file sets E2E_MODE=true, which skips this branch entirely — this
 // suite must turn it off so the code under test actually runs.
+// The `mfa` claim is the ONLY input to requireMfa()/hasSatisfiedMfa(). Login
+// sets it from the effective MFA policy (see the SR2-05 block above); refresh
+// must carry that assurance forward byte-for-byte — a refresh can never turn a
+// policy-locked (mfa:false) session into an assured one, and must not drop
+// assurance a factor proof already earned.
+describe('POST /refresh — mfa assurance is carried forward, never elevated', () => {
+  async function postRefresh(mfa: boolean) {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-42',
+      aep: 3,
+      mep: 1,
+      mfa,
+    } as any);
+    return loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breeze-auth-transition': 'v1' },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    enable2faState.value = true;
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      status: 'active',
+      authEpoch: 3,
+      mfaEpoch: 1,
+    }]) as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 1 });
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    } as any);
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+  });
+
+  afterEach(() => {
+    enable2faState.value = false;
+  });
+
+  it('mints mfa:false when the refresh token carried mfa:false (policy-locked session stays locked)', async () => {
+    const res = await postRefresh(false);
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false }),
+      expect.anything()
+    );
+  });
+
+  it('mints mfa:true when the refresh token carried mfa:true (earned assurance is not dropped)', async () => {
+    const res = await postRefresh(true);
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true }),
+      expect.anything()
+    );
+  });
+});
+
 describe('POST /refresh — per-family rate limiting (#3696)', () => {
   function postRefresh() {
     return loginRoutes.request('/refresh', {
