@@ -295,7 +295,7 @@ export async function rearmIdempotentCommandForDelivery(input: {
 const BACKUP_COMMAND_TYPES = new Set([
   'backup_run', 'backup_stop', 'backup_restore', 'backup_verify',
   'backup_test_restore', 'backup_cleanup', 'vm_restore_from_backup',
-  'vm_instant_boot', 'bmr_recover', 'mssql_backup', 'mssql_restore',
+  'vm_instant_boot', 'bmr_recover', 'bare_metal_rebuild', 'mssql_backup', 'mssql_restore',
   'hyperv_backup', 'hyperv_restore',
 ]);
 
@@ -386,6 +386,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
   CommandTypes.VM_INSTANT_BOOT,
   CommandTypes.BMR_RECOVER,
+  CommandTypes.BARE_METAL_REBUILD,
   // Vault
   CommandTypes.VAULT_SYNC,
   CommandTypes.VAULT_CONFIGURE,
@@ -817,6 +818,7 @@ export async function waitForCommandResult(
       || timedOutType === CommandTypes.VM_RESTORE_FROM_BACKUP
       || timedOutType === CommandTypes.VM_INSTANT_BOOT
       || timedOutType === CommandTypes.BMR_RECOVER
+      || timedOutType === CommandTypes.BARE_METAL_REBUILD
     ) {
       recordRestoreTimeout(timedOutType);
     }
