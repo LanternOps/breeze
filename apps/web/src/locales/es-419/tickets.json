@@ -1,4 +1,10 @@
 {
+  "workType": {
+    "label": "Tipo de trabajo",
+    "none": "Sin tipo de trabajo",
+    "archivedSuffix": "{{name}} (archivado)",
+    "loadError": "Tipos de trabajo no disponibles"
+  },
   "slaChip": {
     "pausedLeft": "En pausa · quedan {{relative}}",
     "left": "Quedan {{relative}}",
