@@ -38,6 +38,9 @@ export function registerDocsTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'core',
+    searchHint: 'Breeze documentation, how-to guides, feature help and reference material',
+    alwaysLoad: true,
     definition: {
       name: 'search_documentation',
       description: 'Search Breeze RMM documentation for how-to guides, feature explanations, and reference material. Use when users ask how to do something, need help understanding a feature, or want to learn about Breeze capabilities.',

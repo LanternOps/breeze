@@ -132,6 +132,8 @@ const optionalString = (v: unknown): string | undefined => (v == null ? undefine
 
 export const LIST_DELIVERABLES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'service deliverables, recurring obligations, due dates, delivery status and recent occurrences',
   deviceArgs: [],
   definition: {
     name: 'list_deliverables',
@@ -172,6 +174,8 @@ export const LIST_DELIVERABLES_TOOL: AiTool = {
 
 export const MANAGE_DELIVERABLES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'deliverables: create, update, deactivate, deliver, waive, reopen, reschedule, link evidence, apply template',
   deviceArgs: [],
   definition: {
     name: 'manage_deliverables',
@@ -263,6 +267,8 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
 
 export const MANAGE_KEY_DATES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'customer key dates, renewals, compliance deadlines: list, create, update, delete',
   deviceArgs: [],
   definition: {
     name: 'manage_key_dates',
@@ -316,6 +322,8 @@ export const MANAGE_KEY_DATES_TOOL: AiTool = {
 
 export const LIST_DELIVERABLE_TEMPLATES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'service deliverable template sets and recurring obligation templates',
   deviceArgs: [],
   definition: {
     name: 'list_deliverable_templates',
@@ -358,6 +366,8 @@ const updateDocumentPayload = z.object({ patch: updateDocumentSchema });
 
 export const LIST_ORG_DOCUMENTS_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'customer documents, versions, metadata and portal visibility',
   deviceArgs: [],
   definition: {
     name: 'list_org_documents',
@@ -392,6 +402,8 @@ export const LIST_ORG_DOCUMENTS_TOOL: AiTool = {
 
 export const MANAGE_ORG_DOCUMENTS_TOOL: AiTool = {
   tier: 2 as AiToolTier,
+  domain: 'accounts',
+  searchHint: 'customer documents: update metadata, set portal visibility, supersede',
   deviceArgs: [],
   definition: {
     name: 'manage_org_documents',
