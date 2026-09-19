@@ -55,7 +55,7 @@ function captureUsage(text: string, isSse: boolean): CapturedRequest['usage'] {
       if (message.type === 'message_start' && object(message.message).usage != null) {
         raw = object(object(message.message).usage);
       } else if (message.type === 'message_delta' && object(message.usage).output_tokens != null) {
-        raw = { ...raw, output_tokens: object(message.usage).output_tokens };
+        raw = { ...(raw ?? {}), output_tokens: object(message.usage).output_tokens };
       }
     }
   } else {
