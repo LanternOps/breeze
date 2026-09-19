@@ -407,6 +407,61 @@ export function isAlwaysBlockedIp(ip: string): boolean {
 }
 
 /**
+ * True only for a plain carrier-grade-NAT (100.64.0.0/10) IPv4 address, or its
+ * IPv4-mapped IPv6 form — the shape an overlay network such as Tailscale hands a
+ * device. Mirrors `isRfc1918OrUla`: the mapped form counts (it is an ordinary
+ * IPv4 host reached over IPv6), but an IPv6 transition prefix that merely embeds
+ * a CGNAT destination (`64:ff9b::…`) does NOT — that is not a plain overlay
+ * address and stays blocked.
+ *
+ * This is the ONLY category the carrier-NAT opt-in may unblock, and only
+ * together with the private-network opt-in (see `isBlockedForEgress`).
+ */
+export function isCarrierNatAddress(ip: string): boolean {
+  if (!ip) return false;
+  const lower = ip.toLowerCase();
+  const mapped = mappedV4(lower);
+  const v4 = mapped ?? (lower.includes(':') ? null : lower);
+  if (v4 === null) return false;
+  return v4RangeFor(v4)?.category === 'carrier-nat';
+}
+
+/** The two independent opt-ins that widen what egress may reach. */
+export interface EgressAllowances {
+  /**
+   * Permit plain RFC1918/ULA appliance addresses. Self-host only in practice:
+   * the callers that set it gate on an affirmative self-host signal.
+   */
+  allowPrivateNetwork?: boolean;
+  /**
+   * Additionally permit carrier-grade-NAT (100.64.0.0/10) addresses — the range
+   * an overlay network such as Tailscale assigns. Inert on its own: it only has
+   * effect together with `allowPrivateNetwork` (self-host-only), so it cannot
+   * widen egress on the hosted platform. Default off.
+   */
+  allowCarrierNat?: boolean;
+}
+
+/**
+ * The single egress decision, shared by the config-time guard and the
+ * connect-time resolver: returns true when `ip` must NOT be dialed.
+ *
+ * - No opt-in: every blocked range is refused (public addresses only).
+ * - `allowPrivateNetwork`: plain RFC1918/ULA appliance addresses are permitted;
+ *   loopback, link-local, metadata, CGNAT, multicast, documentation, etc. stay
+ *   refused.
+ * - `allowPrivateNetwork` + `allowCarrierNat`: additionally permit a plain CGNAT
+ *   address. `allowCarrierNat` without `allowPrivateNetwork` changes nothing.
+ */
+export function isBlockedForEgress(ip: string, opts?: EgressAllowances): boolean {
+  if (classifyBlockedIp(ip) === null) return false; // public — allowed
+  if (!opts?.allowPrivateNetwork) return true; // no private opt-in — refuse
+  if (isRfc1918OrUla(ip)) return false;
+  if (opts.allowCarrierNat && isCarrierNatAddress(ip)) return false;
+  return true;
+}
+
+/**
  * A hostname that is already an IP literal needs no DNS work.
  *
  * Uses `canonicalizeIpv4Literal` rather than a `[\d.]+` shape test so the

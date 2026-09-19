@@ -32,6 +32,7 @@ import {
   canonicalIpLiteral,
   classifyBlockedIp,
   classifyNonRoutableHostname,
+  isCarrierNatAddress,
   isIpLiteralHost,
   isRfc1918OrUla,
   type NonRoutableHostnameKind
@@ -43,6 +44,14 @@ export interface SsrfGuardOptions {
   mode: SsrfMode;
   /** Optional hostname allowlist suffix (e.g. ['.sentinelone.net']). When set, hostname must end with one of these. */
   hostnameAllowlist?: readonly string[];
+  /**
+   * Permit a carrier-grade-NAT (100.64.0.0/10) target — the range an overlay
+   * network such as Tailscale assigns. Only honoured in `on-prem-http` mode
+   * (which is itself self-host-only), so it cannot widen validation on the
+   * hosted platform. Default off; the connect-time `safeFetch` must be given the
+   * matching `allowCarrierNat` for the endpoint to actually be reachable.
+   */
+  allowCarrierNat?: boolean;
 }
 
 // Hostname categories (from the shared table in `ipRanges.ts`) that this
@@ -115,7 +124,11 @@ export function checkSsrfSafe(rawUrl: string, opts: SsrfGuardOptions): SsrfGuard
       // on `isRfc1918OrUla` rather than the category, because an IPv6 transition
       // prefix carrying an embedded RFC1918 address (`64:ff9b::10.0.0.5`) is
       // categorised 'private' by destination but is not an appliance address.
-      const allowedHere = opts.mode === 'on-prem-http' && isRfc1918OrUla(literal);
+      // With the explicit carrier-NAT opt-in, a plain CGNAT (Tailscale) address
+      // is additionally permitted in on-prem-http mode.
+      const allowedHere =
+        opts.mode === 'on-prem-http' &&
+        (isRfc1918OrUla(literal) || (opts.allowCarrierNat === true && isCarrierNatAddress(literal)));
       if (!allowedHere) {
         const shown = literal === hostnameLower ? hostnameLower : `${hostnameLower} (${literal})`;
         return {

@@ -21,9 +21,8 @@ import type { LookupFunction } from 'net';
 import { assertOutsideHeldDbContext } from '../db';
 import {
   canonicalIpLiteral,
-  isAlwaysBlockedIp,
+  isBlockedForEgress,
   isIpLiteralHost,
-  isPrivateIp,
   isRfc1918OrUla
 } from './ipRanges';
 
@@ -37,11 +36,14 @@ export {
   canonicalizeIpv4Literal,
   classifyBlockedIp,
   isAlwaysBlockedIp,
+  isBlockedForEgress,
+  isCarrierNatAddress,
   isIpLiteralHost,
   isPrivateIp,
   isRfc1918OrUla,
   BLOCKED_IP_CATEGORY_LABEL,
-  type BlockedIpCategory
+  type BlockedIpCategory,
+  type EgressAllowances
 } from './ipRanges';
 
 export class SsrfBlockedError extends Error {
@@ -81,6 +83,8 @@ export function __setLookupForTests(fn: LookupAllFn | null): void {
 export interface SsrfGuardOptions {
   /** See `SafeFetchInit.allowPrivateNetwork`. */
   allowPrivateNetwork?: boolean;
+  /** See `SafeFetchInit.allowCarrierNat`. */
+  allowCarrierNat?: boolean;
 }
 
 /** Strip the brackets Node keeps on IPv6 URL hostnames. */
@@ -106,8 +110,10 @@ export async function resolveSafeRecords(
   opts?: SsrfGuardOptions
 ): Promise<{ safe: LookupAddress[]; allIps: string[] }> {
   // With `allowPrivateNetwork`, RFC1918/ULA appliance addresses are permitted
-  // but metadata/loopback/link-local/CGNAT (etc.) are STILL blocked.
-  const block = opts?.allowPrivateNetwork ? isAlwaysBlockedIp : isPrivateIp;
+  // but metadata/loopback/link-local/CGNAT (etc.) are STILL blocked — unless the
+  // caller additionally opts into carrier-NAT (Tailscale et al.). Both opt-ins
+  // are self-host-only in practice; see `isBlockedForEgress`.
+  const block = (ip: string): boolean => isBlockedForEgress(ip, opts);
 
   let records: LookupAddress[];
   if (isIpLiteralHost(hostname)) {
@@ -243,6 +249,14 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * even when this is true. Leave unset for strict (hosted-SaaS) behavior.
    */
   allowPrivateNetwork?: boolean;
+  /**
+   * Additionally permit carrier-grade-NAT (100.64.0.0/10) targets — the range an
+   * overlay network such as Tailscale assigns to a device. Inert unless
+   * `allowPrivateNetwork` is also set, so it cannot widen egress on the hosted
+   * platform (where private networking is never opted in). Default off; enable
+   * per integration only where an operator has affirmatively chosen it.
+   */
+  allowCarrierNat?: boolean;
   /**
    * Require a cleartext (`http:`) target to resolve to an RFC1918/ULA address.
    *
@@ -450,7 +464,8 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   // counts as a blocked address. It rejects literal private IPs without any DNS
   // work, and throws when every resolved record is blocked.
   const { safe, allIps } = await resolveSafeRecords(hostname, {
-    allowPrivateNetwork: init.allowPrivateNetwork
+    allowPrivateNetwork: init.allowPrivateNetwork,
+    allowCarrierNat: init.allowCarrierNat
   });
   const safeRecord = safe[0]!;
 

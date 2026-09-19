@@ -22,9 +22,11 @@ import { checkSsrfSafe, isSsrfSafe, type SsrfMode } from './ssrfGuard';
 import {
   canonicalizeIpv4Literal,
   classifyBlockedIp,
+  isAlwaysBlockedIp,
+  isBlockedForEgress,
+  isCarrierNatAddress,
   isIpLiteralHost,
   isPrivateIp,
-  isAlwaysBlockedIp,
   isRfc1918OrUla,
   resolveSafeRecords,
   SsrfBlockedError,
@@ -470,6 +472,80 @@ describe('CGNAT is refused in every mode, including on-prem', () => {
   }
 });
 
+describe('carrier-NAT opt-in (100.64.0.0/10, e.g. Tailscale)', () => {
+  const CGNAT = '100.100.5.6';
+  const CGNAT_MAPPED = '::ffff:100.100.5.6';
+  const CGNAT_TRANSITION = '64:ff9b::6464:506'; // 100.100.5.6 embedded in NAT64
+
+  it('isCarrierNatAddress: true for a plain CGNAT literal and its mapped form only', () => {
+    expect(isCarrierNatAddress(CGNAT)).toBe(true);
+    expect(isCarrierNatAddress('100.64.0.0')).toBe(true);
+    expect(isCarrierNatAddress('100.127.255.255')).toBe(true);
+    expect(isCarrierNatAddress(CGNAT_MAPPED)).toBe(true);
+    // Just outside 100.64/10 — never CGNAT.
+    expect(isCarrierNatAddress('100.63.255.255')).toBe(false);
+    expect(isCarrierNatAddress('100.128.0.0')).toBe(false);
+    // RFC1918 / public / loopback are not CGNAT.
+    expect(isCarrierNatAddress('10.0.0.5')).toBe(false);
+    expect(isCarrierNatAddress('93.184.216.34')).toBe(false);
+    // A transition prefix that merely embeds a CGNAT destination does NOT count.
+    expect(isCarrierNatAddress(CGNAT_TRANSITION)).toBe(false);
+  });
+
+  it('isBlockedForEgress: CGNAT stays blocked by default and with private-network alone', () => {
+    expect(isBlockedForEgress(CGNAT)).toBe(true);
+    expect(isBlockedForEgress(CGNAT, {})).toBe(true);
+    expect(isBlockedForEgress(CGNAT, { allowPrivateNetwork: true })).toBe(true);
+  });
+
+  it('isBlockedForEgress: the carrier-NAT opt-in is INERT without the private-network opt-in', () => {
+    // This is the hosted-safety guarantee: allowPrivateNetwork is self-host-only,
+    // so allowCarrierNat cannot widen egress on the hosted platform.
+    expect(isBlockedForEgress(CGNAT, { allowCarrierNat: true })).toBe(true);
+    expect(isBlockedForEgress(CGNAT_MAPPED, { allowCarrierNat: true })).toBe(true);
+  });
+
+  it('isBlockedForEgress: CGNAT is reachable only with BOTH opt-ins', () => {
+    const both = { allowPrivateNetwork: true, allowCarrierNat: true };
+    expect(isBlockedForEgress(CGNAT, both)).toBe(false);
+    expect(isBlockedForEgress(CGNAT_MAPPED, both)).toBe(false);
+    // The opt-in is scoped to CGNAT: it does not unblock anything else.
+    expect(isBlockedForEgress('127.0.0.1', both)).toBe(true);
+    expect(isBlockedForEgress('169.254.169.254', both)).toBe(true);
+    expect(isBlockedForEgress('::1', both)).toBe(true);
+    // A transition prefix embedding CGNAT is NOT a plain overlay address.
+    expect(isBlockedForEgress(CGNAT_TRANSITION, both)).toBe(true);
+    // RFC1918/ULA remain reachable (private opt-in), public always reachable.
+    expect(isBlockedForEgress('10.0.0.5', both)).toBe(false);
+    expect(isBlockedForEgress('93.184.216.34', both)).toBe(false);
+  });
+
+  describe('checkSsrfSafe honours the opt-in only in on-prem-http mode', () => {
+    it('rejects a CGNAT literal by default in every mode', () => {
+      for (const mode of ALL_MODES) {
+        expect(isSsrfSafe(urlFor(CGNAT, mode), { mode })).toBe(false);
+      }
+    });
+
+    it('accepts a CGNAT literal in on-prem-http with allowCarrierNat', () => {
+      expect(isSsrfSafe(urlFor(CGNAT, 'on-prem-http'), { mode: 'on-prem-http', allowCarrierNat: true })).toBe(true);
+    });
+
+    it('still rejects CGNAT with allowCarrierNat in the strict modes', () => {
+      expect(isSsrfSafe(urlFor(CGNAT, 'strict-https'), { mode: 'strict-https', allowCarrierNat: true })).toBe(false);
+      expect(isSsrfSafe(urlFor(CGNAT, 'on-prem-strict'), { mode: 'on-prem-strict', allowCarrierNat: true })).toBe(false);
+    });
+
+    it('the opt-in does not widen anything but CGNAT', () => {
+      const opts = { mode: 'on-prem-http' as const, allowCarrierNat: true };
+      expect(isSsrfSafe(urlFor('169.254.169.254', 'on-prem-http'), opts)).toBe(false);
+      expect(isSsrfSafe(urlFor('127.0.0.1', 'on-prem-http'), opts)).toBe(false);
+      // RFC1918 is allowed in on-prem-http regardless of the CGNAT opt-in.
+      expect(isSsrfSafe(urlFor('10.0.0.5', 'on-prem-http'), opts)).toBe(true);
+    });
+  });
+});
+
 describe('resolve-then-check', () => {
   afterEach(() => {
     __setLookupForTests(null);
@@ -507,6 +583,31 @@ describe('resolve-then-check', () => {
     __setLookupForTests(async () => [{ address: '192.168.1.50', family: 4 }]);
     const { safe } = await resolveSafeRecords('appliance.example.com', { allowPrivateNetwork: true });
     expect(safe.map((r) => r.address)).toEqual(['192.168.1.50']);
+  });
+
+  it('resolveSafeRecords blocks a CGNAT literal unless BOTH opt-ins are set', async () => {
+    await expect(resolveSafeRecords('100.100.5.6')).rejects.toBeInstanceOf(SsrfBlockedError);
+    await expect(
+      resolveSafeRecords('100.100.5.6', { allowPrivateNetwork: true })
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+    await expect(
+      resolveSafeRecords('100.100.5.6', { allowCarrierNat: true })
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+    const { safe } = await resolveSafeRecords('100.100.5.6', {
+      allowPrivateNetwork: true,
+      allowCarrierNat: true,
+    });
+    expect(safe.map((r) => r.address)).toEqual(['100.100.5.6']);
+  });
+
+  it('resolveSafeRecords drops a CGNAT DNS answer unless both opt-ins are set', async () => {
+    __setLookupForTests(async () => [{ address: '100.100.5.6', family: 4 }]);
+    await expect(resolveSafeRecords('overlay.example.com')).rejects.toBeInstanceOf(SsrfBlockedError);
+    const { safe } = await resolveSafeRecords('overlay.example.com', {
+      allowPrivateNetwork: true,
+      allowCarrierNat: true,
+    });
+    expect(safe.map((r) => r.address)).toEqual(['100.100.5.6']);
   });
 
   it('canonicalises an inet_aton IPv4 literal instead of dialing it verbatim', async () => {
