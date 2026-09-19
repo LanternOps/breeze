@@ -10,6 +10,14 @@
  * - disk_cleanup (Tier 1 preview, Tier 3 execute): Preview or execute disk cleanup
  */
 
+import { toCleanupOs } from '@breeze/shared';
+import {
+  CLEANUP_EXECUTE_BUDGET_MS,
+  MIN_AGENT_VERSION_CLEANUP_GUARD,
+  agentSupportsCleanupGuard,
+  runCleanupExecution,
+  wasDispatched,
+} from './filesystemCleanupExecution';
 import { db } from '../db';
 import { devices, deviceFilesystemCleanupRuns, users } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
@@ -187,6 +195,20 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         }
 
         const parsed = parseFilesystemAnalysisStdout(commandResult.stdout ?? '{}');
+        if (Object.keys(parsed).length === 0) {
+          // Defect 5: the agent RESULT lane already refuses to write a blank
+          // snapshot (routes/agents/helpers.ts). Without the same guard here, a
+          // completed scan with empty or non-JSON stdout stored `{}`, which then
+          // WON the captured_at ordering and became the "latest snapshot" every
+          // later cleanup preview read — zeroing the Disk Cleanup tab with no
+          // error anywhere.
+          console.warn(
+            `[aiToolsFilesystem] analyze_disk_usage for device ${deviceId} completed with unparseable/empty stdout (len=${commandResult.stdout?.length ?? 0}); no snapshot written`
+          );
+          return JSON.stringify({
+            error: 'Filesystem analysis returned no parseable result; no snapshot was stored. Retry the scan.',
+          });
+        }
         snapshot = await saveFilesystemSnapshot(deviceId, access.device.orgId, 'on_demand', parsed);
       }
 
@@ -317,37 +339,73 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'paths are required for execute action' });
       }
 
-      const byPath = new Map(preview.candidates.map((candidate) => [candidate.path, candidate]));
-      const selected = Array.from(new Set(requestedPaths))
-        .map((path) => byPath.get(path))
-        .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
-      if (selected.length === 0) {
-        return JSON.stringify({ error: 'No valid cleanup candidates selected from the latest preview set' });
-      }
-
-      const actions: Array<{ path: string; category: string; sizeBytes: number; status: string; error?: string }> = [];
-      let bytesReclaimed = 0;
-
-      for (const candidate of selected) {
-        const commandResult = await aiExecuteCommand(auth, 'disk_cleanup', deviceId, 'file_delete', {
-          path: candidate.path,
-          recursive: true,
-        }, { userId: auth.user.id, timeoutMs: 30_000 });
-
-        if (commandResult.status === 'completed') {
-          bytesReclaimed += candidate.sizeBytes;
-        }
-        actions.push({
-          path: candidate.path,
-          category: candidate.category,
-          sizeBytes: candidate.sizeBytes,
-          status: commandResult.status,
-          error: commandResult.error ?? undefined,
+      // Defect 1 is ONE bug with two call sites. This lane used to keep its own
+      // copy of the loop and dispatched { path, recursive: true }, so the agent
+      // moved every "deleted" file to ~/.breeze-trash on the same volume and
+      // freed nothing. Both lanes now run the same screening and the same
+      // dispatch payload, which is the only way they stay in step.
+      // §13 row 3: the AI lane is gated exactly like the route. An agent
+      // without cleanupGuard would perform an unguarded permanent delete.
+      if (!agentSupportsCleanupGuard(access.device.agentVersion)) {
+        return JSON.stringify({
+          error: 'agent_update_required',
+          minAgentVersion: MIN_AGENT_VERSION_CLEANUP_GUARD,
+          agentVersion: access.device.agentVersion ?? null,
         });
       }
 
-      const failedCount = actions.filter((item) => item.status !== 'completed').length;
-      const runStatus = failedCount === actions.length ? 'failed' : 'executed';
+      const outcome = await runCleanupExecution({
+        os: toCleanupOs(access.device.osType),
+        requestedPaths,
+        candidates: preview.candidates,
+        // The AI lane re-derives its preview from the latest snapshot, so the
+        // snapshot's capture time is when the model "looked" (spec §13 row 2).
+        previewedAt: snapshot.capturedAt ?? new Date(0),
+        // The payload already carries the path; the first argument is only the
+        // key the service iterates on.
+        dispatch: (_path, payload) => aiExecuteCommand(
+          auth,
+          'disk_cleanup',
+          deviceId,
+          'file_delete',
+          payload,
+          { userId: auth.user.id, timeoutMs: 30_000 },
+        ),
+        budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
+      });
+
+      const counts = {
+        completed: outcome.actions.filter((action) => action.status === 'completed').length,
+        partial: outcome.actions.filter((action) => action.status === 'partial').length,
+        failed: outcome.actions.filter((action) => action.status === 'failed').length,
+        skipped_locked: outcome.actions.filter((action) => action.status === 'skipped_locked').length,
+        rejected: outcome.actions.filter((action) => action.status === 'rejected').length,
+        skipped_budget: outcome.actions.filter((action) => action.status === 'skipped_budget').length,
+      };
+      const dispatchedPaths = outcome.actions
+        .filter(wasDispatched)
+        .map((action) => action.path);
+
+      if (dispatchedPaths.length === 0) {
+        // NOTHING left the API. An agent-guard rejection means the command DID
+        // reach the device, so it falls through to the run insert below rather
+        // than short-circuiting here.
+        // Every requested path was refused. Say WHICH — the old handler
+        // returned a bare "No valid cleanup candidates selected" with no list,
+        // so the model could not tell a typo from a rule rejection.
+        return JSON.stringify({
+          error: 'No valid cleanup candidates selected from the latest preview set',
+          rejectedPaths: outcome.rejectedPaths,
+          actions: outcome.actions,
+        });
+      }
+
+      const runStatus = counts.completed + counts.partial > 0 ? 'executed' : 'failed';
+      const runError = runStatus === 'failed'
+        ? 'all cleanup actions failed'
+        : counts.failed > 0
+          ? `${counts.failed} cleanup action(s) failed`
+          : null;
 
       const [cleanupRun] = await db
         .insert(deviceFilesystemCleanupRuns)
@@ -359,12 +417,17 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           plan: {
             snapshotId: snapshot.id,
             requestedPaths,
-            selectedPaths: selected.map((candidate) => candidate.path),
+            selectedPaths: dispatchedPaths,
+            rejectedPaths: outcome.rejectedPaths,
           },
-          executedActions: actions,
-          bytesReclaimed,
+          executedActions: {
+            partial: outcome.partial,
+            budgetMs: outcome.budgetMs,
+            actions: outcome.actions,
+          },
+          bytesReclaimed: outcome.bytesReclaimed,
           status: runStatus,
-          error: failedCount > 0 ? `${failedCount} cleanup action(s) failed` : null,
+          error: runError,
         })
         .returning();
 
@@ -372,10 +435,14 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         cleanupRunId: cleanupRun?.id ?? null,
         snapshotId: snapshot.id,
         status: runStatus,
-        bytesReclaimed,
-        selectedCount: selected.length,
-        failedCount,
-        actions
+        bytesReclaimed: outcome.bytesReclaimed,
+        selectedCount: dispatchedPaths.length,
+        failedCount: counts.failed,
+        counts,
+        rejectedPaths: outcome.rejectedPaths,
+        partial: outcome.partial,
+        budgetMs: outcome.budgetMs,
+        actions: outcome.actions,
       });
     }
   });

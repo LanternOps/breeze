@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"container/heap"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 )
 
 const (
+	maxFSDuplicateGroups         = 50_000
 	defaultFSBaselineMaxDepth    = 32
 	defaultFSIncrementalMaxDepth = 12
 	maxFSMaxDepth                = 64
@@ -195,7 +197,8 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 
 	tempBytes := make(map[string]int64)
 	duplicateByKey := make(map[string]*duplicateGroup)
-	cleanupByPath := make(map[string]FilesystemCleanupCandidate)
+	cleanupSet := newCleanupCandidateSet(maxFSCleanupCandidates)
+	var duplicateTrackingTruncated bool
 
 	topLargestFiles := make([]FilesystemLargestFile, 0, topFilesLimit)
 	topLargestDirs := make([]FilesystemLargestDirectory, 0, topDirsLimit)
@@ -377,7 +380,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 
 			// Classification is pure (touches no shared state), so run it before
 			// taking the lock instead of holding every other worker off while we do.
-			category := classifyCleanupCategory(entryPath)
+			category, _, categorySafe := classifyCleanupPath(entryPath, info.ModTime(), now)
 			oldDownload := isOldDownload(entryPath, fileSize, info.ModTime(), oldDownloadsThreshold)
 			unrotated := isUnrotatedLog(entryPath, fileSize)
 
@@ -418,14 +421,14 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 
 			if category != "" {
 				tempBytes[category] += fileSize
-				addCleanupCandidate(cleanupByPath, FilesystemCleanupCandidate{
+				cleanupSet.Add(FilesystemCleanupCandidate{
 					Path:       entryPath,
 					Category:   category,
 					SizeBytes:  fileSize,
-					Safe:       true,
+					Safe:       categorySafe,
 					Reason:     "temporary/cache file",
 					ModifiedAt: resolveModTime(),
-				}, maxFSCleanupCandidates)
+				})
 			}
 
 			if oldDownload {
@@ -445,7 +448,9 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 				})
 			}
 
-			addDuplicateCandidate(duplicateByKey, entryPath, fileSize)
+			if addDuplicateCandidate(duplicateByKey, entryPath, fileSize) {
+				duplicateTrackingTruncated = true
+			}
 			statsMu.Unlock()
 
 			if currentEntries > int64(maxEntries) {
@@ -562,9 +567,18 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		unrotatedLogs = unrotatedLogs[:200]
 	}
 
-	// Trash usage is calculated separately from known locations.
-	for _, trashPath := range getTrashPaths() {
-		size, _, timedOut, trashErr := estimateDirectorySize(trashPath, deadline, maxEntries/2)
+	// Trash usage is calculated separately from known locations, scoped to the
+	// volume that was scanned (defect 2: the bin was hardcoded to C:\).
+	trashPaths, trashScanErrors, trashPermissionDenied := getTrashPaths(cleanRoot)
+	permissionDeniedCount += trashPermissionDenied
+	for _, trashScanError := range trashScanErrors {
+		if len(scanErrors) >= maxFSErrors {
+			break
+		}
+		scanErrors = append(scanErrors, trashScanError)
+	}
+	for _, trashPath := range trashPaths {
+		size, _, timedOut, trashErr := estimateDirectorySize(trashPath, deadline, maxEntries/2, &permissionDeniedCount)
 		if trashErr != nil {
 			if !os.IsNotExist(trashErr) {
 				appendScanError(&scanErrors, trashPath, trashErr, &permissionDeniedCount)
@@ -584,13 +598,20 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 			Path:      trashPath,
 			SizeBytes: size,
 		})
-		addCleanupCandidate(cleanupByPath, FilesystemCleanupCandidate{
+		// Safe is COMPUTED (spec §6.1): a trash location the rule table does
+		// not recognise is still reported in trashUsage, but is emitted with
+		// Safe=false so buildCleanupPreview never offers it for deletion.
+		trashCategory, _, trashSafe := classifyCleanupPath(trashPath, now, now)
+		if trashCategory == "" {
+			trashCategory = "trash"
+		}
+		cleanupSet.Add(FilesystemCleanupCandidate{
 			Path:      trashPath,
-			Category:  "trash",
+			Category:  trashCategory,
 			SizeBytes: size,
-			Safe:      true,
+			Safe:      trashSafe,
 			Reason:    "trash/recycle bin cleanup",
-		}, maxFSCleanupCandidates)
+		})
 	}
 
 	tempAccumulation := make([]FilesystemAccumulation, 0, len(tempBytes))
@@ -604,7 +625,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	sort.Slice(trashUsage, func(i, j int) bool { return trashUsage[i].SizeBytes > trashUsage[j].SizeBytes })
 
 	duplicateCandidates := buildDuplicateCandidateList(duplicateByKey, 200)
-	cleanupCandidates := mapCleanupCandidates(cleanupByPath, maxFSCleanupCandidates)
+	cleanupCandidates := cleanupSet.Sorted()
 
 	completedAt := time.Now()
 	pendingCheckpoint := buildCheckpointPayload(pendingFrames, maxFSCheckpointDirs)
@@ -618,11 +639,12 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		Reason:      reason,
 		Checkpoint:  pendingCheckpoint,
 		Summary: FilesystemAnalysisSummary{
-			FilesScanned:          filesScanned,
-			DirsScanned:           dirsScanned,
-			BytesScanned:          bytesScanned,
-			MaxDepthReached:       maxDepthReached,
-			PermissionDeniedCount: permissionDeniedCount,
+			FilesScanned:               filesScanned,
+			DirsScanned:                dirsScanned,
+			BytesScanned:               bytesScanned,
+			MaxDepthReached:            maxDepthReached,
+			PermissionDeniedCount:      permissionDeniedCount,
+			DuplicateTrackingTruncated: duplicateTrackingTruncated,
 		},
 		TopLargestFiles:     topLargestFiles,
 		TopLargestDirs:      topLargestDirs,
@@ -997,33 +1019,6 @@ func normalizePathForChecks(path string) string {
 	return strings.ToLower(path)
 }
 
-func classifyCleanupCategory(path string) string {
-	n := normalizePathForChecks(path)
-	switch {
-	case strings.Contains(n, "/tmp/"),
-		strings.HasSuffix(n, "/tmp"),
-		strings.Contains(n, "/windows/temp/"),
-		strings.Contains(n, "/appdata/local/temp/"),
-		strings.Contains(n, "/var/tmp/"):
-		return "temp_files"
-	case strings.Contains(n, "/google/chrome/user data/"),
-		strings.Contains(n, "/mozilla/firefox/"),
-		strings.Contains(n, "/library/caches/com.apple.safari/"),
-		strings.Contains(n, "/library/caches/"),
-		strings.Contains(n, "/.cache/"),
-		strings.Contains(n, "/edge/user data/"):
-		return "browser_cache"
-	case strings.Contains(n, "/var/cache/apt/"),
-		strings.Contains(n, "/var/cache/dnf/"),
-		strings.Contains(n, "/var/cache/yum/"),
-		strings.Contains(n, "/library/caches/homebrew/"),
-		strings.Contains(n, "/appdata/local/packages/"):
-		return "package_cache"
-	default:
-		return ""
-	}
-}
-
 func isOldDownload(path string, sizeBytes int64, modifiedAt time.Time, threshold time.Time) bool {
 	if sizeBytes <= 0 {
 		return false
@@ -1031,13 +1026,12 @@ func isOldDownload(path string, sizeBytes int64, modifiedAt time.Time, threshold
 	if modifiedAt.After(threshold) {
 		return false
 	}
-	n := normalizePathForChecks(path)
-	if strings.Contains(n, "/library/caches/") ||
-		strings.Contains(n, "/.cache/") ||
-		strings.Contains(n, "/appdata/local/temp/") {
+	// A file that a cleanup rule already claims is reported there, not twice.
+	if matchCleanupRule(path) != nil {
 		return false
 	}
 
+	n := normalizePathForChecks(path)
 	segments := strings.Split(strings.Trim(n, "/"), "/")
 	for i, segment := range segments {
 		if segment != "downloads" {
@@ -1073,24 +1067,33 @@ func normalizeDuplicateName(name string) string {
 	return n
 }
 
-func addDuplicateCandidate(groups map[string]*duplicateGroup, path string, sizeBytes int64) {
+// addDuplicateCandidate records path under its size|basename key, bounded to
+// maxFSDuplicateGroups DISTINCT keys. It reports whether a NEW key had to be
+// dropped, which the caller surfaces as summary.duplicateTrackingTruncated —
+// an unbounded map grew one entry per distinct basename on a 10M-file scan.
+// Existing keys keep accumulating members (up to 50 paths each) regardless.
+func addDuplicateCandidate(groups map[string]*duplicateGroup, path string, sizeBytes int64) bool {
 	base := normalizeDuplicateName(filepath.Base(path))
 	if base == "" || sizeBytes <= 0 {
-		return
+		return false
 	}
 	key := fmt.Sprintf("%d|%s", sizeBytes, base)
 	group, ok := groups[key]
 	if !ok {
+		if len(groups) >= maxFSDuplicateGroups {
+			return true
+		}
 		groups[key] = &duplicateGroup{
 			Key:       key,
 			SizeBytes: sizeBytes,
 			Paths:     []string{path},
 		}
-		return
+		return false
 	}
 	if len(group.Paths) < 50 {
 		group.Paths = append(group.Paths, path)
 	}
+	return false
 }
 
 func buildDuplicateCandidateList(groups map[string]*duplicateGroup, limit int) []FilesystemDuplicateCandidate {
@@ -1118,88 +1121,250 @@ func buildDuplicateCandidateList(groups map[string]*duplicateGroup, limit int) [
 	return candidates
 }
 
-func addCleanupCandidate(existing map[string]FilesystemCleanupCandidate, candidate FilesystemCleanupCandidate, maxItems int) {
-	if len(existing) >= maxItems {
+// cleanupCandidateSet keeps the top-N cleanup candidates BY SIZE.
+//
+// The previous cap was insertion-ordered (`if len(existing) >= maxItems {
+// return }`), so once 1000 candidates had been seen a late 40 GB directory
+// could not displace an early 1 KB file — while the UI presents the list as
+// "biggest wins". A min-heap keyed on SizeBytes makes the eviction correct:
+// the smallest member is always at the root, so admitting a larger newcomer is
+// O(log n) instead of an O(n) scan on every file of a multi-million-file walk.
+//
+// Not safe for concurrent use; every caller holds statsMu (or runs after
+// workers.Wait()), exactly as the map it replaces did.
+type cleanupCandidateSet struct {
+	limit int
+	heap  cleanupCandidateHeap
+}
+
+type cleanupCandidateHeap struct {
+	items []FilesystemCleanupCandidate
+	index map[string]int
+}
+
+func (h cleanupCandidateHeap) Len() int { return len(h.items) }
+
+func (h cleanupCandidateHeap) Less(i, j int) bool {
+	return h.items[i].SizeBytes < h.items[j].SizeBytes
+}
+
+func (h cleanupCandidateHeap) Swap(i, j int) {
+	h.items[i], h.items[j] = h.items[j], h.items[i]
+	h.index[h.items[i].Path] = i
+	h.index[h.items[j].Path] = j
+}
+
+func (h *cleanupCandidateHeap) Push(x any) {
+	candidate, ok := x.(FilesystemCleanupCandidate)
+	if !ok {
 		return
 	}
-	if candidate.Path == "" || candidate.SizeBytes <= 0 {
-		return
-	}
-	prev, ok := existing[candidate.Path]
-	if !ok || candidate.SizeBytes > prev.SizeBytes {
-		existing[candidate.Path] = candidate
+	h.index[candidate.Path] = len(h.items)
+	h.items = append(h.items, candidate)
+}
+
+func (h *cleanupCandidateHeap) Pop() any {
+	last := len(h.items) - 1
+	candidate := h.items[last]
+	h.items = h.items[:last]
+	delete(h.index, candidate.Path)
+	return candidate
+}
+
+func newCleanupCandidateSet(limit int) *cleanupCandidateSet {
+	return &cleanupCandidateSet{
+		limit: limit,
+		heap:  cleanupCandidateHeap{items: make([]FilesystemCleanupCandidate, 0, limit), index: map[string]int{}},
 	}
 }
 
-func mapCleanupCandidates(existing map[string]FilesystemCleanupCandidate, limit int) []FilesystemCleanupCandidate {
-	candidates := make([]FilesystemCleanupCandidate, 0, len(existing))
-	for _, candidate := range existing {
-		candidates = append(candidates, candidate)
+func (s *cleanupCandidateSet) Add(candidate FilesystemCleanupCandidate) {
+	if s.limit <= 0 || candidate.Path == "" || candidate.SizeBytes <= 0 {
+		return
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].SizeBytes > candidates[j].SizeBytes })
-	if len(candidates) > limit {
-		return candidates[:limit]
+	if at, ok := s.heap.index[candidate.Path]; ok {
+		if candidate.SizeBytes <= s.heap.items[at].SizeBytes {
+			return
+		}
+		s.heap.items[at] = candidate
+		heap.Fix(&s.heap, at)
+		return
 	}
-	return candidates
+	if len(s.heap.items) < s.limit {
+		heap.Push(&s.heap, candidate)
+		return
+	}
+	if candidate.SizeBytes <= s.heap.items[0].SizeBytes {
+		return
+	}
+	heap.Pop(&s.heap)
+	heap.Push(&s.heap, candidate)
 }
 
-func getTrashPaths() []string {
+func (s *cleanupCandidateSet) Sorted() []FilesystemCleanupCandidate {
+	out := make([]FilesystemCleanupCandidate, len(s.heap.items))
+	copy(out, s.heap.items)
+	sort.Slice(out, func(i, j int) bool { return out[i].SizeBytes > out[j].SizeBytes })
+	return out
+}
+
+// isWindowsVolumeRoot reports whether path names a volume root (C:\, d:/, C:).
+// Recycle bins only exist there, so a scan rooted deeper emits none.
+func isWindowsVolumeRoot(path string) bool {
+	return normalizeCleanupPathFor("windows", path) == "<vol>"
+}
+
+// enumerateWindowsRecycleBins lists <volumeRoot>\$Recycle.Bin\S-* — one
+// directory per SID. Each is a `contents`-granularity candidate: the bin ROOT
+// sits at depth 1 and isRecursiveDeleteBoundary refuses it (which is why the
+// old C:\$Recycle.Bin candidate could never be deleted), while a SID directory
+// is depth 2 and its contents are reachable.
+//
+// ReadDir errors are RETURNED rather than swallowed: a bin that cannot be read
+// is a scan error an operator needs to see, not silence.
+func enumerateWindowsRecycleBins(volumeRoot string) ([]string, []FilesystemScanError) {
+	binRoot := filepath.Join(volumeRoot, "$Recycle.Bin")
+	entries, err := os.ReadDir(binRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []FilesystemScanError{{Path: binRoot, Error: err.Error()}}
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToUpper(entry.Name()), "S-") {
+			continue
+		}
+		paths = append(paths, filepath.Join(binRoot, entry.Name()))
+	}
+	return paths, nil
+}
+
+// trashPathsForRoot is getTrashPaths with the platform and home directory
+// passed in, so both grammars are testable from any host.
+func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanError, int64) {
 	paths := make([]string, 0, 12)
+	scanErrors := make([]FilesystemScanError, 0, 2)
+	var permissionDeniedCount int64
 	seen := make(map[string]struct{})
 	addPath := func(p string) {
 		if p == "" {
 			return
 		}
 		clean := filepath.Clean(p)
+		// POSIX trash enumeration used to ignore the scan root entirely, so a
+		// /data scan proposed deleting the OS volume's trash (spec §13 row 11).
+		// Windows is already volume-scoped by isWindowsVolumeRoot above.
+		if goos != "windows" {
+			underRoot, err := isRealPathUnderRoot(scanRoot, clean)
+			if err != nil {
+				// A non-ENOENT EvalSymlinks failure (e.g. EACCES on a parent
+				// component) used to collapse into "not under root" and drop the
+				// trash dir with no trace. Report it like any other scan error
+				// instead (spec §13 row 11 follow-up).
+				appendScanError(&scanErrors, clean, err, &permissionDeniedCount)
+				return
+			}
+			if !underRoot {
+				return
+			}
+		}
 		if _, ok := seen[clean]; ok {
 			return
 		}
 		seen[clean] = struct{}{}
 		paths = append(paths, clean)
 	}
+	addDirErr := func(dir string, err error) {
+		if err == nil || os.IsNotExist(err) {
+			return
+		}
+		scanErrors = append(scanErrors, FilesystemScanError{Path: dir, Error: err.Error()})
+	}
 
-	home, _ := os.UserHomeDir()
-	switch runtime.GOOS {
+	switch goos {
 	case "windows":
-		addPath(`C:\$Recycle.Bin`)
+		if !isWindowsVolumeRoot(scanRoot) {
+			return paths, scanErrors, permissionDeniedCount
+		}
+		binPaths, binErrors := enumerateWindowsRecycleBins(scanRoot)
+		for _, p := range binPaths {
+			addPath(p)
+		}
+		scanErrors = append(scanErrors, binErrors...)
 	case "darwin":
 		if home != "" {
 			addPath(filepath.Join(home, ".Trash"))
 		}
-		if entries, err := os.ReadDir("/Users"); err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				name := entry.Name()
-				if strings.HasPrefix(name, ".") {
-					continue
-				}
-				addPath(filepath.Join("/Users", name, ".Trash"))
+		entries, err := os.ReadDir("/Users")
+		addDirErr("/Users", err)
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
 			}
+			addPath(filepath.Join("/Users", entry.Name(), ".Trash"))
 		}
 	case "linux":
 		if home != "" {
 			addPath(filepath.Join(home, ".local", "share", "Trash"))
 		}
-		if entries, err := os.ReadDir("/home"); err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				name := entry.Name()
-				if strings.HasPrefix(name, ".") {
-					continue
-				}
-				addPath(filepath.Join("/home", name, ".local", "share", "Trash"))
+		entries, err := os.ReadDir("/home")
+		addDirErr("/home", err)
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
 			}
+			addPath(filepath.Join("/home", entry.Name(), ".local", "share", "Trash"))
 		}
 		addPath(filepath.Join("/root", ".local", "share", "Trash"))
 	}
-	return paths
+	return paths, scanErrors, permissionDeniedCount
 }
 
-func estimateDirectorySize(root string, deadline time.Time, maxEntries int) (sizeBytes int64, filesScanned int64, timedOut bool, err error) {
+func getTrashPaths(scanRoot string) ([]string, []FilesystemScanError, int64) {
+	home, _ := os.UserHomeDir()
+	return trashPathsForRoot(runtime.GOOS, scanRoot, home)
+}
+
+// isRealPathUnderRoot reports whether candidate's REAL path (symlinks resolved)
+// is scanRoot's real path or below it. Resolving both sides is the point: a
+// trash directory reached through a symlink out of the scanned tree is not in
+// scope, and a candidate that cannot be resolved at all is refused rather than
+// guessed at (spec §13 row 11).
+//
+// A non-nil error means EvalSymlinks failed for a reason OTHER than the path
+// not existing (e.g. EACCES on an intermediate component) — the caller must
+// surface that as a scan error rather than silently treating it the same as
+// "not under root" (spec §13 row 11 follow-up).
+func isRealPathUnderRoot(scanRoot, candidate string) (bool, error) {
+	realRoot, err := filepath.EvalSymlinks(scanRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	realCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// A trash directory that does not exist is not a candidate anyway —
+			// estimateDirectorySize would drop it a moment later.
+			return false, nil
+		}
+		return false, err
+	}
+	if realCandidate == realRoot {
+		return true, nil
+	}
+	prefix := strings.TrimSuffix(realRoot, string(filepath.Separator)) + string(filepath.Separator)
+	return strings.HasPrefix(realCandidate, prefix), nil
+}
+
+func estimateDirectorySize(root string, deadline time.Time, maxEntries int, permissionDenied *int64) (sizeBytes int64, filesScanned int64, timedOut bool, err error) {
 	info, statErr := os.Stat(root)
 	if statErr != nil {
 		return 0, 0, false, statErr
@@ -1222,6 +1387,11 @@ func estimateDirectorySize(root string, deadline time.Time, maxEntries int) (siz
 		children, readErr := os.ReadDir(current)
 		if readErr != nil {
 			if os.IsPermission(readErr) {
+				// Counted, not silently skipped: unreadable trash makes the
+				// reported size a lower bound.
+				if permissionDenied != nil {
+					*permissionDenied++
+				}
 				continue
 			}
 			return sizeBytes, filesScanned, false, readErr

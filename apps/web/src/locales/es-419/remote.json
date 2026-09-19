@@ -237,6 +237,9 @@
         "trash": "Papelera"
       },
       "cleanupPreview": "Vista previa de limpieza",
+      "cleanupOutcomeBreakdown": "{{failed}} con errores · {{partial}} parcial(es) · {{rejected}} rechazado(s) · {{locked}} bloqueado(s) · {{skipped}} no alcanzado(s)",
+      "cleanupChildIssues": "{{failedChildren}} archivo(s) dentro de una papelera no se pudieron eliminar · {{skippedLinks}} enlace(s) omitido(s)",
+      "cleanupBudgetExhausted": "El tiempo disponible se agotó antes de alcanzar todos los objetivos. Ejecute la limpieza nuevamente para continuar.",
       "cleanupResult": "Limpieza {{status}}: {{size}} recuperado de los objetivos {{count}}, {{failed}} falló.",
       "data": "Datos: {{size}}",
       "deleteFiles": "Eliminar archivos",
@@ -257,7 +260,10 @@
       "selected": "Seleccionado: {{count}} · {{size}}",
       "threshold": "Límite",
       "title": "Inteligencia de disco",
-      "trigger": "Activador: {{value}}"
+      "trigger": "Activador: {{value}}",
+      "cleanupExecuteFailed": "Error al ejecutar la limpieza",
+      "agentUpdateRequiredToast": "El agente debe actualizarse antes de ejecutar esta limpieza.",
+      "agentUpdateRequired": "El agente debe actualizarse a la versión {{minAgentVersion}} o posterior antes de ejecutar esta limpieza."
     },
     "dismiss": "Descartar",
     "dropFiles": "Soltar archivos",

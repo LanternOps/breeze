@@ -237,6 +237,9 @@
         "trash": "Lixeira"
       },
       "cleanupPreview": "Prévia da limpeza",
+      "cleanupOutcomeBreakdown": "{{failed}} com falha · {{partial}} parcial(is) · {{rejected}} rejeitado(s) · {{locked}} bloqueado(s) · {{skipped}} não alcançado(s)",
+      "cleanupChildIssues": "{{failedChildren}} arquivo(s) na lixeira não puderam ser excluídos · {{skippedLinks}} link(s) ignorado(s)",
+      "cleanupBudgetExhausted": "O tempo disponível acabou antes de alcançar todos os alvos. Execute a limpeza novamente para continuar.",
       "cleanupResult": "Limpeza {{status}}: {{size}} recuperados em {{count}} destino(s); {{failed}} falharam.",
       "data": "Dados: {{size}}",
       "deleteFiles": "Excluir arquivos",
@@ -257,7 +260,10 @@
       "selected": "Selecionado: {{count}} · {{size}}",
       "threshold": "Limite",
       "title": "Limpeza de disco",
-      "trigger": "Acionador: {{value}}"
+      "trigger": "Acionador: {{value}}",
+      "cleanupExecuteFailed": "Falha ao executar a limpeza",
+      "agentUpdateRequiredToast": "O agente precisa ser atualizado antes de executar esta limpeza.",
+      "agentUpdateRequired": "O agente precisa ser atualizado para a versão {{minAgentVersion}} ou posterior antes de executar esta limpeza."
     },
     "dismiss": "Dispensar",
     "dropFiles": "Solte os arquivos para enviar",

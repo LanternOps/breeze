@@ -237,6 +237,9 @@
         "trash": "Çöp Kutusu"
       },
       "cleanupPreview": "Temizleme Önizlemesi",
+      "cleanupOutcomeBreakdown": "{{failed}} başarısız · {{partial}} kısmi · {{rejected}} reddedildi · {{locked}} kilitli · {{skipped}} ulaşılamadı",
+      "cleanupChildIssues": "{{failedChildren}} dosya çöp kutusunda silinemedi · {{skippedLinks}} bağlantı atlandı",
+      "cleanupBudgetExhausted": "Tüm hedeflere ulaşılmadan süre doldu. Devam etmek için temizlemeyi yeniden çalıştırın.",
       "cleanupResult": "Temizleme {{status}}: {{size}}, {{count}} hedeflerinden geri alındı, {{failed}} başarısız oldu.",
       "data": "Veri: {{size}}",
       "deleteFiles": "Dosyaları Sil",
@@ -257,7 +260,10 @@
       "selected": "Seçilen: {{count}} · {{size}}",
       "threshold": "Eşik",
       "title": "Disk Analizi",
-      "trigger": "Tetikleyici: {{value}}"
+      "trigger": "Tetikleyici: {{value}}",
+      "cleanupExecuteFailed": "Temizleme çalıştırılamadı",
+      "agentUpdateRequiredToast": "Bu temizlik çalıştırılmadan önce aracının güncellenmesi gerekiyor.",
+      "agentUpdateRequired": "Bu temizlik çalıştırılmadan önce aracının {{minAgentVersion}} veya üzeri sürüme güncellenmesi gerekiyor."
     },
     "dismiss": "Kapat",
     "dropFiles": "Dosyaları Bırak",
