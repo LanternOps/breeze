@@ -30,6 +30,15 @@ import {
 import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
 import type { FilesystemCleanupCandidate } from './filesystemAnalysis';
 
+/**
+ * Wall-clock ceiling for one cleanup-execute request. Deletes are SEQUENTIAL
+ * and each command carries a 30s timeout, so 200 candidates is a 100-minute
+ * worst case on a request thread holding a database context. Paths not reached
+ * are reported `skipped_budget` and the run is recorded `executed` with
+ * `partial: true` — the operator re-runs rather than waiting (spec §5.2).
+ */
+export const CLEANUP_EXECUTE_BUDGET_MS = 240_000;
+
 export type CleanupActionStatus =
   | 'completed'
   | 'partial'
@@ -118,6 +127,8 @@ export interface CleanupExecutionOutcome {
   actions: CleanupExecutionAction[];
   rejectedPaths: string[];
   bytesReclaimed: number;
+  partial: boolean;
+  budgetMs: number;
 }
 
 export function buildFileDeletePayload(params: {
@@ -216,12 +227,20 @@ export async function runCleanupExecution(params: {
    */
   previewedAt: Date;
   dispatch: (path: string, payload: Record<string, unknown>) => Promise<FileDeleteDispatchResult>;
+  budgetMs?: number;
+  /** Injected clock, so the budget is testable without real time. */
+  now?: () => number;
 }): Promise<CleanupExecutionOutcome> {
+  const budgetMs = params.budgetMs ?? CLEANUP_EXECUTE_BUDGET_MS;
+  const now = params.now ?? (() => Date.now());
+  const startedAt = now();
+
   const byPath = new Map(params.candidates.map((candidate) => [candidate.path, candidate]));
   const requested = Array.from(new Set(params.requestedPaths));
 
   const actions: CleanupExecutionAction[] = [];
   let bytesReclaimed = 0;
+  let budgetSpent = false;
 
   for (const path of requested) {
     const candidate = byPath.get(path);
@@ -248,6 +267,24 @@ export async function runCleanupExecution(params: {
         sizeBytes: candidate.sizeBytes,
         status: 'rejected',
         reason: screened.reason,
+        bytesFreed: 0,
+        skippedLockedCount: 0,
+        skippedLinkCount: 0,
+        failedChildren: [],
+      });
+      continue;
+    }
+
+    // Screening happens BEFORE the budget check so a rejection is reported even
+    // for a path the budget would otherwise have skipped: "we refused this" and
+    // "we ran out of time" are different answers and the operator needs both.
+    if (budgetSpent || now() - startedAt >= budgetMs) {
+      budgetSpent = true;
+      actions.push({
+        path,
+        category: candidate.category,
+        sizeBytes: candidate.sizeBytes,
+        status: 'skipped_budget',
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
@@ -291,5 +328,7 @@ export async function runCleanupExecution(params: {
     actions,
     rejectedPaths: actions.filter((action) => action.status === 'rejected').map((action) => action.path),
     bytesReclaimed,
+    partial: actions.some((action) => action.status === 'skipped_budget'),
+    budgetMs,
   };
 }

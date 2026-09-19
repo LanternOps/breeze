@@ -284,6 +284,12 @@ export function mergeFilesystemAnalysisPayload(existing: AnyObject, incoming: An
       maxDepthReached: Math.max(asNumber(existingSummary.maxDepthReached, 0), asNumber(incomingSummary.maxDepthReached, 0)),
       permissionDeniedCount:
         asNumber(existingSummary.permissionDeniedCount, 0) + asNumber(incomingSummary.permissionDeniedCount, 0),
+      // Sticky across a resumed baseline: the summary is REBUILT from named
+      // fields, so without this line a checkpointed scan that hit the duplicate
+      // cap reported "no duplicates" instead of "we stopped looking".
+      duplicateTrackingTruncated:
+        asBoolean(existingSummary.duplicateTrackingTruncated, false) ||
+        asBoolean(incomingSummary.duplicateTrackingTruncated, false),
     },
     topLargestFiles: mergeTopItemsByPath(existing.topLargestFiles, incoming.topLargestFiles, 'sizeBytes', 50),
     topLargestDirectories: mergeTopItemsByPath(existing.topLargestDirectories, incoming.topLargestDirectories, 'sizeBytes', 30),
@@ -388,4 +394,32 @@ export function readPlanPreviewCandidates(plan: unknown): FilesystemCleanupCandi
     .map(toCleanupCandidate)
     .filter((candidate): candidate is FilesystemCleanupCandidate => candidate !== null)
     .filter((candidate) => candidate.safe && SAFE_CLEANUP_CATEGORIES.has(candidate.category));
+}
+
+export interface StoredExecutedActions {
+  partial: boolean;
+  budgetMs: number;
+  actions: unknown[];
+}
+
+/**
+ * The stored `executed_actions` envelope. W01 changed the column from a bare
+ * array to `{ partial, budgetMs, actions }` so a budget-truncated run can say
+ * so (spec §5.2). No migration: the column is jsonb. This reader accepts BOTH
+ * shapes, because every run recorded before W01 is a bare array and the run
+ * history must still render it.
+ */
+export function readExecutedActions(value: unknown): StoredExecutedActions {
+  if (Array.isArray(value)) {
+    return { partial: false, budgetMs: 0, actions: value };
+  }
+  const record = asRecord(value);
+  if (!record || !Array.isArray(record.actions)) {
+    return { partial: false, budgetMs: 0, actions: [] };
+  }
+  return {
+    partial: asBoolean(record.partial, false),
+    budgetMs: asNumber(record.budgetMs, 0),
+    actions: record.actions,
+  };
 }

@@ -326,3 +326,71 @@ describe('runCleanupExecution', () => {
     expect(outcome.actions[0]).toMatchObject({ status: 'rejected', reason: 'rule_rejected' });
   });
 });
+
+describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
+  it('exports a four-minute budget', async () => {
+    const { CLEANUP_EXECUTE_BUDGET_MS } = await import('./filesystemCleanupExecution');
+    expect(CLEANUP_EXECUTE_BUDGET_MS).toBe(240_000);
+  });
+
+  it('stops dispatching once the budget is spent and marks the rest skipped_budget', async () => {
+    // 200 candidates x a 30s per-command timeout is a 100-minute worst case on
+    // a request thread; the budget is what keeps that bounded (defect 10).
+    let clock = 0;
+    const dispatch = vi.fn(async () => {
+      clock += 60_000;
+      return ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], failedChildren: [] }));
+    });
+    const paths = ['/tmp/a.tmp', '/tmp/b.tmp', '/tmp/c.tmp', '/tmp/d.tmp'];
+    const outcome = await runCleanupExecution({
+      os: 'linux',
+      requestedPaths: paths,
+      candidates: paths.map((p) => tempCandidate(p)),
+      previewedAt: PREVIEWED_AT,
+      dispatch,
+      budgetMs: 120_000,
+      now: () => clock,
+    });
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(outcome.actions.map((a) => a.status)).toEqual([
+      'completed', 'completed', 'skipped_budget', 'skipped_budget',
+    ]);
+    expect(outcome.partial).toBe(true);
+    expect(outcome.budgetMs).toBe(120_000);
+    expect(outcome.rejectedPaths).toEqual([]);
+  });
+
+  it('is not partial when everything fits in the budget', async () => {
+    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], failedChildren: [] })));
+    const outcome = await runCleanupExecution({
+      os: 'linux',
+      requestedPaths: ['/tmp/a.tmp'],
+      candidates: [tempCandidate('/tmp/a.tmp')],
+      previewedAt: PREVIEWED_AT,
+      dispatch,
+      budgetMs: 120_000,
+      now: () => 0,
+    });
+    expect(outcome.partial).toBe(false);
+  });
+
+  it('still screens budget-skipped paths, so a rejection is never hidden by the budget', async () => {
+    let clock = 0;
+    const dispatch = vi.fn(async () => {
+      clock += 60_000;
+      return ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], failedChildren: [] }));
+    });
+    const outcome = await runCleanupExecution({
+      os: 'linux',
+      requestedPaths: ['/tmp/a.tmp', '/home/bob/taxes.pdf', '/tmp/c.tmp'],
+      candidates: [tempCandidate('/tmp/a.tmp'), tempCandidate('/tmp/c.tmp')],
+      previewedAt: PREVIEWED_AT,
+      dispatch,
+      budgetMs: 30_000,
+      now: () => clock,
+    });
+    expect(outcome.actions.map((a) => a.status)).toEqual(['completed', 'rejected', 'skipped_budget']);
+    expect(outcome.rejectedPaths).toEqual(['/home/bob/taxes.pdf']);
+  });
+});
