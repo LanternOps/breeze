@@ -1,6 +1,6 @@
 ---
 title: Alerting consolidation — one domain, three facets (retire every legacy authoring surface)
-status: draft — pending owner review
+status: approved (owner, 2026-09-19); plans in docs/superpowers/plans/monitoring/2026-09-19-alerting-consolidation-*.md
 date: 2026-09-19
 supersedes: 2026-09-08-monitoring-automation-unification-design.md §Decisions D1 and §Non-goals "Retiring the config-policy tabs" (the deferred "W5 — retirement decisions")
 origin: "#4984 community proposal (stressedout9064, Discord 2026-08-28); owner review 2026-09-19 (screenshots of four competing surfaces); third consolidation pass after 2026-07-30 (rules → Alerts tab) and 2026-09-08 (Monitors)"
@@ -137,6 +137,11 @@ Two invariants every wave must preserve:
 | #6344 | `resolveMonitorsForDevice` applies assignment `roleFilter`/`osFilter` exactly as `resolveEffectiveConfigWithExecutor` does | converting a policy assigned "servers only" would widen it to every device |
 
 Each is a single-PR fix with an integration test, filed and fixed independently of this program.
+
+Two more, found while planning W05e and gating **that** wave only: #6352 (`network_check` monitors
+write `config.expectStatus`; the agent reads `expectedStatus`, so HTTP checks always expect 200)
+and #6353 (the `network_check` handler breaches for every device the policy reaches, so one failing
+check raises one alert per online device; the legacy worker picks a single alert device).
 
 ## End state
 
@@ -494,7 +499,7 @@ conversion instructions and deadline (W05c), the removals and the boot check (W0
 | **W05b — delivery** (3 PRs) | `resolveDelivery` + preview endpoint; routing `escalation_policy_id`, `is_default`, `monitorKinds`; default-row migration; Delivery page (Channels · Routing · Escalation policies) with `/alerts/channels` redirect; monitor Notify card shows resolved inheritance; dispatcher on the resolver; fallback deleted; delivery MCP tool | one integration test proving dispatch and preview agree for org-row, partner-row, default-row and inbox-only cases against real Postgres |
 | **W05c — conversion** (5 PRs; requires the three prerequisite fixes merged) | `composite` kind; `inheritance` link setting + resolver; `consecutiveFailures` widening; `restart_service` params + agent builder; Check-interval write-through; retirement columns; `monitor_conversions`; converter for all five sources incl. inheritance correction and open-alert carry-over; per-policy panel + partner-level Convert everything; Needs-conversion filter on Monitors; Alert workflows filter + payload fields; device page Monitoring tab; Fleet Designer and AI-tool changes; Alert Templates pages deleted | hosted: ledger shows zero unretired rows on EU and US; self-hosted banner live |
 | **W05d — retirement** (2 PRs, ≥1 release after W05c) | Migration runs the converter in system scope for leftovers; settings re-key to the `monitors` link; transitional delivery overrides removed; `migrateToConfigPolicies` script deleted; policy `#alert_rule`/`#monitoring` tabs, `/alerts/rules`, legacy routers (410), `monitoring` feature decompose/assemble, `evaluateDeviceAlertsFromPolicy` deleted; `RETIRED_CONFIG_FEATURE_TYPES`; boot check | — |
-| **W05e — network checks** (3 PRs) | Network Monitor → **Network** (Assets · Templates · Results); check authoring in Monitors (kind `network_check`, target = asset); unmanaged `network_monitors` rows converted with the same ledger; `network_monitor_alert_rules` retired | — |
+| **W05e — network checks** (3 PRs; requires #6352, #6353 merged) | Network Monitor → **Network** (Assets · Templates · Results); check authoring in Monitors (kind `network_check`, bound to an asset); unmanaged `network_monitors` rows are **adopted** in place (stamped `managed_by_monitor_id`, keeping row id, results history and asset binding) rather than re-inserted, under the same ledger; their `network_monitor_alert_rules` retired; one generated "Network checks — <org>" policy per org carries the attachments | — |
 
 W05a and W05b are independent of each other. W05c depends on both. W05d depends on W05c having
 shipped in a prior release. W05e is separable and may be re-planned after W05d.
@@ -533,6 +538,9 @@ shipped in a prior release. W05e is separable and may be re-planned after W05d.
   server-evaluated kinds and OR groups exist (restricted + `match`); onboarding and the
   migrate script write legacy rows (inventoried); `consecutiveFailures` domains differ
   (widened); ledger could not hold one-to-many (outputs table).
+- 2026-09-19 (W05e planning) — the wave plan adopts legacy `network_monitors` rows in place
+  instead of insert-and-retire (keeps ids, history, TLS observations); accepted and recorded in
+  §Waves. Two shipped W04 defects surfaced and were filed (#6352, #6353).
 - Owner (2026-09-19): framing approved — "alerting is the purpose in an RMM; monitors serve
   it"; Monitors name kept; explicit delivery default with opt-in new channels approved.
 
