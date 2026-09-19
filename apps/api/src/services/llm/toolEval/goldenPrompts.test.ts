@@ -64,4 +64,15 @@ describe('GOLDEN_CASES', () => {
   it('covers at least 10 distinct domains worth of tools (no single-tool eval)', () => {
     expect(new Set(GOLDEN_CASES.flatMap((c) => c.expect.map((e) => e.tool))).size).toBeGreaterThanOrEqual(35);
   });
+  it('freezes the structurally-unwinnable-on-chat case set (every acceptable answer is undeclared)', () => {
+    // A case is structurally unwinnable when EVERY tool in its expect[] is
+    // undeclared (absent from TOOL_TIERS) — the model has no declared
+    // alternate to reach for. This is a stricter bar than "has at least one
+    // undeclared expected tool"; it is what actually caps chat accuracy.
+    const undeclared = new Set([...PENDING_DECLARATION, ...BASELINE_UNDECLARED_TOOLS]);
+    const structuralMisses = GOLDEN_CASES
+      .filter((c) => c.expect.every((e) => undeclared.has(e.tool)))
+      .map((c) => c.id);
+    expect(structuralMisses).toEqual(['g23', 'g26', 'g34', 'g35', 'g36', 'g49', 'g55', 'g57', 'g59', 'g60']);
+  });
 });
