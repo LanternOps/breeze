@@ -66,6 +66,8 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'network monitor status, uptime and response times for ping, TCP, HTTP and DNS checks',
     definition: {
       name: 'query_monitors',
       description: 'List network monitors with their current status, uptime, and response time statistics.',
@@ -196,6 +198,8 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'network monitors: get check history, create, update, delete',
     definition: {
       name: 'manage_monitors',
       description: 'Get monitor details with recent check history, or create/update/delete monitors.',
@@ -426,6 +430,8 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'service and process watchers: status, summary, results, known services',
     definition: {
       name: 'get_service_monitoring_status',
       description: 'Query service and process monitoring status for managed devices. Actions: status (health overview), summary (latest result per watcher), results (check history), known_services (autocomplete).',

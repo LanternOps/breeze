@@ -133,6 +133,33 @@ describe('createBareMetalRecovery', () => {
     expect(expiresIn).toBeLessThanOrEqual(RECOVERY_CODE_TTL_MS);
   });
 
+  it('writes the DR linkage and rebuild host onto the row (W05b Task 6)', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([restorableSnapshot]))
+      .mockReturnValueOnce(chainMock([]));
+    insertMock.mockReturnValueOnce(chainMock([recoveryRow()]));
+
+    await createBareMetalRecovery({
+      orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: null, source: 'dr',
+      executingDeviceId: 'host-1', drExecutionId: 'exec-1', drGroupId: 'group-1',
+    });
+
+    const inserted = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(inserted).toMatchObject({ executingDeviceId: 'host-1', drExecutionId: 'exec-1', drGroupId: 'group-1' });
+  });
+
+  it('leaves the DR linkage NULL for a boot-media recovery', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([restorableSnapshot]))
+      .mockReturnValueOnce(chainMock([]));
+    insertMock.mockReturnValueOnce(chainMock([recoveryRow()]));
+
+    await createBareMetalRecovery({ orgId: ORG_ID, snapshotId: SNAPSHOT_ID, identity: 'original', createdBy: USER_ID, source: 'route' });
+
+    const inserted = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(inserted).toMatchObject({ executingDeviceId: null, drExecutionId: null, drGroupId: null });
+  });
+
   it('audits bmr.recovery.create with the source and never the code', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([restorableSnapshot]))

@@ -56,7 +56,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -64,6 +64,11 @@ import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettin
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { ensureBuiltInMonitorsForPartner } from '../services/monitors/builtInMonitors';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import {
+  richTextStripWarning,
+  sanitizeRichTextHtmlWithReport,
+  type RichTextStripWarning,
+} from '../services/richTextSanitize';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -98,6 +103,55 @@ function foldAllowedMfaMethodsAlias(settings: unknown): unknown {
     delete sec.allowedMfaMethods;
   }
   return settings;
+}
+
+const emailTemplateOverrideSchema = z.object({
+  subject: z.string().max(200).nullable().optional(),
+  heading: z.string().max(200).nullable().optional(),
+  buttonLabel: z.string().max(80).nullable().optional(),
+  html: z.string().max(20_000).nullable().optional(),
+}).strict();
+
+function blankToNull(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function normalizePartnerEmailTemplates(
+  incoming: Partial<Record<string, z.infer<typeof emailTemplateOverrideSchema>>>,
+): {
+  templates: Record<string, {
+    subject: string | null;
+    heading: string | null;
+    buttonLabel: string | null;
+    html: string | null;
+  }>;
+  warnings: RichTextStripWarning[];
+} {
+  const templates: Record<string, {
+    subject: string | null;
+    heading: string | null;
+    buttonLabel: string | null;
+    html: string | null;
+  }> = {};
+  const warnings: RichTextStripWarning[] = [];
+  for (const [id, raw] of Object.entries(incoming)) {
+    if (raw == null) continue;
+    const subject = blankToNull(raw.subject);
+    const heading = blankToNull(raw.heading);
+    const buttonLabel = blankToNull(raw.buttonLabel);
+    let html = blankToNull(raw.html);
+    if (html != null) {
+      const report = sanitizeRichTextHtmlWithReport(html);
+      html = blankToNull(report.html);
+      if (html && isBlankEmailTemplateHtml(html)) html = null;
+      const warning = richTextStripWarning(`emailTemplates.${id}.html`, report);
+      if (warning) warnings.push(warning);
+    }
+    templates[id] = { subject, heading, buttonLabel, html };
+  }
+  return { templates, warnings };
 }
 
 export const orgRoutes = new Hono();
@@ -794,6 +848,8 @@ const partnerSettingsSchema = z.object({
     // sites validate against the same contract this write boundary enforces.
     inbound: ticketingInboundSettingsSchema.optional(),
   }).optional(),
+  // One-level merge by template id (see PATCH /partners/me). Unknown ids 400.
+  emailTemplates: z.partialRecord(z.enum(EMAIL_TEMPLATE_IDS), emailTemplateOverrideSchema).optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -938,6 +994,16 @@ orgRoutes.patch(
     newSettings.timeTracking = {
       ...((currentSettings.timeTracking as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.timeTracking,
+    };
+  }
+
+  let emailTemplateWarnings: RichTextStripWarning[] = [];
+  if (body.settings?.emailTemplates) {
+    const { templates, warnings } = normalizePartnerEmailTemplates(body.settings.emailTemplates);
+    emailTemplateWarnings = warnings;
+    newSettings.emailTemplates = {
+      ...((currentSettings.emailTemplates as Record<string, unknown> | undefined) ?? {}),
+      ...templates,
     };
   }
 
@@ -1124,6 +1190,9 @@ orgRoutes.patch(
     details: { changedFields: Object.keys(body) }
   });
 
+  if (emailTemplateWarnings.length > 0) {
+    return c.json({ ...partner, warnings: emailTemplateWarnings });
+  }
   return c.json(partner);
 });
 

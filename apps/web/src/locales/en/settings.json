@@ -551,6 +551,10 @@
         "description": "Statuses, SLAs, categories, forms",
         "linkCta": "Manage ticketing settings →"
       },
+      "emailTemplates": {
+        "label": "Email templates",
+        "description": "Tickets, quotes, invoices, invites"
+      },
       "sendingDomains": { "label": "Sender Addresses", "description": "Send email from your own domain" },
       "aiBudgets": {
         "label": "AI Budgets",
@@ -842,6 +846,45 @@
     "deleteExpiredTitle": "Delete expired enrollment keys",
     "deleteExpiredConfirm": "Delete all expired enrollment keys? Keys still backing a live installer download link are kept. This cannot be undone."
   },
+  "emailTemplates": {
+    "title": "Email templates",
+    "description": "Customize the emails customers receive for tickets, quotes, invoices, and portal invites. The ticket reply notice never includes the reply text.",
+    "usingDefault": "Using default",
+    "custom": "Custom",
+    "subject": "Subject",
+    "heading": "Heading",
+    "buttonLabel": "Button label",
+    "html": "HTML body",
+    "htmlAria": "Email HTML body",
+    "insert": "Insert:",
+    "preview": "Preview",
+    "save": "Save template",
+    "reset": "Reset to default",
+    "saved": "Email template saved",
+    "saveFailed": "Failed to save email template",
+    "loadFailed": "Failed to load email templates.",
+    "back": "Back to list",
+    "markupRemoved": "Some markup was removed: {{tags}}",
+    "variables": {
+      "ticket_number": "Ticket number",
+      "ticket_subject": "Ticket subject",
+      "requester_name": "Requester name",
+      "requester_email": "Requester email",
+      "org_name": "Organization name",
+      "partner_name": "Company name",
+      "portal_url": "Portal URL",
+      "email_only_hint": "Email-only hint",
+      "resolution_note": "Resolution note",
+      "quote_number": "Quote number",
+      "total": "Total",
+      "expiry_date": "Expiry date",
+      "accept_url": "Accept URL",
+      "invoice_number": "Invoice number",
+      "due_date": "Due date",
+      "invite_url": "Invite URL",
+      "cta_button": "Button"
+    }
+  },
   "inboundEmail": {
     "saveError": "Could not save inbound email settings — your session may need MFA re-verification. Retry.",
     "orgNotAccessible": "That organization is not available under your partner.",
@@ -872,6 +915,8 @@
     "dropUnverified": "Drop mail that fails sender authentication (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "When off, unverified mail is quarantined for review. When on, it's dropped silently. This applies to <all>all</all> unverified senders — including mapped customers whose individual message fails the check.",
     "enableAutoresponse": "Send an autoresponse acknowledging new email tickets",
+    "editEmailTemplates": "The acknowledgement email is edited under Email templates.",
+    "editEmailTemplatesLink": "Edit email templates",
     "autoresponseMessage": "Autoresponse message",
     "subject": "Subject",
     "subjectPlaceholder": "We received your request: {{ticket_subject}}",

@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
-import { SUPPORTED_LOCALES, resolveTicketPushPrefs, updateTicketPushPreferencesSchema } from '@breeze/shared';
+import { ERROR_CODES, SUPPORTED_LOCALES, resolveTicketPushPrefs, updateTicketPushPreferencesSchema } from '@breeze/shared';
 import type { SupportedLocale } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
+import { jsonError } from '../lib/jsonError';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
@@ -361,7 +362,7 @@ userRoutes.get('/me', async (c) => {
     .limit(1);
 
   if (!user) {
-    return c.json({ error: 'User not found' }, 404);
+    return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
   }
 
   // Never spread `user` directly into the response from here on: it carries the
@@ -556,7 +557,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     .limit(1);
 
   if (!self) {
-    return c.json({ error: 'User not found' }, 404);
+    return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
   }
 
   const updates: { name?: string; email?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
@@ -1268,7 +1269,7 @@ userRoutes.get(
     const record = await getScopedUser(userId, scopeContext);
 
     if (!record) {
-      return c.json({ error: 'User not found' }, 404);
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
 
     return c.json(record);
@@ -1506,7 +1507,7 @@ userRoutes.post(
     });
 
     if (!result.linkCreated) {
-      return c.json({ error: 'User already exists in this scope' }, 409);
+      return jsonError(c, 409, ERROR_CODES.CONFLICT, 'User already exists in this scope');
     }
     await clearPermissionCache(result.user.id);
 
@@ -1562,7 +1563,7 @@ userRoutes.post(
     const record = await getScopedUser(userId, scopeContext);
 
     if (!record) {
-      return c.json({ error: 'User not found' }, 404);
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
 
     if (record.status !== 'invited') {
@@ -1637,7 +1638,7 @@ userRoutes.patch(
     );
 
     if (!record) {
-      return c.json({ error: 'User not found' }, 404);
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
 
     const updates: {
@@ -1845,7 +1846,7 @@ userRoutes.delete(
       const { deleted } = await removeMembershipForScope(scopeContext, userId);
 
       if (!deleted) {
-        return c.json({ error: 'User not found' }, 404);
+        return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
       }
 
       writeUserAudit(c, auth, scopeContext, {
@@ -1866,7 +1867,7 @@ userRoutes.delete(
     const { deleted } = await removeMembershipForScope(scopeContext, userId);
 
     if (!deleted) {
-      return c.json({ error: 'User not found' }, 404);
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
 
     writeUserAudit(c, auth, scopeContext, {
@@ -1921,7 +1922,7 @@ userRoutes.post(
     // outside their tenant (RLS on `users` is the second line of defense).
     const record = await getScopedUser(userId, scopeContext);
     if (!record) {
-      return c.json({ error: 'User not found' }, 404);
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
 
     // RMM-QA-166 (D6): the gate is the factor INVENTORY, not `users.mfa_enabled`.
@@ -2012,7 +2013,7 @@ userRoutes.post(
         .returning({ id: partnerUsers.id });
 
       if (updated.length === 0) {
-        return c.json({ error: 'User not found' }, 404);
+        return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
       }
 
       writeUserAudit(c, auth, scopeContext, {
@@ -2037,7 +2038,7 @@ userRoutes.post(
       .returning({ id: organizationUsers.id });
 
     if (updated.length === 0) {
-      return c.json({ error: 'User not found' }, 404);
+      return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
 
     writeUserAudit(c, auth, scopeContext, {

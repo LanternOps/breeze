@@ -5,7 +5,7 @@
 - iOS bundle ID: `com.breeze.rmm`
 - Android application ID: `com.breeze.rmm`
 - Store version: `1.0.0`
-- First local build numbers: iOS `1`; Android `1`
+- Build numbers: iOS `buildNumber` and Android `versionCode` in `app.json` — bump the one you are shipping before every upload (Play rejects a reused `versionCode`).
 - The release path uses the local Xcode project; no Expo/EAS account is required. A committed `eas.json` exists so build-time config has a named home, but no EAS build has ever been run for this app.
 - Apple Team ID: `D8W6N2JYMA` (LanternOps LLC)
 
@@ -56,6 +56,122 @@ ready before that operational step lands.
 
 FCM has no sandbox/production split the way APNs does — there is no equivalent
 to the `APNS_ENVIRONMENT` gotcha above to watch for.
+
+## Google Play — build, sign, and submit
+
+Android ships from the same `app.json` and the same `1.0.0` store version as
+iOS. There is no EAS, no Expo account, and no Play-managed CI: the AAB is
+built locally with Gradle. Everything below has been exercised end-to-end on
+2026-09-15 (release APK installed on an API 36 emulator, signed in against US
+prod with the reviewer demo account, all four tabs and Settings rendered).
+
+### Upload key (Play App Signing)
+
+The app uses **Play App Signing**: Google holds the app signing key; we hold an
+**upload key** and sign every AAB with it.
+
+- Keystore: `apps/mobile/credentials/breeze-upload.jks` (gitignored via `*.jks`),
+  alias `breeze-upload`, RSA 2048, valid 10,000 days. Cert SHA-256
+  `20:B2:5B:45:97:EC:06:E7:4C:D3:A8:97:4F:98:15:C7:72:3B:63:6D:7D:EA:EA:AF:A7:09:60:48:45:32:F4:8D`.
+- Credentials live in `~/.gradle/gradle.properties` as `BREEZE_UPLOAD_STORE_FILE`,
+  `BREEZE_UPLOAD_STORE_PASSWORD`, `BREEZE_UPLOAD_KEY_ALIAS`, `BREEZE_UPLOAD_KEY_PASSWORD`.
+- **Back the `.jks` and the password up in 1Password now.** Losing the upload key
+  means a key-reset request through Play Console support before the next
+  release can be uploaded.
+- `src/config/androidUploadSigning.js` is an Expo config plugin (registered in
+  `app.json`) that re-adds the `signingConfigs.release` block to the generated
+  `android/app/build.gradle` on every `expo prebuild`. When the Gradle property
+  is absent it silently falls back to the debug keystore, so a contributor
+  without the key can still build; Play rejects a debug-signed AAB, so that
+  cannot ship by accident.
+
+### Build sequence
+
+```bash
+cd apps/mobile
+export ANDROID_HOME=~/Library/Android/sdk
+# 1. bump android.versionCode in app.json (and version if it is a new release)
+# 2. release gates: EXPO_PUBLIC_API_URL and EXPO_PUBLIC_SENTRY_DSN in .env
+# 3. google-services.json on disk (see "Push notifications" above)
+GOOGLE_SERVICES_JSON=... pnpm write-google-services
+npx expo prebuild --platform android --clean --no-install
+cd android && ./gradlew bundleRelease          # -> app/build/outputs/bundle/release/app-release.aab
+keytool -printcert -jarfile app/build/outputs/bundle/release/app-release.aab | grep Owner
+```
+
+- `SENTRY_AUTH_TOKEN` (from `.env.sentry-build-plugin`) uploads the JS source
+  map during `bundleRelease`; the Sentry Gradle step fails the build without it.
+  Set `SENTRY_DISABLE_AUTO_UPLOAD=true` only for a local smoke build.
+- The Gradle daemon needs several GB of free disk; a full disk kills it with
+  "Gradle build daemon disappeared unexpectedly", not an out-of-space error.
+- For an emulator smoke test use an **API 36 Google APIs** image. The API 37
+  preview image (`Pixel_10a` AVD) failed to resolve any launcher activity and
+  rendered black on 2026-09-15.
+- Emulators report `not_physical_device`, so push shows as unavailable and the
+  approver banner reports attestation could not complete. Both are expected off
+  hardware; verify push and the approver key on a physical phone before
+  promoting to production.
+
+### Play Console record
+
+- App name: **Breeze RMM** · default language English (United States)
+- App or game: App · Free · package `com.breeze.rmm`
+- Category: Business · tags: IT management, Productivity
+- Contact email: support address · website `https://breezermm.com/`
+- Privacy policy: `https://breezermm.com/legal/privacy-policy/`
+- Account deletion URL (Data safety → account deletion): `https://us.2breeze.app/account/delete`
+- Ads: none · Content rating: IARC questionnaire, Utility/Productivity, no
+  user-generated public content (ticket comments are private to the tenant)
+- Target audience: 18+ only, not designed for children
+- Government app: no · Financial features: none · Health: none
+- Data safety: see below
+
+### Store listing assets (`apps/mobile/store/android/`)
+
+- `hi-res-icon-512.png` — 512×512 app icon
+- `feature-graphic.png` — 1024×500
+- `screenshots/1-home.png … 5-settings.png` — 1080×2160 (2:1) phone screenshots
+  from the 2026-09-15 emulator run, signed in as the reviewer demo account.
+  Retake after any visual change. No 7-inch/10-inch tablet screenshots: the
+  app is phone-only on iOS and Play lists tablets as optional.
+- Short description (≤80): `Your fleet, in one chat. Alerts, approvals, tickets and time for MSPs.`
+- Full description: reuse the App Store description above verbatim, replacing
+  "Face ID or Touch ID" with "fingerprint or face unlock". Play allows 4000
+  characters, same limit as Apple.
+
+### Data safety form
+
+Play's form is per data type with collection/sharing/purpose; map the App
+Store declarations above like this. Everything is transmitted over TLS, none
+of it is shared with third parties other than the processors below, and all of
+it is deletable via account deletion.
+
+| Data type | Collected | Purpose | Notes |
+|---|---|---|---|
+| Personal info → Email address, Name | Yes, required | App functionality, Account management, Analytics | Sentry user context; PostHog identify only when `EXPO_PUBLIC_POSTHOG_KEY` is set |
+| App info and performance → Crash logs, Diagnostics | Yes | Analytics, App functionality | Sentry |
+| App activity → App interactions | Yes | Analytics | PostHog, only when configured in the shipped build |
+| Device or other IDs | Yes | App functionality, Fraud prevention, security | push token, approver device id, Play Integrity / attestation |
+| Photos and videos | Yes, optional | App functionality | ticket attachments, user-initiated only |
+| Audio → Voice or sound recordings | No (processed on-device, not stored) | — | expo-speech-recognition; declare "collected, not stored" if the reviewer asks |
+| Location, Contacts, Financial, Health, Messages, Files | No | — | |
+
+Security practices: data encrypted in transit; users can request deletion
+(in-app "Delete account" → per-region page). No independent security review
+claim.
+
+### Release path
+
+1. Internal testing track first: upload the AAB, add your own Google account as
+   a tester, install from the Play link on a physical phone, confirm push
+   registration and an approval round-trip (that needs the Firebase project
+   wired on the droplets — `FIREBASE_SERVICE_ACCOUNT` — see #4717).
+2. Production release with review notes: reviewer credentials
+   `appstore-review@breezermm.com` (same demo account Apple uses; MFA off),
+   server "United States", and a note that accounts are created by an
+   organization admin so there is no in-app sign-up.
+3. Play review for a new business app typically takes 1–7 days. The
+   `versionCode` used on any track is consumed forever; bump before re-uploading.
 
 ## App Store Connect record
 

@@ -551,6 +551,10 @@
         "description": "Status, SLAs, categorias, formulários",
         "linkCta": "Gerenciar configurações de tickets →"
       },
+      "emailTemplates": {
+        "label": "Modelos de e-mail",
+        "description": "Chamados, orçamentos, faturas, convites"
+      },
       "sendingDomains": {
         "label": "Endereços de envio",
         "description": "Envie e-mails do seu próprio domínio"
@@ -655,7 +659,6 @@
     "failedDnsRemoved": "Os registros DNS foram removidos.",
     "failedUnknown": "A verificação não foi concluída.",
     "retry": "Tentar de novo",
-    "removeTitle": "Remover o domínio de envio?",
     "removeConfirm": "Remover {{domain}}? O e-mail dele volta para o remetente padrão do Breeze.",
     "removeConfirmUnmanaged": "Remover {{domain}} do Breeze? O domínio continua na conta do seu provedor de e-mail — o Breeze nunca apaga um domínio que não criou.",
     "removeStarted": "Removendo o domínio.",
@@ -705,7 +708,8 @@
     "errorCheckFailed": "Não foi possível iniciar a verificação de DNS.",
     "errorRemoveFailed": "Não foi possível remover o domínio.",
     "errorIdentityFailed": "Não foi possível salvar o endereço de remetente.",
-    "errorTestFailed": "Não foi possível enviar o e-mail de teste."
+    "errorTestFailed": "Não foi possível enviar o e-mail de teste.",
+    "removeTitle": "Remover o domínio de envio?"
   },
   "loginBranding": {
     "saved": "Identidade visual do login salva",
@@ -845,6 +849,45 @@
     "deleteExpiredTitle": "Excluir chaves de registro expiradas",
     "deleteExpiredConfirm": "Excluir todas as chaves de registro expiradas? As chaves que ainda sustentam um link de download do instalador ativo são mantidas. Esta ação não pode ser desfeita."
   },
+  "emailTemplates": {
+    "title": "Modelos de e-mail",
+    "description": "Personalize os e-mails que os clientes recebem para chamados, orçamentos, faturas e convites do portal. O aviso de resposta nunca inclui o texto da resposta.",
+    "usingDefault": "Padrão",
+    "custom": "Personalizado",
+    "subject": "Assunto",
+    "heading": "Título",
+    "buttonLabel": "Rótulo do botão",
+    "html": "Corpo HTML",
+    "htmlAria": "Corpo HTML do e-mail",
+    "insert": "Inserir:",
+    "preview": "Prévia",
+    "save": "Salvar modelo",
+    "reset": "Restaurar padrão",
+    "saved": "Modelo de e-mail salvo",
+    "saveFailed": "Falha ao salvar o modelo de e-mail",
+    "loadFailed": "Falha ao carregar os modelos de e-mail.",
+    "back": "Voltar à lista",
+    "markupRemoved": "Parte da marcação foi removida: {{tags}}",
+    "variables": {
+      "ticket_number": "Número do chamado",
+      "ticket_subject": "Assunto do chamado",
+      "requester_name": "Nome do solicitante",
+      "requester_email": "E-mail do solicitante",
+      "org_name": "Nome da organização",
+      "partner_name": "Nome da empresa",
+      "portal_url": "URL do portal",
+      "email_only_hint": "Aviso só por e-mail",
+      "resolution_note": "Nota de resolução",
+      "quote_number": "Número da proposta",
+      "total": "Total",
+      "expiry_date": "Data de validade",
+      "accept_url": "URL de aceitação",
+      "invoice_number": "Número da fatura",
+      "due_date": "Data de vencimento",
+      "invite_url": "URL do convite",
+      "cta_button": "Botão"
+    }
+  },
   "inboundEmail": {
     "saveError": "Não foi possível salvar as configurações de e-mail de entrada — talvez sua sessão precise de nova verificação MFA. Tente novamente.",
     "orgNotAccessible": "Essa organização não está disponível no seu parceiro.",
@@ -875,6 +918,8 @@
     "dropUnverified": "Descartar mensagens que falham na autenticação do remetente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando desativado, mensagens não verificadas ficam em quarentena para revisão. Quando ativado, são descartadas silenciosamente. Isso se aplica a <all>todos</all> os remetentes não verificados — inclusive clientes mapeados cuja mensagem falhe na verificação.",
     "enableAutoresponse": "Enviar resposta automática confirmando novos chamados por e-mail",
+    "editEmailTemplates": "O e-mail de confirmação é editado em Modelos de e-mail.",
+    "editEmailTemplatesLink": "Editar modelos de e-mail",
     "autoresponseMessage": "Mensagem de resposta automática",
     "subject": "Assunto",
     "subjectPlaceholder": "Recebemos sua solicitação: {{ticket_subject}}",

@@ -9,6 +9,10 @@ import {
 } from './emailLayout';
 import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
 import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
+import {
+  renderPartnerEmail,
+  type PartnerEmailCustom,
+} from './emailTemplates/renderPartnerEmail';
 
 export interface EmailAttachment {
   filename: string;
@@ -122,6 +126,8 @@ export interface InvoiceEmailParams {
   /** True when the linked page can take payment (payable status + partner has
    *  Stripe connected) — flips the CTA to "View & pay invoice". */
   payEnabled?: boolean;
+  /** Partner-saved template override; null/absent uses code defaults. */
+  custom?: PartnerEmailCustom | null;
 }
 
 /**
@@ -153,6 +159,9 @@ export interface PortalInviteEmailParams {
    * read or from the verified auth context, never from request input (§8.1).
    */
   partnerId: string | null;
+  partnerName?: string;
+  /** Partner-saved template override; null/absent uses code defaults. */
+  custom?: PartnerEmailCustom | null;
 }
 
 export interface VerificationEmailParams {
@@ -1068,17 +1077,25 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
   const orgName = params.orgName?.trim();
   const inviter = params.inviterName?.trim();
   const customMessage = params.message?.trim();
-  const subject = orgName ? `You're invited to the ${orgName} support portal` : `You're invited to your support portal`;
-  const preheader = 'Set your password to access your support portal.';
-  const heading = orgName ? `Join the ${orgName} portal` : 'Join your support portal';
-  const invitedBy = inviter ? `${escapeHtml(inviter)} invited you` : 'You have been invited';
-  const body = `
-      <p style="${BODY_PARA}">${invitedBy} to the${orgName ? ` ${escapeHtml(orgName)}` : ''} support portal, where you can open tickets, view invoices, and track your devices.</p>
-      ${customMessage ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>` : ''}
-      ${renderButton('Set your password', params.inviteUrl)}
-      <p style="${MUTED_PARA}">This invite link expires in 7 days. If you didn't expect this, you can ignore this email.</p>
-  `;
-  const html = renderLayout({ title: subject, preheader, heading, body, footer: supportFooter(params.supportEmail, 'Need help? Contact') });
+  const messageBlock = customMessage
+    ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>`
+    : '';
+  const custom = params.custom ?? null;
+  const rendered = renderPartnerEmail({
+    id: 'portal_invite',
+    custom,
+    vars: {
+      requester_name: inviter ?? '',
+      partner_name: params.partnerName ?? '',
+      invite_url: params.inviteUrl,
+      org_name: orgName ?? '',
+    },
+    ctaUrl: params.inviteUrl,
+    footer: supportFooter(params.supportEmail, 'Need help? Contact'),
+    preheader: 'Set your password to access your support portal.',
+    bodyBeforeCta: messageBlock,
+    bodyAfterCta: '',
+  });
   const support = getSupportEmail(params.supportEmail);
   const text = [
     orgName ? `You're invited to the ${orgName} support portal.` : `You're invited to your support portal.`,
@@ -1087,7 +1104,7 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     'This invite link expires in 7 days.',
     support ? `Need help? Contact ${support}.` : null
   ].filter(Boolean).join('\n');
-  return { subject, html, text };
+  return { subject: rendered.subject, html: rendered.html, text };
 }
 
 function buildVerificationTemplate(params: VerificationEmailParams): EmailTemplate {
@@ -1202,48 +1219,46 @@ function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
 
 export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate {
   const number = params.invoiceNumber.trim();
-  const subject = params.subject?.trim() || `Invoice ${number} from ${params.partnerName}`;
-  const preheader = `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`;
   const dueNow = params.amountDueNow ?? params.total;
-  // The composer can drop the attachment; the intro must not then promise one.
   const pdfAttached = params.pdfAttached ?? true;
-  const introSuffix = pdfAttached ? ' A PDF copy is attached to this email.' : '';
-  const dueLine = params.dueDate
-    ? `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong> by <strong>${escapeHtml(params.dueDate)}</strong>.</p>`
-    : `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong>.</p>`;
   const paidLine = params.amountPaid
     ? `<p style="${MUTED_PARA}">Paid to date: ${escapeHtml(params.amountPaid)} of ${escapeHtml(params.total)}.</p>`
     : '';
-  // Sender's personal note, if any. Escaped, with newlines preserved as <br> so a
-  // multi-line note keeps its shape. Rendered between the intro and the amounts
-  // (mirrors buildQuoteTemplate).
   const note = params.message?.trim();
   const messageBlock = note
     ? `<p style="${BODY_PARA}">${escapeHtml(note).replace(/\r?\n/g, '<br>')}</p>`
     : '';
-  // Partner signature: muted, under the CTA — reads as a sign-off, not content.
   const signature = params.signature?.trim();
   const signatureBlock = signature
     ? `<p style="${MUTED_PARA}">${escapeHtml(signature).replace(/\r?\n/g, '<br>')}</p>`
     : '';
-  const body = `
-      <p style="${BODY_PARA}">Hi there,</p>
-      <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you invoice <strong>${escapeHtml(number)}</strong>.${introSuffix}</p>
-      ${messageBlock}
-      ${dueLine}
-      ${paidLine}
-      ${renderButton(params.payEnabled ? 'View & pay invoice' : 'View invoice', params.portalUrl)}
-      <p style="${MUTED_PARA}">You can view this invoice and download a copy any time using this link — no sign-in needed.</p>
-      ${signatureBlock}
-  `;
-  const html = renderLayout({
-    title: subject,
-    preheader,
-    heading: `Invoice ${number}`,
-    body,
-    footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
-    // Customer-facing: the brand line shows the MSP the invoice is from, not the platform.
+
+  const custom = params.custom ?? null;
+  const perSendSubject = params.subject?.trim() || null;
+  const customHtml = custom?.html?.trim() || null;
+  const rendered = renderPartnerEmail({
+    id: 'invoice_send',
+    custom: {
+      subject: perSendSubject ?? custom?.subject ?? null,
+      heading: custom?.heading ?? null,
+      buttonLabel: custom?.buttonLabel ?? null,
+      html: customHtml,
+    },
+    vars: {
+      invoice_number: number,
+      partner_name: params.partnerName,
+      total: dueNow,
+      due_date: params.dueDate ?? '',
+      portal_url: params.portalUrl,
+      pdf_attached: pdfAttached ? '1' : '0',
+    },
+    ctaUrl: params.portalUrl,
+    ctaLabel: params.payEnabled ? 'View & pay invoice' : 'View invoice',
     brandName: params.partnerName,
+    footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
+    preheader: `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`,
+    bodyBeforeCta: `${messageBlock}${paidLine}`,
+    bodyAfterCta: signatureBlock,
   });
 
   const support = getSupportEmail(params.supportEmail);
@@ -1260,7 +1275,7 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
     .filter(Boolean)
     .join('\n');
 
-  return { subject, html, text };
+  return { subject: rendered.subject, html: rendered.html, text };
 }
 
 export interface QuoteOutcomeEmailParams {

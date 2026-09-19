@@ -5,6 +5,7 @@ import {
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
   backupScheduleSchema as sharedBackupScheduleSchema,
 } from '@breeze/shared/validators';
+import { drRestoreConfigSchema } from '../../services/drBareMetalRebuildStep';
 
 const queryBoolean = z.preprocess((value) => {
   if (typeof value === 'boolean') return value;
@@ -524,7 +525,7 @@ export const drGroupCreateSchema = z.object({
   sequence: z.number().int().min(0).optional(),
   dependsOnGroupId: z.string().guid().optional(),
   devices: z.array(z.string().guid()).optional(),
-  restoreConfig: z.record(z.string(), z.any()).optional(),
+  restoreConfig: drRestoreConfigSchema.optional(),
   estimatedDurationMinutes: z.number().int().min(0).optional(),
 });
 
@@ -533,7 +534,7 @@ export const drGroupUpdateSchema = z.object({
   sequence: z.number().int().min(0).optional(),
   dependsOnGroupId: z.string().guid().nullable().optional(),
   devices: z.array(z.string().guid()).optional(),
-  restoreConfig: z.record(z.string(), z.any()).optional(),
+  restoreConfig: drRestoreConfigSchema.optional(),
   estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
 });
 

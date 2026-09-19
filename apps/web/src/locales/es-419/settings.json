@@ -551,6 +551,10 @@
         "description": "Estados, SLA, categorías, formularios",
         "linkCta": "Administrar configuración de tickets →"
       },
+      "emailTemplates": {
+        "label": "Plantillas de correo",
+        "description": "Tickets, cotizaciones, facturas, invitaciones"
+      },
       "sendingDomains": {
         "label": "Direcciones de envío",
         "description": "Envía correos desde tu propio dominio"
@@ -655,7 +659,6 @@
     "failedDnsRemoved": "Se quitaron los registros DNS.",
     "failedUnknown": "La verificación no se completó.",
     "retry": "Intentar otra vez",
-    "removeTitle": "¿Quitar el dominio de envío?",
     "removeConfirm": "¿Quitar {{domain}}? Su correo vuelve al remitente estándar de Breeze.",
     "removeConfirmUnmanaged": "¿Quitar {{domain}} de Breeze? El dominio se queda en la cuenta de tu proveedor de correo: Breeze nunca borra un dominio que no creó.",
     "removeStarted": "Quitando el dominio.",
@@ -705,7 +708,8 @@
     "errorCheckFailed": "No se pudo iniciar la revisión de DNS.",
     "errorRemoveFailed": "No se pudo quitar el dominio.",
     "errorIdentityFailed": "No se pudo guardar la dirección de remitente.",
-    "errorTestFailed": "No se pudo enviar el correo de prueba."
+    "errorTestFailed": "No se pudo enviar el correo de prueba.",
+    "removeTitle": "¿Quitar el dominio de envío?"
   },
   "loginBranding": {
     "saved": "Marca de inicio de sesión guardada",
@@ -845,6 +849,45 @@
     "deleteExpiredTitle": "Eliminar claves de inscripción caducadas",
     "deleteExpiredConfirm": "¿Eliminar todas las claves de inscripción caducadas? Se conservan las claves que aún respaldan un enlace de descarga del instalador activo. Esto no se puede deshacer."
   },
+  "emailTemplates": {
+    "title": "Plantillas de correo",
+    "description": "Personalice los correos que reciben los clientes para tickets, cotizaciones, facturas e invitaciones al portal. El aviso de respuesta nunca incluye el texto de la respuesta.",
+    "usingDefault": "Predeterminado",
+    "custom": "Personalizado",
+    "subject": "Asunto",
+    "heading": "Encabezado",
+    "buttonLabel": "Etiqueta del botón",
+    "html": "Cuerpo HTML",
+    "htmlAria": "Cuerpo HTML del correo",
+    "insert": "Insertar:",
+    "preview": "Vista previa",
+    "save": "Guardar plantilla",
+    "reset": "Restablecer predeterminado",
+    "saved": "Plantilla de correo guardada",
+    "saveFailed": "No se pudo guardar la plantilla de correo",
+    "loadFailed": "No se pudieron cargar las plantillas de correo.",
+    "back": "Volver a la lista",
+    "markupRemoved": "Se quitó algo de marcado: {{tags}}",
+    "variables": {
+      "ticket_number": "Número de ticket",
+      "ticket_subject": "Asunto del ticket",
+      "requester_name": "Nombre del solicitante",
+      "requester_email": "Correo del solicitante",
+      "org_name": "Nombre de la organización",
+      "partner_name": "Nombre de la empresa",
+      "portal_url": "URL del portal",
+      "email_only_hint": "Aviso solo por correo",
+      "resolution_note": "Nota de resolución",
+      "quote_number": "Número de cotización",
+      "total": "Total",
+      "expiry_date": "Fecha de vencimiento",
+      "accept_url": "URL de aceptación",
+      "invoice_number": "Número de factura",
+      "due_date": "Fecha de pago",
+      "invite_url": "URL de invitación",
+      "cta_button": "Botón"
+    }
+  },
   "inboundEmail": {
     "saveError": "No se pudo guardar la configuración del correo electrónico entrante; es posible que su sesión necesite una nueva verificación MFA. Reintentar.",
     "orgNotAccessible": "Esa organización no está disponible bajo su socio.",
@@ -875,6 +918,8 @@
     "dropUnverified": "Descartar correo que falla en la autenticación del remitente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Cuando está desactivado, el correo no verificado se pone en cuarentena para su revisión. Cuando está encendido, cae silenciosamente. Esto se aplica a <all>all</all> remitentes no verificados, incluidos los clientes asignados cuyo mensaje individual no pasa la verificación.",
     "enableAutoresponse": "Enviar una respuesta automática reconociendo nuevos tickets por correo electrónico",
+    "editEmailTemplates": "El correo de acuse se edita en Plantillas de correo.",
+    "editEmailTemplatesLink": "Editar plantillas de correo",
     "autoresponseMessage": "Mensaje de respuesta automática",
     "subject": "Asunto",
     "subjectPlaceholder": "Recibimos su solicitud: {{ticket_subject}}",

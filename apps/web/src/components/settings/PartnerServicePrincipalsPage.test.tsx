@@ -140,6 +140,7 @@ describe('PartnerServicePrincipalsPage', () => {
     expect(checkedScopes).toEqual(defaultScopes);
     const writeScope = screen.getByTestId('scope-checkbox-enrollment-keys:write');
     expect(writeScope).not.toBeChecked();
+    expect(screen.getByTestId('scope-checkbox-contracts:write')).not.toBeChecked();
     expect(screen.queryByTestId('write-scope-restrictions-required')).not.toBeInTheDocument();
 
     fireEvent.click(writeScope);

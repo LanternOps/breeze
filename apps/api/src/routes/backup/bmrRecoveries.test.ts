@@ -230,6 +230,8 @@ describe('bare-metal recoveries routes', () => {
       const body = await res.json();
       expect(body.code).toMatch(/^[A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{3}$/);
       expect(body).not.toHaveProperty('codeHash');
+      // W05b Task 6: the summary exposes the DR linkage and rebuild host (null for boot media).
+      expect(body).toMatchObject({ executingDeviceId: null, drExecutionId: null, drGroupId: null });
       const inserted = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
       expect(inserted.codeHash).toMatch(/^[0-9a-f]{64}$/);
       expect(inserted.nonceHash).toMatch(/^[0-9a-f]{64}$/);

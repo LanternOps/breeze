@@ -128,6 +128,8 @@ export async function runDeleteTenant(
 export function registerDeleteTenantTool(aiTools: Map<string, AiTool>): void {
   aiTools.set('delete_tenant', {
     tier: 3 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'tenant deletion with a 30-day restore window',
     definition: {
       name: 'delete_tenant',
       description:

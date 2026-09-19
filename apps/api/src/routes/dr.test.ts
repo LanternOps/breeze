@@ -847,6 +847,60 @@ describe('dr routes', () => {
     });
   });
 
+  // ── W05b Task 7: BARE_METAL_REBUILD needs BACKUP_WRITE on the trigger ────
+  describe('execution trigger with a BARE_METAL_REBUILD group', () => {
+    const bmrGroup = { id: GROUP_ID, planId: PLAN_ID, orgId: ORG_ID, devices: [DEVICE_ID], restoreConfig: { commandType: 'BARE_METAL_REBUILD' } };
+
+    it('returns 403 when the caller lacks backup:write', async () => {
+      permissionsState = { allowedSiteIds: null, permissions: [{ resource: 'devices', action: 'execute' }] } as any;
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]))
+        .mockReturnValueOnce(chainMock([bmrGroup]));
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ executionType: 'failover' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('backup_write_required');
+      expect(createDrExecutionAndEnqueueMock).not.toHaveBeenCalled();
+    });
+
+    it('proceeds (201) when the caller holds backup:write', async () => {
+      permissionsState = { allowedSiteIds: null, permissions: [{ resource: 'devices', action: 'execute' }, { resource: 'backup', action: 'write' }] } as any;
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]))
+        .mockReturnValueOnce(chainMock([bmrGroup]));
+      createDrExecutionAndEnqueueMock.mockResolvedValueOnce({ id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', status: 'pending' });
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ executionType: 'failover' }),
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('does not require backup:write for a plan without the step', async () => {
+      permissionsState = { allowedSiteIds: null, permissions: [{ resource: 'devices', action: 'execute' }] } as any;
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]))
+        .mockReturnValueOnce(chainMock([{ ...bmrGroup, restoreConfig: { commandType: 'vm_restore_from_backup' } }]));
+      createDrExecutionAndEnqueueMock.mockResolvedValueOnce({ id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', status: 'pending' });
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ executionType: 'failover' }),
+      });
+
+      expect(res.status).toBe(201);
+    });
+  });
+
   // ── Execution authorization errors (#3653) ────────────────────────────────
   describe('execution authorization failures', () => {
     it('reports a site-denied execution as 403 rather than a 500', async () => {

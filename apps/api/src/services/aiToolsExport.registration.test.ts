@@ -27,10 +27,10 @@ describe('export_dataset registration', () => {
     expect(BREEZE_MCP_TOOL_NAMES).toContain('mcp__breeze__export_dataset');
   });
 
-  it('4b. has a real tool() declaration inside createBreezeMcpServer', async () => {
+  it('4b. has a real tool() declaration inside buildBreezeSdkTools (A-W02 extracted it from createBreezeMcpServer)', async () => {
     const source = await import('node:fs/promises').then((fs) =>
       fs.readFile(new URL('./aiAgentSdkTools.ts', import.meta.url), 'utf8'));
-    const server = source.slice(source.indexOf('export function createBreezeMcpServer'));
+    const server = source.slice(source.indexOf('export function buildBreezeSdkTools'));
     expect(server).toContain("'export_dataset'");
     expect(server).toContain("makeHandler('export_dataset'");
   });

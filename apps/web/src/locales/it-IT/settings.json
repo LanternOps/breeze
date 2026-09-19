@@ -551,6 +551,10 @@
         "description": "Stati, SLA, categorie, moduli",
         "linkCta": "Gestisci impostazioni ticket →"
       },
+      "emailTemplates": {
+        "label": "Modelli e-mail",
+        "description": "Ticket, preventivi, fatture, inviti"
+      },
       "sendingDomains": {
         "label": "Indirizzi mittente",
         "description": "Invia email dal tuo dominio"
@@ -655,7 +659,6 @@
     "failedDnsRemoved": "I record DNS sono stati rimossi.",
     "failedUnknown": "La verifica non si è conclusa.",
     "retry": "Riprova",
-    "removeTitle": "Rimuovere il dominio di invio?",
     "removeConfirm": "Rimuovere {{domain}}? La sua posta torna al mittente standard di Breeze.",
     "removeConfirmUnmanaged": "Rimuovere {{domain}} da Breeze? Il dominio resta nell'account del tuo fornitore di posta: Breeze non elimina mai un dominio che non ha creato.",
     "removeStarted": "Rimozione del dominio in corso.",
@@ -705,7 +708,8 @@
     "errorCheckFailed": "Non è stato possibile avviare il controllo DNS.",
     "errorRemoveFailed": "Non è stato possibile rimuovere il dominio.",
     "errorIdentityFailed": "Non è stato possibile salvare l'indirizzo mittente.",
-    "errorTestFailed": "Non è stato possibile inviare l'email di prova."
+    "errorTestFailed": "Non è stato possibile inviare l'email di prova.",
+    "removeTitle": "Rimuovere il dominio di invio?"
   },
   "loginBranding": {
     "saved": "Branding di accesso salvato",
@@ -845,6 +849,45 @@
     "deleteExpiredTitle": "Elimina chiavi di registrazione scadute",
     "deleteExpiredConfirm": "Eliminare tutte le chiavi di registrazione scadute? Le chiavi che alimentano ancora un link di download del programma di installazione attivo vengono conservate. Questa operazione non può essere annullata."
   },
+  "emailTemplates": {
+    "title": "Modelli e-mail",
+    "description": "Personalizza le e-mail che i clienti ricevono per ticket, preventivi, fatture e inviti al portale. L'avviso di risposta non include mai il testo della risposta.",
+    "usingDefault": "Predefinito",
+    "custom": "Personalizzato",
+    "subject": "Oggetto",
+    "heading": "Intestazione",
+    "buttonLabel": "Etichetta pulsante",
+    "html": "Corpo HTML",
+    "htmlAria": "Corpo HTML dell'e-mail",
+    "insert": "Inserisci:",
+    "preview": "Anteprima",
+    "save": "Salva modello",
+    "reset": "Ripristina predefinito",
+    "saved": "Modello e-mail salvato",
+    "saveFailed": "Impossibile salvare il modello e-mail",
+    "loadFailed": "Impossibile caricare i modelli e-mail.",
+    "back": "Torna all'elenco",
+    "markupRemoved": "Parte del markup è stata rimossa: {{tags}}",
+    "variables": {
+      "ticket_number": "Numero ticket",
+      "ticket_subject": "Oggetto del ticket",
+      "requester_name": "Nome del richiedente",
+      "requester_email": "E-mail del richiedente",
+      "org_name": "Nome dell'organizzazione",
+      "partner_name": "Nome dell'azienda",
+      "portal_url": "URL del portale",
+      "email_only_hint": "Avviso solo e-mail",
+      "resolution_note": "Nota di risoluzione",
+      "quote_number": "Numero preventivo",
+      "total": "Totale",
+      "expiry_date": "Data di scadenza",
+      "accept_url": "URL di accettazione",
+      "invoice_number": "Numero fattura",
+      "due_date": "Data di scadenza pagamento",
+      "invite_url": "URL di invito",
+      "cta_button": "Pulsante"
+    }
+  },
   "inboundEmail": {
     "saveError": "Impossibile salvare le impostazioni email in ingresso: la sessione potrebbe richiedere una nuova verifica MFA. Riprova.",
     "orgNotAccessible": "Questa organizzazione non è disponibile sotto il tuo partner.",
@@ -875,6 +918,8 @@
     "dropUnverified": "Scarta le email che non superano l'autenticazione del mittente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando disattivato, le email non verificate vengono messe in quarantena per revisione. Quando attivato, vengono scartate senza avviso. Si applica a <all>tutti</all> i mittenti non verificati, inclusi i clienti mappati il cui singolo messaggio non supera il controllo.",
     "enableAutoresponse": "Invia una risposta automatica di conferma per i nuovi ticket email",
+    "editEmailTemplates": "L'e-mail di conferma si modifica in Modelli e-mail.",
+    "editEmailTemplatesLink": "Modifica modelli e-mail",
     "autoresponseMessage": "Messaggio di risposta automatica",
     "subject": "Oggetto",
     "subjectPlaceholder": "Abbiamo ricevuto la tua richiesta: {{ticket_subject}}",

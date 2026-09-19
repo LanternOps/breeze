@@ -96,6 +96,8 @@ function assertReleaseContext(
 export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_ai_agents', {
     tier: 3 as AiToolTier,
+    domain: 'ai',
+    searchHint: 'autonomous AI agent governance: authorize a supervised action key with a second approver',
     deviceArgs: [],
     definition: {
       name: 'manage_ai_agents',

@@ -120,6 +120,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'network',
+    searchHint: 'network changes, new, missing, changed or rogue devices',
     definition: {
       name: 'get_network_changes',
       description: 'Query network change events (new devices, disappeared devices, changed devices, and rogue devices).',
@@ -214,6 +216,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'network',
+    searchHint: 'network change acknowledgement with optional investigation notes',
     definition: {
       name: 'acknowledge_network_device',
       description: 'Acknowledge a network change event and optionally attach notes.',
@@ -291,6 +295,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'network',
+    searchHint: 'network baseline configuration, scheduled scan cadence and change alerts',
     definition: {
       name: 'configure_network_baseline',
       description: 'Create or update network baseline configuration for scheduled scan cadence and alert behavior.',
@@ -488,6 +494,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     deviceArgs: ['device_id'],
+    domain: 'network',
+    searchHint: 'historical IP assignments, device address timeline and reverse lookup at a point in time',
     definition: {
       name: 'get_ip_history',
       description: 'Query historical IP assignments. Supports timeline mode (device_id) and reverse lookup mode (ip_address + at_time).',
@@ -682,6 +690,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'network',
+    searchHint: 'printer, switch, AP, camera or NAS reachability with evidence source and age',
     definition: {
       name: 'get_network_asset_reachability',
       description:
@@ -753,6 +763,8 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 3,
     deviceArgs: ['deviceId'],
+    domain: 'network',
+    searchHint: 'network discovery scan from a managed device to find nearby assets',
     definition: {
       name: 'network_discovery',
       description: 'Initiate a network discovery scan from a device to find other devices on the network.',

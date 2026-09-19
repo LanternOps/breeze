@@ -6,6 +6,8 @@ export * from './semverCompare';
 export * from './timezone';
 export * from './assuranceLevel';
 export * from './ticketTemplate';
+export * from './emailTemplates';
+export * from './hrefSafety';
 export * from './quoteMath';
 export * from './quoteFulfillment';
 export * from './depositMath';

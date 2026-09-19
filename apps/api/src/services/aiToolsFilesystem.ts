@@ -63,6 +63,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier, // Base tier; guardrails escalate read/write/delete/mkdir/rename to Tier 3 (list stays Tier 2)
+    domain: 'devices',
+    searchHint: 'device files and folders: list, read, write, delete, mkdir, rename',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'file_operations',
@@ -127,6 +129,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'disk space, low disk, largest folders and files on one device',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'analyze_disk_usage',
@@ -226,6 +230,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'disk cleanup: preview candidates, execute removal and report reclaimed space',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'disk_cleanup',

@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
+import { jsonError } from '../../lib/jsonError';
 import { eq, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partnerUsers } from '../../db/schema';
@@ -49,7 +51,7 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
 
   const rateCheck = await rateLimiter(redis, `register:${rateLimitClient}`, 5, 3600);
   if (!rateCheck.allowed) {
-    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
+    return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many registration attempts. Try again later.');
   }
 
   const passwordCheck = isPasswordStrong(password);
@@ -171,7 +173,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
   const rateCheck = await rateLimiter(redis, `register-partner:${rateLimitClient}`, 3, 3600);
   if (!rateCheck.allowed) {
     await floorPromise;
-    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
+    return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many registration attempts. Try again later.');
   }
 
   // Password strength is input-dependent, not account-dependent — a 400 here

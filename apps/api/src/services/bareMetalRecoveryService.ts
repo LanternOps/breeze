@@ -157,7 +157,9 @@ export async function createBareMetalRecovery(input: {
       status: 'created',
       ...(input.target ? { target: input.target } : {}),
       createdBy: input.createdBy,
-      // W05b Task 6 adds the columns (executing_device_id, dr_execution_id, dr_group_id).
+      executingDeviceId: input.executingDeviceId ?? null,
+      drExecutionId: input.drExecutionId ?? null,
+      drGroupId: input.drGroupId ?? null,
     })
     .returning();
   if (!row) {

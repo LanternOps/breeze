@@ -83,6 +83,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 2 as AiToolTier,
     deviceArgs: ['affectedDeviceIds'],
+    domain: 'monitoring',
+    searchHint: 'security incident creation with initial investigation timeline',
     definition: {
       name: 'create_incident',
       description:
@@ -214,6 +216,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 3 as AiToolTier,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'incident containment actions on an affected device',
     definition: {
       name: 'execute_containment',
       description:
@@ -320,6 +324,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 2 as AiToolTier,
     deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'forensic evidence collection from a device for an incident investigation',
     definition: {
       name: 'collect_evidence',
       description:
@@ -398,6 +404,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'monitoring',
+    searchHint: 'incident timeline, response actions and collected evidence',
     definition: {
       name: 'get_incident_timeline',
       description:
@@ -487,6 +495,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'monitoring',
+    searchHint: 'incident report, response summary, action counts, evidence breakdown and timeline',
     definition: {
       name: 'generate_incident_report',
       description:

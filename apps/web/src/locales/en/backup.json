@@ -753,7 +753,28 @@
     "executionDetailsAreUnavailable": "Execution details are unavailable.",
     "abortDisasterRecoveryExecution": "Abort disaster recovery execution?",
     "deviceCount_one": "{{count}} device",
-    "deviceCount_other": "{{count}} devices"
+    "deviceCount_other": "{{count}} devices",
+    "recoveryStatus": {
+      "created": "Code issued",
+      "media_booted": "Media booted",
+      "planned": "Planned",
+      "restoring": "Restoring",
+      "validated": "Validated",
+      "rebooted": "Rebooted",
+      "checked_in": "Checked in",
+      "completed": "Completed",
+      "failed": "Failed",
+      "refused": "Refused",
+      "unknown": "Recovery pending"
+    },
+    "reissueCode": "Reissue code",
+    "reissueCodeFailed": "Could not reissue the recovery code",
+    "cancelRecovery": "Cancel recovery",
+    "cancelRecoveryFailed": "Could not cancel the recovery",
+    "recoveryCancelled": "Recovery cancelled",
+    "codeShownOnce": "This code is shown once and expires in 15 minutes. Type it at the recovery media prompt.",
+    "copyCode": "Copy code",
+    "copied": "Copied"
   },
   "dRPlanEditor": {
     "defineRecoveryObjectivesSequenceGroupsAndAssignDevices": "Define recovery objectives, sequence groups, and assign devices in restore order.",
@@ -783,7 +804,9 @@
     "groupCount_one": "{{count}} group",
     "groupCount_other": "{{count}} groups",
     "uniqueDeviceCount_one": "{{count}} unique device",
-    "uniqueDeviceCount_other": "{{count}} unique devices"
+    "uniqueDeviceCount_other": "{{count}} unique devices",
+    "chooseAStepTypeForEachGroup": "Choose a step type for each recovery group.",
+    "rebuildWaitTimeoutOutOfRange": "Bare-metal rebuild wait timeout must be a whole number between {{min}} and {{max}} minutes."
   },
   "dRPlanGroupCard": {
     "device": "device",
@@ -798,7 +821,23 @@
     "deviceSelection": "Device selection",
     "noDevicesAvailableToAssign": "No devices available to assign.",
     "deviceCount_one": "{{count}} device",
-    "deviceCount_other": "{{count}} devices"
+    "deviceCount_other": "{{count}} devices",
+    "stepType": "Step type",
+    "chooseAStepType": "Choose a step type",
+    "stepTypes": {
+      "vmRestoreFromBackup": "VM restore from backup",
+      "vmInstantBoot": "VM instant boot",
+      "hypervRestore": "Hyper-V restore",
+      "mssqlRestore": "SQL Server restore",
+      "bmrRecover": "Bare-metal recover (boot media)",
+      "bareMetalRebuild": "Bare-metal rebuild (rebuild engine)"
+    },
+    "rebuildHost": "Rebuild host",
+    "rebuildHostHint": "Linux device with qemu-utils that runs rehearsals. Failover boots recovery media on each device instead.",
+    "outputDir": "Output directory",
+    "outputDirHint": "Directory on the rebuild host that receives one VHDX image per device.",
+    "waitTimeout": "Wait timeout (min)",
+    "waitTimeoutHint": "Minutes to wait for each device to check in before the step fails."
   },
   "profiles": {
     "title": "Backup Profiles",
