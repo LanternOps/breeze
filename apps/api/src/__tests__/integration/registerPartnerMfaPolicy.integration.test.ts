@@ -227,6 +227,7 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
     // response must push them into enrollment.
     expect(body.user.mfaEnabled).toBe(false);
     expect(accessClaims.mfa).toBe(false);
+    expect(accessClaims.mfa_src).toBeUndefined();
     expect(body.mfaEnrollmentRequired).toBe(true);
     expect(body.enrollUrl).toBe('/auth/mfa/setup');
   });

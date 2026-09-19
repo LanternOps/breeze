@@ -828,6 +828,11 @@ describe('POST /login — MFA enrollment enforcement via effective policy (SR2-0
       expect.objectContaining({ mfa: false }),
       expect.anything()
     );
+    // mfa:false ⇒ no assurance source at all.
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
   });
 
   // #5306 — inside the enrolment grace window the user is let in exactly as an
@@ -868,6 +873,15 @@ describe('POST /login — MFA enrollment enforcement via effective policy (SR2-0
     expect(createTokenPair).toHaveBeenCalledWith(
       expect.objectContaining({ mfa: true }),
       expect.anything()
+    );
+    // Vacuous assurance: the policy admitted a password-only session.
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'policy' }),
+      expect.anything(),
+    );
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfa_src: 'policy' }),
+      expect.anything(),
     );
   });
 });

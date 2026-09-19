@@ -43,6 +43,7 @@ import {
   type UserSessionIdentity,
 } from '../../services';
 import { advanceUserEpochs } from '../../services/authLifecycle';
+import { mfaSrcFor } from '../../services/mfaAssuranceSource';
 import { performOrdinaryTerminalLogout } from '../../services/terminalLogout';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -674,6 +675,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     partnerId,
     scope,
     mfa: mfaSatisfied,
+    // The enrolled branch returned early above, so anyone minting here proved
+    // no factor: `mfa: true` here is policy-admitted, never factor-earned.
+    mfaSrc: mfaSrcFor(mfaSatisfied, 'policy'),
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
