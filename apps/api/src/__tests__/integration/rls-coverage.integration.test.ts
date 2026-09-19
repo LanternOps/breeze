@@ -347,6 +347,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  'topology_config_templates',
+  'topology_config_template_versions',
   // network_monitors (#5287 W04): reshaped from org-only to org XOR partner by
   // 2026-10-16-181300-monitor-coverage-kinds, so one MSP-authored "is the
   // gateway up" check runs for every org under the partner. CHECK
@@ -684,6 +686,8 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // changes. If access_reviews ever gains a CHECK, this note has no examples
 // left and should be deleted rather than patched.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  'topology_config_templates',
+  'topology_config_template_versions',
   // monitor_definitions_one_owner_chk ((org_id IS NULL) <> (partner_id IS
   // NULL)), 2026-10-16-160300 (#5287 W02). Its partner-wide SELECT branch
   // (monitor_definitions_partner_wide_select) ships in the same migration, so

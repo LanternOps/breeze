@@ -22,7 +22,13 @@ export type ClaimCancelReason =
   | 'device_lifecycle'
   | 'trust_denied'
   | 'requester_inactive'
-  | 'submitter_org_erased';
+  | 'submitter_org_erased'
+  /** A per-type revalidation found the authority the row was issued under gone. */
+  | 'scope_changed'
+  /** The row carries its own absolute expiry and it has passed. */
+  | 'expired'
+  /** A type that REQUIRES revalidation had none registered — fail closed. */
+  | 'authority_unavailable';
 
 /** Why a claim candidate was withheld this heartbeat but left `pending`. */
 export type ClaimHoldReason =
@@ -124,6 +130,72 @@ export function registerTypeHold(type: string, hold: TypeHold): void {
 /** Test-only: drop every registered hold so a suite can install its own. */
 export function __resetTypeHoldsForTests(): void {
   for (const key of Object.keys(typeHolds)) delete typeHolds[key];
+}
+
+/**
+ * The row facts a delivery-time revalidation needs. Deliberately the same shape
+ * on both transports: the HTTP poll claim and the WebSocket push both run this
+ * immediately before the row flips to `sent`, so there is exactly one place a
+ * command's authority is re-derived and no bypass socket path.
+ */
+export type CommandRevalidationRow = {
+  id: string;
+  type: string;
+  deviceId: string;
+  payload: unknown;
+};
+
+/**
+ * Re-derive a queued command's authority from live rows. Returns `null` to
+ * deliver, or the cancel reason that terminalises the row. A revalidation must
+ * never write: cancellation is the caller's, inside its own claim transaction.
+ */
+export type CommandRevalidationReader = Pick<Tx, 'select'>;
+export type CommandRevalidation = (
+  reader: CommandRevalidationReader,
+  row: CommandRevalidationRow,
+) => Promise<ClaimCancelReason | null>;
+
+export const commandRevalidations: Record<string, CommandRevalidation> = {};
+
+/**
+ * Types that must NOT be delivered unless a revalidation actually ran. Without
+ * this the registration is a side-effect import away from silently vanishing,
+ * and the failure mode would be "deliver anyway" — the wrong direction for a
+ * command whose whole authority is time- and origin-bound.
+ */
+export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
+  'network_diagnostic',
+]);
+
+export function registerCommandRevalidation(
+  type: string,
+  revalidate: CommandRevalidation,
+): void {
+  if (commandRevalidations[type]) {
+    throw new Error(`A delivery revalidation is already registered for "${type}"`);
+  }
+  commandRevalidations[type] = revalidate;
+}
+
+/** Test-only: drop every registered revalidation. */
+export function __resetCommandRevalidationsForTests(): void {
+  for (const key of Object.keys(commandRevalidations)) delete commandRevalidations[key];
+}
+
+/**
+ * Runs the registered revalidation for one row, fail-closed for every type in
+ * {@link REVALIDATION_REQUIRED_TYPES}. Shared by both delivery legs.
+ */
+export async function revalidateCommandForDelivery(
+  reader: CommandRevalidationReader,
+  row: CommandRevalidationRow,
+): Promise<ClaimCancelReason | null> {
+  const revalidate = commandRevalidations[row.type];
+  if (!revalidate) {
+    return REVALIDATION_REQUIRED_TYPES.has(row.type) ? 'authority_unavailable' : null;
+  }
+  return revalidate(reader, row);
 }
 
 /**
@@ -270,6 +342,20 @@ export async function partitionClaimable(
         cancelled.push({ id: row.id, reason: 'requester_inactive' });
         continue;
       }
+    }
+
+    // Delivery-time authority re-derivation (M1 Task 15). Runs after the
+    // tenant/trust checks and before the hold: a row whose issuing authority is
+    // gone is terminal, not deferrable.
+    const revalidation = await revalidateCommandForDelivery(tx, {
+      id: row.id,
+      type: row.type,
+      deviceId: device.id,
+      payload: row.payload,
+    });
+    if (revalidation) {
+      cancelled.push({ id: row.id, reason: revalidation });
+      continue;
     }
 
     const hold = typeHolds[row.type];

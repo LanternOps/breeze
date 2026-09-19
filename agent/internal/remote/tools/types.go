@@ -146,10 +146,12 @@ const (
 	CmdSnmpPoll = "snmp_poll"
 
 	// Network monitoring
-	CmdNetworkPing      = "network_ping"
-	CmdNetworkTcpCheck  = "network_tcp_check"
-	CmdNetworkHttpCheck = "network_http_check"
-	CmdNetworkDnsCheck  = "network_dns_check"
+	CmdNetworkDiagnostic       = "network_diagnostic"
+	CmdNetworkDiagnosticCancel = "network_diagnostic_cancel"
+	CmdNetworkPing             = "network_ping"
+	CmdNetworkTcpCheck         = "network_tcp_check"
+	CmdNetworkHttpCheck        = "network_http_check"
+	CmdNetworkDnsCheck         = "network_dns_check"
 
 	// Script management (executor)
 	CmdScriptCancel      = "script_cancel"

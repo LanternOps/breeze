@@ -1,3 +1,4 @@
+import TopologyEntry from '../topology/TopologyEntry';
 import { useCallback, useMemo, useState, useEffect } from 'react';
 import { Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -247,7 +248,7 @@ function mapProfileToDisplay(profile: ApiDiscoveryProfile, t: TFunction): Discov
 
 function getTabFromHash(): DiscoveryTab {
   if (typeof window === 'undefined') return 'assets';
-  const hash = window.location.hash.replace('#', '');
+  const hash = window.location.hash.replace('#', '').split('/')[0];
   if (hash && (DISCOVERY_TABS as readonly string[]).includes(hash)) {
     return hash as DiscoveryTab;
   }
@@ -706,7 +707,7 @@ export default function DiscoveryPage() {
 
       {activeTab === 'topology' && (
         <>
-          <NetworkTopologyMap onNodeClick={(nodeId) => setTopologyAssetId(nodeId)} />
+          <TopologyEntry sites={sites} legacy={<NetworkTopologyMap onNodeClick={(nodeId) => setTopologyAssetId(nodeId)} />} />
           {topologyAssetId && (
             <AssetDetailModal
               open={!!topologyAssetId}

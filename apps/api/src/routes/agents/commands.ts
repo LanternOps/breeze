@@ -136,7 +136,8 @@ function buildStoredCommandResult(
 function normalizeCriticalResultIfNeeded(
   commandType: string,
   commandId: string,
-  data: z.infer<typeof commandResultSchema>
+  data: z.infer<typeof commandResultSchema>,
+  commandPayload?: unknown
 ) {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -156,7 +157,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: data.durationMs,
       error: data.error,
       result: data.result,
-    });
+    }, { commandPayload });
 
     if (!validated) {
       return {
@@ -374,7 +375,7 @@ commandsRoutes.post(
       normalizedData: rawNormalizedData,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, commandId, data);
+    } = normalizeCriticalResultIfNeeded(command.type, commandId, data, command.payload);
 
     // #2434 chokepoint (REST twin of agentWs.processCommandResult): redact
     // agent-supplied error/stderr ONCE before the device_commands write and
@@ -660,6 +661,24 @@ commandsRoutes.post(
         });
       } catch (err) {
         console.error(`[agents] vault sync post-processing failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    if (command.type === 'network_diagnostic') {
+      try {
+        const { ingestTopologyDiagnosticCommandResult } = await import(
+          '../../services/topology/diagnosticResults'
+        );
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: command.deviceId,
+          agentId: agent?.agentId ?? agentId,
+          commandId,
+          result: normalizedData.result,
+        });
+      } catch (err) {
+        console.error(`[agents] topology diagnostic post-processing failed for ${commandId}:`, err);
         captureException(err);
       }
     }
