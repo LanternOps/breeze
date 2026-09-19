@@ -4,6 +4,7 @@ import { db } from '../db';
 import { workTypes, type WorkType } from '../db/schema/workTypes';
 // ticketCategories lives in tickets.ts; ticketConfig.ts holds orgTicketSettings.
 import { ticketCategories } from '../db/schema/tickets';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export const WORK_TYPE_NAME_MAX = 60;
 
@@ -12,10 +13,6 @@ export class WorkTypeServiceError extends Error {
     super(message);
     this.name = 'WorkTypeServiceError';
   }
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
 }
 
 /**
@@ -49,7 +46,7 @@ export async function createWorkType(
     return row;
   } catch (err) {
     // Re-throw, never swallow: the request transaction is already aborted.
-    if (isUniqueViolation(err)) {
+    if (isPgUniqueViolation(err)) {
       throw new WorkTypeServiceError('A work type with that name already exists', 409, 'WORK_TYPE_NAME_TAKEN');
     }
     throw err;
@@ -77,7 +74,7 @@ export async function updateWorkType(
     if (!row) throw new WorkTypeServiceError('Work type not found', 404, 'WORK_TYPE_NOT_FOUND');
     return row;
   } catch (err) {
-    if (isUniqueViolation(err)) {
+    if (isPgUniqueViolation(err)) {
       throw new WorkTypeServiceError('A work type with that name already exists', 409, 'WORK_TYPE_NAME_TAKEN');
     }
     throw err;

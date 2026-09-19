@@ -57,4 +57,25 @@ describe('createWorkType duplicate handling', () => {
       status: 409, code: 'WORK_TYPE_NAME_TAKEN',
     });
   });
+
+  // Drizzle wraps the postgres.js PostgresError in a DrizzleQueryError whose
+  // OWN `.code` is undefined -- the SQLSTATE lives on `.cause`. Every real
+  // insert this service issues goes through Drizzle, so a top-level `.code`
+  // check maps nothing and leaks a raw 500 on a duplicate name.
+  it('maps a DRIZZLE-WRAPPED 23505 (SQLSTATE on .cause) to a 409, not a 500', async () => {
+    const { db } = await import('../db');
+    (db.insert as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
+      values: () => ({
+        returning: () => Promise.reject(Object.assign(new Error('Failed query'), {
+          cause: Object.assign(new Error('duplicate key value violates unique constraint'), {
+            code: '23505',
+            constraint_name: 'work_types_partner_name_lower_idx',
+          }),
+        })),
+      }),
+    }));
+    await expect(createWorkType(PARTNER, { name: 'Remote' })).rejects.toMatchObject({
+      status: 409, code: 'WORK_TYPE_NAME_TAKEN',
+    });
+  });
 });
