@@ -10,6 +10,7 @@ import {
   readPlanScanPath,
   upsertFilesystemScanState,
   setFilesystemScanGeneration,
+  clearFilesystemScanGeneration,
   claimFilesystemScanGeneration,
   buildCleanupPreview,
   mergeFilesystemAnalysisPayload,
@@ -363,5 +364,25 @@ describe('scan generation (spec §13 #18)', () => {
     mockSelectRows([]);
 
     await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('absent');
+  });
+});
+
+
+describe('clearFilesystemScanGeneration', () => {
+  it.each(['failed-command', 'newer-command'])('conditionally clears only the failed generation (current: %s)', async (current) => {
+    let generation: string | null = current;
+    const where = vi.fn(async (predicate) => {
+      const query = new PgDialect().sqlToQuery(predicate);
+      expect(query.sql).toBe('("device_filesystem_scan_state"."device_id" = $1 and "device_filesystem_scan_state"."scan_path" = $2 and "device_filesystem_scan_state"."scan_generation" = $3)');
+      expect(query.params).toEqual(['device-1', '/', 'failed-command']);
+      if (generation === query.params[2]) generation = null;
+    });
+    const set = vi.fn(() => ({ where }));
+    vi.mocked(db.update).mockReturnValue({ set } as never);
+
+    await clearFilesystemScanGeneration('device-1', '/', 'failed-command');
+
+    expect(set).toHaveBeenCalledWith({ scanGeneration: null });
+    expect(generation).toBe(current === 'failed-command' ? null : 'newer-command');
   });
 });

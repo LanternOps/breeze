@@ -20,7 +20,7 @@ import {
   wasDispatched,
 } from './filesystemCleanupExecution';
 import { db, runOutsideDbContext, withDbAccessContext } from '../db';
-import { devices, deviceFilesystemCleanupRuns, users } from '../db/schema';
+import { devices, deviceCommands, deviceFilesystemCleanupRuns, users } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -31,6 +31,7 @@ import {
   getLatestFilesystemCleanupSnapshot,
   parseFilesystemAnalysisStdout,
   setFilesystemScanGeneration,
+  clearFilesystemScanGeneration,
   safeCleanupCategories,
 } from './filesystemAnalysis';
 import { aiExecuteCommand } from './aiDispatch';
@@ -190,18 +191,33 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         await runOutsideDbContext(() => withDbAccessContext({
           scope: 'organization', orgId: access.device.orgId, accessibleOrgIds: [access.device.orgId],
         }, () => setFilesystemScanGeneration(deviceId, access.device.orgId, scanPath, commandId)));
-        const commandResult = await aiExecuteCommand(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
-          trigger: 'on_demand',
-          path: scanPath,
-          maxDepth: input.maxDepth,
-          topFiles: input.topFiles,
-          topDirs: input.topDirs,
-          maxEntries: input.maxEntries,
-          workers: input.workers,
-          timeoutSeconds: input.timeoutSeconds,
-          autoContinue: isRootScopedScan,
-          resumeAttempt: 0,
-        }, { userId: auth.user.id, timeoutMs, preferHeartbeat: true, commandId });
+        let commandResult: Awaited<ReturnType<typeof aiExecuteCommand>> | undefined;
+        try {
+          commandResult = await aiExecuteCommand(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
+            trigger: 'on_demand',
+            path: scanPath,
+            maxDepth: input.maxDepth,
+            topFiles: input.topFiles,
+            topDirs: input.topDirs,
+            maxEntries: input.maxEntries,
+            workers: input.workers,
+            timeoutSeconds: input.timeoutSeconds,
+            autoContinue: isRootScopedScan,
+            resumeAttempt: 0,
+          }, { userId: auth.user.id, timeoutMs, preferHeartbeat: true, commandId });
+        } finally {
+          if (commandResult?.status !== 'completed') {
+            // Prechecks can fail before insertion. Commit recovery independently
+            // too, so a thrown dispatch cannot roll it back with the AI context.
+            await runOutsideDbContext(() => withDbAccessContext({
+              scope: 'organization', orgId: access.device.orgId, accessibleOrgIds: [access.device.orgId],
+            }, async () => {
+              const [command] = await db.select({ id: deviceCommands.id })
+                .from(deviceCommands).where(eq(deviceCommands.id, commandId)).limit(1);
+              if (!command) await clearFilesystemScanGeneration(deviceId, scanPath, commandId);
+            }));
+          }
+        }
 
         if (commandResult.status !== 'completed') {
           return JSON.stringify({ error: commandResult.error || 'Filesystem analysis failed' });

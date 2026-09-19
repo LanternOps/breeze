@@ -41,6 +41,7 @@ vi.mock('./filesystemAnalysis', () => ({
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(),
   setFilesystemScanGeneration: vi.fn(),
+  clearFilesystemScanGeneration: vi.fn(),
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash'],
 }));
 
@@ -52,6 +53,7 @@ import {
   getLatestFilesystemSnapshot,
   saveFilesystemSnapshot,
   setFilesystemScanGeneration,
+  clearFilesystemScanGeneration,
 } from './filesystemAnalysis';
 import { registerFilesystemTools } from './aiToolsFilesystem';
 
@@ -135,6 +137,41 @@ describe('analyze_disk_usage — path (spec §9)', () => {
     expect(withDbAccessContext).toHaveBeenCalledWith(
       { scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] }, expect.any(Function),
     );
+  });
+
+  it.each(['returned', 'thrown'] as const)('clears an orphan generation after a %s dispatch failure', async (failure) => {
+    withDevice('linux');
+    vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue(null);
+    const missingCommand = vi.fn().mockResolvedValue([]);
+    vi.mocked(aiExecuteCommand).mockImplementationOnce(async () => {
+      vi.mocked(db.select).mockReturnValue({ from: () => ({ where: () => ({ limit: missingCommand }) }) } as never);
+      if (failure === 'thrown') throw new Error('precheck rejected');
+      return { status: 'failed', error: 'precheck rejected' } as never;
+    });
+    vi.mocked(clearFilesystemScanGeneration).mockImplementationOnce(async () => {
+      expect(contextState).toEqual({ outside: true, scoped: true });
+    });
+
+    const result = registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true }, AUTH);
+    if (failure === 'thrown') await expect(result).rejects.toThrow('precheck rejected');
+    else expect(JSON.parse(await result).error).toBe('precheck rejected');
+
+    const commandId = vi.mocked(setFilesystemScanGeneration).mock.calls[0]![3];
+    expect(clearFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, '/', commandId);
+    expect(missingCommand).toHaveBeenCalled();
+  });
+
+  it.each(['completed', 'failed', 'thrown'])('preserves the generation when a command exists and dispatch is %s', async (status) => {
+    withDevice('linux');
+    vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue(null);
+    vi.mocked(aiExecuteCommand).mockImplementationOnce(async () => {
+      if (status === 'thrown') throw new Error('poll failed after insertion');
+      return { status, stdout: '{}' } as never;
+    });
+    const result = registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true }, AUTH);
+    if (status === 'thrown') await expect(result).rejects.toThrow('poll failed after insertion');
+    else await result;
+    expect(clearFilesystemScanGeneration).not.toHaveBeenCalled();
   });
 
   it('defaults to the OS root, which counts as root-scoped', async () => {

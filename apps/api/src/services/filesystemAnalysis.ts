@@ -484,6 +484,21 @@ export async function setFilesystemScanGeneration(
     });
 }
 
+/** Release an orphan registration without overwriting a newer producer. */
+export async function clearFilesystemScanGeneration(
+  deviceId: string,
+  scanPath: string,
+  commandId: string
+): Promise<void> {
+  await db.update(deviceFilesystemScanState)
+    .set({ scanGeneration: null })
+    .where(and(
+      eq(deviceFilesystemScanState.deviceId, deviceId),
+      eq(deviceFilesystemScanState.scanPath, scanPath),
+      eq(deviceFilesystemScanState.scanGeneration, commandId),
+    ));
+}
+
 export type ScanGenerationClaim = 'claimed' | 'superseded' | 'already_applied' | 'absent';
 
 /**
