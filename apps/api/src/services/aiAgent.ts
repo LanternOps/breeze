@@ -14,8 +14,6 @@ import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
-import { renderToolIndexByDomain } from './aiToolIndex';
-import { listChatSurfaceToolNames } from './aiAgentSdkTools';
 import { getActiveDeviceContext } from './brainDeviceContext';
 import {
   sanitizePageContext,
@@ -613,6 +611,13 @@ export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageC
   const parts: string[] = [];
 
   parts.push(AI_SYSTEM_PROMPT_BASE);
+  // A-W02: the tool index is generated from the registry. Loaded lazily so
+  // this module stays importable without the tool hub (routes/devices tests
+  // mock db/schema partially and would otherwise pull aiToolSchemas in).
+  const [{ renderToolIndexByDomain }, { listChatSurfaceToolNames }] = await Promise.all([
+    import('./aiToolIndex'),
+    import('./aiAgentSdkTools'),
+  ]);
   parts.push(renderToolIndexByDomain(listChatSurfaceToolNames()));
   parts.push(AI_SYSTEM_PROMPT_TAIL);
 
