@@ -1393,7 +1393,14 @@
     "resultSummary": "{{imported}} importiert, {{renamed}} umbenannt, {{versioned}} versioniert, {{skipped}} übersprungen, {{failed}} fehlgeschlagen",
     "scriptCount": "{{count}} Skripte im Bundle",
     "statusInvalid": "Ungültig",
-    "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren."
+    "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren.",
+    "importDoneTitle": "Import abgeschlossen",
+    "importDoneNothing": "Es wurde nichts importiert",
+    "importDoneOpen": "Skript öffnen",
+    "resultActionImported": "Importiert",
+    "resultActionRenamed": "Umbenannt von {{name}}",
+    "resultActionVersioned": "Als neue Version hinzugefügt",
+    "resultOpen": "Öffnen"
   },
   "testRunner": {
     "title": "Testlauf",

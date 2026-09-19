@@ -1279,6 +1279,20 @@
         }
       }
     },
+    "accent": {
+      "title": "Portal accent",
+      "description": "The colour of buttons and links in your customer portal. Status colours never change.",
+      "options": {
+        "spruce": "Spruce",
+        "ink": "Ink",
+        "oxblood": "Oxblood",
+        "navy": "Navy",
+        "plum": "Plum",
+        "bronze": "Bronze",
+        "teal": "Teal",
+        "forest": "Forest"
+      }
+    },
     "support": {
       "title": "Support contact",
       "description": "Shown to customers in the portal.",

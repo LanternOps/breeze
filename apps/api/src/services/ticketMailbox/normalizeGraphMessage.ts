@@ -88,6 +88,7 @@ export function normalizeGraphMessage(
     // Phase-1 parity: attachment bodies deferred; metadata not fetched yet.
     attachments: [],
     raw: {
+      ccRecipients: msg.ccRecipients ?? [],
       graphConversationId: msg.conversationId,
       receivedDateTime: msg.receivedDateTime,
     },

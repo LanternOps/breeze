@@ -1,5 +1,6 @@
 import { SignJWT, jwtVerify, errors as joseErrors, type JWTHeaderParameters } from 'jose';
 import { randomUUID } from 'crypto';
+import { isMfaAssuranceSource, type MfaAssuranceSource } from './mfaAssuranceSource';
 
 const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
 const ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '15m';
@@ -206,6 +207,13 @@ export interface TokenPayload {
   // Indicates whether this token was issued after completing MFA.
   // For legacy tokens that predate this claim, verification defaults this to false.
   mfa: boolean;
+  // HOW `mfa: true` was earned — 'factor' (Breeze verified one), 'idp' (a
+  // trusted external assertion), 'policy' (the effective policy required
+  // none). See services/mfaAssuranceSource.ts. Absent on every token minted
+  // before this claim shipped and on every `mfa: false` token; consumers MUST
+  // read absent as 'policy'. Carry-forward mints (refresh, factor re-mints)
+  // copy it verbatim — never recompute. No gate reads it yet (spec D6).
+  mfa_src?: MfaAssuranceSource;
   // Mobile device binding (SR-001). Set only on tokens minted for the mobile
   // app, to the per-install device id. Absent on web/MCP/OAuth/agent tokens.
   // The lost-phone block is enforced against this SIGNED value, never a
@@ -319,6 +327,7 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       scope: payload.scope as 'system' | 'partner' | 'organization',
       type: payload.type as 'access' | 'refresh',
       mfa: payload.mfa === true,
+      mfa_src: isMfaAssuranceSource(payload.mfa_src) ? payload.mfa_src : undefined,
       mdid: typeof payload.mdid === 'string' && payload.mdid.length > 0 ? payload.mdid : undefined,
       fam: typeof payload.fam === 'string' && payload.fam.length > 0 ? payload.fam : undefined,
       aep: typeof payload.aep === 'number' ? payload.aep : undefined,

@@ -28,6 +28,7 @@ import {
 import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { auditLogin } from './helpers';
 import { enforceIpAllowlist, isBlocked } from '../../services/ipAllowlist';
+import { mfaSrcFor } from '../../services/mfaAssuranceSource';
 
 /**
  * Shared tail of every SSO-completed sign-in: MFA-claim evaluation, axis
@@ -180,6 +181,10 @@ export async function completeSsoLogin(
   });
   const ssoMfa = breezeMfaVerified === true
     || (idpMfa && (user.mfaEnabled === true || !ssoPolicy.required));
+  // A Breeze-verified factor from the link ceremony outranks the IdP
+  // evaluation for the SOURCE too: 'factor' when Breeze proved it, else the
+  // assurance rests on the IdP assertion (spec D6).
+  const ssoMfaSrc = mfaSrcFor(ssoMfa, breezeMfaVerified === true ? 'factor' : 'idp');
 
   // Membership resolution + token payload, keyed on the provider's axis.
   let sessionIdentity: UserSessionIdentity;
@@ -223,7 +228,8 @@ export async function completeSsoLogin(
       orgId: null,
       partnerId: providerPartnerId,
       scope: 'partner' as const,
-      mfa: ssoMfa
+      mfa: ssoMfa,
+      mfaSrc: ssoMfaSrc
     };
   } else {
     // System context required: the caller is unauthenticated (no request
@@ -262,7 +268,8 @@ export async function completeSsoLogin(
       orgId: provider.orgId!,
       partnerId: null,
       scope: 'organization' as const,
-      mfa: ssoMfa
+      mfa: ssoMfa,
+      mfaSrc: ssoMfaSrc
     };
   }
 

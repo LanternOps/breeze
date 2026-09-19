@@ -6,6 +6,7 @@ import { createHash } from 'crypto';
 import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users, partners, roles } from '../../db/schema';
+import { mfaSrcFor } from '../../services/mfaAssuranceSource';
 import type { PartnerStatus, PartnerTrustState } from '../../db/schema/orgs';
 import {
   rateLimiter,
@@ -520,6 +521,8 @@ function registrationIdentity(facts: RegistrationFacts): UserSessionIdentity {
     partnerId: facts.created.partnerId,
     scope: 'partner',
     mfa: facts.mfaSatisfied,
+    // A brand-new partner admin has no factor yet: assurance is policy-admitted.
+    mfaSrc: mfaSrcFor(facts.mfaSatisfied, 'policy'),
   };
 }
 
