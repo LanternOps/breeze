@@ -10,8 +10,17 @@ Breeze uses two PostgreSQL connection roles in production:
 
 At startup, Breeze queries `current_user`, `rolsuper`, and `rolbypassrls` through
 the exact module-scope request pool that backs the exported API database client.
-Production startup fails if that effective role is a `SUPERUSER`, has
-`BYPASSRLS`, or cannot be identified.
+Startup fails if that effective role is a `SUPERUSER`, has `BYPASSRLS`, or
+cannot be identified. This check is unconditional: it does not depend on
+`NODE_ENV`, so a deployment whose `NODE_ENV` never reached the container, or
+carries a development/test value, is verified exactly like any other.
+
+The single exception is `BREEZE_ALLOW_UNSAFE_DB_ROLE=true`, a local-development
+escape hatch for machines that knowingly run the request pool as a privileged
+role. It prints a warning banner on every boot, and is ignored when
+`NODE_ENV=production` — startup still fails there. It must never be set on a
+deployment holding real data, and it is not a way to work around a managed-service
+permission error.
 
 ## Supported production configuration
 
@@ -24,7 +33,7 @@ Production startup fails if that effective role is a `SUPERUSER`, has
 
 `DATABASE_URL` remains required even when `DATABASE_URL_APP` is set because
 migrations and system setup use the administrator connection. `AUTO_MIGRATE=false`
-skips migrations only; it does not skip the production request-role assertion.
+skips migrations only; it does not skip the request-role assertion.
 
 ## Pre-deploy role provisioning
 
