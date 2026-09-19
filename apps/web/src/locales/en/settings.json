@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Email templates",
-        "description": "Customer ticket emails"
+        "description": "Tickets, quotes, invoices, invites"
       },
       "sendingDomains": { "label": "Sender Addresses", "description": "Send email from your own domain" },
       "aiBudgets": {
@@ -847,7 +847,7 @@
   },
   "emailTemplates": {
     "title": "Email templates",
-    "description": "Customize the emails customers receive about tickets. The ticket reply notice never includes the reply text.",
+    "description": "Customize the emails customers receive for tickets, quotes, invoices, and portal invites. The ticket reply notice never includes the reply text.",
     "usingDefault": "Using default",
     "custom": "Custom",
     "subject": "Subject",
@@ -873,7 +873,15 @@
       "partner_name": "Company name",
       "portal_url": "Portal URL",
       "email_only_hint": "Email-only hint",
-      "resolution_note": "Resolution note"
+      "resolution_note": "Resolution note",
+      "quote_number": "Quote number",
+      "total": "Total",
+      "expiry_date": "Expiry date",
+      "accept_url": "Accept URL",
+      "invoice_number": "Invoice number",
+      "due_date": "Due date",
+      "invite_url": "Invite URL",
+      "cta_button": "Button"
     }
   },
   "inboundEmail": {

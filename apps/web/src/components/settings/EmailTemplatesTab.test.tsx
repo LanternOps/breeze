@@ -43,16 +43,39 @@ beforeEach(() => {
 });
 
 describe('EmailTemplatesTab', () => {
-  it('lists the three PR1 template ids with catalog labels', async () => {
+  it('lists all catalog template ids with catalog labels', async () => {
     routeFetch();
     render(<EmailTemplatesTab />);
 
     expect(await screen.findByTestId('email-templates-list')).toBeTruthy();
+    expect([...EMAIL_TEMPLATE_IDS]).toEqual([
+      'ticket_comment_notification',
+      'ticket_autoresponse',
+      'ticket_resolved',
+      'quote_send',
+      'invoice_send',
+      'portal_invite',
+    ]);
     for (const id of EMAIL_TEMPLATE_IDS) {
       const row = screen.getByTestId(`email-template-row-${id}`);
       expect(row.textContent).toContain(emailTemplateLabel(id));
       expect(screen.getByTestId(`email-template-status-${id}`).textContent).toContain('Using default');
     }
+  });
+
+  it('shows quote, invoice, and portal-invite rows and copy that is not ticket-only', async () => {
+    routeFetch();
+    render(<EmailTemplatesTab />);
+
+    const tab = await screen.findByTestId('email-templates-tab');
+    expect(screen.getByTestId('email-template-row-quote_send').textContent).toContain('Quote / proposal');
+    expect(screen.getByTestId('email-template-row-invoice_send').textContent).toContain('Invoice');
+    expect(screen.getByTestId('email-template-row-portal_invite').textContent).toContain('Portal invite');
+    const description = tab.querySelector('p')?.textContent ?? '';
+    expect(description).toMatch(/quotes/i);
+    expect(description).toMatch(/invoices/i);
+    expect(description).toMatch(/invite/i);
+    expect(description).not.toMatch(/^Customize the emails customers receive about tickets\./);
   });
 
   it('marks a template Custom when any stored field is non-null', async () => {

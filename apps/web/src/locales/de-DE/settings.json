@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "E-Mail-Vorlagen",
-        "description": "Kunden-Ticket-E-Mails"
+        "description": "Tickets, Angebote, Rechnungen, Einladungen"
       },
       "sendingDomains": { "label": "Absenderadressen", "description": "E-Mails von Ihrer eigenen Domain senden" },
       "aiBudgets": {
@@ -847,7 +847,7 @@
   },
   "emailTemplates": {
     "title": "E-Mail-Vorlagen",
-    "description": "Passen Sie die E-Mails an, die Kunden zu Tickets erhalten. Die Antwortbenachrichtigung enthält nie den Antworttext.",
+    "description": "Passen Sie die E-Mails an, die Kunden zu Tickets, Angeboten, Rechnungen und Portaleinladungen erhalten. Die Antwortbenachrichtigung enthält nie den Antworttext.",
     "usingDefault": "Standard",
     "custom": "Angepasst",
     "subject": "Betreff",
@@ -873,7 +873,15 @@
       "partner_name": "Firmenname",
       "portal_url": "Portal-URL",
       "email_only_hint": "Hinweis nur per E-Mail",
-      "resolution_note": "Lösungshinweis"
+      "resolution_note": "Lösungshinweis",
+      "quote_number": "Angebotsnummer",
+      "total": "Gesamtbetrag",
+      "expiry_date": "Ablaufdatum",
+      "accept_url": "Annahme-URL",
+      "invoice_number": "Rechnungsnummer",
+      "due_date": "Fälligkeitsdatum",
+      "invite_url": "Einladungs-URL",
+      "cta_button": "Schaltfläche"
     }
   },
   "inboundEmail": {

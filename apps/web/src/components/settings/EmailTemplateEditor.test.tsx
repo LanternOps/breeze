@@ -23,6 +23,12 @@ vi.mock('../common/RichTextEditor', () => ({
   ),
 }));
 
+import {
+  EMAIL_TEMPLATE_IDS,
+  emailTemplateFieldDefaults,
+  emailTemplateHasCta,
+  varsForEmailTemplate,
+} from '@breeze/shared';
 import EmailTemplateEditor from './EmailTemplateEditor';
 
 function jsonRes(body: unknown, ok = true, status = 200) {
@@ -43,6 +49,67 @@ beforeEach(() => {
 });
 
 describe('EmailTemplateEditor', () => {
+  it('fills empty stored fields with the catalog defaults', () => {
+    const defaults = emailTemplateFieldDefaults('ticket_comment_notification');
+    render(
+      <EmailTemplateEditor
+        templateId="ticket_comment_notification"
+        value={{ subject: null, heading: null, buttonLabel: null, html: null }}
+        onBack={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByTestId('email-template-subject') as HTMLInputElement).value).toBe(defaults.subject);
+    expect((screen.getByTestId('email-template-heading') as HTMLInputElement).value).toBe(defaults.heading);
+    expect((screen.getByTestId('email-template-button-label') as HTMLInputElement).value).toBe(defaults.buttonLabel);
+    expect((screen.getByTestId('email-template-html') as HTMLTextAreaElement).value).toBe(defaults.html);
+  });
+
+  it('keeps a saved override instead of the default', () => {
+    render(
+      <EmailTemplateEditor
+        templateId="ticket_comment_notification"
+        value={{ subject: 'Custom subject', heading: 'Custom heading', buttonLabel: 'Go', html: '<p>Custom</p>' }}
+        onBack={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByTestId('email-template-subject') as HTMLInputElement).value).toBe('Custom subject');
+    expect((screen.getByTestId('email-template-html') as HTMLTextAreaElement).value).toBe('<p>Custom</p>');
+  });
+
+  it('saves untouched defaults as null so the list stays Using default', async () => {
+    render(
+      <EmailTemplateEditor
+        templateId="ticket_comment_notification"
+        value={{ subject: null, heading: null, buttonLabel: null, html: null }}
+        onBack={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('email-template-save'));
+
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
+      '/orgs/partners/me',
+      expect.objectContaining({ method: 'PATCH' }),
+    ));
+    expect(lastPatchBody()).toEqual({
+      settings: {
+        emailTemplates: {
+          ticket_comment_notification: {
+            subject: null,
+            heading: null,
+            buttonLabel: null,
+            html: null,
+          },
+        },
+      },
+    });
+  });
+
   it('PATCHes only the edited id under settings.emailTemplates', async () => {
     const onSaved = vi.fn();
     render(
@@ -61,7 +128,7 @@ describe('EmailTemplateEditor', () => {
       target: { value: 'New reply' },
     });
     fireEvent.change(screen.getByTestId('email-template-button-label'), {
-      target: { value: 'View ticket' },
+      target: { value: 'Open ticket' },
     });
     fireEvent.change(screen.getByTestId('email-template-html'), {
       target: { value: '<p>Hi {{requester_name}}</p>' },
@@ -79,7 +146,7 @@ describe('EmailTemplateEditor', () => {
           ticket_comment_notification: {
             subject: 'Reply on {{ticket_number}}',
             heading: 'New reply',
-            buttonLabel: 'View ticket',
+            buttonLabel: 'Open ticket',
             html: '<p>Hi {{requester_name}}</p>',
           },
         },
@@ -104,7 +171,8 @@ describe('EmailTemplateEditor', () => {
     );
   });
 
-  it('reset saves all four fields as null', async () => {
+  it('reset saves all four fields as null and puts the defaults back in the form', async () => {
+    const defaults = emailTemplateFieldDefaults('ticket_resolved');
     render(
       <EmailTemplateEditor
         templateId="ticket_resolved"
@@ -132,6 +200,10 @@ describe('EmailTemplateEditor', () => {
         },
       },
     });
+    expect((screen.getByTestId('email-template-subject') as HTMLInputElement).value).toBe(defaults.subject);
+    expect((screen.getByTestId('email-template-heading') as HTMLInputElement).value).toBe(defaults.heading);
+    expect((screen.getByTestId('email-template-button-label') as HTMLInputElement).value).toBe(defaults.buttonLabel);
+    expect((screen.getByTestId('email-template-html') as HTMLTextAreaElement).value).toBe(defaults.html);
   });
 
   it('hides the button label when the template has no CTA', () => {
@@ -145,7 +217,30 @@ describe('EmailTemplateEditor', () => {
     );
 
     expect(screen.queryByTestId('email-template-button-label')).toBeNull();
+    expect(screen.queryByTestId('email-template-var-cta_button')).toBeNull();
     expect(screen.getByTestId('email-template-subject')).toBeTruthy();
+  });
+
+  it.each([...EMAIL_TEMPLATE_IDS])('shows every catalog insert chip for %s', (id) => {
+    render(
+      <EmailTemplateEditor
+        templateId={id}
+        value={{ subject: null, heading: null, buttonLabel: null, html: null }}
+        onBack={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    for (const key of varsForEmailTemplate(id)) {
+      expect(screen.getByTestId(`email-template-var-${key}`)).toBeTruthy();
+    }
+    if (emailTemplateHasCta(id)) {
+      expect(screen.getByTestId('email-template-button-label')).toBeTruthy();
+      expect(screen.getByTestId('email-template-var-cta_button')).toBeTruthy();
+    } else {
+      expect(screen.queryByTestId('email-template-button-label')).toBeNull();
+      expect(screen.queryByTestId('email-template-var-cta_button')).toBeNull();
+    }
   });
 
   it('previews substituted html in a read-only prose div without running scripts', () => {

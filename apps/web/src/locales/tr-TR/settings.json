@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "E-posta şablonları",
-        "description": "Müşteri bilet e-postaları"
+        "description": "Biletler, teklifler, faturalar, davetler"
       },
       "sendingDomains": { "label": "Gönderen adresleri", "description": "E-postaları kendi alan adınızdan gönderin" },
       "aiBudgets": {
@@ -847,7 +847,7 @@
   },
   "emailTemplates": {
     "title": "E-posta şablonları",
-    "description": "Müşterilerin biletler hakkında aldığı e-postaları özelleştirin. Yanıt bildirimi asla yanıt metnini içermez.",
+    "description": "Müşterilerin biletler, teklifler, faturalar ve portal davetleri için aldığı e-postaları özelleştirin. Yanıt bildirimi asla yanıt metnini içermez.",
     "usingDefault": "Varsayılan",
     "custom": "Özel",
     "subject": "Konu",
@@ -873,7 +873,15 @@
       "partner_name": "Şirket adı",
       "portal_url": "Portal URL'si",
       "email_only_hint": "Yalnızca e-posta ipucu",
-      "resolution_note": "Çözüm notu"
+      "resolution_note": "Çözüm notu",
+      "quote_number": "Teklif numarası",
+      "total": "Toplam",
+      "expiry_date": "Son geçerlilik tarihi",
+      "accept_url": "Kabul URL'si",
+      "invoice_number": "Fatura numarası",
+      "due_date": "Vade tarihi",
+      "invite_url": "Davet URL'si",
+      "cta_button": "Düğme"
     }
   },
   "inboundEmail": {

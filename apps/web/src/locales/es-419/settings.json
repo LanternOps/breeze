@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Plantillas de correo",
-        "description": "Correos de tickets al cliente"
+        "description": "Tickets, cotizaciones, facturas, invitaciones"
       },
       "sendingDomains": { "label": "Direcciones de envío", "description": "Envía correos desde tu propio dominio" },
       "aiBudgets": {
@@ -847,7 +847,7 @@
   },
   "emailTemplates": {
     "title": "Plantillas de correo",
-    "description": "Personalice los correos que reciben los clientes sobre tickets. El aviso de respuesta nunca incluye el texto de la respuesta.",
+    "description": "Personalice los correos que reciben los clientes para tickets, cotizaciones, facturas e invitaciones al portal. El aviso de respuesta nunca incluye el texto de la respuesta.",
     "usingDefault": "Predeterminado",
     "custom": "Personalizado",
     "subject": "Asunto",
@@ -873,7 +873,15 @@
       "partner_name": "Nombre de la empresa",
       "portal_url": "URL del portal",
       "email_only_hint": "Aviso solo por correo",
-      "resolution_note": "Nota de resolución"
+      "resolution_note": "Nota de resolución",
+      "quote_number": "Número de cotización",
+      "total": "Total",
+      "expiry_date": "Fecha de vencimiento",
+      "accept_url": "URL de aceptación",
+      "invoice_number": "Número de factura",
+      "due_date": "Fecha de pago",
+      "invite_url": "URL de invitación",
+      "cta_button": "Botón"
     }
   },
   "inboundEmail": {

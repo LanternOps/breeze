@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Modelos de e-mail",
-        "description": "E-mails de chamados para clientes"
+        "description": "Chamados, orçamentos, faturas, convites"
       },
       "sendingDomains": { "label": "Endereços de envio", "description": "Envie e-mails do seu próprio domínio" },
       "aiBudgets": {
@@ -847,7 +847,7 @@
   },
   "emailTemplates": {
     "title": "Modelos de e-mail",
-    "description": "Personalize os e-mails que os clientes recebem sobre chamados. O aviso de resposta nunca inclui o texto da resposta.",
+    "description": "Personalize os e-mails que os clientes recebem para chamados, orçamentos, faturas e convites do portal. O aviso de resposta nunca inclui o texto da resposta.",
     "usingDefault": "Padrão",
     "custom": "Personalizado",
     "subject": "Assunto",
@@ -873,7 +873,15 @@
       "partner_name": "Nome da empresa",
       "portal_url": "URL do portal",
       "email_only_hint": "Aviso só por e-mail",
-      "resolution_note": "Nota de resolução"
+      "resolution_note": "Nota de resolução",
+      "quote_number": "Número da proposta",
+      "total": "Total",
+      "expiry_date": "Data de validade",
+      "accept_url": "URL de aceitação",
+      "invoice_number": "Número da fatura",
+      "due_date": "Data de vencimento",
+      "invite_url": "URL do convite",
+      "cta_button": "Botão"
     }
   },
   "inboundEmail": {

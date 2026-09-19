@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Modèles d'e-mail",
-        "description": "E-mails de tickets clients"
+        "description": "Tickets, devis, factures, invitations"
       },
       "sendingDomains": { "label": "Adresses d'expédition", "description": "Envoyez vos e-mails depuis votre propre domaine" },
       "aiBudgets": {
@@ -847,7 +847,7 @@
   },
   "emailTemplates": {
     "title": "Modèles d'e-mail",
-    "description": "Personnalisez les e-mails que les clients reçoivent à propos des tickets. L'avis de réponse n'inclut jamais le texte de la réponse.",
+    "description": "Personnalisez les e-mails que les clients reçoivent pour les tickets, devis, factures et invitations au portail. L'avis de réponse n'inclut jamais le texte de la réponse.",
     "usingDefault": "Par défaut",
     "custom": "Personnalisé",
     "subject": "Objet",
@@ -873,7 +873,15 @@
       "partner_name": "Nom de l'entreprise",
       "portal_url": "URL du portail",
       "email_only_hint": "Indication e-mail uniquement",
-      "resolution_note": "Note de résolution"
+      "resolution_note": "Note de résolution",
+      "quote_number": "Numéro de devis",
+      "total": "Total",
+      "expiry_date": "Date d'expiration",
+      "accept_url": "URL d'acceptation",
+      "invoice_number": "Numéro de facture",
+      "due_date": "Date d'échéance",
+      "invite_url": "URL d'invitation",
+      "cta_button": "Bouton"
     }
   },
   "inboundEmail": {

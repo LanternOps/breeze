@@ -438,7 +438,7 @@ async function collectAutoresponse(
     bestEffort: true,
     graphMailbox,
     purpose: 'ticket.customer_notification',
-    partnerId: ticket.partnerId ?? null
+    partnerId: ticket.partnerId ?? null,
   }];
 }
 

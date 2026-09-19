@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   canonicalizeHrefForSchemeCheck,
+  emailTemplateFieldDefaults,
   emailTemplateHasCta,
   emailTemplateLabel,
+  isBlankEmailTemplateHtml,
   renderTemplate,
   varsForEmailTemplate,
   type EmailTemplateId,
@@ -37,6 +39,14 @@ const SAMPLE_VARS: Record<string, string> = {
   portal_url: 'https://portal.example.com/tickets/1',
   email_only_hint: 'If you do not have a portal account, reply to this email instead.',
   resolution_note: 'Replaced the failing drive.',
+  quote_number: 'Q-2026-0001',
+  total: '$1,200.00',
+  expiry_date: '2026-07-01',
+  accept_url: 'https://portal.example.com/quote/TOKEN',
+  invoice_number: 'INV-0001',
+  due_date: '2026-09-01',
+  invite_url: 'https://portal.example.com/accept-invite?token=abc',
+  cta_button: 'Button',
 };
 
 /** Same tags as apps/api/src/services/richTextSanitize.ts RICH_TEXT_ALLOWED_TAGS. */
@@ -54,6 +64,46 @@ function isSafePreviewHref(href: string): boolean {
   const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
   if (!scheme) return true;
   return scheme.toLowerCase() === 'http' || scheme.toLowerCase() === 'https';
+}
+
+
+
+function shownFields(templateId: EmailTemplateId, stored: EmailTemplateOverride | undefined) {
+  const defaults = emailTemplateFieldDefaults(templateId);
+  const pick = (value: string | null | undefined, fallback: string, html = false) => {
+    if (value == null) return fallback;
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    if (html && isBlankEmailTemplateHtml(trimmed)) return fallback;
+    return value;
+  };
+  return {
+    subject: pick(stored?.subject, defaults.subject),
+    heading: pick(stored?.heading, defaults.heading),
+    buttonLabel: pick(stored?.buttonLabel, defaults.buttonLabel),
+    html: pick(stored?.html, defaults.html, true),
+  };
+}
+
+function storedFromForm(
+  templateId: EmailTemplateId,
+  form: { subject: string; heading: string; buttonLabel: string; html: string },
+  hasCta: boolean,
+): EmailTemplateOverride {
+  const defaults = emailTemplateFieldDefaults(templateId);
+  const nullIfDefault = (value: string, fallback: string, html = false) => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (html && isBlankEmailTemplateHtml(trimmed)) return null;
+    if (trimmed === fallback.trim()) return null;
+    return value;
+  };
+  return {
+    subject: nullIfDefault(form.subject, defaults.subject),
+    heading: nullIfDefault(form.heading, defaults.heading),
+    buttonLabel: hasCta ? nullIfDefault(form.buttonLabel, defaults.buttonLabel) : null,
+    html: nullIfDefault(form.html, defaults.html, true),
+  };
 }
 
 function previewSafeHtml(html: string): string {
@@ -111,17 +161,23 @@ interface Props {
 export default function EmailTemplateEditor({ templateId, value, onBack, onSaved }: Props) {
   const { t } = useTranslation('settings');
   const hasCta = emailTemplateHasCta(templateId);
-  const [subject, setSubject] = useState(value?.subject ?? '');
-  const [heading, setHeading] = useState(value?.heading ?? '');
-  const [buttonLabel, setButtonLabel] = useState(value?.buttonLabel ?? '');
-  const [html, setHtml] = useState(value?.html ?? '');
+  const initial = shownFields(templateId, value);
+  const [subject, setSubject] = useState(initial.subject);
+  const [heading, setHeading] = useState(initial.heading);
+  const [buttonLabel, setButtonLabel] = useState(initial.buttonLabel);
+  const [html, setHtml] = useState(initial.html);
   const [saving, setSaving] = useState(false);
 
+  const applyStored = (stored: EmailTemplateOverride | undefined) => {
+    const next = shownFields(templateId, stored);
+    setSubject(next.subject);
+    setHeading(next.heading);
+    setButtonLabel(next.buttonLabel);
+    setHtml(next.html);
+  };
+
   useEffect(() => {
-    setSubject(value?.subject ?? '');
-    setHeading(value?.heading ?? '');
-    setButtonLabel(value?.buttonLabel ?? '');
-    setHtml(value?.html ?? '');
+    applyStored(value);
   }, [templateId, value]);
 
   const preview = useMemo(() => previewSafeHtml(html), [html]);
@@ -149,10 +205,7 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
       });
       const stored = overrideFromPartnerResponse(saved, templateId) ?? fields;
       onSaved(stored);
-      setSubject(stored.subject ?? '');
-      setHeading(stored.heading ?? '');
-      setButtonLabel(stored.buttonLabel ?? '');
-      setHtml(stored.html ?? '');
+      applyStored(stored);
     } catch (err) {
       handleActionError(err, t('emailTemplates.saveFailed'));
     } finally {
@@ -161,12 +214,7 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
   };
 
   const save = () =>
-    void persist({
-      subject,
-      heading,
-      buttonLabel: hasCta ? buttonLabel : null,
-      html,
-    });
+    void persist(storedFromForm(templateId, { subject, heading, buttonLabel, html }, hasCta));
 
   const reset = () =>
     void persist({ subject: null, heading: null, buttonLabel: null, html: null });

@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Modelli e-mail",
-        "description": "E-mail dei ticket per i clienti"
+        "description": "Ticket, preventivi, fatture, inviti"
       },
       "sendingDomains": { "label": "Indirizzi mittente", "description": "Invia email dal tuo dominio" },
       "aiBudgets": {
@@ -847,7 +847,7 @@
   },
   "emailTemplates": {
     "title": "Modelli e-mail",
-    "description": "Personalizza le e-mail che i clienti ricevono sui ticket. L'avviso di risposta non include mai il testo della risposta.",
+    "description": "Personalizza le e-mail che i clienti ricevono per ticket, preventivi, fatture e inviti al portale. L'avviso di risposta non include mai il testo della risposta.",
     "usingDefault": "Predefinito",
     "custom": "Personalizzato",
     "subject": "Oggetto",
@@ -873,7 +873,15 @@
       "partner_name": "Nome dell'azienda",
       "portal_url": "URL del portale",
       "email_only_hint": "Avviso solo e-mail",
-      "resolution_note": "Nota di risoluzione"
+      "resolution_note": "Nota di risoluzione",
+      "quote_number": "Numero preventivo",
+      "total": "Totale",
+      "expiry_date": "Data di scadenza",
+      "accept_url": "URL di accettazione",
+      "invoice_number": "Numero fattura",
+      "due_date": "Data di scadenza pagamento",
+      "invite_url": "URL di invito",
+      "cta_button": "Pulsante"
     }
   },
   "inboundEmail": {
