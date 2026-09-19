@@ -1,6 +1,6 @@
 # Billing profiles and work types — design
 
-Status: **draft r2, awaiting Todd's approval (Gate A)**.
+Status: **approved 2026-09-19 (Gate A) — r2, all §10 recommendations taken**.
 Issues: LanternOps/breeze#4628 (billing profiles / rate cards, community, anchor) and
 LanternOps/breeze#4615 (activity-type codes on time entries) — **one spec for both**, per
 Todd's 2026-09-02 comment on #4628: the rate dimension is built once.
@@ -460,9 +460,12 @@ to the pile and removes six fields from it.
   `billable_minutes`, money + portal readers, invoice lines · **W04** mobile + add-in
   pickers, report / CSV dimensions, docs, drop the six columns.
 
-## 10. Open Decisions
+## 10. Decisions (closed 2026-09-19)
 
-Three are yours. The rest were settled by the quorum; say if you disagree.
+Todd, in chat 2026-09-19: "take recommendations" — **1 = A (clean cut), 2 = A (the
+permission binds everyone, release-noted), 3 = confirmed** (included hours do not draw a
+block; both §5 block-hours amendments accepted and applied to the block-hours spec on
+`spec/4547-block-hours`). The options are kept below as the record.
 
 1. **Clean cut or coexistence?**
    - **A — convert and remove the old category / org rate fields in the cut-over wave**
