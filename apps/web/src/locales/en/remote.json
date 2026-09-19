@@ -237,6 +237,8 @@
         "trash": "Trash"
       },
       "cleanupPreview": "Cleanup Preview",
+      "cleanupOutcomeBreakdown": "{{failed}} failed · {{rejected}} rejected · {{locked}} locked · {{skipped}} not reached",
+      "cleanupBudgetExhausted": "The time budget ran out before every target was reached. Run the cleanup again to continue.",
       "cleanupResult": "Cleanup {{status}}: reclaimed {{size}} from {{count}} target(s), {{failed}} failed.",
       "data": "Data: {{size}}",
       "deleteFiles": "Delete Files",

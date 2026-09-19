@@ -237,6 +237,8 @@
         "trash": "Papierkorb"
       },
       "cleanupPreview": "Bereinigungsvorschau",
+      "cleanupOutcomeBreakdown": "{{failed}} fehlgeschlagen · {{rejected}} abgelehnt · {{locked}} gesperrt · {{skipped}} nicht erreicht",
+      "cleanupBudgetExhausted": "Das Zeitbudget war aufgebraucht, bevor alle Ziele erreicht wurden. Führen Sie die Bereinigung erneut aus.",
       "cleanupResult": "Aufräumen {{status}}: {{size}} von {{count}} Ziel(en) zurückgewonnen, {{failed}} fehlgeschlagen.",
       "data": "Daten: {{size}}",
       "deleteFiles": "Dateien löschen",

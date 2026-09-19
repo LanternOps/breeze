@@ -132,6 +132,17 @@ type DiskCleanupResult = {
   bytesReclaimed: number;
   selectedCount: number;
   failedCount: number;
+  partial?: boolean;
+  rejectedPaths?: string[];
+  counts?: {
+    completed: number;
+    // §13 row 13: a contentsOnly delete that could not remove every child.
+    partial?: number;
+    failed: number;
+    skipped_locked: number;
+    rejected: number;
+    skipped_budget: number;
+  };
 };
 
 type DeviceCommandDetail = {
@@ -1008,7 +1019,14 @@ export default function FileManager({
     try {
       const response = await fetchWithAuth(`/devices/${deviceId}/filesystem/cleanup-execute`, {
         method: 'POST',
-        body: JSON.stringify({ paths })
+        // Pin the deletion to the run the user actually previewed. Without it
+        // the API re-derives candidates from whatever snapshot is now newest,
+        // which is the race the pinning exists to prevent (defect 4).
+        body: JSON.stringify(
+          cleanupPreview?.cleanupRunId
+            ? { paths, cleanupRunId: cleanupPreview.cleanupRunId }
+            : { paths },
+        )
       });
       if (!response.ok) {
         const json = await response.json().catch(() => ({ error: 'Cleanup execution failed' }));
@@ -1028,7 +1046,7 @@ export default function FileManager({
     } finally {
       setDiskLoadingAction(null);
     }
-  }, [currentPath, deviceId, fetchDirectory, loadLatestFilesystemSnapshot, onError, selectedCleanupPaths]);
+  }, [cleanupPreview, currentPath, deviceId, fetchDirectory, loadLatestFilesystemSnapshot, onError, selectedCleanupPaths]);
 
   // Initial load
   useEffect(() => {
@@ -1250,6 +1268,7 @@ export default function FileManager({
       <div className="border-b bg-muted/20">
         <button
           type="button"
+          data-testid="disk-intelligence-toggle"
           onClick={() => setShowDiskIntel(!showDiskIntel)}
           className="flex w-full items-center justify-between px-4 py-2 hover:bg-muted/30"
         >
@@ -1278,6 +1297,7 @@ export default function FileManager({
               </button>
               <button
                 type="button"
+                data-testid="disk-preview-button"
                 onClick={runCleanupPreview}
                 disabled={diskLoadingAction !== null || !diskSnapshot}
                 className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
@@ -1287,6 +1307,7 @@ export default function FileManager({
               </button>
               <button
                 type="button"
+                data-testid="disk-execute-button"
                 onClick={executeCleanup}
                 disabled={diskLoadingAction !== null || selectedCleanupPaths.size === 0}
                 className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
@@ -1379,11 +1400,53 @@ export default function FileManager({
               </div>
             )}
 
-            {cleanupResult && (
-              <div className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                {t('fileManager.disk.cleanupResult', { status: cleanupResult.status, size: formatSize(cleanupResult.bytesReclaimed), count: cleanupResult.selectedCount, failed: cleanupResult.failedCount })}
-              </div>
-            )}
+            {cleanupResult && (() => {
+              const rejectedCount = cleanupResult.rejectedPaths?.length ?? cleanupResult.counts?.rejected ?? 0;
+              const skippedLockedCount = cleanupResult.counts?.skipped_locked ?? 0;
+              const skippedBudgetCount = cleanupResult.counts?.skipped_budget ?? 0;
+              const partialCount = cleanupResult.counts?.partial ?? 0;
+              // A partial failure used to render in the SAME green box as a
+              // clean run, so "3 of 40 targets failed" read as success.
+              const clean =
+                cleanupResult.failedCount === 0 &&
+                rejectedCount === 0 &&
+                skippedLockedCount === 0 &&
+                skippedBudgetCount === 0 &&
+                partialCount === 0;
+              return (
+                <div
+                  data-testid="disk-cleanup-result"
+                  className={cn(
+                    'mt-2 rounded-md border px-3 py-2 text-xs',
+                    clean
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                      : 'border-amber-300 bg-amber-50 text-amber-800'
+                  )}
+                >
+                  <div>
+                    {t('fileManager.disk.cleanupResult', {
+                      status: cleanupResult.status,
+                      size: formatSize(cleanupResult.bytesReclaimed),
+                      count: cleanupResult.selectedCount,
+                      failed: cleanupResult.failedCount,
+                    })}
+                  </div>
+                  {!clean && (
+                    <div className="mt-1">
+                      {t('fileManager.disk.cleanupOutcomeBreakdown', {
+                        failed: cleanupResult.failedCount,
+                        rejected: rejectedCount,
+                        locked: skippedLockedCount,
+                        skipped: skippedBudgetCount,
+                      })}
+                    </div>
+                  )}
+                  {cleanupResult.partial && (
+                    <div className="mt-1">{t('fileManager.disk.cleanupBudgetExhausted')}</div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>
@@ -1726,6 +1789,7 @@ export default function FileManager({
         open={showCleanupConfirm}
         onClose={() => setShowCleanupConfirm(false)}
         onConfirm={handleConfirmCleanup}
+        confirmTestId="disk-execute-confirm"
         title={t('fileManager.disk.deleteTargets')}
         message={t('fileManager.disk.deleteTargetsConfirm', { count: selectedCleanupPaths.size })}
         confirmLabel={t('fileManager.disk.deleteFiles')}

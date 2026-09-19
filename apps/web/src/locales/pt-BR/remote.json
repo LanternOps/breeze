@@ -237,6 +237,8 @@
         "trash": "Lixeira"
       },
       "cleanupPreview": "Prévia da limpeza",
+      "cleanupOutcomeBreakdown": "{{failed}} com falha · {{rejected}} rejeitados · {{locked}} bloqueados · {{skipped}} não alcançados",
+      "cleanupBudgetExhausted": "O tempo disponível acabou antes de alcançar todos os alvos. Execute a limpeza novamente para continuar.",
       "cleanupResult": "Limpeza {{status}}: {{size}} recuperados em {{count}} destino(s); {{failed}} falharam.",
       "data": "Dados: {{size}}",
       "deleteFiles": "Excluir arquivos",

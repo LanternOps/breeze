@@ -237,6 +237,8 @@
         "trash": "Corbeille"
       },
       "cleanupPreview": "Aperçu du nettoyage",
+      "cleanupOutcomeBreakdown": "{{failed}} en échec · {{rejected}} refusés · {{locked}} verrouillés · {{skipped}} non traités",
+      "cleanupBudgetExhausted": "Le temps alloué s’est épuisé avant que toutes les cibles soient traitées. Relancez le nettoyage pour continuer.",
       "cleanupResult": "Nettoyage {{status}} : récupéré {{size}} de {{count}} cible(s), {{failed}} échoué.",
       "data": "Data : {{size}}",
       "deleteFiles": "Supprimer les fichiers",

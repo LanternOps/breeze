@@ -237,6 +237,8 @@
         "trash": "Papelera"
       },
       "cleanupPreview": "Vista previa de limpieza",
+      "cleanupOutcomeBreakdown": "{{failed}} con errores · {{rejected}} rechazados · {{locked}} bloqueados · {{skipped}} sin alcanzar",
+      "cleanupBudgetExhausted": "El tiempo disponible se agotó antes de alcanzar todos los objetivos. Ejecute la limpieza nuevamente para continuar.",
       "cleanupResult": "Limpieza {{status}}: {{size}} recuperado de los objetivos {{count}}, {{failed}} falló.",
       "data": "Datos: {{size}}",
       "deleteFiles": "Eliminar archivos",

@@ -237,6 +237,8 @@
         "trash": "Cestino"
       },
       "cleanupPreview": "Anteprima pulizia",
+      "cleanupOutcomeBreakdown": "{{failed}} non riusciti · {{rejected}} rifiutati · {{locked}} bloccati · {{skipped}} non raggiunti",
+      "cleanupBudgetExhausted": "Il tempo a disposizione è terminato prima di raggiungere tutti gli elementi. Esegui di nuovo la pulizia per continuare.",
       "cleanupResult": "Pulizia {{status}}: recuperati {{size}} da {{count}} destinazioni, {{failed}} non riuscite.",
       "data": "Dati: {{size}}",
       "deleteFiles": "Elimina file",

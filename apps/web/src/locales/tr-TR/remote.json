@@ -237,6 +237,8 @@
         "trash": "Çöp Kutusu"
       },
       "cleanupPreview": "Temizleme Önizlemesi",
+      "cleanupOutcomeBreakdown": "{{failed}} başarısız · {{rejected}} reddedildi · {{locked}} kilitli · {{skipped}} ulaşılamadı",
+      "cleanupBudgetExhausted": "Tüm hedeflere ulaşılmadan süre doldu. Devam etmek için temizlemeyi yeniden çalıştırın.",
       "cleanupResult": "Temizleme {{status}}: {{size}}, {{count}} hedeflerinden geri alındı, {{failed}} başarısız oldu.",
       "data": "Veri: {{size}}",
       "deleteFiles": "Dosyaları Sil",
