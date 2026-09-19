@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -591,6 +593,155 @@ func WriteFile(payload map[string]any) CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
+// sumTreeSizeAt totals the regular-file bytes under `rel`, through the confined
+// root handle. These are LOGICAL bytes (the sum of Lstat sizes): sparse files,
+// compression, dedup and cluster slack all make the real free-space delta
+// differ. The measured figure arrives with the native cleaners in W04.
+//
+// fs.WalkDir over root.FS() uses ReadDir entries, so it never follows a link,
+// and the Root confines every lookup to the anchor.
+func sumTreeSizeAt(root *os.Root, rel string) int64 {
+	var total int64
+	_ = fs.WalkDir(root.FS(), filepath.ToSlash(rel), func(_ string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() || isReparsePoint(info) {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total
+}
+
+// cleanupTarget is a cleanup victim addressed by a DIRECTORY HANDLE plus a
+// relative name, never by a pathname (spec §13 row 1).
+type cleanupTarget struct {
+	root  *os.Root
+	rel   string
+	match *cleanupRuleMatch
+}
+
+func (t *cleanupTarget) close() {
+	if t != nil && t.root != nil {
+		_ = t.root.Close()
+	}
+}
+
+// openCleanupTarget resolves cleanPath into a confined handle.
+//
+// Lstat-then-Remove on a literal path confines nothing: preview
+// `~/.cache/sub/x`, swap `sub` for a symlink to /etc before execute, and the
+// leaf Lstat sees an ordinary file at /etc/x. So the agent opens the matched
+// rule's ANCHOR — the wildcard-free literal prefix of the pattern, which the
+// rule author fixed and no attacker can choose — and every later operation goes
+// through that *os.Root. The runtime then refuses an absolute symlink, and any
+// relative symlink or reparse point that escapes the anchor, at EVERY component
+// of the traversal.
+//
+// The anchor's own real path must also sit on the dispatched volumeRoot, so a
+// junction at the anchor itself cannot relocate the whole operation.
+func openCleanupTarget(goos, cleanPath, volumeRoot string) (*cleanupTarget, error) {
+	if isCleanupDeniedRootFor(goos, cleanPath) {
+		return nil, fmt.Errorf("%s %s is under a cleanup-denied root", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	match := matchCleanupRuleFor(goos, cleanPath)
+	if match == nil {
+		return nil, fmt.Errorf("%s %s matches no cleanup rule", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	anchor, ok := cleanupRuleAnchorFor(goos, cleanPath)
+	if !ok {
+		return nil, fmt.Errorf("%s %s has no confinement anchor", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	if volumeRoot == "" {
+		// Keep the field additive for callers that omit volumeRoot; derive
+		// the filesystem root rather than skipping the check.
+		if goos == "windows" {
+			volumeRoot = filepath.VolumeName(filepath.Clean(cleanPath)) + string(filepath.Separator)
+		} else {
+			volumeRoot = string(filepath.Separator)
+		}
+	}
+	if !isRealPathUnderRoot(volumeRoot, anchor) {
+		return nil, fmt.Errorf("%s anchor %s is not on volume %s", CleanupGuardRejectedPrefix, anchor, volumeRoot)
+	}
+
+	rel, err := filepath.Rel(anchor, filepath.Clean(cleanPath))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("%s %s is not inside its anchor %s", CleanupGuardRejectedPrefix, cleanPath, anchor)
+	}
+
+	root, err := os.OpenRoot(anchor)
+	if err != nil {
+		return nil, fmt.Errorf("%s cannot open anchor %s: %v", CleanupGuardRejectedPrefix, anchor, err)
+	}
+	if _, err := root.Lstat(rel); err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("%s %s could not be opened inside its anchor: %v", CleanupGuardRejectedPrefix, cleanPath, err)
+	}
+	return &cleanupTarget{root: root, rel: rel, match: match}, nil
+}
+
+// cleanupGuardRejection is the live re-check (spec §13 row 2). Pinning a path
+// pins a STRING; between preview and execute the thing at that path can change
+// type, age or contents.
+//
+// Order matters: link checks come first, so a symlink is refused by identity
+// even when its path would otherwise match a rule.
+func cleanupGuardRejection(
+	info os.FileInfo,
+	match *cleanupRuleMatch,
+	recursive bool,
+	previewedAt time.Time,
+	now time.Time,
+) error {
+	if info == nil || match == nil {
+		return fmt.Errorf("%s target could not be inspected", CleanupGuardRejectedPrefix)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s %s is a symlink", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if isReparsePoint(info) {
+		return fmt.Errorf("%s %s is a reparse point", CleanupGuardRejectedPrefix, info.Name())
+	}
+	// File-granularity rules dispatch recursive:false. A target that has become
+	// a directory since the preview is refused rather than deleted as a subtree.
+	if !recursive && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %s is not a regular file", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if recursive && !info.IsDir() && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %s is not a regular file or directory", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if match.MinAge > 0 && now.Sub(info.ModTime()) < match.MinAge {
+		return fmt.Errorf("%s %s is newer than the rule's minimum age", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if !previewedAt.IsZero() && info.ModTime().After(previewedAt) {
+		return fmt.Errorf("%s %s was modified after the preview", CleanupGuardRejectedPrefix, info.Name())
+	}
+	return nil
+}
+
+// newLockedDeleteResult reports a Windows file lock as a SUCCESS carrying
+// `deleted: false` rather than as a failure, because skippedLocked only exists
+// on the success envelope (NewErrorResult carries no body). The API maps
+// bytesFreed == 0 with a non-empty skippedLocked onto `skipped_locked`, which
+// is a different operator action from "it failed" — close the app and re-run.
+func newLockedDeleteResult(cleanPath string, start time.Time) CommandResult {
+	return NewSuccessResult(map[string]any{
+		"path":          cleanPath,
+		"deleted":       false,
+		"permanent":     true,
+		"bytesFreed":    int64(0),
+		"skippedLocked": []string{cleanPath},
+	}, time.Since(start).Milliseconds())
+}
+
+func deleteDirectoryContents(_ *cleanupTarget, _ string, _ os.FileInfo, start time.Time) CommandResult {
+	return NewErrorResult(fmt.Errorf("contentsOnly is not implemented"), time.Since(start).Milliseconds())
+}
+
 // DeleteFile deletes a file or directory. By default it moves the item to the
 // .breeze-trash directory for later restore. Pass "permanent": true to bypass
 // the trash and delete immediately.
@@ -604,6 +755,33 @@ func DeleteFile(payload map[string]any) CommandResult {
 
 	recursive := GetPayloadBool(payload, "recursive", false)
 	permanent := GetPayloadBool(payload, "permanent", false)
+	// Cleanup-only flags. Absent on every non-cleanup caller, and no OLD agent
+	// ever receives them: cleanup-execute refuses any agent below
+	// MIN_AGENT_VERSION_CLEANUP_GUARD with 409 agent_update_required, because
+	// an agent that ignores `cleanupGuard` while honouring `permanent` would
+	// perform an UNGUARDED permanent delete (spec §13 row 3).
+	cleanupGuard := GetPayloadBool(payload, "cleanupGuard", false)
+	if cleanupGuard && !permanent {
+		return NewErrorResult(fmt.Errorf("%s cleanupGuard requires permanent", CleanupGuardRejectedPrefix), time.Since(start).Milliseconds())
+	}
+	contentsOnly := GetPayloadBool(payload, "contentsOnly", false)
+	volumeRoot := GetPayloadString(payload, "volumeRoot", "")
+	previewedAtRaw := GetPayloadString(payload, "previewedAt", "")
+	if contentsOnly && !permanent {
+		return NewErrorResult(fmt.Errorf("contentsOnly requires permanent"), time.Since(start).Milliseconds())
+	}
+	var previewedAt time.Time
+	if previewedAtRaw != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, previewedAtRaw)
+		if parseErr != nil {
+			// Present-but-garbage is a dispatcher bug, not an absent field.
+			return NewErrorResult(
+				fmt.Errorf("%s previewedAt is not RFC3339: %q", CleanupGuardRejectedPrefix, previewedAtRaw),
+				time.Since(start).Milliseconds(),
+			)
+		}
+		previewedAt = parsed
+	}
 
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
@@ -637,30 +815,84 @@ func DeleteFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("recursive delete denied on top-level path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
-	// Check if path exists
-	info, err := os.Stat(cleanPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+	// The cleanup path never addresses a file by pathname. Every other caller
+	// keeps os.Stat, which is what the file browser has always used.
+	var info os.FileInfo
+	var err error
+	var target *cleanupTarget
+	if cleanupGuard {
+		target, err = openCleanupTarget(runtime.GOOS, cleanPath, volumeRoot)
+		if err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
 		}
-		return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
+		defer target.close()
+		info, err = target.root.Lstat(target.rel)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+			}
+			// An escape refused by the Root surfaces here, which is the whole
+			// point: the ancestor was swapped after the preview.
+			return NewErrorResult(
+				fmt.Errorf("%s %s could not be opened inside its anchor: %v", CleanupGuardRejectedPrefix, cleanPath, err),
+				time.Since(start).Milliseconds(),
+			)
+		}
+		if guardErr := cleanupGuardRejection(info, target.match, recursive, previewedAt, time.Now()); guardErr != nil {
+			return NewErrorResult(guardErr, time.Since(start).Milliseconds())
+		}
+	} else {
+		info, err = os.Stat(cleanPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+			}
+			return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
+		}
 	}
 
 	// Permanent delete — bypass trash
 	if permanent {
-		if info.IsDir() && recursive {
-			if err := os.RemoveAll(cleanPath); err != nil {
-				return NewErrorResult(fmt.Errorf("failed to remove directory: %w", err), time.Since(start).Milliseconds())
+		if contentsOnly {
+			if target == nil {
+				return NewErrorResult(fmt.Errorf("contentsOnly requires cleanupGuard"), time.Since(start).Milliseconds())
 			}
+			return deleteDirectoryContents(target, cleanPath, info, start)
+		}
+
+		var bytesFreed int64
+		if target != nil {
+			if info.IsDir() && recursive {
+				bytesFreed = sumTreeSizeAt(target.root, target.rel)
+				err = target.root.RemoveAll(target.rel)
+			} else {
+				bytesFreed = info.Size()
+				err = target.root.Remove(target.rel)
+			}
+		} else if info.IsDir() && recursive {
+			root, openErr := os.OpenRoot(cleanPath)
+			if openErr != nil {
+				return NewErrorResult(fmt.Errorf("failed to open directory: %w", openErr), time.Since(start).Milliseconds())
+			}
+			bytesFreed = sumTreeSizeAt(root, ".")
+			_ = root.Close()
+			err = os.RemoveAll(cleanPath)
 		} else {
-			if err := os.Remove(cleanPath); err != nil {
-				return NewErrorResult(fmt.Errorf("failed to remove file: %w", err), time.Since(start).Milliseconds())
+			bytesFreed = info.Size()
+			err = os.Remove(cleanPath)
+		}
+		if err != nil {
+			if isSharingViolation(err) {
+				return newLockedDeleteResult(cleanPath, start)
 			}
+			return NewErrorResult(fmt.Errorf("failed to remove path: %w", err), time.Since(start).Milliseconds())
 		}
 		return NewSuccessResult(map[string]any{
-			"path":      cleanPath,
-			"deleted":   true,
-			"permanent": true,
+			"path":          cleanPath,
+			"deleted":       true,
+			"permanent":     true,
+			"bytesFreed":    bytesFreed,
+			"skippedLocked": []string{},
 		}, time.Since(start).Milliseconds())
 	}
 
