@@ -8,8 +8,8 @@ import {
 describe('PARTNER_WIDE_WRITE_DENIED_MESSAGE', () => {
   // The constant is returned by every canManagePartnerWidePolicies gate, including
   // routes that administer partner-wide state which is NOT a policy (partner login
-  // branding, partner trust review requests). Resource-specific wording there is
-  // wrong copy.
+  // branding today, and more such surfaces to come). Resource-specific wording at
+  // those call sites is wrong copy.
   it('does not name a specific resource kind', () => {
     for (const resourceWord of ['policy', 'policies', 'template', 'profile', 'package', 'window']) {
       expect(PARTNER_WIDE_WRITE_DENIED_MESSAGE.toLowerCase()).not.toContain(resourceWord);
