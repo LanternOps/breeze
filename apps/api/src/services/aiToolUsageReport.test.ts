@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 const executeMock = vi.hoisted(() => vi.fn());
@@ -5,6 +7,10 @@ vi.mock('../db', () => ({ db: { execute: executeMock } }));
 vi.mock('./aiTools', () => ({ getAllRegisteredToolNames: () => ['query_devices', 'manage_alerts', 'never_used_tool'] }));
 
 import { buildToolUsageReport, toolUsageReportSqlText } from './aiToolUsageReport';
+
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
 
 describe('buildToolUsageReport', () => {
   it('maps rows and lists registered tools with zero executions as cold', async () => {
@@ -21,5 +27,12 @@ describe('buildToolUsageReport', () => {
     const text = toolUsageReportSqlText(90);
     expect(text).toMatch(/device_id IS NOT NULL THEN 'helper'/);
     expect(text).toMatch(/created_at >= now\(\) - make_interval\(days => /);
+  });
+
+  it('the committed operator SQL file stays byte-identical (modulo whitespace) to toolUsageReportSqlText(90)', () => {
+    const sqlFilePath = join(__dirname, '../../../../docs/superpowers/specs/ai-mcp/sql/2026-09-17-ai-tool-usage-90d.sql');
+    const fileText = readFileSync(sqlFilePath, 'utf8');
+    const expected = normalizeWhitespace(toolUsageReportSqlText(90));
+    expect(normalizeWhitespace(fileText)).toContain(expected);
   });
 });
