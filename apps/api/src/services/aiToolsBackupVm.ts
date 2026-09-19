@@ -18,6 +18,7 @@ import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { deviceSiteDenied, deviceIdSiteDenied } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
+import { startRebuildEngineVmRestore } from './vmRestoreRebuildEngine';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -65,22 +66,32 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
-    deviceArgs: ['targetDeviceId'],
+    // Both engines' hosts are device args: the central gate (enforceDeviceArgs)
+    // runs the org+site check on whichever one the call carries.
+    deviceArgs: ['targetDeviceId', 'rebuildHostDeviceId'],
     definition: {
       name: 'restore_as_vm',
-      description: 'Restore a backup snapshot as a virtual machine on a target device.',
+      description:
+        'Restore a backup snapshot as a virtual machine. engine "hyperv" (default) creates a Hyper-V VM on a Windows target device. ' +
+        'engine "rebuild" rebuilds a Linux whole-machine snapshot (one with a disk layout manifest) into a VHDX file on a Linux rebuild host; ' +
+        'the image always gets a NEW machine identity and must be attached to a Hyper-V VM manually.',
       input_schema: {
         type: 'object' as const,
         properties: {
+          engine: {
+            type: 'string',
+            enum: ['hyperv', 'rebuild'],
+            description: 'Restore engine. Defaults to "hyperv".',
+          },
           snapshotId: { type: 'string', description: 'Snapshot UUID (required)' },
-          targetDeviceId: { type: 'string', description: 'Target device UUID (required)' },
+          targetDeviceId: { type: 'string', description: 'Target Hyper-V host device UUID (required for engine "hyperv")' },
           hypervisor: {
             type: 'string',
             enum: ['hyperv'],
-            description: 'Target hypervisor platform',
+            description: 'Target hypervisor platform (engine "hyperv")',
           },
-          vmName: { type: 'string', description: 'Name of the restored VM (required)' },
-          switchName: { type: 'string', description: 'Optional Hyper-V switch name' },
+          vmName: { type: 'string', description: 'Name of the restored VM (required for engine "hyperv")' },
+          switchName: { type: 'string', description: 'Optional Hyper-V switch name (engine "hyperv")' },
           vmSpecs: {
             type: 'object',
             properties: {
@@ -88,14 +99,58 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
               cpuCount: { type: 'number' },
               diskSizeGb: { type: 'number' },
             },
-            description: 'Optional VM resource overrides',
+            description: 'Optional VM resource overrides (engine "hyperv")',
           },
+          rebuildHostDeviceId: { type: 'string', description: 'Linux device UUID that runs the rebuild (required for engine "rebuild")' },
+          outputPath: { type: 'string', description: 'Absolute .vhdx output path on the rebuild host (required for engine "rebuild")' },
+          imageSizeGb: { type: 'number', description: 'Optional virtual disk size in GB (engine "rebuild")' },
         },
-        required: ['snapshotId', 'targetDeviceId', 'hypervisor', 'vmName'],
+        required: ['snapshotId'],
       },
     },
     handler: safeHandler('restore_as_vm', async (input, auth) => {
       const snapshotId = input.snapshotId as string;
+      const engine = input.engine === 'rebuild' ? 'rebuild' : 'hyperv';
+
+      if (engine === 'rebuild') {
+        const rebuildHostDeviceId = input.rebuildHostDeviceId as string;
+        const outputPath = input.outputPath as string;
+        if (!snapshotId || !rebuildHostDeviceId || !outputPath) {
+          return JSON.stringify({ error: 'snapshotId, rebuildHostDeviceId, and outputPath are required for engine "rebuild"' });
+        }
+        // Org axis via orgCondition and site axis on the SOURCE device
+        // (app-layer only). The rebuild host is gated by deviceArgs before the
+        // handler runs; the service re-checks it inside the snapshot's org.
+        const snapshotResult = await loadSnapshotWithSiteAccess(auth, snapshotId);
+        if ('error' in snapshotResult) return JSON.stringify({ error: snapshotResult.error });
+
+        // `identity` is deliberately not read from the input: the server forces
+        // `identity: 'new'` for engine-produced images (spec §9).
+        const result = await startRebuildEngineVmRestore({
+          orgId: snapshotResult.snapshot.orgId,
+          snapshotId,
+          rebuildHostDeviceId,
+          outputPath,
+          ...(typeof input.imageSizeGb === 'number' ? { imageSizeGb: input.imageSizeGb } : {}),
+          userId: auth.user?.id ?? null,
+        });
+        if (!result.ok) {
+          return JSON.stringify({ error: result.error, ...(result.details ? { details: result.details } : {}) });
+        }
+        return JSON.stringify({
+          success: true,
+          engine: 'rebuild',
+          restoreJobId: result.jobId,
+          recoveryId: result.recoveryId,
+          commandId: result.commandId,
+          status: result.status,
+          rebuildHostDeviceId,
+          outputPath,
+          identity: 'new',
+          note: 'Attach the VHDX to a Hyper-V VM manually; automatic VM creation for Linux guests arrives with the Windows engine.',
+        });
+      }
+
       const targetDeviceId = input.targetDeviceId as string;
       const hypervisor = input.hypervisor as string;
       const vmName = input.vmName as string;

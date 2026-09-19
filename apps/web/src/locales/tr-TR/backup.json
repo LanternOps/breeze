@@ -617,7 +617,12 @@
     "cpu": "CPU,",
     "mbRam": "MB RAM'i,",
     "gbDisk": "GB Disk",
-    "mode": "Modu"
+    "mode": "Modu",
+    "rebuildHost": "Yeniden oluşturma ana bilgisayarı",
+    "outputPath": "Çıktı yolu",
+    "rebuildEngine": "Yeniden oluşturma motoru (Linux)",
+    "manualAttachNote": "VHDX'i bir Hyper-V sanal makinesine elle bağlayın; Linux konuklar için otomatik sanal makine oluşturma Windows motoruyla gelecek.",
+    "newIdentityNote": "Yeniden oluşturulan görüntü her zaman yeni bir makine kimliği alır ve asla özgün cihazın kimliğini devralmaz."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "VM özellikleri",
@@ -655,7 +660,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "VM'yi doğrudan yedekleme deposundan önyükler. Saniyeler içinde hazır. Arka planda geçiş, verileri ana bilgisayara kopyalar.",
     "back": "Geri",
     "continue": "Devam et",
-    "starting": "Başlıyor..."
+    "starting": "Başlıyor...",
+    "rebuildEngineLinux": "Yeniden oluşturma motoru (Linux)",
+    "rebuildEngineDescription": "Bu Linux tam makine anlık görüntüsünü, Breeze yardımcısını çalıştıran bir Linux cihazında Hyper-V VHDX disk görüntüsüne dönüştürür. Görüntü her zaman yeni bir makine kimliği alır.",
+    "selectRebuildHost": "Linux yeniden oluşturma ana bilgisayarını seçin",
+    "chooseALinuxDeviceWithQemuUtils": "qemu-utils yüklü, çevrimiçi ve görüntü için yeterli boş alana sahip bir Linux cihazı seçin.",
+    "outputPath": "Çıktı yolu",
+    "outputPathHint": "Yeniden oluşturma ana bilgisayarında .vhdx ile biten mutlak yol.",
+    "outputPathInvalid": ".vhdx ile biten mutlak bir yol girin.",
+    "startRebuild": "Yeniden oluşturmayı başlat",
+    "rebuildStarted": "Yeniden oluşturma başlatıldı. VHDX, işlem tamamlandığında yeniden oluşturma ana bilgisayarında görünecek."
   },
   "vaultConfigDialog": {
     "device": "Cihaz",

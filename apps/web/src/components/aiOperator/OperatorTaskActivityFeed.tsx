@@ -15,6 +15,8 @@ import { cn } from '@/lib/utils';
 import type { AiOperatorTaskListItemDto } from '@breeze/shared';
 import { taskStateLabel } from './operatorTaskLabels';
 
+const AI_OPERATOR_DOCS_URL = 'https://docs.breezermm.com/features/ai-agents/';
+
 export default function OperatorTaskActivityFeed({ deviceId }: { deviceId: string }) {
   const { t } = useTranslation('aiOperator');
   const [tasks, setTasks] = useState<AiOperatorTaskListItemDto[]>([]);
@@ -63,9 +65,18 @@ export default function OperatorTaskActivityFeed({ deviceId }: { deviceId: strin
   }
   if (tasks.length === 0) {
     return (
-      <p className="p-4 text-sm text-muted-foreground" data-testid="operator-task-feed-empty">
-        {t('operatorTaskFeed.empty')}
-      </p>
+      <div className="p-4 text-sm text-muted-foreground" data-testid="operator-task-feed-empty">
+        <p className="font-medium text-foreground">{t('operatorTaskFeed.empty')}</p>
+        <p className="mt-1 max-w-prose">{t('operatorTaskFeed.emptyHint')}</p>
+        <a
+          href={AI_OPERATOR_DOCS_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-2 inline-block font-medium text-primary hover:underline"
+        >
+          {t('operatorTaskFeed.learnMore')}
+        </a>
+      </div>
     );
   }
 

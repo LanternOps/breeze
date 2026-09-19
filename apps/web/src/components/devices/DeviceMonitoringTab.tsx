@@ -154,7 +154,13 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
                     data-testid="device-monitoring-empty"
                     className="px-4 py-6 text-center text-sm text-muted-foreground"
                   >
-                    {t('deviceMonitoringTab.empty')}
+                    <p>{t('deviceMonitoringTab.empty')}</p>
+                    <a
+                      href="/configuration-policies"
+                      className="mt-2 inline-block text-sm font-medium text-primary hover:underline"
+                    >
+                      {t('deviceMonitoringTab.assignPolicy')}
+                    </a>
                   </td>
                 </tr>
               ) : (

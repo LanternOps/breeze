@@ -617,7 +617,12 @@
     "cpu": "CPU,",
     "mbRam": "MB de RAM,",
     "gbDisk": "GB de disco",
-    "mode": "Modo"
+    "mode": "Modo",
+    "rebuildHost": "Host de reconstrução",
+    "outputPath": "Caminho de saída",
+    "rebuildEngine": "Mecanismo de reconstrução (Linux)",
+    "manualAttachNote": "Anexe o VHDX a uma VM do Hyper-V manualmente; a criação automática de VM para convidados Linux chegará com o mecanismo do Windows.",
+    "newIdentityNote": "A imagem reconstruída sempre recebe uma nova identidade de máquina e nunca retoma a identidade do dispositivo original."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "Especificações da VM",
@@ -655,7 +660,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Inicializa a VM diretamente do armazenamento de backup. Pronta em segundos. A migração em segundo plano copia os dados para o host.",
     "back": "Voltar",
     "continue": "Continuar",
-    "starting": "Iniciando..."
+    "starting": "Iniciando...",
+    "rebuildEngineLinux": "Mecanismo de reconstrução (Linux)",
+    "rebuildEngineDescription": "Reconstrói este snapshot de máquina completa Linux em uma imagem de disco VHDX do Hyper-V em um dispositivo Linux que executa o assistente Breeze. A imagem sempre recebe uma nova identidade de máquina.",
+    "selectRebuildHost": "Selecionar host de reconstrução Linux",
+    "chooseALinuxDeviceWithQemuUtils": "Escolha um dispositivo Linux online com qemu-utils instalado e espaço livre suficiente para a imagem.",
+    "outputPath": "Caminho de saída",
+    "outputPathHint": "Caminho absoluto no host de reconstrução terminando em .vhdx.",
+    "outputPathInvalid": "Informe um caminho absoluto que termine em .vhdx.",
+    "startRebuild": "Iniciar reconstrução",
+    "rebuildStarted": "Reconstrução iniciada. O VHDX aparecerá no host de reconstrução quando ela for concluída."
   },
   "vaultConfigDialog": {
     "device": "Dispositivo",

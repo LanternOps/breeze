@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 type realSystem struct{}
@@ -129,5 +131,14 @@ func (s realSystem) Unmount(ctx context.Context, dir string) error {
 	return nil
 }
 
-func (s realSystem) Sync(ctx context.Context) error { _, err := s.Run(ctx, "sync"); return err }
-func (realSystem) Arch() string                     { return runtime.GOARCH }
+func (s realSystem) Sync(ctx context.Context) error     { _, err := s.Run(ctx, "sync"); return err }
+func (realSystem) Arch() string                         { return runtime.GOARCH }
+func (realSystem) LookPath(name string) (string, error) { return exec.LookPath(name) }
+
+func (realSystem) FreeSpace(dir string) (int64, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", dir, err)
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}

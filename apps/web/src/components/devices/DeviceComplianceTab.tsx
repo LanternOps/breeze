@@ -201,9 +201,17 @@ export default function DeviceComplianceTab({
                     data-testid="device-compliance-empty"
                     className="px-4 py-6 text-center text-sm text-muted-foreground"
                   >
-                    {t(
-                      "deviceComplianceTab.noComplianceResultsReportedAssignA",
-                    )}{" "}
+                    <p>
+                      {t(
+                        "deviceComplianceTab.noComplianceResultsReportedAssignA",
+                      )}
+                    </p>
+                    <a
+                      href="/configuration-policies"
+                      className="mt-2 inline-block text-sm font-medium text-primary hover:underline"
+                    >
+                      {t("deviceComplianceTab.assignPolicy")}
+                    </a>
                   </td>
                 </tr>
               ) : (

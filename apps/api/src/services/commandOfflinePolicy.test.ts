@@ -126,6 +126,7 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(defaultOfflinePolicy(CommandTypes.BACKUP_RUN)).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy(CommandTypes.BACKUP_RESTORE)).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy(CommandTypes.BMR_RECOVER)).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy(CommandTypes.BARE_METAL_REBUILD)).toEqual({ kind: 'reject' });
   });
 
   it('standard TTL is 7 days by default and env-tunable', () => {

@@ -347,6 +347,11 @@ const TARGET_GLOBS = [
   // above — and is listed so a future direct mutation cannot be added here
   // without CI noticing. TARGET_GLOBS is a literal file list, not directory-wide.
   'src/components/settings/PartnerSendingDomainTab.tsx',
+  // Restore-as-VM wizard (bare-metal W05a): the one POST now fans out to three
+  // engines (Hyper-V full, instant boot, Linux rebuild → VHDX) through
+  // runAction; a bare fetchWithAuth added for a fourth would silently swallow
+  // a restore that never started.
+  'src/components/backup/VMRestoreWizard.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -692,9 +697,10 @@ describe('no silent mutations in targeted set', () => {
     // W01 settings consolidation (#6224): PartnerBillingSettings.tsx ->
     // PartnerBillingSettingsPage.tsx (net 0) then + CatalogDefaultsCard.tsx:
     // 145 → 146.
+    // Bare-metal W05a adds backup/VMRestoreWizard.tsx (rebuild engine): 146 → 147.
     // Outbound email templates (PR1 settings UI) add EmailTemplatesTab.tsx
-    // and EmailTemplateEditor.tsx: 146 → 148.
-    expect(absoluteFiles.length).toBe(148);
+    // and EmailTemplateEditor.tsx: 147 → 149.
+    expect(absoluteFiles.length).toBe(149);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

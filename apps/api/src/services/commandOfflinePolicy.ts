@@ -155,6 +155,7 @@ const BACKUP_AND_RESTORE: readonly string[] = [
   C.VM_RESTORE_FROM_BACKUP,
   C.VM_INSTANT_BOOT,
   C.BMR_RECOVER,
+  C.BARE_METAL_REBUILD,
 ];
 
 /**

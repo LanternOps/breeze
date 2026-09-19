@@ -27,14 +27,17 @@ type fakeSystem struct {
 	// provision_test.go). Checked before fail, so an
 	// exhausted failTimes entry falls through to permanent success even if
 	// the same prefix also has a `fail` entry.
-	failTimes map[string]*failTimesEntry
-	arch      string
-	mountLog  []string // "device dir"
-	unmounts  []string
+	failTimes   map[string]*failTimesEntry
+	arch        string
+	mountLog    []string // "device dir"
+	unmounts    []string
+	lastRun     []string         // name + args of the most recent Run call
+	lookPathErr map[string]error // LookPath answers err for these names, "" path + nil otherwise
+	freeSpace   int64            // FreeSpace answer (default 1 PiB)
 }
 
 func newFakeSystem(dir string, diskSize int64) *fakeSystem {
-	return &fakeSystem{dir: dir, diskSize: diskSize, fail: map[string]error{}, arch: "amd64"}
+	return &fakeSystem{dir: dir, diskSize: diskSize, fail: map[string]error{}, arch: "amd64", freeSpace: 1 << 50}
 }
 
 // failTimesEntry is the state behind fakeSystem.failTimes: fail with err
@@ -67,6 +70,9 @@ func (f *fakeSystem) record(name string, args ...string) ([]byte, error) {
 }
 
 func (f *fakeSystem) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	f.lastRun = append([]string{name}, args...)
+	f.mu.Unlock()
 	return f.record(name, args...)
 }
 func (f *fakeSystem) Chroot(root string) func(context.Context, string, ...string) ([]byte, error) {
@@ -113,6 +119,13 @@ func (f *fakeSystem) Unmount(_ context.Context, dir string) error {
 }
 func (f *fakeSystem) Sync(context.Context) error { _, err := f.record("sync"); return err }
 func (f *fakeSystem) Arch() string               { return f.arch }
+func (f *fakeSystem) LookPath(name string) (string, error) {
+	if err, ok := f.lookPathErr[name]; ok {
+		return "", err
+	}
+	return "/usr/bin/" + name, nil
+}
+func (f *fakeSystem) FreeSpace(string) (int64, error) { return f.freeSpace, nil }
 
 func (f *fakeSystem) has(prefix string) bool {
 	for _, c := range f.cmds {
