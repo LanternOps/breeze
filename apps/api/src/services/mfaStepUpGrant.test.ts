@@ -22,7 +22,7 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
 
 const bind = (operation: StepUpOperation) => ({
   userId: 'user-1',
@@ -80,6 +80,48 @@ describe('maintenanceResourceDigest', () => {
 
   it('emits the sha256: prefixed shape the grant store compares literally', () => {
     expect(maintenanceResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+});
+
+// Device move-org step-up (spec 2026-09-18 D2): the ONE canonicaliser the mint
+// route and the move route both call. A grant minted for one move intent must
+// never validate for another, and two callers describing the SAME intent must
+// hash byte-identically — including when one omits acceptCurrencyMismatch and
+// the other sends `false`.
+describe('moveOrgResourceDigest', () => {
+  const base = {
+    deviceId: '55555555-5555-4555-8555-555555555555',
+    targetOrgId: '22222222-2222-4222-8222-222222222222',
+    targetSiteId: '44444444-4444-4444-8444-444444444444',
+  };
+
+  it('treats an omitted acceptCurrencyMismatch as false', () => {
+    expect(moveOrgResourceDigest(base)).toBe(moveOrgResourceDigest({ ...base, acceptCurrencyMismatch: false }));
+  });
+
+  it('is insensitive to input key order', () => {
+    const reordered = { targetSiteId: base.targetSiteId, targetOrgId: base.targetOrgId, deviceId: base.deviceId };
+    expect(moveOrgResourceDigest(reordered)).toBe(moveOrgResourceDigest(base));
+  });
+
+  it('binds acceptCurrencyMismatch — accepting a billing consequence is a different grant', () => {
+    expect(moveOrgResourceDigest({ ...base, acceptCurrencyMismatch: true })).not.toBe(moveOrgResourceDigest(base));
+  });
+
+  it('binds the device', () => {
+    expect(moveOrgResourceDigest({ ...base, deviceId: '55555555-5555-4555-8555-555555555556' })).not.toBe(moveOrgResourceDigest(base));
+  });
+
+  it('binds the target organization', () => {
+    expect(moveOrgResourceDigest({ ...base, targetOrgId: '22222222-2222-4222-8222-222222222223' })).not.toBe(moveOrgResourceDigest(base));
+  });
+
+  it('binds the target site', () => {
+    expect(moveOrgResourceDigest({ ...base, targetSiteId: '44444444-4444-4444-8444-444444444445' })).not.toBe(moveOrgResourceDigest(base));
+  });
+
+  it('emits the sha256: prefixed shape the grant store compares literally', () => {
+    expect(moveOrgResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 });
 
