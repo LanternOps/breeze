@@ -6,6 +6,7 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 import TicketTimeBilling from './TicketTimeBilling';
+import { resetWorkTypeCache } from '../shared/WorkTypeSelect';
 import { BILLING_CHANGED_EVENT } from '../../lib/timerActions';
 
 const summary = {
@@ -14,12 +15,13 @@ const summary = {
 };
 const entries = [{ id: 'te-1', startedAt: '2026-06-12T09:00:00Z', endedAt: '2026-06-12T09:45:00Z', durationMinutes: 45, description: 'diag', isBillable: true, userName: 'Todd', ticketNumber: null, ticketSubject: null, ticketId: 'tk-1', isApproved: false }];
 const route = (url: string) => {
+  if (url === '/billing-profiles/work-types') return { ok: true, json: async () => ({ workTypes: [{ id: 'wt-1', name: 'Remote', isActive: true }, { id: 'wt-2', name: 'On-site', isActive: true }] }) } as Response;
   if (url.startsWith('/tickets/tk-1/billing-summary')) return { ok: true, status: 200, json: async () => ({ data: summary }) } as Response;
   if (url.startsWith('/tickets/tk-1/time-entries')) return { ok: true, status: 200, json: async () => ({ data: entries, total: 1 }) } as Response;
   return { ok: true, status: 200, json: async () => ({ data: {} }) } as Response;
 };
 
-beforeEach(() => { fetchWithAuth.mockReset(); fetchWithAuth.mockImplementation(async (url: string) => route(url)); });
+beforeEach(() => { resetWorkTypeCache(); fetchWithAuth.mockReset(); fetchWithAuth.mockImplementation(async (url: string) => route(url)); });
 
 describe('TicketTimeBilling', () => {
   it('renders totals from the billing summary', async () => {
@@ -263,4 +265,53 @@ describe('TicketTimeBilling', () => {
     act(() => { window.dispatchEvent(new CustomEvent(BILLING_CHANGED_EVENT)); });
     await waitFor(() => expect(fetchWithAuth.mock.calls.length).toBeGreaterThan(callsBefore));
   });
+});
+
+const requestBody = (url: string) => {
+  const call = fetchWithAuth.mock.calls.find((args) => args[0] === url && args[1]?.method === 'POST');
+  expect(call).toBeTruthy();
+  return JSON.parse(call![1].body);
+};
+
+it('MOUNT: quick-add renders the picker and sends the selected workTypeId', async () => {
+  render(<TicketTimeBilling ticketId="tk-1" />);
+  fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+  const picker = screen.getByTestId('ticket-billing-quick-add-work-type');
+  await waitFor(() => expect(picker).toBeEnabled());
+  fireEvent.change(picker, { target: { value: 'wt-2' } });
+  fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '30' } });
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-submit'));
+  await waitFor(() => expect(requestBody('/time-entries').workTypeId).toBe('wt-2'));
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+  expect(screen.getByTestId('ticket-billing-quick-add-work-type')).toHaveValue('');
+});
+
+it('MOUNT: blank quick-add omits workTypeId for the server category default', async () => {
+  render(<TicketTimeBilling ticketId="tk-1" />);
+  fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+  fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '30' } });
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-submit'));
+  await waitFor(() => expect(requestBody('/time-entries')).not.toHaveProperty('workTypeId'));
+});
+
+it('MOUNT: the actual timer start surface sends workTypeId', async () => {
+  render(<TicketTimeBilling ticketId="tk-1" />);
+  const picker = await screen.findByTestId('timer-work-type');
+  await waitFor(() => expect(picker).toBeEnabled());
+  fireEvent.change(picker, { target: { value: 'wt-1' } });
+  fireEvent.click(screen.getByTestId('ticket-billing-start-timer'));
+  await waitFor(() => expect(requestBody('/time-entries/start')).toEqual({ ticketId: 'tk-1', workTypeId: 'wt-1' }));
+});
+
+it('MOUNT: switching tickets resets both work type selections', async () => {
+  const { rerender } = render(<TicketTimeBilling ticketId="tk-1" />);
+  const timerPicker = await screen.findByTestId('timer-work-type');
+  await waitFor(() => expect(timerPicker).toBeEnabled());
+  fireEvent.change(timerPicker, { target: { value: 'wt-1' } });
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+  fireEvent.change(screen.getByTestId('ticket-billing-quick-add-work-type'), { target: { value: 'wt-2' } });
+  rerender(<TicketTimeBilling ticketId="tk-2" />);
+  expect(screen.getByTestId('timer-work-type')).toHaveValue('');
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+  expect(screen.getByTestId('ticket-billing-quick-add-work-type')).toHaveValue('');
 });

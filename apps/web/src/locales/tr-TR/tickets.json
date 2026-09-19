@@ -1,4 +1,7 @@
 {
+  "timesheet": {
+    "workTypeColumn": "İş türü"
+  },
   "workType": {
     "label": "İş türü",
     "none": "İş türü yok",

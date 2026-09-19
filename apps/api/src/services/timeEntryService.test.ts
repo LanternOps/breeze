@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { inspect } from 'node:util';
+import { db } from '../db';
 import { createTimeEntrySchema, startTimerSchema, updateTimeEntrySchema } from '@breeze/shared';
 
 const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
@@ -1935,4 +1936,14 @@ describe('workTypeId stamping', () => {
     expect(schema.parse(body)).not.toHaveProperty('workTypeId');
     expect(schema.safeParse({ ...body, workTypeId: 'invalid' }).success).toBe(false);
   });
+});
+
+it('timesheet selects the work type id and archived-capable label payload', async () => {
+  vi.mocked(db.select).mockClear();
+  dbMocks.selectResults = [[]];
+  await getTimesheet('u-1', new Date('2026-06-08T00:00:00Z'));
+  expect(db.select).toHaveBeenCalledWith(expect.objectContaining({
+    workTypeId: 'workTypeId',
+    workType: expect.anything(),
+  }));
 });

@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
+import { workTypes } from '../db/schema/workTypes';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
@@ -1103,6 +1104,15 @@ function entrySelection() {
     hourlyRate: timeEntries.hourlyRate,
     currencyCode: timeEntries.currencyCode,
     billingStatus: timeEntries.billingStatus,
+    workTypeId: timeEntries.workTypeId,
+    // Keep archived labels on historical entries. The correlated read preserves
+    // entry cardinality and stays in the ambient partner RLS context.
+    workType: sql<{ id: string; name: string; isActive: boolean } | null>`(
+      SELECT json_build_object('id', ${workTypes.id}, 'name', ${workTypes.name}, 'isActive', ${workTypes.isActive})
+      FROM ${workTypes}
+      WHERE ${workTypes.id} = ${timeEntries.workTypeId}
+        AND ${workTypes.partnerId} = ${timeEntries.partnerId}
+    )`,
     // W06 (#3900): read-only provenance on GET /, /timesheet and the
     // per-ticket list. Never accepted on a write.
     source: timeEntries.source,

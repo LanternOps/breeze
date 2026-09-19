@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
+import WorkTypeSelect from '../shared/WorkTypeSelect';
 import { formatMinutes } from '../../lib/timeFormat';
 import { sourceBadgeLabelKey } from '../time/timeEntrySource';
 import { formatMoney } from '../billing/shared/format';
@@ -70,6 +71,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   // #5321: the rate box shows the ticket's resolved default until the tech
   // types over it, so a prefill still lands when the summary resolves after the
   // panel is already open.
+  const [workTypeId, setWorkTypeId] = useState<string | null>(null);
+  const [timerWorkTypeId, setTimerWorkTypeId] = useState<string | null>(null);
   const [rate, setRate] = useState('');
   const [rateDirty, setRateDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -108,6 +111,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
   useEffect(() => {
     setQuickAddOpen(false);
+    setWorkTypeId(null);
+    setTimerWorkTypeId(null);
     setMinutes('');
     setDescription('');
     setBillable(true);
@@ -137,7 +142,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     // button in flight keeps the happy path single-shot.
     if (startingTimer) return;
     setStartingTimer(true);
-    void startTimerAction({ ticketId })
+    void startTimerAction({ ticketId, ...(timerWorkTypeId ? { workTypeId: timerWorkTypeId } : {}) })
       .catch((err) => handleActionError(err, t('ticketTimeBilling.toast.startTimerFailed')))
       .finally(() => setStartingTimer(false));
   };
@@ -165,6 +170,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               endedAt: end.toISOString(),
               description: description || undefined,
               isBillable: billable,
+              // Omit blank to preserve the server-side category default.
+              ...(workTypeId ? { workTypeId } : {}),
               ...(rateNumber !== undefined ? { hourlyRate: rateNumber } : {}),
             }),
           }),
@@ -172,6 +179,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         successMessage: t('ticketTimeBilling.toast.logged'),
       });
       setQuickAddOpen(false);
+      setWorkTypeId(null);
       setMinutes('');
       setDescription('');
       setRate('');
@@ -223,6 +231,10 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         </dl>
       )}
 
+      <label className="mt-2 block text-[11px] text-muted-foreground">
+        {t('workType.label')}
+        <WorkTypeSelect value={timerWorkTypeId} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer} />
+      </label>
       <div className="mt-2 flex gap-2">
         <button
           type="button"
@@ -265,6 +277,10 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-billing-quick-add-description"
           />
+          <label className="block text-[11px] text-muted-foreground">
+            {t('workType.label')}
+            <WorkTypeSelect value={workTypeId} onChange={setWorkTypeId} testId="ticket-billing-quick-add-work-type" disabled={busy} />
+          </label>
           <div className="flex items-center gap-1.5">
             <input
               type="number"
