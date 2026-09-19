@@ -205,3 +205,39 @@ func TestValidate_StateExpectedNotApplied_Fails(t *testing.T) {
 		})
 	}
 }
+
+func TestSnapshotAdvertisesSystemState(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(p *memProvider)
+		want    bool
+		wantErr string
+	}{
+		{"state manifest and layout", func(*memProvider) {}, true, ""},
+		{"layout only", func(p *memProvider) { delete(p.files, "snapshots/snap-1/system-state/manifest.json") }, true, ""},
+		{"state manifest only", func(p *memProvider) { delete(p.files, "snapshots/snap-1/layout.json") }, true, ""},
+		{"neither", func(p *memProvider) {
+			delete(p.files, "snapshots/snap-1/system-state/manifest.json")
+			delete(p.files, "snapshots/snap-1/layout.json")
+		}, false, ""},
+		{"transport error is not absence", func(p *memProvider) {
+			p.failKey = map[string]error{"snapshots/snap-1/system-state/manifest.json": errors.New("timeout")}
+		}, false, "timeout"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := seedSnapshot(t, "snap-1", testLayout())
+			tt.mutate(p)
+			got, err := SnapshotAdvertisesSystemState(context.Background(), p, "snap-1")
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("got %v err=%v, want %v", got, err, tt.want)
+			}
+		})
+	}
+}

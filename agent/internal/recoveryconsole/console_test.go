@@ -2,6 +2,7 @@ package recoveryconsole
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -688,5 +689,54 @@ func TestVersionAtLeast(t *testing.T) {
 		if got := versionAtLeast(tc.have, tc.want); got != tc.result {
 			t.Errorf("versionAtLeast(%q, %q) = %v, want %v", tc.have, tc.want, got, tc.result)
 		}
+	}
+}
+
+// TestConsole_ExpectSystemStateFollowsBootstrap pins #5412 for the console
+// path: the rebuild.Options it builds must carry ExpectSystemState derived
+// from the bootstrap snapshot (backupType system_image OR an advertised
+// state manifest), on both the dry and the real run, so the engine refuses
+// a state-less system_image snapshot at preflight instead of completing.
+func TestConsole_ExpectSystemStateFollowsBootstrap(t *testing.T) {
+	tests := []struct {
+		name string
+		snap *bmr.AuthenticatedSnapshot
+		want bool
+	}{
+		{"system_image with NULL manifest", &bmr.AuthenticatedSnapshot{SnapshotID: "snap-1", BackupType: "system_image", SystemStateManifest: json.RawMessage(`null`)}, true},
+		{"file backup with no manifest", &bmr.AuthenticatedSnapshot{SnapshotID: "snap-1", BackupType: "file"}, false},
+		{"manifest advertised", &bmr.AuthenticatedSnapshot{SnapshotID: "snap-1", SystemStateManifest: json.RawMessage(`{"platform":"linux"}`)}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "6002248"}}
+			deps := &fakeDeps{
+				exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+					return "tok-1", &bmr.BootstrapResponse{
+						Version: 1, MinHelperVersion: "0.100.0", SnapshotID: "snap-1", Snapshot: tt.snap,
+						Recovery: &bmr.RecoveryBinding{ID: "rec-1", Identity: "new"},
+					}, nil
+				},
+				collectFn: func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+				rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+					if opts.DryRun {
+						return samplePlan(), nil
+					}
+					return &rebuild.Result{Status: "completed", StateApplied: opts.ExpectSystemState}, nil
+				},
+			}
+			c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+			if err := c.Run(context.Background()); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if len(deps.rebuildCalls) != 2 {
+				t.Fatalf("rebuild calls = %d, want 2", len(deps.rebuildCalls))
+			}
+			for i, call := range deps.rebuildCalls {
+				if call.ExpectSystemState != tt.want {
+					t.Errorf("call %d ExpectSystemState = %v, want %v", i, call.ExpectSystemState, tt.want)
+				}
+			}
+		})
 	}
 }
