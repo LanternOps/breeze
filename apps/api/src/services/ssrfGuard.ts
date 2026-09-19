@@ -30,6 +30,7 @@ import {
   classifyBlockedIp,
   classifyNonRoutableHostname,
   isIpLiteralHost,
+  isRfc1918OrUla,
   type NonRoutableHostnameKind
 } from './ipRanges';
 
@@ -107,9 +108,12 @@ export function checkSsrfSafe(rawUrl: string, opts: SsrfGuardOptions): SsrfGuard
     const literal = canonicalIpLiteral(hostnameLower);
     const category = classifyBlockedIp(literal);
     if (category !== null) {
-      // RFC1918/ULA appliance addresses are the one category an on-prem
-      // integration may reach; every other category is blocked in every mode.
-      const allowedHere = category === 'private' && opts.mode === 'on-prem-http';
+      // A plain RFC1918/ULA appliance address is the one thing an on-prem
+      // integration may reach; everything else is blocked in every mode. Gated
+      // on `isRfc1918OrUla` rather than the category, because an IPv6 transition
+      // prefix carrying an embedded RFC1918 address (`64:ff9b::10.0.0.5`) is
+      // categorised 'private' by destination but is not an appliance address.
+      const allowedHere = opts.mode === 'on-prem-http' && isRfc1918OrUla(literal);
       if (!allowedHere) {
         const shown = literal === hostnameLower ? hostnameLower : `${hostnameLower} (${literal})`;
         return {

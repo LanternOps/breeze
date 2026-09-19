@@ -11,6 +11,9 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { isSsrfSafe, type SsrfMode } from './ssrfGuard';
 import {
+  canonicalizeIpv4Literal,
+  classifyBlockedIp,
+  isIpLiteralHost,
   isPrivateIp,
   isAlwaysBlockedIp,
   isRfc1918OrUla,
@@ -114,6 +117,40 @@ const BLOCKED_ROWS: Row[] = [
   },
   { label: 'fd00::/8 ULA zero-padded', host: '[fd00:0000::0001]', bare: 'fd00:0000::0001', allowedIn: ONPREM, rfc1918OrUla: true },
 
+  // ---- IPv6 prefixes that carry an IPv4 destination ---------------------
+  // Each of these reaches an IPv4 address on a host with the matching
+  // transition mechanism, so the IPv4 destination is what must be classified.
+  // None of them is a plain appliance address, so none counts as RFC1918 —
+  // an embedded private address stays blocked even with the on-prem opt-in.
+  {
+    label: 'NAT64 well-known prefix embedding loopback',
+    host: '[64:ff9b::7f00:1]',
+    bare: '64:ff9b::7f00:1',
+  },
+  {
+    label: 'NAT64 well-known prefix embedding metadata',
+    host: '[64:ff9b::a9fe:a9fe]',
+    bare: '64:ff9b::a9fe:a9fe',
+  },
+  {
+    label: 'NAT64 well-known prefix embedding RFC1918',
+    host: '[64:ff9b::10.0.0.5]',
+    bare: '64:ff9b::10.0.0.5',
+  },
+  { label: '6to4 embedding loopback', host: '[2002:7f00:1::]', bare: '2002:7f00:1::' },
+  { label: '6to4 embedding metadata', host: '[2002:a9fe:a9fe::]', bare: '2002:a9fe:a9fe::' },
+  { label: '6to4 embedding RFC1918', host: '[2002:a00:5::]', bare: '2002:a00:5::' },
+  {
+    label: 'IPv4-translated ::ffff:0:a.b.c.d embedding loopback',
+    host: '[::ffff:0:127.0.0.1]',
+    bare: '::ffff:0:127.0.0.1',
+  },
+  {
+    label: 'IPv4-compatible ::a.b.c.d embedding loopback',
+    host: '[::127.0.0.1]',
+    bare: '::127.0.0.1',
+  },
+
   // ---- IPv4-mapped IPv6, dotted form -----------------------------------
   { label: 'mapped loopback ::ffff:127.0.0.1', host: '[::ffff:127.0.0.1]', bare: '::ffff:127.0.0.1' },
   {
@@ -153,6 +190,7 @@ const BLOCKED_ROWS: Row[] = [
   { label: 'hex 0x7f.0.0.1 (=127.0.0.1)', host: '0x7f.0.0.1' },
   { label: 'two-part 127.1 (=127.0.0.1)', host: '127.1' },
   { label: 'three-part 169.254.43518 (=169.254.169.254)', host: '169.254.43518' },
+  { label: 'octal two-part 0177.1 (=127.0.0.1)', host: '0177.1' },
 
   // ---- Documentation / benchmarking / multicast / reserved -------------
   { label: '192.0.0.0/24 IETF protocol assignments', host: '192.0.0.1' },
@@ -179,6 +217,8 @@ const ALLOWED_ROWS: Array<{ label: string; host: string }> = [
   { label: 'public IPv6 uncompressed', host: '[2606:2800:0220:0001:0248:1893:25c8:1946]' },
   { label: 'fec0:: (site-local, outside fe80::/10)', host: '[fec0::1]' },
   { label: 'fb00:: (outside fc00::/7)', host: '[fb00::1]' },
+  { label: '6to4 embedding a public IPv4', host: '[2002:5db8:d822::]' },
+  { label: 'NAT64 prefix embedding a public IPv4', host: '[64:ff9b::5db8:d822]' },
 ];
 
 describe('ssrfGuard blocklist ranges', () => {
@@ -229,6 +269,77 @@ describe('urlSafety classifiers agree with ssrfGuard (one guard)', () => {
       expect(isAlwaysBlockedIp(bare)).toBe(false);
     });
   }
+});
+
+describe('canonicalizeIpv4Literal follows inet_aton, not "looks numeric"', () => {
+  it.each([
+    ['2130706433', '127.0.0.1'],
+    ['0177.0.0.1', '127.0.0.1'],
+    ['0177.1', '127.0.0.1'],
+    ['0x7f.0.0.1', '127.0.0.1'],
+    ['0x7f000001', '127.0.0.1'],
+    ['127.1', '127.0.0.1'],
+    ['169.254.43518', '169.254.169.254'],
+    ['010.010.010.010', '8.8.8.8'],
+    ['1', '0.0.0.1'],
+  ])('canonicalises %s to %s', (input, expected) => {
+    expect(canonicalizeIpv4Literal(input)).toBe(expected);
+  });
+
+  it.each([
+    // An out-of-base octal digit makes inet_aton reject the whole address, so
+    // this is a DNS hostname — classifying it as 9.0.0.1 would skip resolution.
+    '09.0.0.1',
+    '08',
+    // Out of range / malformed — the resolver treats each as a hostname.
+    '4294967296',
+    '0x100.0.0.1',
+    '1.2.3.4.5',
+    '127.0.0.256',
+    '172.16.0.1.',
+    '1e3',
+    '-1',
+    'example.com',
+    'fd-cdn.example.com',
+    '',
+    '::1',
+  ])('does not treat %s as an IPv4 literal', (input) => {
+    expect(canonicalizeIpv4Literal(input)).toBeNull();
+    expect(isIpLiteralHost(input)).toBe(input.includes(':'));
+  });
+});
+
+describe('parseV6 rejects malformed IPv6 rather than guessing', () => {
+  it.each(['1::2::3', '1:2:3:4:5:6:7:8:9', 'gggg::1', '::ffff:1.2.3.4.5', '1:2:3:4:5:6:7'])(
+    'classifies %s as unknown (null), not blocked and not allowed by accident',
+    (input) => {
+      expect(classifyBlockedIp(input)).toBeNull();
+    }
+  );
+
+  it('honours a zone id', () => {
+    expect(classifyBlockedIp('fe80::1%eth0')).toBe('link-local');
+  });
+});
+
+describe('embedded-IPv4 IPv6 prefixes are never plain appliance addresses', () => {
+  // A mapped address IS an ordinary IPv4 host reached over IPv6, so embedded
+  // RFC1918 counts as RFC1918 there. The transition prefixes are not, so an
+  // embedded private address must stay blocked even under the private opt-in.
+  const transitionPrivate = ['64:ff9b::10.0.0.5', '2002:a00:5::', '::ffff:0:10.0.0.5', '::10.0.0.5'];
+  for (const ip of transitionPrivate) {
+    it(`isRfc1918OrUla(${ip}) is false`, () => {
+      expect(isRfc1918OrUla(ip)).toBe(false);
+    });
+    it(`isAlwaysBlockedIp(${ip}) is true`, () => {
+      expect(isAlwaysBlockedIp(ip)).toBe(true);
+    });
+  }
+
+  it('the mapped form, by contrast, IS a plain RFC1918 appliance address', () => {
+    expect(isRfc1918OrUla('::ffff:10.0.0.5')).toBe(true);
+    expect(isAlwaysBlockedIp('::ffff:10.0.0.5')).toBe(false);
+  });
 });
 
 describe('resolve-then-check', () => {

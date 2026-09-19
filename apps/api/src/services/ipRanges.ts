@@ -126,7 +126,11 @@ function parseAtonPart(part: string): number | null {
   let value: number;
   if (/^0[xX][0-9a-fA-F]{1,8}$/.test(part)) {
     value = parseInt(part.slice(2), 16);
-  } else if (/^0[0-7]{1,11}$/.test(part)) {
+  } else if (part[0] === '0' && part.length > 1) {
+    // A leading zero means octal, and `inet_aton` REJECTS the whole address when
+    // a digit is out of base ('09' is not octal 9). Falling back to decimal here
+    // would classify a host the resolver treats as a DNS name.
+    if (!/^0[0-7]{1,11}$/.test(part)) return null;
     value = parseInt(part.slice(1), 8);
   } else if (/^\d{1,10}$/.test(part)) {
     value = Number(part);
@@ -249,14 +253,55 @@ function parseV6(ip: string): number[] | null {
   return [...head, ...Array(fill).fill(0), ...after];
 }
 
-/** The IPv4 address embedded in an IPv4-mapped IPv6 literal, else null. */
+function v4FromGroups(hi: number, lo: number): string {
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+/**
+ * The IPv4 address embedded in an IPv4-MAPPED IPv6 literal (`::ffff:a.b.c.d`),
+ * else null.
+ *
+ * Kept narrow on purpose: a mapped address is an ordinary IPv4 host reached over
+ * an IPv6 socket, so an embedded RFC1918 address is a plain appliance address
+ * and `isRfc1918OrUla` may say so. The transition prefixes in `embeddedV4` are
+ * not — see there.
+ */
 function mappedV4(ip: string): string | null {
   const groups = parseV6(ip);
   if (groups === null) return null;
   if (groups.slice(0, 5).some((g) => g !== 0) || groups[5] !== 0xffff) return null;
-  const hi = groups[6]!;
-  const lo = groups[7]!;
-  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  return v4FromGroups(groups[6]!, groups[7]!);
+}
+
+/**
+ * The IPv4 address an IPv6 literal would actually reach, for every prefix that
+ * carries one — not only the mapped form.
+ *
+ * `64:ff9b::7f00:1` reaches 127.0.0.1 on any host with NAT64, and
+ * `2002:7f00:1::` does the same over 6to4; the deprecated IPv4-compatible
+ * (`::a.b.c.d`) and IPv4-translated (`::ffff:0:a.b.c.d`) prefixes are the same
+ * idea. Classifying only the mapped form leaves the destination unexamined for
+ * all of them. Order matters: `::` and `::1` are inside the IPv4-compatible
+ * prefix and are classified by their own rules first, so they keep their
+ * specific category.
+ */
+function embeddedV4(groups: number[]): string | null {
+  const zero = (from: number, to: number) => groups.slice(from, to).every((g) => g === 0);
+  // IPv4-mapped ::ffff:a.b.c.d
+  if (zero(0, 5) && groups[5] === 0xffff) return v4FromGroups(groups[6]!, groups[7]!);
+  // IPv4-translated ::ffff:0:a.b.c.d (RFC 2765, deprecated)
+  if (zero(0, 4) && groups[4] === 0xffff && groups[5] === 0) {
+    return v4FromGroups(groups[6]!, groups[7]!);
+  }
+  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052)
+  if (groups[0] === 0x0064 && groups[1] === 0xff9b && zero(2, 6)) {
+    return v4FromGroups(groups[6]!, groups[7]!);
+  }
+  // 6to4 2002::/16 (RFC 3056) — the IPv4 address is groups 1 and 2
+  if (groups[0] === 0x2002) return v4FromGroups(groups[1]!, groups[2]!);
+  // IPv4-compatible ::a.b.c.d (RFC 4291 §2.5.5.1, deprecated)
+  if (zero(0, 6)) return v4FromGroups(groups[6]!, groups[7]!);
+  return null;
 }
 
 /** IPv6 ranges that must never be dialed, matched on the parsed groups. */
@@ -295,11 +340,15 @@ export function classifyBlockedIp(ip: string): BlockedIpCategory | null {
   if (lower.includes(':')) {
     const groups = parseV6(lower);
     if (groups === null) return null;
-    // An IPv4-mapped address is classified as the IPv4 address it carries, so
-    // both families route through the one table.
-    const mapped = mappedV4(lower);
-    if (mapped !== null) return v4RangeFor(mapped)?.category ?? null;
-    return BLOCKED_V6_RANGES.find((r) => r.match(groups))?.category ?? null;
+    // The IPv6-native rules run first so `::`, `::1` and ULA/link-local keep
+    // their own category (they overlap the IPv4-compatible prefix below).
+    const native = BLOCKED_V6_RANGES.find((r) => r.match(groups))?.category;
+    if (native !== undefined) return native;
+    // Otherwise, if the address carries an IPv4 destination, classify THAT — one
+    // table decides for both families.
+    const embedded = embeddedV4(groups);
+    if (embedded !== null) return v4RangeFor(embedded)?.category ?? null;
+    return null;
   }
   return v4RangeFor(lower)?.category ?? null;
 }
@@ -338,8 +387,14 @@ export function isRfc1918OrUla(ip: string): boolean {
     const range = v4RangeFor(v4);
     return range !== null && RFC1918_CIDRS.has(range.cidr);
   }
-  // ULA (fc00::/7) is the IPv6 member of the 'private' category.
-  return classifyBlockedIp(lower) === 'private';
+  // ULA (fc00::/7) is the IPv6 member of the 'private' category. Matched against
+  // the IPv6-native rules only, NOT via `classifyBlockedIp`: that would also say
+  // 'private' for a transition prefix carrying an embedded RFC1918 address
+  // (`64:ff9b::10.0.0.5`), which is not a plain appliance address and must stay
+  // blocked even under the private-network opt-in.
+  const groups = parseV6(lower);
+  if (groups === null) return false;
+  return BLOCKED_V6_RANGES.find((r) => r.match(groups))?.category === 'private';
 }
 
 /**
