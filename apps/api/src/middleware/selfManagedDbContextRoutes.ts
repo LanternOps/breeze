@@ -268,6 +268,20 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // ambient context; writeRouteAudit already manages its own (via
   // createAuditLogAsync's runOutsideDbContext + withSystemDbAccessContext).
   { method: 'POST', pattern: /^\/api\/v1\/agent-versions\/sync-github\/?$/ },
+  // Disk Cleanup v2 W03 (spec §13 #5). `cleanup-execute` claims its pinned run
+  // (`UPDATE … WHERE status='previewed' RETURNING`) and must COMMIT that claim
+  // before dispatching, for two reasons the ambient request transaction defeats:
+  //   - a concurrent execute on the same run must see `running` and get a 409,
+  //     which it cannot while the claim is uncommitted in another transaction;
+  //   - a crash between the deletes and the finalise must leave the row
+  //     `running`, not roll it back to `previewed` — the files are already gone,
+  //     and re-offering that candidate set is a lie about the device's state.
+  // The dispatch itself is an agent round-trip bounded by
+  // CLEANUP_EXECUTE_BUDGET_MS (240s); holding a pooled connection
+  // idle-in-transaction across it is the #1105 pool-poison class on its own.
+  // The handler opens its own short `withAuthDbAccessContext` blocks around the
+  // claim and the finalise, and runs the dispatch between them.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/cleanup-execute\/?$/ },
 ];
 
 /**

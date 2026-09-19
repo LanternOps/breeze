@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceFilesystemCleanupRuns } from '../../db/schema';
-import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission, withAuthDbAccessContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { CommandTypes, executeCommand, queueCommandForExecution } from '../../services/commandQueue';
 import {
@@ -29,7 +29,6 @@ import {
   readPlanPreviewCandidates,
   readPlanScanPath,
   safeCleanupCategories,
-  type FilesystemCleanupCandidate,
 } from '../../services/filesystemAnalysis';
 import { listFilesystemVolumes } from '../../services/filesystemVolumes';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -66,13 +65,22 @@ const cleanupPreviewBodySchema = z.object({
   categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
 });
 
+/**
+ * How long a pinned cleanup preview stays executable (spec §13 #2). Pinning a
+ * path pins neither its contents nor its identity: a `contentsOnly` trash
+ * candidate is "whatever is in the bin at execution", and a temp file can be
+ * replaced between preview and execute. A day-old plan is a guess about a
+ * machine nobody has looked at since, so it expires rather than executing.
+ */
+export const CLEANUP_PREVIEW_TTL_HOURS = 24;
+
 const cleanupExecuteBodySchema = z.object({
-  path: z.string().min(1).max(2048).optional(),
   paths: z.array(z.string().min(1).max(4096)).min(1).max(200),
-  // When set, the selection is validated against the exact candidate set the
-  // user previewed in this cleanup run, rather than re-derived from whatever
-  // snapshot is now latest (which may have changed between preview and execute).
-  cleanupRunId: z.string().guid().optional(),
+  // W03 (spec §5.2, §10.1): REQUIRED. Deleting from "whatever snapshot is now
+  // latest" is exactly the race the pinning exists to prevent, and both real
+  // callers hold an id from their own preview — the tab (W03 Task 13) and the
+  // AI tool (W03 Task 18). There is no caller left that needs the fallback.
+  cleanupRunId: z.string().guid(),
 });
 
 function readSnapshotReason(snapshot: { rawPayload?: unknown } | null | undefined): string | null {
@@ -416,73 +424,104 @@ filesystemRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
-    const { paths, cleanupRunId, path } = c.req.valid('json');
+    const { paths, cleanupRunId } = c.req.valid('json');
 
-    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
-    if (device === SITE_ACCESS_DENIED) {
-      return failJson(c, 'Access to this site denied', 403);
-    }
-    if (!device) {
-      return failJson(c, 'Device not found', 404);
-    }
+    // PHASE 1 — claim, in its own short transaction that COMMITS before any
+    // file is deleted (spec §13 #5). `WHERE status = 'previewed'` makes this an
+    // atomic claim: a second, concurrent Execute matches zero rows and answers
+    // 409 instead of deleting the same paths twice.
+    const claimed = await withAuthDbAccessContext(auth, async () => {
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED) return { kind: 'site_denied' as const };
+      if (!device) return { kind: 'device_missing' as const };
 
-    const osType = (device as { osType?: unknown }).osType;
-
-    // Resolve the authoritative candidate set. When the caller pins a cleanup
-    // run, use exactly the candidates it previewed; otherwise fall back to the
-    // selected volume snapshot's safe candidates.
-    let candidates: FilesystemCleanupCandidate[];
-    let scanPath: string;
-    let sourceSnapshotId: string | null = null;
-    // When the operator looked at this plan. The agent refuses any target whose
-    // mtime is newer (spec §13 row 2). Epoch fallback keeps missing timestamps
-    // fail-closed instead of silently disabling the check.
-    let previewedAt = new Date(0);
-    if (cleanupRunId) {
-      const [run] = await db
-        .select({
+      const [row] = await db
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'running', approvedAt: new Date(), updatedAt: new Date() })
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
+          eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
+          eq(deviceFilesystemCleanupRuns.status, 'previewed'),
+        ))
+        .returning({
+          id: deviceFilesystemCleanupRuns.id,
           plan: deviceFilesystemCleanupRuns.plan,
           scanPath: deviceFilesystemCleanupRuns.scanPath,
           requestedAt: deviceFilesystemCleanupRuns.requestedAt,
-        })
+        });
+      if (row) return { kind: 'claimed' as const, row, device };
+
+      // Distinguish "no such run for this device" from "that run is not
+      // previewable any more". A bare 404 on the second reads as a client bug;
+      // the operator needs to know the run already ran.
+      const [existing] = await db
+        .select({ status: deviceFilesystemCleanupRuns.status })
         .from(deviceFilesystemCleanupRuns)
         .where(and(
           eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
           eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
         ))
         .limit(1);
-      if (!run) {
-        return failJson(c, 'Cleanup run not found', 404);
-      }
-      previewedAt = run.requestedAt ?? new Date(0);
-      candidates = readPlanPreviewCandidates(run.plan);
-      if (candidates.length === 0) {
-        // Distinct from the path-mismatch 400 below: the pinned run itself has
-        // no previewable candidates (e.g. it is an already-executed run, or its
-        // stored preview is missing/corrupt), so no selection could ever match.
-        return failJson(c, 'Pinned cleanup run has no previewable candidates (it may already be executed or its preview is unavailable). Re-run the cleanup preview.', 400);
-      }
-      // Prefer the column, then legacy plan metadata, then the OS root.
-      scanPath = run.scanPath ?? readPlanScanPath(run.plan) ?? osRootScanPath(osType);
-    } else {
-      if (!path && (await listFilesystemVolumes(deviceId, osType)).length > 1) {
-        return failJson(c, 'volume_required', 400);
-      }
-      scanPath = normalizeScanPath(osType, path ?? osRootScanPath(osType));
-      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
-      if (!snapshot) {
-        return c.json({ success: false, error: 'No filesystem snapshot available. Run a scan first.', scanPath }, 404);
-      }
-      previewedAt = snapshot.capturedAt ?? new Date(0);
-      sourceSnapshotId = snapshot.id;
-      candidates = buildCleanupPreview(snapshot).candidates;
+      return existing
+        ? { kind: 'not_previewed' as const, status: existing.status }
+        : { kind: 'missing' as const };
+    });
+
+    if (claimed.kind === 'site_denied') return failJson(c, 'Access to this site denied', 403);
+    if (claimed.kind === 'device_missing') return failJson(c, 'Device not found', 404);
+    if (claimed.kind === 'missing') {
+      return c.json({ success: false, error: 'Cleanup run not found' }, 404);
     }
+    if (claimed.kind === 'not_previewed') {
+      return c.json({
+        success: false,
+        error: 'run_not_previewed',
+        data: { cleanupRunId, status: claimed.status },
+      }, 409);
+    }
+
+    /** Put a claimed-but-undispatched run back so it stays visible as a preview. */
+    const releaseClaim = () => withAuthDbAccessContext(auth, async () => {
+      await db
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'previewed', approvedAt: null, updatedAt: new Date() })
+        .where(eq(deviceFilesystemCleanupRuns.id, cleanupRunId));
+    });
+
+    const requestedAt = claimed.row.requestedAt instanceof Date
+      ? claimed.row.requestedAt
+      : new Date(claimed.row.requestedAt as unknown as string);
+    if (Date.now() - requestedAt.getTime() > CLEANUP_PREVIEW_TTL_HOURS * 3_600_000) {
+      await releaseClaim();
+      return c.json({
+        success: false,
+        error: 'preview_expired',
+        data: { cleanupRunId, requestedAt: requestedAt.toISOString(), ttlHours: CLEANUP_PREVIEW_TTL_HOURS },
+      }, 409);
+    }
+
+    const candidates = readPlanPreviewCandidates(claimed.row.plan);
+    if (candidates.length === 0) {
+      await releaseClaim();
+      return c.json({
+        success: false,
+        error: 'Pinned cleanup run has no previewable candidates (its stored preview is unavailable). Re-run the cleanup preview.',
+      }, 400);
+    }
+
+    const device = claimed.device;
+    // W02 columns remain nullable until the later contraction task. Preserve
+    // the pinned plan's legacy volume metadata without consulting a snapshot.
+    const scanPath = claimed.row.scanPath ?? readPlanScanPath(claimed.row.plan)
+      ?? osRootScanPath((device as { osType?: unknown }).osType);
+    const previewedAt = requestedAt;
 
     // §13 row 3. An agent without `cleanupGuard` that receives `permanent: true`
     // performs an UNGUARDED recursive permanent delete — strictly worse than
     // today's trash-move, which is why the spec's mixed-version paragraph is
     // withdrawn. Refuse before anything is dispatched.
     if (!agentSupportsCleanupGuard((device as { agentVersion?: string | null }).agentVersion)) {
+      await releaseClaim();
       return failJson(c, 'agent_update_required', 409, {
         minAgentVersion: MIN_AGENT_VERSION_CLEANUP_GUARD,
         agentVersion: (device as { agentVersion?: string | null }).agentVersion ?? null,
@@ -500,7 +539,7 @@ filesystemRoutes.post(
       dispatch: (_path, payload) => executeCommand(
         deviceId,
         CommandTypes.FILE_DELETE,
-        payload,
+        { ...payload, cleanupRunId },
         { userId: auth.user.id, timeoutMs: 30_000 },
       ),
       budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
@@ -519,6 +558,7 @@ filesystemRoutes.post(
       .map((action) => action.path);
 
     if (dispatchedPaths.length === 0) {
+      await releaseClaim();
       // NOTHING left the API — every path failed the plan/rule/denied-root
       // screening. Reporting WHICH and WHY is the point of defect 10's fix: the
       // old route dropped non-candidates silently. An agent-guard rejection is
@@ -537,33 +577,59 @@ filesystemRoutes.post(
         ? `${counts.failed} cleanup action(s) failed`
         : null;
 
-    const [cleanupRun] = await db
-      .insert(deviceFilesystemCleanupRuns)
-      .values({
-        deviceId,
-        orgId: device.orgId,
+    const planRecord =
+      claimed.row.plan && typeof claimed.row.plan === 'object' && !Array.isArray(claimed.row.plan)
+        ? (claimed.row.plan as Record<string, unknown>)
+        : {};
+
+    // PHASE 3 — finalise, in its own short transaction. If this throws the
+    // files are ALREADY gone, so the row must stay `running`: rolling it back
+    // to `previewed` would re-offer a candidate set that no longer exists.
+    // Retention (Task 4) ages a stuck file run to `failed` after 24h.
+    try {
+      await withAuthDbAccessContext(auth, async () => {
+        await db
+          .update(deviceFilesystemCleanupRuns)
+          .set({
+            status: runStatus,
+            // W01 amendment 8's envelope, NOT a bare array — Task 2's
+            // `actionCount` unwraps `actions` out of it and the web result
+            // panel reads `partial`/`budgetMs` off it.
+            executedActions: { partial: outcome.partial, budgetMs: outcome.budgetMs, actions: outcome.actions },
+            bytesReclaimed: outcome.bytesReclaimed,
+            error: runError,
+            updatedAt: new Date(),
+            // The pinned preview STAYS in `plan` — it is what the 90-day
+            // retention trim removes and what the detail route renders.
+            plan: {
+              ...planRecord,
+              executedBy: auth.user.id,
+              requestedPaths: requested,
+              selectedPaths: dispatchedPaths,
+              rejectedPaths: outcome.rejectedPaths,
+            },
+          })
+          .where(eq(deviceFilesystemCleanupRuns.id, cleanupRunId))
+          .returning({ id: deviceFilesystemCleanupRuns.id });
+      });
+    } catch (err) {
+      console.error('[filesystem] cleanup finalize failed AFTER deletion', {
+        deviceId, cleanupRunId, error: err instanceof Error ? err.message : String(err),
+      });
+      return failJson(c, 'cleanup_finalize_failed', 500, {
+        cleanupRunId,
         scanPath,
-        requestedBy: auth.user.id,
-        approvedAt: new Date(),
-        plan: {
-          snapshotId: sourceSnapshotId,
-          scanPath,
-          previewedAt: previewedAt.toISOString(),
-          sourceCleanupRunId: cleanupRunId ?? null,
-          requestedPaths: requested,
-          selectedPaths: dispatchedPaths,
-          rejectedPaths: outcome.rejectedPaths,
-        },
-        executedActions: {
-          partial: outcome.partial,
-          budgetMs: outcome.budgetMs,
-          actions: outcome.actions,
-        },
+        status: 'running',
         bytesReclaimed: outcome.bytesReclaimed,
-        status: runStatus,
-        error: runError,
-      })
-      .returning();
+        selectedCount: dispatchedPaths.length,
+        failedCount: counts.failed,
+        rejectedPaths: outcome.rejectedPaths,
+        counts,
+        partial: outcome.partial,
+        budgetMs: outcome.budgetMs,
+        actions: outcome.actions,
+      });
+    }
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -572,7 +638,7 @@ filesystemRoutes.post(
       resourceId: deviceId,
       resourceName: device.hostname,
       details: {
-        cleanupRunId: cleanupRun?.id ?? null,
+        cleanupRunId,
         scanPath,
         requestedCount: requested.length,
         selectedCount: dispatchedPaths.length,
@@ -589,7 +655,7 @@ filesystemRoutes.post(
     });
 
     const responseData = {
-      cleanupRunId: cleanupRun?.id ?? null,
+      cleanupRunId,
       scanPath,
       status: runStatus,
       bytesReclaimed: outcome.bytesReclaimed,
