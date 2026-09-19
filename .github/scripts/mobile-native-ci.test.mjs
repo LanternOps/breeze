@@ -25,9 +25,13 @@ test('mobile compilation watches all native and workspace dependency inputs', ()
   // The lockfile and root package.json are NOT direct inputs any more: they
   // gate through the closure comparison so api/web-only bumps never allocate a
   // macOS runner. Both must still be watched by the `lockfile` filter.
-  const mobileFilter = changes.match(/mobile:\n([\s\S]*?)\n            lockfile:/u)?.[1] ?? '';
+  const mobileFilterMatch = changes.match(/mobile:\n([\s\S]*?)\n\s+lockfile:/u);
+  assert.ok(mobileFilterMatch, 'mobile: filter block followed by lockfile: block not found');
+  const mobileFilter = mobileFilterMatch[1];
   assert.doesNotMatch(mobileFilter, /- 'pnpm-lock\.yaml'|- 'package\.json'/u, 'lockfile edits must go through the closure gate');
-  const lockfileFilter = changes.match(/lockfile:\n([\s\S]*?)\n\n/u)?.[1] ?? '';
+  const lockfileFilterMatch = changes.match(/lockfile:\n([\s\S]*?)\n\n/u);
+  assert.ok(lockfileFilterMatch, 'lockfile: filter block not found');
+  const lockfileFilter = lockfileFilterMatch[1];
   assert.match(lockfileFilter, /- 'pnpm-lock\.yaml'/u);
   assert.match(lockfileFilter, /- 'package\.json'/u);
   assert.match(changes, /id: lockfile\n\s+if: steps\.changes\.outputs\.lockfile == 'true'/u);

@@ -8,7 +8,10 @@
 //
 // Usage: node mobile-lockfile-closure.mjs <base-lockfile> <head-lockfile> [importer]
 // Prints `changed=true|false` and a reason line; exit code is 0 either way.
-// Fails CLOSED: any parse problem or a missing importer reports changed=true.
+// Fails CLOSED: any parse problem, unsupported lockfileVersion, missing
+// importer, or a reachable key with no snapshots entry reports changed=true.
+// (Shell-level failures in the CI step — git fetch/show — fail the JOB, which
+// `ci-success` treats as a hard red: louder still, never silent.)
 //
 // The lockfile is a plain nested map of scalars (v9). Parsing is a deliberate
 // indentation-only subset — enough for `importers:` and `snapshots:`; it does
@@ -32,6 +35,10 @@ export function parseLockfile(text) {
       const node = {};
       parent[key] = node;
       stack.push({ indent, node });
+    } else if (value === '{}') {
+      // Leaf snapshot with no dependencies (`name@1.2.3: {}`) — an empty map,
+      // not a scalar, so the closure walk can tell it from a missing entry.
+      parent[key] = {};
     } else {
       parent[key] = value;
     }
@@ -74,20 +81,49 @@ function stripQuotes(v) {
 
 const DEP_GROUPS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 
+/**
+ * Snapshot key for a dependency entry. Normally `name@version`, but an
+ * aliased dependency (`ip: neoip@3.1.0`, i.e. `npm:neoip@3` in package.json)
+ * carries the real package in the value, and its snapshot is keyed by that
+ * value alone. A peer suffix `(react@19.1.0)` never precedes the first `@`.
+ */
+const ALIAS_VERSION = /^@?[^@(]+@/u;
+const snapshotKey = (name, version) => (ALIAS_VERSION.test(version) ? version : `${name}@${version}`);
+
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Structural invariants the walk relies on. A lockfile that parses into
+ * something else (new pnpm major, wrapper key, restructured groups) must
+ * THROW so compareLockfiles reports changed=true — a plausible-looking but
+ * wrong closure on both sides would otherwise diff as "identical" and skip
+ * the build silently. This is what makes "fails closed" real rather than a
+ * comment.
+ */
+function assertLockfileShape(lock) {
+  const version = String(lock.lockfileVersion ?? '');
+  if (!version.startsWith('9.')) throw new Error(`unsupported lockfileVersion ${JSON.stringify(lock.lockfileVersion)}; this parser knows v9 only`);
+  if (!isPlainObject(lock.importers) || Object.keys(lock.importers).length === 0) throw new Error('importers: block missing or empty');
+  if (!isPlainObject(lock.snapshots) || Object.keys(lock.snapshots).length === 0) throw new Error('snapshots: block missing or empty');
+}
+
 /** Reachable package@version snapshot keys from one importer; null if the importer is missing. */
 export function mobileClosure(lock, importer = 'apps/mobile') {
-  const imp = lock.importers?.[importer];
-  if (!imp || typeof imp !== 'object') return null;
-  const snapshots = lock.snapshots ?? {};
+  assertLockfileShape(lock);
+  const imp = lock.importers[importer];
+  if (!isPlainObject(imp)) return null;
+  const snapshots = lock.snapshots;
   const seen = new Set();
   const queue = [];
   const links = new Set();
   for (const group of DEP_GROUPS) {
-    for (const [name, spec] of Object.entries(imp[group] ?? {})) {
-      const version = typeof spec === 'object' ? spec.version : spec;
-      if (typeof version !== 'string') continue;
+    if (imp[group] === undefined) continue;
+    if (!isPlainObject(imp[group])) throw new Error(`importer ${importer}.${group} is not a map`);
+    for (const [name, spec] of Object.entries(imp[group])) {
+      const version = isPlainObject(spec) ? spec.version : spec;
+      if (typeof version !== 'string') throw new Error(`importer ${importer}.${group}.${name} has no version string`);
       if (version.startsWith('link:')) { links.add(`${name}=${version}`); continue; }
-      queue.push(`${name}@${version}`);
+      queue.push(snapshotKey(name, version));
     }
   }
   while (queue.length) {
@@ -95,11 +131,17 @@ export function mobileClosure(lock, importer = 'apps/mobile') {
     if (seen.has(key)) continue;
     seen.add(key);
     const snap = snapshots[key];
-    if (!snap || typeof snap !== 'object') continue; // unknown key: still counted by name
+    // Every resolved, non-link dependency has a snapshot entry in v9. A missing
+    // one means a truncated or restructured lockfile: fail closed rather than
+    // silently dropping that subtree from the closure.
+    if (!isPlainObject(snap)) throw new Error(`no snapshots entry for reachable key ${key}`);
     for (const group of DEP_GROUPS) {
-      for (const [name, version] of Object.entries(snap[group] ?? {})) {
-        if (typeof version !== 'string' || version.startsWith('link:')) continue;
-        queue.push(`${name}@${version}`);
+      if (snap[group] === undefined) continue;
+      if (!isPlainObject(snap[group])) throw new Error(`snapshot ${key}.${group} is not a map`);
+      for (const [name, version] of Object.entries(snap[group])) {
+        if (typeof version !== 'string') throw new Error(`snapshot ${key}.${group}.${name} has no version string`);
+        if (version.startsWith('link:')) continue;
+        queue.push(snapshotKey(name, version));
       }
     }
   }
