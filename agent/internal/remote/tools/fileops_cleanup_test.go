@@ -728,3 +728,45 @@ func TestDeleteFileContentsOnlyChecksFreshnessPerChildNotOnTheContainer(t *testi
 		t.Errorf("expected only the stale child's bytes, got %d", payload.BytesFreed)
 	}
 }
+
+// The API maps CleanupGuardRejectedPrefix onto `rejected` — "policy refused
+// this" — so an EACCES or EBUSY on the way to the target must NOT carry it, or
+// a device I/O problem reads to the operator as a guard decision and they never
+// learn the disk or the permissions are the issue. The prefix is reserved for
+// symlink/reparse, mtime, denied root, no rule, off-volume and not-a-regular-file.
+func TestCleanupGuardPrefixIsReservedForGuardDecisions(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("relies on POSIX mode bits that root ignores")
+	}
+	home := cleanupTempDir(t)
+	nested := filepath.Join(home, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	victim := filepath.Join(nested, "aged.tmp")
+	if err := os.WriteFile(victim, make([]byte, 16), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(victim, aged, aged); err != nil {
+		t.Fatalf("age: %v", err)
+	}
+	// Unsearchable: Lstat of the leaf fails with EACCES, not ENOENT.
+	if err := os.Chmod(nested, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(nested, 0o755) })
+
+	result := DeleteFile(map[string]any{
+		"path": victim, "permanent": true, "cleanupGuard": true,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("an unreadable target must fail, got %q", result.Status)
+	}
+	if strings.HasPrefix(result.Error, CleanupGuardRejectedPrefix) {
+		t.Fatalf("an I/O error must not be labelled a guard rejection, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "permission denied") {
+		t.Fatalf("expected the underlying I/O reason to survive, got %q", result.Error)
+	}
+}

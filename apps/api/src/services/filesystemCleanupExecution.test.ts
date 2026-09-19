@@ -144,6 +144,19 @@ describe('mapFileDeleteStatus (spec §5.2 status vocabulary)', () => {
     expect(mapFileDeleteStatus({ status: 'timeout' }, null)).toBe('failed');
   });
 
+  it('keeps device I/O errors on the failed lane, not the rejected lane', () => {
+    // The agent reserves the prefix for genuine guard decisions. An EACCES on
+    // the anchor or on the target is a device problem: calling it `rejected`
+    // tells the operator policy refused the delete and hides the real cause.
+    for (const error of [
+      'cannot open cleanup anchor /home: permission denied',
+      'failed to stat /home/a/.cache/x inside its anchor: statat x: permission denied',
+      'failed to open /root/.local/share/Trash inside its anchor: device or resource busy',
+    ]) {
+      expect(mapFileDeleteStatus({ status: 'failed', error }, null)).toBe('failed');
+    }
+  });
+
   it('maps a locked file onto skipped_locked', () => {
     expect(
       mapFileDeleteStatus({ status: 'completed' }, {

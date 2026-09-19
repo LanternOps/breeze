@@ -831,7 +831,10 @@ func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.Fi
 	dirRoot, err := target.root.OpenRoot(target.rel)
 	if err != nil {
 		return NewErrorResult(
-			fmt.Errorf("%s cannot open %s inside its anchor: %v", CleanupGuardRejectedPrefix, cleanPath, err),
+			// An OpenRoot failure here is I/O (EACCES, EBUSY, ENOTDIR), not a
+			// guard decision, so it must not carry the prefix the API maps
+			// onto `rejected`.
+			fmt.Errorf("failed to open %s inside its anchor: %w", cleanPath, err),
 			time.Since(start).Milliseconds(),
 		)
 	}
@@ -997,10 +1000,11 @@ func DeleteFile(payload map[string]any) CommandResult {
 			if os.IsNotExist(err) {
 				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
 			}
-			// An escape refused by the Root surfaces here, which is the whole
-			// point: the ancestor was swapped after the preview.
+			// openCleanupTarget already refused a symlink or reparse point at
+			// every component, so anything left here is I/O (EACCES, EIO) and
+			// must stay `failed` rather than being mislabelled `rejected`.
 			return NewErrorResult(
-				fmt.Errorf("%s %s could not be opened inside its anchor: %v", CleanupGuardRejectedPrefix, cleanPath, err),
+				fmt.Errorf("failed to stat %s inside its anchor: %w", cleanPath, err),
 				time.Since(start).Milliseconds(),
 			)
 		}
