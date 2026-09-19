@@ -162,6 +162,7 @@ export type PostToolUseCallback = (
 
 export const TOOL_TIERS = {
   query_devices: 1,
+  search_documentation: 1,
   get_device_details: 1,
   analyze_metrics: 1,
   get_active_users: 1,
@@ -1361,6 +1362,16 @@ export function createBreezeMcpServer(
   const uuid = z.string().guid();
 
   const tools = [
+    tool(
+      'search_documentation',
+      registryDescription('search_documentation'),
+      {
+        query: z.string().min(1).max(500),
+        section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
+      },
+      makeHandler('search_documentation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'query_devices',
       'Search and filter devices in the organization. Returns a summary list.',

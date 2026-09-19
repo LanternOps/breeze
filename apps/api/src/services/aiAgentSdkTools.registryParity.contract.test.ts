@@ -119,7 +119,6 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'restore_snapshot',
   'revoke_elevation',
   'search_c2c_items',
-  'search_documentation',
   'search_script_library',
   'test_webhook',
   'trigger_agent_restart',
