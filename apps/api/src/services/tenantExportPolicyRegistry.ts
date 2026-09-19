@@ -227,9 +227,17 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // `system` and `external_id` are tenant IDENTIFIERS, not secrets — the same
   // classification organization_external_links and contact_external_links carry.
   "device_external_links": tablePolicy("org_id", {"included":["id","device_id","org_id","partner_id","system","source_instance","external_id","label","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "device_filesystem_cleanup_runs": tablePolicy("org_id", {"included":["id","device_id","org_id","requested_by","requested_at","approved_at","bytes_reclaimed","status","error","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["plan","executed_actions"]}),
-  "device_filesystem_scan_state": tablePolicy("org_id", {"included":["device_id","org_id","last_run_mode","last_baseline_completed_at","last_disk_used_percent","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint","aggregate","hot_directories"]}),
-  "device_filesystem_snapshots": tablePolicy("org_id", {"included":["id","device_id","org_id","captured_at","trigger","partial","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["summary","largest_files","largest_dirs","temp_accumulation","old_downloads","unrotated_logs","trash_usage","duplicate_candidates","cleanup_candidates","errors","raw_payload"]}),
+  // W02 multi-volume (spec §4): scan_path is a normalised path string, kind is
+  // a closed catalog value ('files'|'system'), and command_id / scan_generation
+  // are plain device_commands identifiers. All four are ordinary
+  // customer-visible
+  // operational data — no open container, no SUSPICIOUS_NAME_PARTS hit — so
+  // `included`. `plan` and `executed_actions` stay `excludedOpen` (jsonb), so
+  // a system run's action list does not appear in a tenant export while kind,
+  // status, bytes_reclaimed and requested_at do. Accepted.
+  "device_filesystem_cleanup_runs": tablePolicy("org_id", {"included":["id","device_id","org_id","scan_path","kind","command_id","requested_by","requested_at","approved_at","bytes_reclaimed","status","error","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["plan","executed_actions"]}),
+  "device_filesystem_scan_state": tablePolicy("org_id", {"included":["device_id","scan_path","scan_generation","org_id","last_run_mode","last_baseline_completed_at","last_disk_used_percent","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint","aggregate","hot_directories"]}),
+  "device_filesystem_snapshots": tablePolicy("org_id", {"included":["id","device_id","org_id","scan_path","captured_at","trigger","partial","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["summary","largest_files","largest_dirs","temp_accumulation","old_downloads","unrotated_logs","trash_usage","duplicate_candidates","cleanup_candidates","errors","raw_payload"]}),
   "device_function_assessments": tablePolicy("org_id", {"included":["id","org_id","device_id","function_key","label","confidence","source","run_id","report_run_id","active","superseded_at","created_by_user_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["evidence"]}),
   "device_group_memberships": tablePolicy("org_id", {"included":["device_id","group_id","org_id","is_pinned","added_at","added_by"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "device_groups": tablePolicy("org_id", {"included":["id","org_id","site_id","name","type","filter_fields_used","parent_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["rules","filter_conditions"]}),
