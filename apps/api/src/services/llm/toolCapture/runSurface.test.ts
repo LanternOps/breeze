@@ -7,7 +7,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 });
 
 import { denyPreToolUse, runSurfaceCapture } from './runSurface';
-import { CAPTURE_SURFACES } from './surfaces';
+import { CAPTURE_SURFACES, type CaptureSurface } from './surfaces';
+import { buildBreezeSdkTools } from '../../aiAgentSdkTools';
 
 /** An async generator standing in for the SDK's `query()` return value. */
 async function* messages(items: unknown[]): AsyncGenerator<unknown> {
@@ -80,5 +81,30 @@ describe('runSurfaceCapture', () => {
     queryMock.mockReturnValueOnce(messagesThenReject([], new Error('ENOTFOUND api.anthropic.com')));
 
     await expect(runSurfaceCapture(baseOpts)).rejects.toThrow('ENOTFOUND api.anthropic.com');
+  });
+
+  it('derives registeredToolCount from the tools the server actually registers, not TOOL_TIERS', async () => {
+    queryMock.mockReturnValueOnce(messages([
+      { type: 'result', subtype: 'success', session_id: 's-count', num_turns: 1, duration_ms: 10, total_cost_usd: 0 },
+    ]));
+
+    const result = await runSurfaceCapture(baseOpts);
+
+    const distinctNames = new Set(buildBreezeSdkTools(() => { throw new Error('unused'); }).map((t) => t.name));
+    expect(result.registeredToolCount).toBe(distinctNames.size);
+    expect(result.registeredToolNames).toEqual([...distinctNames].sort());
+  });
+
+  it('an onlyTools surface reports the subset size, not the full registry', async () => {
+    queryMock.mockReturnValueOnce(messages([
+      { type: 'result', subtype: 'success', session_id: 's-subset', num_turns: 1, duration_ms: 10, total_cost_usd: 0 },
+    ]));
+    const onlyTools = new Set(['query_devices', 'get_device_details']);
+    const surface: CaptureSurface = { ...CAPTURE_SURFACES.chat, onlyTools };
+
+    const result = await runSurfaceCapture({ ...baseOpts, surface });
+
+    expect(result.registeredToolCount).toBe(2);
+    expect(result.registeredToolNames).toEqual(['get_device_details', 'query_devices']);
   });
 });

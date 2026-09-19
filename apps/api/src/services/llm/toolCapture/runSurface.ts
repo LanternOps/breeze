@@ -31,7 +31,7 @@
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { AI_SYSTEM_PROMPT_BASE } from '../../aiAgentSystemPrompt';
-import { createBreezeMcpServer, TOOL_TIERS, type PreToolUseCallback } from '../../aiAgentSdkTools';
+import { buildBreezeSdkTools, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
 import type { CaptureSurface, CaptureSurfaceId } from './surfaces';
@@ -49,6 +49,10 @@ export interface RunSurfaceOptions {
 export interface SurfaceCaptureResult {
   surface: CaptureSurfaceId;
   registeredToolCount: number;
+  /** Sorted, distinct tool names the server actually registered for this
+   *  capture — makes the JSONL self-explaining instead of forcing a reader
+   *  to cross-reference registeredToolCount against the live registry. */
+  registeredToolNames: string[];
   allowedToolCount: number;
   observation: StreamObservation;
 }
@@ -66,9 +70,16 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
   const mcpServer = surface.server === 'breeze'
     ? createBreezeMcpServer(denyAuth, denyPreToolUse, undefined, undefined, [], surface.onlyTools ? { onlyTools: surface.onlyTools } : undefined)
     : createScriptBuilderMcpServer(denyAuth, denyPreToolUse);
-  const registeredToolCount = surface.server === 'breeze'
-    ? (surface.onlyTools ? surface.onlyTools.size : Object.keys(TOOL_TIERS).length)
-    : SCRIPT_BUILDER_MCP_TOOL_NAMES.length;
+  // Derived from the tools the server actually registers (buildBreezeSdkTools),
+  // not TOOL_TIERS — TOOL_TIERS is a system-prompt promotion index, and the
+  // registry also includes env-gated tool sets (M365, Google Workspace, script
+  // authoring) that TOOL_TIERS does not enumerate. See runSurface.test.ts.
+  const registeredToolNames = surface.server === 'breeze'
+    ? [...new Set(buildBreezeSdkTools(denyAuth, denyPreToolUse)
+        .map((t) => t.name)
+        .filter((name) => !surface.onlyTools || surface.onlyTools.has(name)))].sort()
+    : [...SCRIPT_BUILDER_MCP_TOOL_NAMES].sort();
+  const registeredToolCount = registeredToolNames.length;
   const observer = createStreamObserver();
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), opts.timeoutMs ?? 90_000);
@@ -105,5 +116,5 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
   } finally {
     clearTimeout(timer);
   }
-  return { surface: surface.id, registeredToolCount, allowedToolCount: surface.allowedTools.length, observation };
+  return { surface: surface.id, registeredToolCount, registeredToolNames, allowedToolCount: surface.allowedTools.length, observation };
 }
