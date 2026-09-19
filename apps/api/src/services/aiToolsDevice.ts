@@ -28,6 +28,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { projectPublicDevice } from '../routes/devices/helpers';
+import { sanitizeUntrustedText, wrapUntrustedData } from './aiInputSanitizer';
 import {
   getActiveDeviceContext,
   getAllDeviceContext,
@@ -279,6 +280,9 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         return 'No context found for this device. This is a fresh start with no previous memory.';
       }
 
+      // Device memory is free text and is replayed straight into model context.
+      // Sanitize every untrusted field, then render the whole set inside a
+      // delimited untrusted-data block so it reads as data, not instructions.
       const formatted = results.map(r => {
         const status = r.resolvedAt
           ? 'RESOLVED'
@@ -286,9 +290,9 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           ? 'EXPIRED'
           : 'ACTIVE';
 
-        let output = `[${status}] ${r.contextType.toUpperCase()}: ${r.summary}`;
+        let output = `[${status}] ${sanitizeUntrustedText(r.contextType, 40).toUpperCase()}: ${sanitizeUntrustedText(r.summary)}`;
         if (r.details) {
-          output += `\nDetails: ${JSON.stringify(r.details, null, 2)}`;
+          output += `\nDetails: ${sanitizeUntrustedText(JSON.stringify(r.details, null, 2))}`;
         }
         output += `\nRecorded: ${r.createdAt.toISOString()} | ID: ${r.id}`;
         if (r.resolvedAt) {
@@ -297,7 +301,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         return output;
       });
 
-      return `Found ${results.length} context entries:\n\n${formatted.join('\n\n---\n\n')}`;
+      const block = wrapUntrustedData('device_memory', formatted.join('\n\n---\n\n'));
+      return `Found ${results.length} context entries:\n\n${block}`;
     },
   });
 
