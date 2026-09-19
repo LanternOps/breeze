@@ -71,6 +71,11 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+vi.mock('../../services/filesystemVolumes', () => ({
+  listFilesystemVolumes: vi.fn(),
+}));
+
+import { listFilesystemVolumes } from '../../services/filesystemVolumes';
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { filesystemRoutes } from './filesystem';
@@ -633,5 +638,61 @@ describe('device filesystem routes', () => {
     expect(row.executedActions.partial).toBe(false);
     expect(row.executedActions.budgetMs).toBe(240_000);
     expect(row.executedActions.actions).toHaveLength(1);
+  });
+
+  describe('GET /devices/:id/filesystem/volumes (spec §5.1)', () => {
+    it('returns the scannable volumes for the device', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'windows',
+      } as never);
+      vi.mocked(listFilesystemVolumes).mockResolvedValue([
+        {
+          mountPoint: 'C:\\', scanPath: 'C:\\', fsType: 'NTFS',
+          totalGb: 500, usedGb: 400, freeGb: 100, usedPercent: 80, isOsRoot: true,
+          scanState: { lastRunMode: 'baseline', lastBaselineCompletedAt: null, hasCheckpoint: false },
+          latestSnapshot: null,
+        },
+        {
+          mountPoint: 'D:\\', scanPath: 'D:\\', fsType: 'NTFS',
+          totalGb: 2000, usedGb: 100, freeGb: 1900, usedPercent: 5, isOsRoot: false,
+          scanState: null,
+          latestSnapshot: { id: 'snap-d', capturedAt: '2026-09-19T09:00:00.000Z', partial: false, cleanupEstimateBytes: 4096 },
+        },
+      ] as never);
+
+      const res = await app.request(`/devices/${deviceId}/filesystem/volumes`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((v: { scanPath: string }) => v.scanPath)).toEqual(['C:\\', 'D:\\']);
+      expect(body.data[0].isOsRoot).toBe(true);
+      // The device's OS decides how a mount point normalises, so it must reach
+      // the service — a POSIX default would key a Windows device on '/'.
+      expect(listFilesystemVolumes).toHaveBeenCalledWith(deviceId, 'windows');
+    });
+
+    it('denies the volumes list when site scope excludes the device', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SITE_ACCESS_DENIED as never);
+
+      const res = await app.request(`/devices/${deviceId}/filesystem/volumes`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(listFilesystemVolumes).not.toHaveBeenCalled();
+    });
+
+    it('404s for an unknown device without touching the service', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null as never);
+
+      const res = await app.request(`/devices/${deviceId}/filesystem/volumes`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+      expect(listFilesystemVolumes).not.toHaveBeenCalled();
+    });
   });
 });

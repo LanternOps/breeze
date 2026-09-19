@@ -29,6 +29,7 @@ import {
   safeCleanupCategories,
   type FilesystemCleanupCandidate,
 } from '../../services/filesystemAnalysis';
+import { listFilesystemVolumes } from '../../services/filesystemVolumes';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
@@ -166,6 +167,37 @@ filesystemRoutes.get(
       cleanupCandidates: snapshot.cleanupCandidates,
       errors: snapshot.errors,
     });
+  }
+);
+
+/**
+ * The volumes a disk-cleanup scan can target (spec §5.1). Sourced from the
+ * `device_disks` inventory the agent already reports, filtered to what is
+ * actually scannable, and annotated with the per-volume scan state and latest
+ * snapshot so the tab can render a chip worth clicking.
+ *
+ * DEVICES_READ, like every other read here — listing mount points and their
+ * capacity reveals nothing a device detail page does not already show.
+ */
+filesystemRoutes.get(
+  '/:id/filesystem/volumes',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId } = c.req.valid('param');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const volumes = await listFilesystemVolumes(deviceId, (device as { osType?: unknown }).osType);
+    return c.json({ data: volumes });
   }
 );
 
