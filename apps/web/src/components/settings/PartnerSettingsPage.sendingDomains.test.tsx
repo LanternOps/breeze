@@ -60,16 +60,16 @@ describe('PartnerSettingsPage — sending domains tab', () => {
     route({ error: 'sending_domains_unsupported' }, 404);
     render(<PartnerSettingsPage />);
 
-    await screen.findByTestId('settings-nav-tab-company');
+    await screen.findByTestId('partner-settings-tab-company');
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/partner/sending-domains', expect.anything()));
-    expect(screen.queryByTestId('settings-nav-tab-sending-domains')).toBeNull();
+    expect(screen.queryByTestId('partner-settings-tab-sendingDomains')).toBeNull();
   });
 
   it('shows the tab in the communications group when a provider is configured', async () => {
     route({ capability: { supported: true, provider: 'fake', verifiesByDns: true, eligible: true, maxDomains: 3 }, domains: [], identities: [] });
     render(<PartnerSettingsPage />);
 
-    const link = await screen.findByTestId('settings-nav-tab-sending-domains');
+    const link = await screen.findByTestId('partner-settings-tab-sendingDomains');
     expect(link.getAttribute('href')).toBe('#sending-domains');
     // Communications group: it sits with Notifications, Ticketing and the AI tabs.
     const group = link.closest('div')!;

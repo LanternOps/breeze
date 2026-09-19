@@ -82,7 +82,6 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                       data-testid={testIdPrefix ? `${testIdPrefix}-tab-${item.key}` : undefined}
                       aria-current={isActive ? 'page' : undefined}
                       aria-label={item.dirty ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
-                      data-testid={`settings-nav-tab-${item.hash}`}
                       onClick={e => {
                         // Let modified clicks do their native thing (new tab, etc.).
                         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
