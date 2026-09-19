@@ -753,6 +753,16 @@
     "noMoreActivity": "Başka etkinlik yok"
   },
   "deviceFilesystemTab": {
+    "volumes": "Birimler",
+    "volumesLoading": "Birimler yükleniyor...",
+    "volumesEmpty": "Bu cihaz için taranabilir birim bildirilmedi.",
+    "failedToFetchVolumes": "Birimler alınamadı",
+    "volumeOsBadge": "İS",
+    "volumeUsedOfTotal": "{{total}} biriminin {{used}} kadarı kullanımda",
+    "volumeCapacityUnknown": "Kapasite bilinmiyor",
+    "volumeNeverScanned": "Hiç taranmadı",
+    "volumeLastScanned": "{{when}} tarihinde tarandı",
+    "volumeSelectAria": "{{mountPoint}} birimini seç",
     "scanCommandNotFound": "Tarama komutu bulunamadı",
     "scanCommandNotQueued": "Tarama komutu sıraya alınmadı",
     "scanStillRunning": "Dosya sistemi taraması hâlâ çalışıyor. Birkaç dakika sonra Yenile’ye tıklayın.",

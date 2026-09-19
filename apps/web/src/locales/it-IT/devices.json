@@ -753,6 +753,16 @@
     "noMoreActivity": "Nessun’altra attività"
   },
   "deviceFilesystemTab": {
+    "volumes": "Volumi",
+    "volumesLoading": "Caricamento volumi...",
+    "volumesEmpty": "Nessun volume analizzabile segnalato per questo dispositivo.",
+    "failedToFetchVolumes": "Impossibile recuperare i volumi",
+    "volumeOsBadge": "OS",
+    "volumeUsedOfTotal": "{{used}} di {{total}} in uso",
+    "volumeCapacityUnknown": "Capacità sconosciuta",
+    "volumeNeverScanned": "Mai scansionato",
+    "volumeLastScanned": "Scansionato {{when}}",
+    "volumeSelectAria": "Seleziona il volume {{mountPoint}}",
     "scanCommandNotFound": "Comando di scansione non trovato",
     "scanCommandNotQueued": "Comando di scansione non accodato",
     "scanStillRunning": "La scansione del filesystem è ancora in corso. Fai clic su Aggiorna tra qualche istante.",

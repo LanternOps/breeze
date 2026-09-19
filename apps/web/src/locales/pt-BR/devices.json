@@ -753,6 +753,16 @@
     "noMoreActivity": "Não há mais atividade"
   },
   "deviceFilesystemTab": {
+    "volumes": "Volumes",
+    "volumesLoading": "Carregando volumes...",
+    "volumesEmpty": "Nenhum volume analisável informado para este dispositivo.",
+    "failedToFetchVolumes": "Não foi possível obter os volumes",
+    "volumeOsBadge": "SO",
+    "volumeUsedOfTotal": "{{used}} de {{total}} em uso",
+    "volumeCapacityUnknown": "Capacidade desconhecida",
+    "volumeNeverScanned": "Nunca verificado",
+    "volumeLastScanned": "Verificado {{when}}",
+    "volumeSelectAria": "Selecionar volume {{mountPoint}}",
     "scanCommandNotFound": "Comando de varredura não encontrado",
     "scanCommandNotQueued": "O comando de varredura não foi enfileirado",
     "scanStillRunning": "A varredura do sistema de arquivos ainda está em execução. Clique em Atualizar em instantes.",

@@ -753,6 +753,16 @@
     "noMoreActivity": "Keine weitere Aktivität"
   },
   "deviceFilesystemTab": {
+    "volumes": "Datenträger",
+    "volumesLoading": "Datenträger werden geladen...",
+    "volumesEmpty": "Für dieses Gerät wurden keine scanbaren Datenträger gemeldet.",
+    "failedToFetchVolumes": "Datenträger konnten nicht abgerufen werden",
+    "volumeOsBadge": "OS",
+    "volumeUsedOfTotal": "{{used}} von {{total}} belegt",
+    "volumeCapacityUnknown": "Kapazität unbekannt",
+    "volumeNeverScanned": "Nie gescannt",
+    "volumeLastScanned": "Gescannt {{when}}",
+    "volumeSelectAria": "Datenträger {{mountPoint}} auswählen",
     "scanCommandNotFound": "Der Scanbefehl wurde nicht gefunden",
     "scanCommandNotQueued": "Der Scanbefehl wurde nicht eingereiht",
     "scanStillRunning": "Der Scan des Dateisystems läuft noch. Klicken Sie in Kürze auf „Aktualisieren“.",

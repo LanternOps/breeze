@@ -753,6 +753,16 @@
     "noMoreActivity": "Plus aucune activité"
   },
   "deviceFilesystemTab": {
+    "volumes": "Volumes",
+    "volumesLoading": "Chargement des volumes...",
+    "volumesEmpty": "Aucun volume analysable signalé pour cet appareil.",
+    "failedToFetchVolumes": "Impossible de récupérer les volumes",
+    "volumeOsBadge": "OS",
+    "volumeUsedOfTotal": "{{used}} sur {{total}} utilisés",
+    "volumeCapacityUnknown": "Capacité inconnue",
+    "volumeNeverScanned": "Jamais analysé",
+    "volumeLastScanned": "Analysé {{when}}",
+    "volumeSelectAria": "Sélectionner le volume {{mountPoint}}",
     "scanCommandNotFound": "La commande d’analyse est introuvable",
     "scanCommandNotQueued": "La commande d’analyse n’a pas été mise en file d’attente",
     "scanStillRunning": "Le balayage du système de fichiers est toujours en cours. Cliquez sur Actualiser dans quelques instants.",

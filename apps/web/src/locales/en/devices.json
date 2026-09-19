@@ -753,6 +753,16 @@
     "noMoreActivity": "No more activity"
   },
   "deviceFilesystemTab": {
+    "volumes": "Volumes",
+    "volumesLoading": "Loading volumes...",
+    "volumesEmpty": "No scannable volumes reported for this device.",
+    "failedToFetchVolumes": "Failed to fetch volumes",
+    "volumeOsBadge": "OS",
+    "volumeUsedOfTotal": "{{used}} of {{total}} used",
+    "volumeCapacityUnknown": "Capacity unknown",
+    "volumeNeverScanned": "Never scanned",
+    "volumeLastScanned": "Scanned {{when}}",
+    "volumeSelectAria": "Select volume {{mountPoint}}",
     "scanCommandNotFound": "Scan command was not found",
     "scanCommandNotQueued": "Scan command was not queued",
     "scanStillRunning": "Filesystem scan is still running. Click Refresh in a few moments.",
