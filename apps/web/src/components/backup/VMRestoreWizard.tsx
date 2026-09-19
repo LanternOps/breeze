@@ -7,10 +7,11 @@ import {
   Loader2,
   MemoryStick,
   Server,
+  Wrench,
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { extractApiError } from '@/lib/apiError';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import VMRestoreSpecsStep from './VMRestoreSpecsStep';
@@ -35,6 +36,9 @@ type Snapshot = {
     memoryMB?: number;
     diskGB?: number;
   };
+  /** Storage key of the disk-layout manifest; only whole-machine snapshots
+   * carry one, and only those can go through the Linux rebuild engine. */
+  layoutManifestKey?: string | null;
 };
 
 type VMEstimate = {
@@ -46,7 +50,12 @@ type VMEstimate = {
   requiredDiskGb?: number;
 };
 
-type RestoreMode = 'full' | 'instant';
+type RestoreMode = 'full' | 'instant' | 'rebuild';
+
+function isAbsoluteVhdxPath(path: string): boolean {
+  const trimmed = path.trim();
+  return trimmed.startsWith('/') && trimmed.endsWith('.vhdx') && trimmed.length > '/.vhdx'.length;
+}
 
 const steps = ['Snapshot', 'Target Host', 'VM Specs', 'VM Name', 'Mode', 'Review'];
 
@@ -65,6 +74,9 @@ export default function VMRestoreWizard() {
   const [vmName, setVmName] = useState('');
   const [virtualSwitch, setVirtualSwitch] = useState('');
   const [mode, setMode] = useState<RestoreMode>('full');
+  const [rebuildHostDeviceId, setRebuildHostDeviceId] = useState('');
+  const [rebuildHostSearch, setRebuildHostSearch] = useState('');
+  const [outputPath, setOutputPath] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [restoreError, setRestoreError] = useState<string>();
@@ -74,6 +86,15 @@ export default function VMRestoreWizard() {
     search: deviceSearch,
     osType: 'windows',
     includeIds: targetDeviceId ? [targetDeviceId] : [],
+  });
+  // Rebuild engine hosts (W05a): Linux only in this wave — the engine refuses
+  // other platforms — so the picker is filtered server-side and only loads
+  // once the rebuild engine is chosen.
+  const rebuildHostOptions = useDeviceOptions({
+    search: rebuildHostSearch,
+    osType: 'linux',
+    includeIds: rebuildHostDeviceId ? [rebuildHostDeviceId] : [],
+    enabled: mode === 'rebuild',
   });
 
   const nextStep = () => setStep((prev) => Math.min(prev + 1, steps.length - 1));
@@ -133,55 +154,81 @@ export default function VMRestoreWizard() {
 
   const selectedSnapshot = snapshots.find((s) => s.id === snapshotId);
   const selectedDevice = deviceOptions.options.find((d) => d.id === targetDeviceId);
+  const selectedRebuildHost = rebuildHostOptions.options.find((d) => d.id === rebuildHostDeviceId);
+  const rebuildEngineAvailable = Boolean(selectedSnapshot?.layoutManifestKey);
+
+  // Switching to a snapshot without a layout manifest invalidates the rebuild engine.
+  useEffect(() => {
+    if (mode === 'rebuild' && !rebuildEngineAvailable) setMode('full');
+  }, [mode, rebuildEngineAvailable]);
+
+  const canSubmit =
+    mode === 'rebuild'
+      ? Boolean(snapshotId && rebuildHostDeviceId && isAbsoluteVhdxPath(outputPath) && rebuildHostOptions.canSubmit)
+      : Boolean(snapshotId && targetDeviceId && vmName.trim() && deviceOptions.canSubmit);
 
   const handleRestore = useCallback(async () => {
+    setRestoring(true);
+    setRestoreError(undefined);
+    setRestoreSuccess(undefined);
+
+    const endpoint = mode === 'instant' ? '/backup/restore/instant-boot' : '/backup/restore/as-vm';
+    const vmSpecs = {
+      memoryMb: memoryMB,
+      cpuCount,
+      diskSizeGb: diskGB,
+    };
+    // The rebuild variant deliberately carries no `identity`: the server
+    // always creates the recovery with a NEW machine identity.
+    const payload =
+      mode === 'rebuild'
+        ? {
+            engine: 'rebuild' as const,
+            snapshotId,
+            rebuildHostDeviceId,
+            outputPath: outputPath.trim(),
+          }
+        : {
+            snapshotId,
+            targetDeviceId,
+            vmName,
+            ...(mode === 'full'
+              ? {
+                  hypervisor: 'hyperv' as const,
+                  vmSpecs,
+                  switchName: virtualSwitch.trim() || undefined,
+                }
+              : {
+                  vmSpecs,
+                }),
+          };
+
+    const successMessage =
+      mode === 'full'
+        ? 'VM restore started successfully.'
+        : mode === 'instant'
+          ? 'Instant boot initiated. The VM will be available shortly.'
+          : t('vMRestoreWizard.rebuildStarted');
+
     try {
-      setRestoring(true);
-      setRestoreError(undefined);
-      setRestoreSuccess(undefined);
-
-      const endpoint = mode === 'full' ? '/backup/restore/as-vm' : '/backup/restore/instant-boot';
-      const vmSpecs = {
-        memoryMb: memoryMB,
-        cpuCount,
-        diskSizeGb: diskGB,
-      };
-      const payload = {
-        snapshotId,
-        targetDeviceId,
-        vmName,
-        ...(mode === 'full'
-          ? {
-              hypervisor: 'hyperv' as const,
-              vmSpecs,
-              switchName: virtualSwitch.trim() || undefined,
-            }
-          : {
-              vmSpecs,
-            }),
-      };
-
-      const response = await fetchWithAuth(endpoint, {
-        method: 'POST',
-        body: JSON.stringify(payload),
+      await runAction({
+        request: () =>
+          fetchWithAuth(endpoint, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          }),
+        errorFallback: 'Failed to start restore',
+        successMessage,
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to start restore'));
-      }
-
-      setRestoreSuccess(
-        mode === 'full'
-          ? 'VM restore started successfully.'
-          : 'Instant boot initiated. The VM will be available shortly.'
-      );
+      setRestoreSuccess(successMessage);
     } catch (err) {
+      handleActionError(err, 'Failed to start restore');
+      if (err instanceof ActionError && err.status === 401) return;
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
     } finally {
       setRestoring(false);
     }
-  }, [cpuCount, diskGB, memoryMB, mode, snapshotId, targetDeviceId, virtualSwitch, vmName]);
+  }, [cpuCount, diskGB, memoryMB, mode, outputPath, rebuildHostDeviceId, snapshotId, t, targetDeviceId, virtualSwitch, vmName]);
 
   if (loading) {
     return (
@@ -396,7 +443,56 @@ export default function VMRestoreWizard() {
                   <p className="mt-2 text-xs text-muted-foreground">
                     {t('vMRestoreWizard.bootsTheVmDirectlyFromTheBackupStorage')} </p>
                 </button>
+                {rebuildEngineAvailable && (
+                  <button
+                    type="button"
+                    onClick={() => setMode('rebuild')}
+                    data-testid="vm-restore-engine-rebuild"
+                    className={cn(
+                      'rounded-lg border p-4 text-left',
+                      mode === 'rebuild' ? 'border-primary bg-primary/5' : 'border-muted bg-muted/20'
+                    )}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                      <Wrench className="h-4 w-4 text-primary" />
+                      {t('vMRestoreWizard.rebuildEngineLinux')} </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {t('vMRestoreWizard.rebuildEngineDescription')} </p>
+                  </button>
+                )}
               </div>
+              {mode === 'rebuild' && (
+                <div className="space-y-4 rounded-lg border border-dashed bg-muted/20 p-4">
+                  <div>
+                    <h4 className="text-sm font-semibold text-foreground">{t('vMRestoreWizard.selectRebuildHost')}</h4>
+                    <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.chooseALinuxDeviceWithQemuUtils')}</p>
+                  </div>
+                  <DeviceOptionPicker
+                    result={rebuildHostOptions}
+                    selectedIds={rebuildHostDeviceId ? [rebuildHostDeviceId] : []}
+                    onSelectedIdsChange={(ids) => setRebuildHostDeviceId(ids[0] ?? '')}
+                    search={rebuildHostSearch}
+                    onSearchChange={setRebuildHostSearch}
+                    selectionMode="single"
+                  />
+                  <div className="space-y-2">
+                    <label htmlFor="rebuild-output-path" className="text-xs font-medium text-muted-foreground">
+                      {t('vMRestoreWizard.outputPath')}
+                    </label>
+                    <input
+                      id="rebuild-output-path"
+                      value={outputPath}
+                      onChange={(e) => setOutputPath(e.target.value)}
+                      placeholder="/var/lib/breeze/rebuild/out/server-01.vhdx"
+                      className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono"
+                    />
+                    <p className="text-xs text-muted-foreground">{t('vMRestoreWizard.outputPathHint')}</p>
+                    {outputPath.trim() && !isAbsoluteVhdxPath(outputPath) && (
+                      <p className="text-xs text-destructive">{t('vMRestoreWizard.outputPathInvalid')}</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -404,12 +500,13 @@ export default function VMRestoreWizard() {
           {step === 5 && (
             <VMRestoreConfirmStep
               snapshotLabel={selectedSnapshot?.label}
-              hostname={selectedDevice?.hostname}
+              hostname={mode === 'rebuild' ? selectedRebuildHost?.hostname : selectedDevice?.hostname}
               cpuCount={cpuCount}
               memoryMB={memoryMB}
               diskGB={diskGB}
               mode={mode}
               vmName={vmName}
+              outputPath={outputPath.trim()}
             />
           )}
         </div>
@@ -436,7 +533,7 @@ export default function VMRestoreWizard() {
               <button
                 type="button"
                 onClick={handleRestore}
-                disabled={restoring || !snapshotId || !targetDeviceId || !vmName.trim() || !deviceOptions.canSubmit}
+                disabled={restoring || !canSubmit}
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {restoring ? (
@@ -444,7 +541,11 @@ export default function VMRestoreWizard() {
                     <Loader2 className="h-4 w-4 animate-spin" /> {t('vMRestoreWizard.starting')} </>
                 ) : (
                   <>
-                    {mode === 'full' ? 'Start Full Restore' : 'Start Instant Boot'}
+                    {mode === 'full'
+                      ? 'Start Full Restore'
+                      : mode === 'instant'
+                        ? 'Start Instant Boot'
+                        : t('vMRestoreWizard.startRebuild')}
                     <ArrowRight className="h-4 w-4" />
                   </>
                 )}

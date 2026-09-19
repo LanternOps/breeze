@@ -378,7 +378,14 @@ export const bmrMediaListSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
-export const bmrVmRestoreSchema = z.object({
+// Restore-as-VM (W05a): two engines behind one route. `hyperv` is the
+// existing Hyper-V path (fields verbatim); `rebuild` drives the Linux rebuild
+// engine on a helper host and produces a VHDX. The rebuild variant is strict
+// and carries NO `identity` field — the server always creates the recovery
+// with `identity: 'new'` (spec §9: a rehearsal image can never resume the
+// production identity), so a client cannot even ask.
+const bmrVmRestoreHypervSchema = z.object({
+  engine: z.literal('hyperv'),
   snapshotId: z.string().guid(),
   targetDeviceId: z.string().guid(),
   hypervisor: z.literal('hyperv'),
@@ -392,6 +399,35 @@ export const bmrVmRestoreSchema = z.object({
     })
     .optional(),
 });
+
+export const rebuildVhdxOutputPathSchema = z
+  .string()
+  .min(1)
+  .max(1024)
+  .refine((p) => p.startsWith('/') && p.endsWith('.vhdx'), 'absolute .vhdx path required');
+
+const bmrVmRestoreRebuildSchema = z
+  .object({
+    engine: z.literal('rebuild'),
+    snapshotId: z.string().guid(),
+    rebuildHostDeviceId: z.string().guid(),
+    outputPath: rebuildVhdxOutputPathSchema,
+    imageSizeGb: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+// zod 4 does not apply a `.default()` on the discriminator when the key is
+// absent (the union matches on the raw value first), so the legacy Hyper-V
+// payload — every existing wizard/tool/integration caller sends no `engine`
+// — is defaulted in a preprocess step instead.
+export const bmrVmRestoreSchema = z.preprocess(
+  (value) =>
+    value && typeof value === 'object' && !Array.isArray(value) && !('engine' in value)
+      ? { ...(value as Record<string, unknown>), engine: 'hyperv' }
+      : value,
+  z.discriminatedUnion('engine', [bmrVmRestoreHypervSchema, bmrVmRestoreRebuildSchema]),
+);
+export type BmrVmRestoreInput = z.infer<typeof bmrVmRestoreSchema>;
 
 export const instantBootSchema = z.object({
   snapshotId: z.string().guid(),

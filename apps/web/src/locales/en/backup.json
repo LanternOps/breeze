@@ -617,7 +617,12 @@
     "cpu": "CPU,",
     "mbRam": "MB RAM,",
     "gbDisk": "GB Disk",
-    "mode": "Mode"
+    "mode": "Mode",
+    "rebuildHost": "Rebuild host",
+    "outputPath": "Output path",
+    "rebuildEngine": "Rebuild engine (Linux)",
+    "manualAttachNote": "Attach the VHDX to a Hyper-V VM manually; automatic VM creation for Linux guests arrives with the Windows engine.",
+    "newIdentityNote": "The rebuilt image always receives a new machine identity and never resumes the original device's identity."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "VM specifications",
@@ -655,7 +660,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Boots the VM directly from the backup storage. Ready in seconds. Background migration copies data to the host.",
     "back": "Back",
     "continue": "Continue",
-    "starting": "Starting..."
+    "starting": "Starting...",
+    "rebuildEngineLinux": "Rebuild engine (Linux)",
+    "rebuildEngineDescription": "Rebuilds this whole-machine Linux snapshot into a Hyper-V VHDX disk image on a Linux device running the Breeze helper. The image always receives a new machine identity.",
+    "selectRebuildHost": "Select Linux rebuild host",
+    "chooseALinuxDeviceWithQemuUtils": "Choose an online Linux device with qemu-utils installed and enough free space for the image.",
+    "outputPath": "Output path",
+    "outputPathHint": "Absolute path on the rebuild host ending in .vhdx.",
+    "outputPathInvalid": "Enter an absolute path that ends in .vhdx.",
+    "startRebuild": "Start Rebuild",
+    "rebuildStarted": "Rebuild started. The VHDX will appear on the rebuild host when the rebuild completes."
   },
   "vaultConfigDialog": {
     "device": "Device",
