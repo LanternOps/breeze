@@ -99,6 +99,38 @@ describe('work_types partner-axis RLS', () => {
     expect(rows).toHaveLength(0);
   });
 
+  // Spec §4.1: the tenancy argument for rates rests on ORG tokens having no
+  // read path to work_types AT ALL -- the route answers 403 rather than an
+  // empty list precisely because the table is invisible at org scope. An
+  // org-scoped policy branch sneaking in later (the partner-wide SELECT branch
+  // pattern is a standing temptation) would silently undo that.
+  it('FORGE: an ORG-scoped context reads ZERO work types, even for its own partner', async () => {
+    const id = randomUUID();
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`INSERT INTO work_types (id, partner_id, name) VALUES (${id}, ${partnerA}, 'OrgInvisible')`),
+    );
+    // CONTROL: the row exists and the PARTNER-scoped context can see it, so an
+    // empty org-scoped result below is about the policy, not a failed insert.
+    const partnerRows = (await withDbAccessContext(partnerContext(partnerA), () =>
+      db.execute(sql`SELECT id FROM work_types WHERE id = ${id}`),
+    )) as unknown as Array<{ id: string }>;
+    expect(partnerRows).toHaveLength(1);
+
+    const orgRows = (await withDbAccessContext({
+      scope: 'organization',
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [],
+      // An org token DOES carry a partnerId -- that is exactly the trap. It
+      // still must not pass breeze_has_partner_access.
+      currentPartnerId: partnerA,
+      userId: null,
+    } as DbAccessContext, () =>
+      db.execute(sql`SELECT id FROM work_types WHERE partner_id = ${partnerA}`),
+    )) as unknown as Array<{ id: string }>;
+    expect(orgRows).toHaveLength(0);
+  });
+
   it('FORGE: a time entry cannot point at another partner\'s work type (composite FK, 23503)', async () => {
     const wtA = randomUUID();
     const userB = randomUUID();
