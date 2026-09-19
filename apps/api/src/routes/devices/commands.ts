@@ -18,7 +18,7 @@ import {
 } from '../../services/deviceMaintenanceLease';
 import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
 import { getUserEpochs } from '../../services/authEpochs';
-import { lockMaintenanceAssurance } from '../../services/maintenanceAuthorization';
+import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import { ENABLE_2FA } from '../auth/schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
@@ -393,7 +393,7 @@ commandsRoutes.post(
     let results: Array<{ device: typeof eligible[number]; result: Awaited<ReturnType<typeof applyMaintenanceEntry>> }>;
     try {
       results = await db.transaction(async (tx) => {
-        if (grantBinding && (!(await lockMaintenanceAssurance(tx, auth, grantBinding))
+        if (grantBinding && (!(await lockActorAssurance(tx, auth, grantBinding))
           || !(await consumeStepUpGrant(data.stepUpGrant!, grantBinding)))) {
           throw new MaintenanceStepUpConsumedError();
         }
@@ -759,7 +759,7 @@ commandsRoutes.post(
       const result = await db.transaction(async (tx) => {
         // Consume INSIDE the transaction, before the write: a grant burned by a
         // racing request must abort this one with no row change.
-        if (grantBinding && (!(await lockMaintenanceAssurance(tx, auth, grantBinding))
+        if (grantBinding && (!(await lockActorAssurance(tx, auth, grantBinding))
           || !(await consumeStepUpGrant(data.stepUpGrant!, grantBinding)))) {
           throw new MaintenanceStepUpConsumedError();
         }
