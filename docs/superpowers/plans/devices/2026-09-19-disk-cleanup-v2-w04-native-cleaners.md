@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
+tracking_issue: LanternOps/breeze#6326
 ---
 # Disk Cleanup v2 W04: OS-Native Cleaners — Implementation Plan
 
@@ -45,7 +45,7 @@ Every spec claim this wave depends on was re-verified against the working tree o
 
 2. **`COMMAND_OFFLINE_POLICY_REGISTRY` has no "long class used by patch/backup jobs".** The spec asks for `system_cleanup_run` in that class. Verified: the classes are exactly `live | standard | short | power_state` (`commandOfflinePolicy.ts:12`), and `standard` (7 days, `DEVICE_COMMAND_QUEUE_TTL_HOURS`, default 168) is the longest. `FILESYSTEM_ANALYSIS`, `INSTALL_PATCHES`, `SOFTWARE_INSTALL` and `SCRIPT` are all in `STANDARD_REVIEWED` (`:219-249`); backup/restore types are deliberately `live` (reject). So **both** new types go into `STANDARD_REVIEWED` — `system_cleanup_list` lands in the same class as `filesystem_analysis` exactly as the spec asks, and `system_cleanup_run` lands in the same class as patch installs, which is what the spec's phrase describes. A `CommandTypes` value listed in none of the arrays still resolves to `standard`, but `commandOfflinePolicy.test.ts:81` ("every CommandTypes value is EXPLICITLY classified, never left to the fallback") fails — that is the red this task hangs on.
 
-3. **A ninth registry the spec does not name: `services/commandTimeouts.ts`.** `getCommandTimeoutMs` (`:134`) falls through to `DEFAULT_TIMEOUT_MS` = 30 minutes for an unregistered type and logs `[commandTimeouts] Unknown command type "…"`. The stale reaper (`jobs/staleCommandReaper.ts:428`) uses that value, so a 90-minute DISM run would be terminalised at 30 minutes while the agent was still working. `system_cleanup_run` goes into `LONG_TIMEOUT_TYPES` (`TWO_HOURS`) and **`SYSTEM_CLEANUP_RUN_TIMEOUT_MS` is exported from that same module** so the route's lazy-timeout transition and the reaper cannot drift. `system_cleanup_list` goes into `MEDIUM_TIMEOUT_TYPES` (30 minutes), matching `FILESYSTEM_ANALYSIS`; the agent's own estimation cap is 3 minutes, so the server clock is pure backstop.
+3. **A ninth registry the spec does not name: `services/commandTimeouts.ts`.** `getCommandTimeoutMs` (`:134`) falls through to `DEFAULT_TIMEOUT_MS` = 30 minutes for an unregistered type and logs `[commandTimeouts] Unknown command type "…"`. The stale reaper (`jobs/staleCommandReaper.ts:428`) uses that value, so a 90-minute DISM run would be terminalised at 30 minutes while the agent was still working. `system_cleanup_run` gets an explicit three-hour branch and **`SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS` is exported from that same module** as the reaper's ceiling (amendment 23 replaced the fixed budget with a per-selection one stored on the row). `system_cleanup_list` goes into `MEDIUM_TIMEOUT_TYPES` (30 minutes), matching `FILESYSTEM_ANALYSIS`; the agent's own estimation cap is 3 minutes, so the server clock is pure backstop.
 
 4. **A tenth and eleventh registry, both Go-adjacent.** (a) `agent/internal/heartbeat/handlers_test.go:14` `allCommandTypes` — `TestHandlerRegistryNoExtraEntries` fails for any `handlerRegistry` key not listed there. (b) `apps/api/src/services/partnerTrust.test.ts:122` `agentDispatcherCommandTypes()` parses `agent/internal/heartbeat/handlers*.go` **and** `agent/internal/remote/tools/types.go` for `Cmd… = "…"` constants and registry entries, then asserts every discovered type is in **exactly one** of `LIFECYCLE_COMMAND_TYPES` / `GATED_COMMAND_TYPES`. So the moment the Go constants land, that API suite goes red until `partnerTrust.ts`'s `GATED_COMMAND_TYPES` gains both ids — which is the cross-language red this plan uses. `privilege.RequiresElevation` (`agent/internal/privilege/check.go:7`) is a twelfth, warn-only list; `system_cleanup_run` is added to it because cleanmgr, DISM, `apt-get` and `journalctl --vacuum-size` all need root/SYSTEM.
 
@@ -75,6 +75,28 @@ Every spec claim this wave depends on was re-verified against the working tree o
 
 17. **Cross-wave alignment pass (2026-09-19): `list`/`run` are a SERVICE, not a route body.** The five plans were written in parallel, and W05 assumed `apps/api/src/services/systemCleanup.ts` exports `systemCleanupAgentGate`, `queueSystemCleanupList` and `startSystemCleanupRun` (its amendment A1 offered to extract them itself if W04 had inlined them). That conditional is now resolved in W04's favour, because W04 is the producing wave: Task 11a's Produces gains `systemCleanupAgentGate`, Task 11b gains **Step 3a** which implements the two queue/start functions in that module, and both route handlers were rewritten to call them and to stop importing `CommandTypes`/`queueCommandForExecution` at all. W05 Task 1 then only *adds* an optional `aiOrigin` parameter and the `awaitSystemCleanupResult` poller. Note the type-name reservation: `SystemCleanupRunResult` in this module is **W04's parsed agent payload** (Task 11a), so the queue/start discriminated union is `SystemCleanupStartResult` — W05 was renamed to match. Also aligned: `no-silent-mutations`'s count assertion is a running total across waves (W01 147, W03 148), so Task 14 Step 5 bumps it to 149 rather than leaving it untouched.
 
+### Amendments from the Codex `gpt-6-astra` xhigh quorum (spec §13, 2026-09-19)
+
+Numbering continues from 17 rather than restarting: amendments 1–17 are cross-referenced by number throughout the tasks below, and renumbering them would silently invalidate every one of those references. Spec §13 findings 4, 5, 6, 11, 12, 13, 14 and 15 name W04 as the owning wave; each is applied in place in the tasks listed.
+
+18. **The self-managed-context registry is `middleware/selfManagedDbContextRoutes.ts`, not `db/index.ts`.** Spec §13 #5 says "`db/index.ts` registry". Verified: `db/index.ts` exports the context helpers (`withDbAccessContext:642`, `withSystemDbAccessContext:734`, `runOutsideDbContext:939`) but holds no route registry. The opt-out list is `SELF_MANAGED_DB_CONTEXT_ROUTES` (`middleware/selfManagedDbContextRoutes.ts:30`), an array of `{ method, pattern: RegExp }` matched against the **full** path including the `/api/v1` mount prefix, consulted by `isSelfManagedDbContextRoute` (`:280`) from `middleware/auth.ts`. (Task 11b)
+
+19. **There is no offline TTL class ≤ 15 minutes to reuse.** Spec §13 #6 asks for "the shortest offline TTL class (or a new `LIVE_ONLY` class if none is ≤ 15 min)". Verified `commandOfflinePolicy.ts:12,46-58`: the classes are `live` (which is `{kind:'reject'}` — it does not queue at all, so it cannot express "deliver within 15 minutes"), `standard` (168 h), `short` (24 h) and `power_state` (24 h). The shortest *queueing* class is therefore 24 h, 96× the ceiling this finding sets. W04 adds a `live_only` class at 15 minutes (env-tunable via `DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES`, floor 1 minute) and puts both new command types in it. W01 needs the same class for `file_delete` under `cleanupGuard` (spec §13 #6 names both waves): whichever lands first adds the class body, the other adds only its registry entries — the class body in Task 10 is the canonical text for both.
+
+20. **`apt-get -s autoremove` prints no "After this operation" line.** The plan's original parser (and the spec's §7.2 table) assumed it did. Spec §13 #14 records this as verified against the APT source: that summary is emitted by the interactive install path, not by `-s`. A parser looking for it matches nothing and — under this plan's own "unknown, never 0" rule — every Debian/Ubuntu endpoint would report `estimateKnown:false` for the one action whose size a tech most wants to know. The estimate becomes Σ `dpkg-query -W -f='${Installed-Size}\n' <pkg>…` over the packages named by the simulation's `Remv <pkg>` lines. `Installed-Size` is **KiB**, so the sum is multiplied by 1024. It is a *heuristic*, not an upper bound: unpacked footprint over-counts shared files. (Task 4)
+
+21. **`tmutil deletelocalsnapshots <date>` is machine-wide.** Spec §13 #11: a bare date deletes the snapshot with that timestamp on **every** mounted APFS volume, including a Time Machine destination or an attached backup disk carrying a snapshot of the same instant. The mount-point form `tmutil deletelocalsnapshots /` deletes only the startup volume's, and `tmutil listlocalsnapshots /` is already scoped that way. The per-date loop is replaced by a single mount-point invocation. (Task 5)
+
+22. **A `maintenance` lock package does not exist and must be created.** Spec §13 #4/#12 require one process-wide lock shared by `system_cleanup_run`, DISM and the `patching` Homebrew cleanup. Verified: the agent has `HomebrewProvider.brewMutateMu` (an *instance* mutex, `homebrew.go:52`) and `executor`'s per-execution containment, but nothing process-wide and nothing shared across packages. `agent/internal/maintenance` is new and must be a LEAF — it is imported by both `syscleanup` and `patching`, so it may import neither. (New Task 2b; consumed by 5, 6, 7)
+
+23. **`SYSTEM_CLEANUP_RUN_TIMEOUT_MS` becomes a function of the selection.** Spec §13 #14's aggregate-budget rule makes a single constant wrong in both directions: a lone `linux_pkg_cache_clean` would get two hours for five minutes of work, while `win_cleanmgr` (60 min) + `win_dism_component_cleanup` (90 min) needs 150 and would be reaped at 120 mid-DISM. The budget is Σ the selected actions' own timeouts + 10 minutes, capped at 3 h. The per-run deadline is **stored on the row** (`plan.deadlineAt`) so the route's lazy timeout and the reaper read one number instead of each recomputing it from a selection they would have to re-parse. `commandTimeouts.ts` keeps a constant only as the command row's ceiling: `SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS = 3 h`. (Tasks 7, 10, 11a, 11b)
+
+24. **The 16 KiB output cap must preserve the TAIL, not the head.** As originally written `capOutput` kept the first 16 KiB. Every parser in this package reads a *trailing* summary line (`Freed space:`, `This operation would free approximately`, `Archived and active journals take up`), and the failure a human reads in `outputTail` is at the end too. A head-preserving cap silently truncates exactly the bytes that matter on any verbose run. (Task 2)
+
+25. **`Component Store Cleanup Recommended : No` is not a zero.** Spec §13 #14: the two DISM fields are component-store *overhead*, and a direct `/StartComponentCleanup` has no 30-day grace period (that applies to the scheduled task, not the explicit invocation). "Recommended: No" means Windows does not think it is worth doing, not that nothing would be freed. The estimate reports the summed fields in both cases, flagged, and is labelled `heuristic`; the plan's original "Recommended: No → a KNOWN zero" behaviour and its "30-day grace" wording are both withdrawn. (Task 6)
+
+26. **The Delivery Optimization cache is not under `%SystemRoot%\SoftwareDistribution`,** and the `Temporary Files` handler covers more than `%SystemRoot%\Temp` (spec §13 #14). The DO cache default is `%SystemDrive%\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`, policy-overridable via `HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization\DOModifyCacheDrive`; the `Temporary Files` estimate is marked unknown rather than under-reported. (Task 6)
+
 ---
 
 ## File Structure
@@ -83,7 +105,8 @@ Every spec claim this wave depends on was re-verified against the working tree o
 |---|---|---|
 | `agent/internal/syscleanup/types.go` (+ `types_test.go`) | `Action`, `ActionInfo`, `ActionResult`, `Params`, `CatalogVersion`, `ActionIDs`, risk-flag constants | 1 |
 | `agent/internal/syscleanup/shared_ids_test.go` | Go↔TS parity: the ids in `packages/shared/src/validators/systemCleanup.ts` equal the Go catalog's | 1 |
-| `agent/internal/syscleanup/runner.go` (+ `runner_test.go`) | `cLocaleEnv`, `capOutput`, `runProcess`, `ProcResult` | 2 |
+| `agent/internal/syscleanup/runner.go` (+ `runner_test.go`) | `cLocaleEnv`, tail-preserving `capOutput`, `runProcess`, `ProcResult` | 2 |
+| `agent/internal/maintenance/lock.go` (+ `lock_test.go`) | process-wide `TryAcquire`/`Acquire`/`ErrBusy`, shared with `patching` | 2b |
 | `agent/internal/syscleanup/process_tree.go`, `_windows.go`, `_unix.go` (+ `process_tree_test.go`) | job object / process group containment | 2 |
 | `agent/internal/syscleanup/volumes.go` (+ `volumes_test.go`) | `VolumeFree`, `measureFreed`, `usageFn` seam | 3 |
 | `agent/internal/syscleanup/linux.go`, `linux_probe_linux.go`, `linux_probe_other.go` (+ `linux_test.go`) | three Linux actions, argv builders, four parsers, `Available()` probes | 4 |
@@ -93,10 +116,12 @@ Every spec claim this wave depends on was re-verified against the working tree o
 | `agent/internal/syscleanup/catalog.go` (+ `catalog_test.go`) | per-GOOS registry, `List`, `Run`, sequential ordering, estimate fan-out with a 3-minute cap | 7 |
 | `agent/internal/remote/tools/types.go`, `agent/internal/heartbeat/handlers.go`, `handlers_syscleanup.go`, `handlers_test.go`, `agent/internal/privilege/check.go` (+ `check_test.go`) | command consts, registry entries, handlers, elevation list | 8 |
 | `packages/shared/src/validators/systemCleanup.ts` (+ `.test.ts`), `packages/shared/src/validators/index.ts` | `SYSTEM_CLEANUP_ACTION_IDS`, `systemCleanupRunBodySchema`, `JOURNAL_VACUUM_*` bounds | 9 |
-| `apps/api/src/services/commandTypes.ts`, `commandOfflinePolicy.ts`, `commandTimeouts.ts` (+ `.test.ts`), `partnerTrust.ts` | four command-type registries + `SYSTEM_CLEANUP_RUN_TIMEOUT_MS` | 10 |
+| `apps/api/src/services/commandTypes.ts`, `commandOfflinePolicy.ts`, `commandTimeouts.ts` (+ `.test.ts`), `partnerTrust.ts` | four command-type registries + the `live_only` TTL class + `SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS` | 10 |
 | `apps/api/src/routes/devices/filesystemSystemCleanup.ts` (+ `.test.ts`), `routes/devices/index.ts` | four routes, agent-version gate, audit, lazy timeout | 11 |
 | `apps/api/src/services/systemCleanupResultPayload.ts` (+ `.test.ts`) | shared Zod shapes for the two agent payloads (route + result handler) | 11 |
-| `apps/api/src/services/commandResultHandlers.ts` (+ `commandResultHandlers.systemCleanup.test.ts`), `routes/agents/commands.ts` | `handleSystemCleanupRunResult`, registry entry, `REGISTRY_DISPATCHED_COMMAND_TYPES` | 12 |
+| `apps/api/src/services/commandResultHandlers.ts` (+ `commandResultHandlers.systemCleanup.test.ts`), `routes/agents/commands.ts` | `handleSystemCleanupRunResult`, late-result recording, registry entry, `REGISTRY_DISPATCHED_COMMAND_TYPES` | 12 |
+| `apps/api/src/services/commandCancelPropagation.ts` (+ `commandCancelPropagation.systemCleanup.test.ts`) | terminalise a system run whose command was cancelled | 12b |
+| `apps/api/src/middleware/selfManagedDbContextRoutes.ts` (+ `.test.ts`) | both POSTs opt out of the ambient request transaction | 11b |
 | `apps/web/src/components/devices/filesystem/SystemCleanupPanel.tsx` (+ `.test.tsx`) | list → rows → Run → destructive confirm → running → result; 409 banner | 13 |
 | `apps/web/src/components/devices/DeviceFilesystemTab.tsx` (+ `DeviceFilesystemTab.systemCleanup.test.tsx`), `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` | MOUNT + page-level proof + guard coverage | 14 |
 | `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/devices.json` | 8-locale strings | 15 |
@@ -261,6 +286,31 @@ func TestCatalogVersionIsPinned(t *testing.T) {
 		t.Fatalf("CatalogVersion = %d, want 1 (bump deliberately; the server records it on every run)", CatalogVersion)
 	}
 }
+
+// Spec §13 #4/#14/#15: two statuses and two risk flags the original catalogue
+// did not have. They are pinned here because the shared TS validator, the run
+// projection and eight locale catalogues all mirror these exact strings.
+func TestStatusAndRiskFlagStringsArePinned(t *testing.T) {
+	for _, pair := range [][2]string{
+		{StatusCompleted, "completed"},
+		{StatusFailed, "failed"},
+		{StatusTimedOut, "timed_out"},
+		{StatusUnavailable, "unavailable"},
+		{StatusBusy, "busy"},
+		{StatusNotStarted, "not_started"},
+		{RiskLongRunning, "long_running"},
+		{RiskMayRequireReboot, "may_require_reboot"},
+		{RiskMayRequireRebootFree, "may_require_reboot_free_state"},
+		{RiskRemovesDriverRollback, "removes_driver_rollback"},
+		{RiskRemovesPackages, "removes_packages"},
+		{RiskRemovesOSRollback, "removes_os_rollback"},
+		{RiskRemovesRecoveryPoints, "removes_recovery_points"},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("constant = %q, want %q", pair[0], pair[1])
+		}
+	}
+}
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
@@ -313,9 +363,16 @@ const (
 	RiskMayRequireRebootFree  RiskFlag = "may_require_reboot_free_state"
 	RiskRemovesDriverRollback RiskFlag = "removes_driver_rollback"
 	RiskRemovesPackages       RiskFlag = "removes_packages"
+	// Spec §13 #15. Two disclosures the original catalogue left implicit and
+	// that a tech cannot recover from afterwards: deleting Windows.old ends
+	// the 10-day "go back to the previous version" window, and deleting the
+	// local APFS snapshots removes the only on-disk restore points a Mac has
+	// when its Time Machine destination is not attached.
+	RiskRemovesOSRollback      RiskFlag = "removes_os_rollback"
+	RiskRemovesRecoveryPoints  RiskFlag = "removes_recovery_points"
 )
 
-// ActionStatus values as they appear in the run result (spec §7.3).
+// ActionStatus values as they appear in the run result (spec §7.3, §13 #4/#14).
 type ActionStatus = string
 
 const (
@@ -323,6 +380,13 @@ const (
 	StatusFailed      ActionStatus = "failed"
 	StatusTimedOut    ActionStatus = "timed_out"
 	StatusUnavailable ActionStatus = "unavailable"
+	// Another maintenance operation (a concurrent run, a patch job's Homebrew
+	// cleanup, DISM) held the process-wide lock. Distinct from `failed`
+	// because nothing was attempted and a retry is the right next step.
+	StatusBusy ActionStatus = "busy"
+	// The aggregate run budget expired before this action's turn. Distinct
+	// from `timed_out`, which means THIS action ran and overran its own cap.
+	StatusNotStarted ActionStatus = "not_started"
 )
 
 // ActionInfo is the static half of an action: everything the catalogue can
@@ -613,13 +677,19 @@ func TestCLocaleEnvAddsTheVariablesWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestCapOutputTruncatesAtSixteenKiB(t *testing.T) {
-	got := capOutput([]byte(strings.Repeat("a", maxOutputBytes+5000)))
-	if len(got) <= maxOutputBytes {
-		t.Fatalf("capped output is %d bytes, want slightly over the %d cap plus the marker", len(got), maxOutputBytes)
+// Plan amendment 24 (spec §13 #14): the cap keeps the TAIL. Every parser in
+// this package reads a trailing summary line, and the error a human reads in
+// outputTail is at the end too — a head-preserving cap throws away exactly the
+// bytes that matter on a verbose run.
+func TestCapOutputKeepsTheTail(t *testing.T) {
+	noise := strings.Repeat("a", maxOutputBytes+5000)
+	got := capOutput([]byte(noise + "\nFreed space: 1.2 G"))
+
+	if !strings.HasSuffix(got, "Freed space: 1.2 G") {
+		t.Fatalf("capped output must END with the trailing summary; got %q", got[max(0, len(got)-40):])
 	}
-	if !strings.HasSuffix(got, "... [truncated]") {
-		t.Fatalf("capped output must end with the truncation marker; got %q", got[len(got)-32:])
+	if !strings.HasPrefix(got, "[truncated] ") {
+		t.Fatalf("a truncated capture must say so at the start; got %q", got[:32])
 	}
 	if strings.Count(got, "a") > maxOutputBytes {
 		t.Fatalf("capped output kept %d payload bytes, want at most %d", strings.Count(got, "a"), maxOutputBytes)
@@ -929,6 +999,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/procoutput"
 )
@@ -973,14 +1044,27 @@ func containsFold(list []string, value string) bool {
 	return false
 }
 
-// capOutput trims and caps one stream, marking truncation so a parser (and a
-// human reading outputTail) can tell a short answer from a clipped one.
+// capOutput trims and caps one stream, keeping the TAIL and marking truncation
+// so a parser (and a human reading outputTail) can tell a short answer from a
+// clipped one.
+//
+// Tail, not head (spec §13 #14): every parser in this package matches a
+// trailing summary line — `Freed space:`, `This operation would free
+// approximately`, `Archived and active journals take up` — and a failing
+// cleaner puts its error last as well. Keeping the first 16 KiB of a chatty
+// `apt-get clean` or a DISM progress bar discards precisely the bytes the
+// estimate and the diagnosis depend on, and does it silently.
 func capOutput(b []byte) string {
 	text := strings.TrimSpace(procoutput.BytesToUTF8(b))
 	if len(text) <= maxOutputBytes {
 		return text
 	}
-	return strings.TrimSpace(text[:maxOutputBytes]) + "... [truncated]"
+	// Cut on a rune boundary so the kept tail is valid UTF-8.
+	tail := text[len(text)-maxOutputBytes:]
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	return "[truncated] " + strings.TrimSpace(tail)
 }
 
 // resolveBinary returns the first candidate that exists and is a regular file.
@@ -1136,6 +1220,304 @@ than the wrapper we started.
 cLocaleEnv OVERRIDES the inherited locale instead of appending one when absent,
 which is what procoutput.ApplyEnv does: on a host with LC_ALL=fr_FR.UTF-8 that
 helper is a no-op and every parser here would silently miss.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+MSG
+)"
+```
+
+---
+
+### Task 2b: The process-wide maintenance lock
+
+Spec §13 #4/#12. Two `system_cleanup_run` commands, or one of them and a patch job's debounced `brew cleanup`, can otherwise interleave: on Windows the second run rewrites `StateFlags5555` under the first one's feet and `/sagerun:5555` then executes the *other* run's selection; on macOS two `brew cleanup --prune=all` processes mutate the Cellar concurrently, which Homebrew does not promise is safe.
+
+**Files:**
+- Create: `agent/internal/maintenance/lock.go`
+- Create: `agent/internal/maintenance/lock_test.go` (Test)
+
+**Interfaces:**
+- Consumes: nothing. A LEAF package by requirement — both `syscleanup` and `patching` import it, so it may import neither (plan amendment 22).
+- Produces:
+  ```go
+  var ErrBusy = errors.New("another maintenance operation is already running")
+  func TryAcquire(owner string) (release func(), err error)
+  func Acquire(ctx context.Context, owner string) (release func(), err error)
+  func CurrentOwner() string
+  ```
+
+- [ ] **Step 1: Write the failing test** — create `agent/internal/maintenance/lock_test.go`:
+
+```go
+package maintenance
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestTryAcquireIsExclusiveAndReleasable(t *testing.T) {
+	release, err := TryAcquire("system_cleanup_run")
+	if err != nil {
+		t.Fatalf("first TryAcquire failed: %v", err)
+	}
+	if got := CurrentOwner(); got != "system_cleanup_run" {
+		t.Fatalf("CurrentOwner() = %q", got)
+	}
+
+	if _, err := TryAcquire("brew_cleanup"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second TryAcquire err = %v, want ErrBusy", err)
+	}
+
+	release()
+	if got := CurrentOwner(); got != "" {
+		t.Fatalf("CurrentOwner() after release = %q, want empty", got)
+	}
+	second, err := TryAcquire("brew_cleanup")
+	if err != nil {
+		t.Fatalf("TryAcquire after release failed: %v", err)
+	}
+	second()
+}
+
+// Double release must be harmless: every caller uses `defer release()` and
+// some also release early on a branch.
+func TestReleaseIsIdempotent(t *testing.T) {
+	release, err := TryAcquire("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	release()
+	other, err := TryAcquire("b")
+	if err != nil {
+		t.Fatalf("lock was not free after a double release: %v", err)
+	}
+	other()
+}
+
+// The patch-job path WAITS (its cleanup is best-effort background work);
+// the command path does not (a tech is watching a spinner).
+func TestAcquireWaitsAndHonoursContextCancellation(t *testing.T) {
+	release, err := TryAcquire("holder")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := Acquire(ctx, "waiter"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Acquire err = %v, want context.DeadlineExceeded", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		got, err := Acquire(context.Background(), "waiter")
+		if err != nil {
+			t.Errorf("Acquire after release failed: %v", err)
+			return
+		}
+		got()
+	}()
+	release()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Acquire did not proceed after the holder released")
+	}
+}
+
+func TestConcurrentTryAcquireAdmitsExactlyOne(t *testing.T) {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	admitted := 0
+	releases := make([]func(), 0, 8)
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			release, err := TryAcquire("racer")
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			admitted++
+			releases = append(releases, release)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if admitted != 1 {
+		t.Fatalf("%d goroutines acquired the lock, want exactly 1", admitted)
+	}
+	for _, release := range releases {
+		release()
+	}
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+cd agent && go test -race ./internal/maintenance/...
+```
+
+Expected failure: `internal/maintenance/lock_test.go:12:19: undefined: TryAcquire` … `[build failed]`.
+
+- [ ] **Step 3: Implement** — create `agent/internal/maintenance/lock.go`:
+
+```go
+// Package maintenance holds the agent's single process-wide lock for
+// long-running OS maintenance (Disk Cleanup v2, spec §13 #4/#12).
+//
+// It exists because the operations it guards are not merely slow, they
+// interfere:
+//
+//   - Windows Disk Cleanup is driven by a SHARED registry profile
+//     (StateFlags5555). Two concurrent runs both rewrite it before invoking
+//     `cleanmgr /sagerun:5555`, and whichever wrote last decides what BOTH
+//     runs execute — a tech who selected "Setup Log Files" can silently get
+//     "Previous Installations" because another session started a run a second
+//     earlier.
+//   - DISM refuses to service the same image twice and returns an unhelpful
+//     error, so the second run looks like a failure rather than a conflict.
+//   - Homebrew does not guarantee that `brew cleanup --prune=all` is safe
+//     concurrently with another cleanup or with an in-flight upgrade.
+//
+// A LEAF package with no internal imports: both internal/syscleanup and
+// internal/patching depend on it, so any import back into either would be a
+// cycle.
+package maintenance
+
+import (
+	"context"
+	"errors"
+	"sync"
+)
+
+// ErrBusy is returned by TryAcquire when another operation holds the lock.
+// Callers surface it as a `busy` action status rather than a failure: nothing
+// was attempted, and a retry is the right next step.
+var ErrBusy = errors.New("another maintenance operation is already running")
+
+var (
+	mu     sync.Mutex
+	locked bool
+	owner  string
+	// waiters is signalled on every release so Acquire can re-check without
+	// polling. A condition variable rather than a channel because the lock is
+	// held by a plain bool under `mu` and Cond is the shape that fits.
+	waiters = sync.NewCond(&mu)
+)
+
+// TryAcquire takes the lock or fails immediately with ErrBusy.
+//
+// The command path uses this: a tech is watching a spinner, and "something
+// else is running maintenance, try again shortly" is a better answer than an
+// unbounded wait inside a two-hour command budget.
+//
+// The returned release is idempotent — callers `defer release()` and some also
+// release early on a branch.
+func TryAcquire(ownerName string) (func(), error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if locked {
+		return nil, ErrBusy
+	}
+	locked = true
+	owner = ownerName
+	return releaser(), nil
+}
+
+// Acquire waits for the lock, or for ctx to be done.
+//
+// The patch-job Homebrew cleanup uses this: it is debounced background work
+// with no user waiting on it, so queueing behind a cleanup run is strictly
+// better than skipping the cleanup entirely.
+func Acquire(ctx context.Context, ownerName string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Wake the Cond when ctx is done so a waiter cannot block past its
+	// deadline; the re-check below then observes ctx.Err().
+	stop := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		waiters.Broadcast()
+		mu.Unlock()
+	})
+	defer stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	for locked {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		waiters.Wait()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	locked = true
+	owner = ownerName
+	return releaser(), nil
+}
+
+// CurrentOwner names the holder, or "" when the lock is free. For log lines
+// and the `busy` status's reason string — never for control flow, since it is
+// stale the instant it returns.
+func CurrentOwner() string {
+	mu.Lock()
+	defer mu.Unlock()
+	return owner
+}
+
+func releaser() func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			mu.Lock()
+			locked = false
+			owner = ""
+			waiters.Broadcast()
+			mu.Unlock()
+		})
+	}
+}
+```
+
+- [ ] **Step 4: Run it and watch it pass**
+
+```bash
+cd agent && go test -race ./internal/maintenance/...
+```
+
+Expected: `ok github.com/breeze-rmm/agent/internal/maintenance` — 4 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add agent/internal/maintenance/lock.go agent/internal/maintenance/lock_test.go
+git commit -m "$(cat <<'MSG'
+feat(agent): process-wide maintenance lock for OS cleanup and brew cleanup
+
+The operations this guards do not merely contend, they interfere. Windows Disk
+Cleanup is driven by a SHARED registry profile: two concurrent runs both
+rewrite StateFlags5555 before invoking /sagerun:5555, and whichever wrote last
+decides what BOTH runs execute — a tech who selected "Setup Log Files" can
+silently get "Previous Installations".
+
+TryAcquire for the command path (a tech is watching a spinner, so `busy` beats
+an unbounded wait inside the run budget) and Acquire for the debounced patch-job
+brew cleanup (background work with nobody waiting, so queueing beats skipping).
+
+A leaf package: syscleanup and patching both import it, so it imports neither.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
@@ -1441,7 +1823,9 @@ MSG
   func packageAutoremoveArgs(pm linuxPackageManager) []string
   func journalDiskUsageArgs() []string
   func journalVacuumArgs(bytes int64) []string
-  func parseAptAutoremoveFreed(stdout string) (int64, bool)
+  func parseAptAutoremovePackages(stdout string) ([]string, bool)
+  func dpkgQueryInstalledSizeArgs(packages []string) []string
+  func parseDpkgInstalledSizes(stdout string) (int64, bool)
   func parseDnfAutoremoveFreed(stdout string, exitCode int) (int64, bool)
   func parseJournalDiskUsage(stdout string) (int64, bool)
   func linuxActions() []Action   // linux_pkg_cache_clean, linux_pkg_autoremove, linux_journal_vacuum
@@ -1684,7 +2068,11 @@ func TestJournalVacuumArgsClampTheRequestedSize(t *testing.T) {
 	}
 }
 
-func TestParseAptAutoremoveFreed(t *testing.T) {
+// Plan amendment 20 (spec §13 #14): `apt-get -s autoremove` prints NO
+// "After this operation" line — that summary belongs to the interactive
+// install path. The simulation names the packages on `Remv` lines and the
+// size comes from dpkg.
+func TestParseAptAutoremovePackages(t *testing.T) {
 	const fixture = `NOTE: This is only a simulation!
       apt-get needs root privileges for real execution.
 Reading package lists...
@@ -1693,41 +2081,70 @@ The following packages will be REMOVED:
   linux-image-6.1.0-13-amd64 linux-headers-6.1.0-13-amd64
 0 upgraded, 0 newly installed, 2 to remove and 0 not upgraded.
 Remv linux-image-6.1.0-13-amd64 [6.1.55-1]
-After this operation, 412 MB disk space will be freed.
+Remv linux-headers-6.1.0-13-amd64 [6.1.55-1]
 `
-	got, ok := parseAptAutoremoveFreed(fixture)
-	if !ok || got != 412_000_000 {
-		t.Fatalf("parseAptAutoremoveFreed() = (%d, %v), want (412000000, true)", got, ok)
+	got, ok := parseAptAutoremovePackages(fixture)
+	if !ok {
+		t.Fatal("the documented -s autoremove shape must parse")
+	}
+	if strings.Join(got, ",") != "linux-image-6.1.0-13-amd64,linux-headers-6.1.0-13-amd64" {
+		t.Fatalf("parseAptAutoremovePackages() = %v", got)
 	}
 }
 
-// "will be used" is the opposite sign; reporting it as reclaimable would be a
-// lie, so it parses as "nothing to reclaim", not as an unknown.
-func TestParseAptAutoremoveFreedTreatsSpaceUsedAsZero(t *testing.T) {
-	got, ok := parseAptAutoremoveFreed("After this operation, 3,072 kB of additional disk space will be used.\n")
-	if !ok || got != 0 {
-		t.Fatalf("parseAptAutoremoveFreed() = (%d, %v), want (0, true)", got, ok)
-	}
-}
-
-// Nothing to remove: apt prints no "After this operation" line at all. That is
-// a KNOWN zero, not an unknown.
-func TestParseAptAutoremoveFreedOnAnEmptyPlan(t *testing.T) {
+// Nothing to remove: a KNOWN empty plan, which the caller turns into a known 0.
+func TestParseAptAutoremovePackagesOnAnEmptyPlan(t *testing.T) {
 	const fixture = `Reading package lists...
 Building dependency tree...
 0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
 `
-	got, ok := parseAptAutoremoveFreed(fixture)
-	if !ok || got != 0 {
-		t.Fatalf("parseAptAutoremoveFreed() = (%d, %v), want (0, true)", got, ok)
+	got, ok := parseAptAutoremovePackages(fixture)
+	if !ok || len(got) != 0 {
+		t.Fatalf("parseAptAutoremovePackages() = (%v, %v), want ([], true)", got, ok)
 	}
 }
 
-// A shape the parser does not recognise must be UNKNOWN, never 0 (spec §7.1):
-// a confident zero reads as "nothing to reclaim" in the UI.
-func TestParseAptAutoremoveFreedOnUnparseableOutput(t *testing.T) {
-	if _, ok := parseAptAutoremoveFreed("E: Could not open lock file\n"); ok {
-		t.Fatal("unparseable apt output must be estimateKnown:false, not 0")
+// A shape the parser does not recognise must be UNKNOWN, never 0 (spec §7.1).
+func TestParseAptAutoremovePackagesOnUnparseableOutput(t *testing.T) {
+	if _, ok := parseAptAutoremovePackages("E: Could not open lock file\n"); ok {
+		t.Fatal("unparseable apt output must be estimateKnown:false, not an empty plan")
+	}
+}
+
+// A package name is passed straight back as an argv token to dpkg-query, so
+// anything that is not a valid Debian package name is dropped rather than
+// escaped.
+func TestParseAptAutoremovePackagesRejectsHostileNames(t *testing.T) {
+	const hostile = `Remv good-package [1.0]
+Remv ../../etc/passwd [1.0]
+Remv ; rm -rf / [1.0]
+Remv --force-all [1.0]
+`
+	got, _ := parseAptAutoremovePackages(hostile)
+	if strings.Join(got, ",") != "good-package" {
+		t.Fatalf("parseAptAutoremovePackages() = %v, want only the well-formed name", got)
+	}
+}
+
+// dpkg reports Installed-Size in KiB.
+func TestParseDpkgInstalledSizes(t *testing.T) {
+	got, ok := parseDpkgInstalledSizes("402000\n10240\n\n")
+	if !ok || got != (402_000+10_240)*1024 {
+		t.Fatalf("parseDpkgInstalledSizes() = (%d, %v), want (%d, true)", got, ok, (402_000+10_240)*1024)
+	}
+	if _, ok := parseDpkgInstalledSizes("dpkg-query: no packages found\n"); ok {
+		t.Fatal("a dpkg error body must be unknown, not 0")
+	}
+	if got, ok := parseDpkgInstalledSizes(""); !ok || got != 0 {
+		t.Fatalf("empty output for an empty package list = (%d, %v), want (0, true)", got, ok)
+	}
+}
+
+func TestDpkgQueryArgs(t *testing.T) {
+	got := dpkgQueryInstalledSizeArgs([]string{"a", "b"})
+	want := []string{"-W", "-f=${Installed-Size}\n", "a", "b"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("dpkgQueryInstalledSizeArgs() = %v, want %v", got, want)
 	}
 }
 
@@ -1894,6 +2311,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1929,6 +2347,7 @@ var linuxPackageManagerCandidates = []linuxPackageManager{
 
 const journalctlBinary = "/usr/bin/journalctl"
 const journalDirectory = "/var/log/journal"
+const dpkgQueryBinary = "/usr/bin/dpkg-query"
 
 // detectPackageManager returns the first candidate whose binary exists. Order
 // is apt, dnf, yum — the spec's "first present" (§7.2).
@@ -1975,9 +2394,11 @@ func journalVacuumArgs(requested int64) []string {
 	return []string{fmt.Sprintf("--vacuum-size=%d", clampJournalVacuumBytes(requested))}
 }
 
-// journalVacuumEstimate is an UPPER bound: journalctl vacuums ARCHIVED files
-// only, so the active journal's share of current usage is not reclaimable and
-// the real figure is lower (spec §7.2). The UI labels every estimate "up to".
+// journalVacuumEstimate is a HEURISTIC, not an upper bound (spec §13 #14):
+// journalctl vacuums ARCHIVED files only and rotates on file boundaries, so
+// usage-minus-target can be either high (the active journal's share is not
+// reclaimable) or low (a rotation during the run frees more). The action
+// labels it `heuristic` rather than "up to".
 func journalVacuumEstimate(currentUsage, target int64) int64 {
 	if delta := currentUsage - target; delta > 0 {
 		return delta
@@ -1985,32 +2406,74 @@ func journalVacuumEstimate(currentUsage, target int64) int64 {
 	return 0
 }
 
-var aptFreedPattern = regexp.MustCompile(`After this operation, ([0-9.,]+\s*[kKMGTP]?B) (?:of )?disk space will be freed`)
-var aptUsedPattern = regexp.MustCompile(`After this operation, [0-9.,]+\s*[kKMGTP]?B of additional disk space will be used`)
+var aptRemvPattern = regexp.MustCompile(`(?m)^Remv\s+(\S+)`)
 var aptPlanPattern = regexp.MustCompile(`(?m)^\d+ upgraded, \d+ newly installed, (\d+) to remove`)
+// Debian policy §5.6.1. The captured name is handed straight back to
+// dpkg-query as an argv token, so anything else is dropped rather than quoted.
+var debianPackageNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{1,127}$`)
 var dnfFreedPattern = regexp.MustCompile(`(?m)^Freed space:\s*([0-9.,]+\s*[KkMGTP]?i?B?)\s*$`)
 var journalUsagePattern = regexp.MustCompile(`journals take up ([0-9.,]+\s*[KkMGTP]?i?B?) in the file system`)
 
-// parseAptAutoremoveFreed reads `apt-get -s autoremove`'s summary line.
+// parseAptAutoremovePackages reads the package names from
+// `apt-get -s autoremove`.
 //
-// Three distinguishable outcomes, and the distinction is the point:
-//   - a freed figure -> (bytes, true)
-//   - "will be used", or a plan that removes 0 packages -> (0, true): a KNOWN
-//     zero, which the UI may honestly render as "nothing to reclaim"
-//   - anything else (a lock error, a non-English endpoint that slipped past
-//     the C locale, a future format) -> (0, false): estimateKnown:false, never
-//     a confident zero (spec §7.1)
-func parseAptAutoremoveFreed(stdout string) (int64, bool) {
-	if match := aptFreedPattern.FindStringSubmatch(stdout); match != nil {
-		return parseDecimalSize(match[1])
+// It does NOT look for "After this operation, X disk space will be freed":
+// verified against the APT source (spec §13 #14), that line is emitted by the
+// interactive install path and never by `-s`. The original parser looked for
+// it, matched nothing on every Debian/Ubuntu endpoint, and — correctly, under
+// this package's own "unknown, never 0" rule — would have reported
+// estimateKnown:false for the one action whose size a tech most wants to see.
+//
+// Three distinguishable outcomes:
+//   - `Remv` lines -> (names, true)
+//   - a plan that removes 0 packages -> ([], true): a KNOWN empty plan
+//   - anything else (a lock error, a future format) -> (nil, false)
+func parseAptAutoremovePackages(stdout string) ([]string, bool) {
+	matches := aptRemvPattern.FindAllStringSubmatch(stdout, -1)
+	if len(matches) == 0 {
+		if plan := aptPlanPattern.FindStringSubmatch(stdout); plan != nil && plan[1] == "0" {
+			return []string{}, true
+		}
+		return nil, false
 	}
-	if aptUsedPattern.MatchString(stdout) {
-		return 0, true
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if debianPackageNamePattern.MatchString(match[1]) {
+			names = append(names, match[1])
+		}
 	}
-	if match := aptPlanPattern.FindStringSubmatch(stdout); match != nil && match[1] == "0" {
-		return 0, true
+	return names, true
+}
+
+func dpkgQueryInstalledSizeArgs(packages []string) []string {
+	return append([]string{"-W", "-f=${Installed-Size}\n"}, packages...)
+}
+
+// parseDpkgInstalledSizes sums `dpkg-query -W -f='${Installed-Size}\n'`.
+//
+// Installed-Size is in KiB (Debian policy §5.6.20), hence the ×1024. The
+// result is a HEURISTIC, not an upper bound: unpacked footprint over-counts
+// files shared with packages that stay installed, and dpkg rounds to whole
+// KiB. The action labels it as such rather than presenting it as "up to".
+func parseDpkgInstalledSizes(stdout string) (int64, bool) {
+	var total int64
+	saw := false
+	for _, line := range strings.Split(stdout, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		kib, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil || kib < 0 {
+			return 0, false
+		}
+		total += kib * 1024
+		saw = true
 	}
-	return 0, false
+	// No lines at all is only honest for an empty package list; the caller
+	// short-circuits that case and never reaches here with real packages.
+	_ = saw
+	return total, true
 }
 
 // parseDnfAutoremoveFreed reads `dnf --assumeno autoremove`'s summary.
@@ -2157,11 +2620,23 @@ func (linuxPkgAutoremoveAction) Estimate(ctx context.Context) (int64, bool, stri
 	switch pm.name {
 	case "apt":
 		proc := runProcess(ctx, linuxEstimateTimeout, pm.binary, aptAutoremoveSimulateArgs()...)
-		bytes, known := parseAptAutoremoveFreed(proc.Stdout)
+		packages, known := parseAptAutoremovePackages(proc.Stdout)
 		if !known {
 			return 0, false, ""
 		}
-		return bytes, true, "apt-get -s autoremove"
+		if len(packages) == 0 {
+			return 0, true, "apt-get -s autoremove: nothing to remove"
+		}
+		dpkg, ok := resolveBinary(dpkgQueryBinary)
+		if !ok {
+			return 0, false, ""
+		}
+		sizes := runProcess(ctx, linuxEstimateTimeout, dpkg, dpkgQueryInstalledSizeArgs(packages)...)
+		bytes, sizesKnown := parseDpkgInstalledSizes(sizes.Stdout)
+		if !sizesKnown {
+			return 0, false, ""
+		}
+		return bytes, true, fmt.Sprintf("heuristic: installed size of %d package(s) apt would remove", len(packages))
 	case "dnf":
 		proc := runProcess(ctx, linuxEstimateTimeout, pm.binary, dnfAutoremoveSimulateArgs()...)
 		bytes, known := parseDnfAutoremoveFreed(proc.Stdout, proc.ExitCode)
@@ -2225,7 +2700,7 @@ func (linuxJournalVacuumAction) Estimate(ctx context.Context) (int64, bool, stri
 		return 0, false, ""
 	}
 	return journalVacuumEstimate(usage, journalVacuumDefaultBytes), true,
-		"journalctl --disk-usage minus the vacuum target; archived journals only"
+		"heuristic: journalctl --disk-usage minus the vacuum target; only archived journals are vacuumed"
 }
 
 func (a linuxJournalVacuumAction) Run(ctx context.Context, params Params) ActionResult {
@@ -2335,7 +2810,7 @@ MSG
   func brewCleanupDryRunArgs() []string   // {"cleanup", "--prune=all", "-n"}
   // agent/internal/syscleanup
   func tmutilListSnapshotsArgs() []string
-  func tmutilDeleteSnapshotArgs(date string) []string
+  func tmutilDeleteSnapshotsArgs() []string
   func parseTmutilSnapshots(stdout string) []string
   func parseBrewCleanupDryRun(output string) (int64, bool)
   func darwinActions() []Action
@@ -2385,7 +2860,7 @@ cd agent && go test -race -run 'TestBrewCleanup|TestRunBrewCleanupStillSwallows'
 
 Expected failure on macOS: `internal/patching/homebrew_test.go:…: undefined: brewCleanupDryRunArgs` … `[build failed]`. On Linux the package builds with those tests excluded, so the real gate is Step 4's darwin cross-vet, which fails with the same `undefined` error.
 
-- [ ] **Step 3: Implement the extraction** — in `agent/internal/patching/homebrew.go`, add `"context"` to the import block, add `brewCleanupDryRunArgs` next to `brewCleanupArgs` (`:280`), and replace the body of `runBrewCleanup` (`:319`):
+- [ ] **Step 3: Implement the extraction** — in `agent/internal/patching/homebrew.go`, add `"context"`, `"os/exec"`, `"unicode/utf8"` and `"github.com/breeze-rmm/agent/internal/maintenance"` to the import block (`"strings"` and `"fmt"` are already there), add `brewCleanupDryRunArgs` next to `brewCleanupArgs` (`:280`), and replace the body of `runBrewCleanup` (`:319`):
 
 ```go
 // brewCleanupDryRunArgs builds the non-mutating estimate invocation. Pure and
@@ -2394,57 +2869,103 @@ func brewCleanupDryRunArgs() []string {
 	return []string{"cleanup", "--prune=all", "-n"}
 }
 
-// BrewCleanup runs `brew cleanup --prune=all` (or `-n` for a dry run) through
-// the same brewCommand() path Scan/Install/Uninstall use, so it executes as the
-// console user via `sudo -n -H -u` when the agent is running as root.
+// brewCleanupTailLimit caps a captured cleanup stream, keeping the TAIL: the
+// only line the estimator reads ("This operation would free approximately …")
+// is the last one, and truncatePatchOutput keeps the head.
+const brewCleanupTailLimit = 16 * 1024
+
+func truncateBrewOutputTail(output []byte) string {
+	text := strings.TrimSpace(string(output))
+	if len(text) <= brewCleanupTailLimit {
+		return text
+	}
+	tail := text[len(text)-brewCleanupTailLimit:]
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	return "[truncated] " + strings.TrimSpace(tail)
+}
+
+// RunBrewCleanupBounded runs `brew cleanup --prune=all` (or `-n`) under the
+// caller's context, with a tail-preserving 16 KiB output cap, and returns both
+// the output and the error.
 //
-// Exported for the system-cleanup catalogue (Disk Cleanup v2 §7.2), which
-// needs BOTH halves this function's unexported predecessor could not provide:
-// the command output (for the dry-run estimate) and the error (so a failed
-// action is reported as failed instead of vanishing into a warn log). The
-// patch-job caller keeps the swallow-and-log behaviour through runBrewCleanup
-// below — that one must never fail the job that triggered it (#4912).
+// It takes NO lock. Two callers need this invocation and they hold the
+// maintenance lock at different levels: `BrewCleanup` below (the patch-job
+// entry point) acquires it around this call, while the system-cleanup
+// catalogue's `mac_brew_cleanup` action runs underneath a lock its whole run
+// already holds — locking here as well would deadlock that path.
 //
-// Serialized against Install/Uninstall via brewMutateMu, the same lock its
-// predecessor took and for the same reason (see HomebrewProvider's doc).
-func BrewCleanup(ctx context.Context, dryRun bool) (string, error) {
+// It lives in `patching` rather than in `syscleanup` because this is where the
+// brew binary lookup and the console-user `sudo -n -H -u` handling already
+// live (`brewCommand`), and `syscleanup` may import `patching` while the
+// reverse would be a cycle. `syscleanup` calls it directly rather than
+// reimplementing the sudo dance, which is exactly the duplication spec §13's
+// narrative warns against.
+//
+// NOT runCmdCombinedOutputWithTimeout: that helper builds its own
+// context.WithTimeout and ignores the caller's, so a cancelled cleanup run
+// would leave brew running for up to patchMutateTimeout (30 minutes) after the
+// command it belonged to was already reported.
+func RunBrewCleanupBounded(ctx context.Context, dryRun bool) (string, error) {
 	args := brewCleanupArgs()
 	if dryRun {
 		args = brewCleanupDryRunArgs()
 	}
 	provider := &HomebrewProvider{}
-	cmd, err := provider.brewCommand(args...)
+	built, err := provider.brewCommand(args...)
 	if err != nil {
 		return "", fmt.Errorf("brew cleanup: could not build command: %w", err)
 	}
-	if ctx != nil {
-		if deadline, ok := ctx.Deadline(); ok {
-			_ = deadline // the timeout below is the binding one; the deadline is advisory
-		}
-	}
 
-	brewCleanupMu.Lock()
-	output, err := runCmdCombinedOutputWithTimeout(cmd, patchMutateTimeout)
-	brewCleanupMu.Unlock()
-	text := truncatePatchOutput(output)
+	cmd := exec.CommandContext(ctx, built.Path, built.Args[1:]...)
+	cmd.Env = built.Env
+	cmd.Dir = built.Dir
+	output, err := cmd.CombinedOutput()
+	text := truncateBrewOutputTail(output)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return text, fmt.Errorf("brew cleanup cancelled: %w", ctxErr)
+	}
 	if err != nil {
 		return text, fmt.Errorf("brew cleanup failed: %w: %s", err, text)
 	}
 	return text, nil
 }
 
-// brewCleanupMu serializes BrewCleanup against itself and against the
-// provider-scoped mutations. A package-level lock (rather than the provider's
-// brewMutateMu) because BrewCleanup has no provider instance to borrow one
-// from — and Homebrew does not promise that a cleanup is safe concurrently
-// with an upgrade.
-var brewCleanupMu sync.Mutex
+// BrewCleanup is the exported, LOCKED entry point.
+//
+// Exported for the system-cleanup catalogue (Disk Cleanup v2 §7.2), which
+// needs both halves this function's unexported predecessor could not provide:
+// the command output (for the dry-run estimate) and the error (so a failed
+// action is reported as failed instead of vanishing into a warn log).
+//
+// The lock is the process-wide maintenance lock (spec §13 #4/#12), not the
+// provider's instance mutex: a `brew cleanup` firing on its debounce timer
+// while a `system_cleanup_run` is mid-flight is exactly the interleaving that
+// mutex cannot see, since the two live in different packages. Acquire (not
+// TryAcquire) because this path is background work with nobody waiting —
+// queueing behind a cleanup run is strictly better than skipping the cleanup.
+func BrewCleanup(ctx context.Context, dryRun bool) (string, error) {
+	release, err := maintenance.Acquire(ctx, "brew_cleanup")
+	if err != nil {
+		return "", fmt.Errorf("brew cleanup: %w", err)
+	}
+	defer release()
+	return RunBrewCleanupBounded(ctx, dryRun)
+}
 
 // runBrewCleanup is the patch-job path: best-effort maintenance whose failures
 // are logged (warn) and swallowed, never surfaced to the job that triggered it.
+//
+// The 30-minute ceiling replaces the one runCmdCombinedOutputWithTimeout used
+// to impose internally; it is now the caller's, which is what lets the
+// maintenance lock's wait be bounded too.
 func (h *HomebrewProvider) runBrewCleanup() {
+	ctx, cancel := context.WithTimeout(context.Background(), patchMutateTimeout)
+	defer cancel()
+
 	h.brewMutateMu.Lock()
-	output, err := BrewCleanup(context.Background(), false)
+	output, err := BrewCleanup(ctx, false)
 	h.brewMutateMu.Unlock()
 	if err != nil {
 		log.Warn("brew cleanup failed", "error", err.Error(), "output", output)
@@ -2460,23 +2981,35 @@ func (h *HomebrewProvider) runBrewCleanup() {
 package syscleanup
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// `tmutil thinlocalsnapshots` is OPPORTUNISTIC and may delete nothing, so the
-// action enumerates and deletes each snapshot by date instead (spec §7.2).
-func TestTmutilArgsAreDeterministicDeletes(t *testing.T) {
+// Two independent constraints, and the second is the one plan amendment 21
+// (spec §13 #11) added:
+//   - `thinlocalsnapshots` is OPPORTUNISTIC and may delete nothing, so it is
+//     never used;
+//   - `deletelocalsnapshots <date>` deletes that timestamp's snapshot on EVERY
+//     mounted APFS volume, which on a Mac with its Time Machine disk attached
+//     reaches the backup destination. The MOUNT-POINT form is scoped to the
+//     startup volume, and is also what `listlocalsnapshots /` enumerates.
+func TestTmutilArgsAreMountPointScoped(t *testing.T) {
 	if got := strings.Join(tmutilListSnapshotsArgs(), " "); got != "listlocalsnapshots /" {
 		t.Fatalf("tmutilListSnapshotsArgs() = %q", got)
 	}
-	if got := strings.Join(tmutilDeleteSnapshotArgs("2026-09-19-104500"), " "); got != "deletelocalsnapshots 2026-09-19-104500" {
-		t.Fatalf("tmutilDeleteSnapshotArgs() = %q", got)
+	if got := strings.Join(tmutilDeleteSnapshotsArgs(), " "); got != "deletelocalsnapshots /" {
+		t.Fatalf("tmutilDeleteSnapshotsArgs() = %q, want the mount-point form", got)
 	}
-	for _, args := range [][]string{tmutilListSnapshotsArgs(), tmutilDeleteSnapshotArgs("2026-09-19-104500")} {
+	for _, args := range [][]string{tmutilListSnapshotsArgs(), tmutilDeleteSnapshotsArgs()} {
 		for _, arg := range args {
 			if arg == "thinlocalsnapshots" {
 				t.Fatalf("args %v use the opportunistic thinning command", args)
+			}
+			// A bare date would be machine-wide. The only argument either
+			// invocation may carry is the mount point.
+			if regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d{6}$`).MatchString(arg) {
+				t.Fatalf("args %v pass a bare snapshot date, which deletes on every mounted volume", args)
 			}
 		}
 	}
@@ -2580,12 +3113,20 @@ import (
 	"github.com/breeze-rmm/agent/internal/patching"
 )
 
-// brewCleanupRun delegates to the exported patching entry point, which keeps
-// the console-user `sudo -n -H -u` handling Homebrew requires when the agent
-// runs as root. Extracting it there rather than reimplementing it here is the
-// whole point: there is one brew invocation path in the agent.
+// brewCleanupRun delegates to patching's BOUNDED, UNLOCKED entry point.
+//
+// Unlocked on purpose: `syscleanup.Run` already holds the process-wide
+// maintenance lock for the whole run (spec §13 #4/#12), so calling
+// `patching.BrewCleanup` — which acquires it — would deadlock against
+// ourselves. `RunBrewCleanupBounded` is the same invocation both callers use;
+// only the locking level differs.
+//
+// Delegating rather than reimplementing is the point: the console-user
+// `sudo -n -H -u` dance Homebrew requires when the agent runs as root lives in
+// `patching.brewCommand`, and there is exactly one brew invocation path in the
+// agent.
 func brewCleanupRun(ctx context.Context, dryRun bool) (string, error) {
-	return patching.BrewCleanup(ctx, dryRun)
+	return patching.RunBrewCleanupBounded(ctx, dryRun)
 }
 ```
 
@@ -2630,13 +3171,23 @@ const (
 	darwinEstimateTimeout = 60 * time.Second
 )
 
-func tmutilListSnapshotsArgs() []string { return []string{"listlocalsnapshots", "/"} }
+// startupVolumeMountPoint is the ONLY argument either tmutil invocation takes.
+const startupVolumeMountPoint = "/"
 
-// tmutilDeleteSnapshotArgs takes a date already validated by
-// parseTmutilSnapshots — the ONLY source a date may come from. Nothing from
-// the command payload reaches this function.
-func tmutilDeleteSnapshotArgs(date string) []string {
-	return []string{"deletelocalsnapshots", date}
+func tmutilListSnapshotsArgs() []string {
+	return []string{"listlocalsnapshots", startupVolumeMountPoint}
+}
+
+// tmutilDeleteSnapshotsArgs uses the MOUNT-POINT form.
+//
+// `tmutil deletelocalsnapshots <date>` deletes the snapshot bearing that
+// timestamp on EVERY mounted APFS volume (spec §13 #11) — on a Mac with its
+// Time Machine destination or a cloned backup disk attached, that reaches
+// volumes this action was never asked to touch. The mount-point form is
+// confined to the startup volume, takes no date at all, and therefore also
+// removes the only path by which a parsed string could become an argv token.
+func tmutilDeleteSnapshotsArgs() []string {
+	return []string{"deletelocalsnapshots", startupVolumeMountPoint}
 }
 
 // snapshotDatePattern is deliberately exact: the captured value is passed
@@ -2686,10 +3237,13 @@ func (macSnapshotsAction) ID() string { return "mac_tm_local_snapshots" }
 func (a macSnapshotsAction) Describe() ActionInfo {
 	return ActionInfo{
 		ID:             a.ID(),
-		Label:          "Time Machine local snapshots",
-		Description:    "Deletes the local APFS snapshots Time Machine keeps on the startup volume. Backups on the Time Machine destination are untouched.",
-		OS:             "darwin",
-		RiskFlags:      []string{},
+		Label:       "Time Machine local snapshots",
+		Description: "Deletes the local APFS snapshots Time Machine keeps on the startup volume. Backups on the Time Machine destination are untouched.",
+		OS:          "darwin",
+		// Spec §13 #15: on a Mac whose Time Machine destination is not
+		// attached, these snapshots are the ONLY on-disk restore points. The
+		// original catalogue left that undisclosed.
+		RiskFlags:      []string{RiskRemovesRecoveryPoints},
 		AffectsVolumes: []string{"/"},
 	}
 }
@@ -2717,9 +3271,14 @@ func (macSnapshotsAction) Estimate(ctx context.Context) (int64, bool, string) {
 	return 0, false, fmt.Sprintf("%d local snapshot(s); macOS does not report their size", count)
 }
 
-// Run deletes each listed snapshot by date. One failure does not stop the
-// others; the action is completed when at least one delete succeeded and
-// failed when every one did.
+// Run deletes the startup volume's local snapshots in ONE mount-point-scoped
+// invocation.
+//
+// The per-date loop this replaces was both slower and wrong: each iteration
+// passed a bare timestamp, which tmutil applies to every mounted APFS volume
+// (spec §13 #11). Listing first is kept only so the result can say how many
+// snapshots were present, and so an empty volume is `completed` rather than a
+// tmutil error.
 func (a macSnapshotsAction) Run(ctx context.Context, _ Params) ActionResult {
 	started := time.Now()
 	binary, ok := resolveBinary(tmutilBinary)
@@ -2728,41 +3287,21 @@ func (a macSnapshotsAction) Run(ctx context.Context, _ Params) ActionResult {
 	}
 
 	listing := runProcess(ctx, darwinEstimateTimeout, binary, tmutilListSnapshotsArgs()...)
-	dates := parseTmutilSnapshots(listing.Stdout)
-	if len(dates) == 0 {
+	before := len(parseTmutilSnapshots(listing.Stdout))
+	if before == 0 {
 		return ActionResult{ID: a.ID(), Status: StatusCompleted, ExitCode: 0,
-			DurationMs: time.Since(started).Milliseconds(), OutputTail: "no local snapshots to delete"}
+			DurationMs: time.Since(started).Milliseconds(), OutputTail: "no local snapshots on the startup volume"}
 	}
 
-	var lines []string
-	deleted, failed := 0, 0
-	for _, date := range dates {
-		proc := runProcess(ctx, darwinSnapshotTimeout, binary, tmutilDeleteSnapshotArgs(date)...)
-		if proc.TimedOut {
-			lines = append(lines, fmt.Sprintf("%s: timed out", date))
-			failed++
-			continue
-		}
-		if proc.ExitCode != 0 || proc.Err != nil {
-			lines = append(lines, fmt.Sprintf("%s: exit %d %s", date, proc.ExitCode, proc.Stderr))
-			failed++
-			continue
-		}
-		lines = append(lines, fmt.Sprintf("%s: deleted", date))
-		deleted++
-	}
-
-	result := ActionResult{
-		ID:         a.ID(),
-		ExitCode:   0,
-		DurationMs: time.Since(started).Milliseconds(),
-		OutputTail: capOutput([]byte(strings.Join(lines, "\n"))),
-		Status:     StatusCompleted,
-	}
-	if deleted == 0 && failed > 0 {
-		result.Status = StatusFailed
-		result.ExitCode = 1
-		result.Error = fmt.Sprintf("all %d snapshot deletions failed", failed)
+	proc := runProcess(ctx, darwinSnapshotTimeout, binary, tmutilDeleteSnapshotsArgs()...)
+	result := resultFromProc(a.ID(), proc)
+	result.DurationMs = time.Since(started).Milliseconds()
+	if result.Status == StatusCompleted {
+		after := runProcess(ctx, darwinEstimateTimeout, binary, tmutilListSnapshotsArgs()...)
+		result.OutputTail = capOutput([]byte(fmt.Sprintf(
+			"%d local snapshot(s) before, %d after\n%s",
+			before, len(parseTmutilSnapshots(after.Stdout)), proc.Stdout,
+		)))
 	}
 	return result
 }
@@ -2893,7 +3432,8 @@ MSG
   func cleanmgrArgs() []string                   // {"/sagerun:5555"}
   func dismAnalyzeArgs() []string                // {"/English","/Online","/Cleanup-Image","/AnalyzeComponentStore"}
   func dismCleanupArgs() []string                // {"/English","/Online","/Cleanup-Image","/StartComponentCleanup"}
-  func parseDismAnalyze(stdout string) (int64, bool)
+  func parseDismAnalyze(stdout string) (bytes int64, known bool, recommended bool)
+  func deliveryOptimizationCachePath(policyValue string) string
   func parseDismSize(text string) (int64, bool)
   func windowsActions() []Action
   // windows-only seam, stubbed elsewhere:
@@ -2909,6 +3449,8 @@ MSG
 package syscleanup
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -2993,6 +3535,16 @@ func TestCleanmgrHandlerRiskFlags(t *testing.T) {
 	}
 	if !containsFold(byslug["device_driver_packages"].riskFlags, RiskRemovesDriverRollback) {
 		t.Error("Device Driver Packages must carry removes_driver_rollback")
+	}
+	// Spec §13 #15: deleting Windows.old / $WINDOWS.~BT ends the "go back to
+	// the previous version" window, which no later action can restore.
+	for _, slug := range []string{"previous_installations", "upgrade_discarded_files"} {
+		if !containsFold(byslug[slug].riskFlags, RiskRemovesOSRollback) {
+			t.Errorf("%s must carry removes_os_rollback", slug)
+		}
+	}
+	if containsFold(byslug["setup_log_files"].riskFlags, RiskRemovesOSRollback) {
+		t.Error("Setup Log Files must not claim to remove OS rollback")
 	}
 	if len(byslug["setup_log_files"].riskFlags) != 0 {
 		t.Error("Setup Log Files carries no risk flag")
@@ -3080,34 +3632,46 @@ Component Store Cleanup Recommended : Yes
 
 The operation completed successfully.
 `
-	got, ok := parseDismAnalyze(fixture)
+	got, ok, recommended := parseDismAnalyze(fixture)
 	if !ok {
 		t.Fatal("the documented AnalyzeComponentStore shape must parse")
 	}
 	if want := int64(1_760_936_755 + 408_431_493); got != want {
 		t.Fatalf("parseDismAnalyze() = %d, want %d", got, want)
 	}
+	if !recommended {
+		t.Fatal("recommended must be true for this fixture")
+	}
 }
 
-// "Cleanup Recommended : No" is a KNOWN zero — there is genuinely nothing to
-// reclaim, and the UI should say so rather than show "unknown" (spec §7.2).
-func TestParseDismAnalyzeRecommendedNoIsAKnownZero(t *testing.T) {
+// Plan amendment 25 (spec §13 #14): "Cleanup Recommended : No" is NOT a zero.
+// The two fields are component-store overhead and a direct
+// /StartComponentCleanup has no 30-day grace period, so Windows saying "not
+// worth it" is not the same as "nothing would be freed". The sum is still
+// reported; only the recommendation flag changes.
+func TestParseDismAnalyzeReportsTheSumEvenWhenNotRecommended(t *testing.T) {
 	const fixture = `Component Store (WinSxS) information:
 
 Actual Size of Component Store : 6.10 GB
 
-    Shared with Windows : 6.10 GB
-    Backups and Disabled Features : 0 bytes
-    Cache and Temporary Data : 0 bytes
+    Shared with Windows : 5.90 GB
+    Backups and Disabled Features : 180.00 MB
+    Cache and Temporary Data : 20.00 MB
 
 Number of Reclaimable Packages : 0
 Component Store Cleanup Recommended : No
 
 The operation completed successfully.
 `
-	got, ok := parseDismAnalyze(fixture)
-	if !ok || got != 0 {
-		t.Fatalf("parseDismAnalyze() = (%d, %v), want (0, true)", got, ok)
+	got, ok, recommended := parseDismAnalyze(fixture)
+	if !ok {
+		t.Fatal("the shape must parse")
+	}
+	if want := int64(180*(1<<20) + 20*(1<<20)); got != want {
+		t.Fatalf("parseDismAnalyze() = %d, want %d — a 'No' recommendation does not zero the estimate", got, want)
+	}
+	if recommended {
+		t.Fatal("recommended must be false for this fixture")
 	}
 }
 
@@ -3118,8 +3682,115 @@ The file or directory is corrupted and unreadable.
 
 The DISM log file can be found at C:\Windows\Logs\DISM\dism.log
 `
-	if _, ok := parseDismAnalyze(fixture); ok {
+	if _, ok, _ := parseDismAnalyze(fixture); ok {
 		t.Fatal("an error body must be estimateKnown:false, never 0")
+	}
+}
+
+// Plan amendment 26 (spec §13 #14). The Delivery Optimization cache is NOT
+// under SoftwareDistribution — it lives in the NetworkService profile and is
+// policy-overridable — and the Temporary Files handler covers more than
+// %SystemRoot%\Temp, so sizing it from that one directory under-reports.
+func TestDeliveryOptimizationAndTemporaryFilesEstimatePaths(t *testing.T) {
+	byslug := map[string]winCleanmgrHandler{}
+	for _, handler := range winCleanmgrHandlers {
+		byslug[handler.slug] = handler
+	}
+
+	do := byslug["delivery_optimization_files"]
+	if len(do.estimatePaths) != 0 {
+		t.Fatalf("Delivery Optimization must resolve its cache at runtime (policy override), not from a static path list; got %v", do.estimatePaths)
+	}
+	if do.estimatePathsFn == nil {
+		t.Fatal("Delivery Optimization needs a runtime path resolver")
+	}
+	if got := deliveryOptimizationCachePath(""); got != `%SystemDrive%\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache` {
+		t.Fatalf("default DO cache path = %q", got)
+	}
+	// DOModifyCacheDrive names a drive or a folder; the default tail is
+	// appended to a bare drive letter.
+	if got := deliveryOptimizationCachePath("E:"); !strings.HasPrefix(got, `E:\`) {
+		t.Fatalf("policy-overridden DO cache path = %q, want it on E:", got)
+	}
+	if got := deliveryOptimizationCachePath(`D:\DOCache`); got != `D:\DOCache` {
+		t.Fatalf("an explicit policy folder must be used verbatim; got %q", got)
+	}
+
+	if len(byslug["temporary_files"].estimatePaths) != 0 {
+		t.Fatal("Temporary Files must report an UNKNOWN estimate: the handler covers more than %SystemRoot%\\Temp")
+	}
+}
+
+// --- Profile hygiene (spec §13 #4) -----------------------------------------
+//
+// These are the most safety-critical assertions in the wave, and the Windows
+// `go test` job does not run internal/syscleanup at all — so the registry seam
+// is a function variable and this fake is the only place the rules execute.
+
+func withFakeVolumeCaches(t *testing.T, present []string, failOn string) map[string]uint32 {
+	t.Helper()
+	written := map[string]uint32{}
+	originalPresent, originalSet := presentVolumeCaches, setStateFlags
+	t.Cleanup(func() { presentVolumeCaches, setStateFlags = originalPresent, originalSet })
+
+	presentVolumeCaches = func() ([]string, error) { return present, nil }
+	setStateFlags = func(keyName string, value uint32) error {
+		if keyName == failOn {
+			return errors.New("access is denied")
+		}
+		written[keyName] = value
+		return nil
+	}
+	return written
+}
+
+// The whole point: /sagerun:5555 runs EVERY handler flagged 2, wherever that 2
+// came from. A third-party or excluded handler that already carries one must
+// be zeroed, or it executes alongside the selection with no trace in the
+// result.
+func TestCleanmgrRunZeroesEveryNonSelectedHandlerIncludingUnallowlistedOnes(t *testing.T) {
+	written := withFakeVolumeCaches(t, []string{
+		"Setup Log Files",
+		"Update Cleanup",
+		"DownloadsFolder",          // excluded built-in
+		"Contoso Disk Helper",      // third-party
+		"Windows ESD installation files",
+	}, "")
+
+	action := winCleanmgrAction{selectedSlugs: []string{"setup_log_files"}}
+	_ = action.Run(context.Background(), Params{})
+
+	if written["Setup Log Files"] != 2 {
+		t.Fatalf("the selected handler was flagged %d, want 2", written["Setup Log Files"])
+	}
+	for _, keyName := range []string{"Update Cleanup", "DownloadsFolder", "Contoso Disk Helper", "Windows ESD installation files"} {
+		value, seen := written[keyName]
+		if !seen {
+			t.Errorf("%q was never written; a stale StateFlags5555=2 would run it", keyName)
+			continue
+		}
+		if value != 0 {
+			t.Errorf("%q was flagged %d, want 0", keyName, value)
+		}
+	}
+}
+
+// A half-written profile executes an arbitrary subset that matches neither the
+// selection nor the reported result, so the action fails before cleanmgr runs.
+func TestCleanmgrRunAbortsBeforeCleanmgrWhenAProfileWriteFails(t *testing.T) {
+	written := withFakeVolumeCaches(t,
+		[]string{"Setup Log Files", "Contoso Disk Helper"}, "Contoso Disk Helper")
+
+	got := winCleanmgrAction{selectedSlugs: []string{"setup_log_files"}}.Run(context.Background(), Params{})
+
+	if got.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if !strings.Contains(got.Error, "aborted before running cleanmgr") {
+		t.Fatalf("error = %q, want it to say the run was aborted before cleanmgr", got.Error)
+	}
+	if _, ran := written["__cleanmgr_started__"]; ran {
+		t.Fatal("cleanmgr must not have been started")
 	}
 }
 
@@ -3174,7 +3845,7 @@ import (
 // Reporting handlers were consolidated in 10 1809+ — so the allowlist is
 // intersected with whatever is present and missing names are simply not
 // offered (spec §7.2).
-func presentVolumeCaches() ([]string, error) {
+func presentVolumeCachesImpl() ([]string, error) {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, volumeCachesKey, registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
 		return nil, err
@@ -3187,7 +3858,7 @@ func presentVolumeCaches() ([]string, error) {
 // then runs exactly the handlers flagged 2 — which is why every allowlisted
 // handler NOT selected is explicitly written 0 rather than left alone: a stale
 // 2 from an earlier run would silently widen the current one.
-func setStateFlags(keyName string, value uint32) error {
+func setStateFlagsImpl(keyName string, value uint32) error {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, volumeCachesKey+`\`+keyName, registry.SET_VALUE)
 	if err != nil {
 		return err
@@ -3208,7 +3879,7 @@ var (
 // SHLoadIndirectString can expand, the export is absent on some SKUs, and a
 // failed expansion must not cost the handler its row in the UI. Callers fall
 // back to the fixed friendly-name table, then to the key name.
-func handlerDisplayName(keyName string) string {
+func handlerDisplayNameImpl(keyName string) string {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, volumeCachesKey+`\`+keyName, registry.QUERY_VALUE)
 	if err != nil {
 		return ""
@@ -3242,7 +3913,22 @@ func handlerDisplayName(keyName string) string {
 	return syscall.UTF16ToString(buffer)
 }
 
-func expandWindowsPath(path string) string { return os.ExpandEnv(expandPercentVars(path)) }
+func expandWindowsPathImpl(path string) string { return os.ExpandEnv(expandPercentVars(path)) }
+
+// readDOCachePolicyImpl reads DOModifyCacheDrive. Absent policy -> "", which
+// deliveryOptimizationCachePath turns into the NetworkService default.
+func readDOCachePolicyImpl() string {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, doPolicyKey, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer key.Close()
+	value, _, err := key.GetStringValue(doPolicyValue)
+	if err != nil {
+		return ""
+	}
+	return value
+}
 ```
 
 Create `agent/internal/syscleanup/windows_registry_other.go`:
@@ -3258,13 +3944,15 @@ import "errors"
 // allowlist, every argv builder and the DISM parser — stays untagged and is
 // therefore exercised by `go test ./...` on the Linux CI runner, where the
 // Windows job does not run internal/syscleanup at all.
-func presentVolumeCaches() ([]string, error) { return nil, errors.New("not windows") }
+func presentVolumeCachesImpl() ([]string, error) { return nil, errors.New("not windows") }
 
-func setStateFlags(string, uint32) error { return errors.New("not windows") }
+func setStateFlagsImpl(string, uint32) error { return errors.New("not windows") }
 
-func handlerDisplayName(string) string { return "" }
+func handlerDisplayNameImpl(string) string { return "" }
 
-func expandWindowsPath(path string) string { return path }
+func expandWindowsPathImpl(path string) string { return path }
+
+func readDOCachePolicyImpl() string { return "" }
 ```
 
 - [ ] **Step 4: Implement the Windows actions** — create `agent/internal/syscleanup/windows.go`:
@@ -3283,8 +3971,22 @@ import (
 	"time"
 )
 
+// The Windows-only seam, indirected through function VARIABLES so the profile
+// hygiene rules (spec §13 #4) are testable on the Linux CI runner — the
+// Windows `go test` job does not run internal/syscleanup at all, so a
+// registry-shaped fake here is the only place those rules are ever executed.
+var (
+	presentVolumeCaches = presentVolumeCachesImpl
+	setStateFlags       = setStateFlagsImpl
+	handlerDisplayName  = handlerDisplayNameImpl
+	expandWindowsPath   = expandWindowsPathImpl
+	readDOCachePolicy   = readDOCachePolicyImpl
+)
+
 const (
 	volumeCachesKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches`
+	doPolicyKey     = `SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization`
+	doPolicyValue   = "DOModifyCacheDrive"
 	stateFlagsValue = "StateFlags5555"
 
 	cleanmgrBinaryRelative = `\System32\cleanmgr.exe`
@@ -3303,11 +4005,16 @@ const (
 // where one is known (spec §7.2); an empty list means the handler is opaque
 // and reports estimateKnown:false.
 type winCleanmgrHandler struct {
-	slug          string
-	keyName       string
-	label         string
-	riskFlags     []string
+	slug      string
+	keyName   string
+	label     string
+	riskFlags []string
+	// estimatePaths are static, environment-expanded directories.
 	estimatePaths []string
+	// estimatePathsFn resolves paths that depend on machine state — today only
+	// the Delivery Optimization cache, whose location is policy-overridable
+	// (spec §13 #14). Nil for every other handler.
+	estimatePathsFn func() []string
 }
 
 // The allowlist from spec §7.2, verbatim. Anything else under VolumeCaches is
@@ -3320,12 +4027,14 @@ var winCleanmgrHandlers = []winCleanmgrHandler{
 	{slug: "update_cleanup", keyName: "Update Cleanup", label: "Windows Update cleanup",
 		riskFlags: []string{RiskMayRequireReboot}},
 	{slug: "delivery_optimization_files", keyName: "Delivery Optimization Files", label: "Delivery Optimization files",
-		estimatePaths: []string{`%SystemRoot%\SoftwareDistribution\DeliveryOptimization`}},
+		estimatePathsFn: func() []string { return []string{deliveryOptimizationCachePath(readDOCachePolicy())} }},
 	{slug: "device_driver_packages", keyName: "Device Driver Packages", label: "Device driver packages",
 		riskFlags: []string{RiskRemovesDriverRollback}},
 	{slug: "previous_installations", keyName: "Previous Installations", label: "Previous Windows installations",
+		riskFlags:     []string{RiskRemovesOSRollback},
 		estimatePaths: []string{`%SystemDrive%\Windows.old`}},
 	{slug: "upgrade_discarded_files", keyName: "Upgrade Discarded Files", label: "Discarded upgrade files",
+		riskFlags:     []string{RiskRemovesOSRollback},
 		estimatePaths: []string{`%SystemDrive%\$WINDOWS.~BT`, `%SystemDrive%\$WINDOWS.~WS`}},
 	{slug: "windows_upgrade_log_files", keyName: "Windows Upgrade Log Files", label: "Windows upgrade log files",
 		estimatePaths: []string{`%SystemDrive%\$Windows.~BT\Sources\Panther`, `%SystemRoot%\Panther`}},
@@ -3340,14 +4049,27 @@ var winCleanmgrHandlers = []winCleanmgrHandler{
 	{slug: "windows_error_reporting_files", keyName: "Windows Error Reporting Files", label: "Error reporting files"},
 	{slug: "windows_error_reporting_system_archive_files", keyName: "Windows Error Reporting System Archive Files", label: "Error reporting archive"},
 	{slug: "windows_error_reporting_system_queue_files", keyName: "Windows Error Reporting System Queue Files", label: "Error reporting queue"},
-	{slug: "temporary_files", keyName: "Temporary Files", label: "Temporary files",
-		estimatePaths: []string{`%SystemRoot%\Temp`}},
+	// No estimatePaths on purpose (spec §13 #14): under the SYSTEM account the
+	// handler covers %SystemRoot%\Temp AND the service profiles' temp
+	// directories, so sizing it from one directory under-reports. An honest
+	// "size unknown" beats a confidently low number.
+	{slug: "temporary_files", keyName: "Temporary Files", label: "Temporary files"},
 	{slug: "windows_defender", keyName: "Windows Defender", label: "Microsoft Defender scan history",
 		estimatePaths: []string{`%ProgramData%\Microsoft\Windows Defender\Scans\History`}},
 	{slug: "old_chkdsk_files", keyName: "Old ChkDsk Files", label: "Old ChkDsk fragments"},
 	{slug: "diagnostic_data_viewer_database_files", keyName: "Diagnostic Data Viewer database files", label: "Diagnostic Data Viewer database"},
 	{slug: "branchcache", keyName: "BranchCache", label: "BranchCache"},
 	{slug: "content_indexer_cleaner", keyName: "Content Indexer Cleaner", label: "Search index fragments"},
+}
+
+// paths returns the directories whose size stands in for this handler, static
+// and runtime-resolved alike. Empty means "opaque" — the handler reports
+// estimateKnown:false rather than a number it cannot stand behind.
+func (h winCleanmgrHandler) paths() []string {
+	if h.estimatePathsFn != nil {
+		return h.estimatePathsFn()
+	}
+	return h.estimatePaths
 }
 
 func winCleanmgrHandlerBySubID(subID string) (winCleanmgrHandler, bool) {
@@ -3361,6 +4083,28 @@ func winCleanmgrHandlerBySubID(subID string) (winCleanmgrHandler, bool) {
 		}
 	}
 	return winCleanmgrHandler{}, false
+}
+
+// defaultDOCachePath is where Delivery Optimization keeps its cache when no
+// policy moves it (spec §13 #14). NOT under SoftwareDistribution, which is
+// where the original plan looked and where nothing DO-related lives.
+const defaultDOCachePath = `%SystemDrive%\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`
+
+// deliveryOptimizationCachePath applies the DOModifyCacheDrive policy value.
+//
+// The policy accepts either a bare drive ("E:") or an explicit folder
+// ("D:\DOCache"). A drive letter keeps the default tail; a folder is used
+// verbatim. Pure, so the three cases are table-tested on any host.
+func deliveryOptimizationCachePath(policyValue string) string {
+	trimmed := strings.TrimSpace(policyValue)
+	if trimmed == "" {
+		return defaultDOCachePath
+	}
+	if regexp.MustCompile(`^[A-Za-z]:\\?$`).MatchString(trimmed) {
+		drive := strings.TrimSuffix(trimmed, `\`)
+		return drive + `\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`
+	}
+	return strings.TrimSuffix(trimmed, `\`)
 }
 
 func cleanmgrArgs() []string { return []string{"/sagerun:5555"} }
@@ -3422,32 +4166,34 @@ var dismBackupsPattern = regexp.MustCompile(`Backups and Disabled Features\s*:\s
 var dismCachePattern = regexp.MustCompile(`Cache and Temporary Data\s*:\s*([0-9.]+\s*(?:bytes|KB|MB|GB|TB))`)
 var dismRecommendedNoPattern = regexp.MustCompile(`Component Store Cleanup Recommended\s*:\s*No`)
 
-// parseDismAnalyze sums the two reclaimable fields of AnalyzeComponentStore.
+// parseDismAnalyze sums the two reclaimable fields of AnalyzeComponentStore
+// and reports whether Windows recommends the cleanup.
 //
-// The figure is an UPPER bound and the UI labels it "up to": StartComponentCleanup
-// honours a 30-day grace period and retains the most recent backup, so it
-// reclaims strictly less than these two fields report (spec §7.1).
+// The figure is a HEURISTIC, not an upper bound (spec §13 #14). The original
+// plan called it an upper bound on the strength of a 30-day grace period that
+// does not apply here: that grace belongs to the SCHEDULED
+// StartComponentCleanup task, not to the explicit invocation this action
+// makes. The two fields are component-store *overhead*, which can be more or
+// less than what the run actually frees.
 //
-// "Cleanup Recommended : No" is a KNOWN zero — there is genuinely nothing to
-// reclaim. An unrecognised body is unknown, never 0.
-func parseDismAnalyze(stdout string) (int64, bool) {
+// `Component Store Cleanup Recommended : No` is NOT a zero either — it means
+// Windows does not think the cleanup is worth doing, which is a different
+// claim from "nothing would be freed". The sum is reported in both cases and
+// the recommendation rides alongside it so the UI can say so.
+//
+// An unrecognised body is unknown, never 0.
+func parseDismAnalyze(stdout string) (bytes int64, known bool, recommended bool) {
 	backups := dismBackupsPattern.FindStringSubmatch(stdout)
 	cache := dismCachePattern.FindStringSubmatch(stdout)
 	if backups == nil || cache == nil {
-		if dismRecommendedNoPattern.MatchString(stdout) {
-			return 0, true
-		}
-		return 0, false
+		return 0, false, false
 	}
 	backupBytes, backupOK := parseDismSize(backups[1])
 	cacheBytes, cacheOK := parseDismSize(cache[1])
 	if !backupOK || !cacheOK {
-		return 0, false
+		return 0, false, false
 	}
-	if dismRecommendedNoPattern.MatchString(stdout) {
-		return 0, true
-	}
-	return backupBytes + cacheBytes, true
+	return backupBytes + cacheBytes, true, !dismRecommendedNoPattern.MatchString(stdout)
 }
 
 // ---------------------------------------------------------------------------
@@ -3491,7 +4237,7 @@ func (a winCleanmgrAction) Estimate(context.Context) (int64, bool, string) {
 	var total int64
 	known := false
 	for _, handler := range a.availableHandlers() {
-		for _, path := range handler.estimatePaths {
+		for _, path := range handler.paths() {
 			size, ok := directorySize(expandWindowsPath(path))
 			if !ok {
 				continue
@@ -3547,7 +4293,7 @@ func (a winCleanmgrAction) SubActions() []SubActionInfo {
 			label = handler.label
 		}
 		info := SubActionInfo{ID: "win_cleanmgr:" + handler.slug, Label: label}
-		for _, path := range handler.estimatePaths {
+		for _, path := range handler.paths() {
 			if size, ok := directorySize(expandWindowsPath(path)); ok {
 				info.EstimateBytes += size
 				info.EstimateKnown = true
@@ -3558,8 +4304,32 @@ func (a winCleanmgrAction) SubActions() []SubActionInfo {
 	return out
 }
 
-// Run flags the selected handlers 2 and every other ALLOWLISTED handler 0,
-// then runs cleanmgr /sagerun:5555.
+// Run rewrites the ENTIRE StateFlags5555 profile, then runs cleanmgr
+// /sagerun:5555.
+//
+// Profile hygiene (spec §13 #4) is the safety-critical part, and it is why
+// this writes 0 to **every** VolumeCaches subkey rather than only to the
+// allowlisted ones it did not select:
+//
+//   - `/sagerun:5555` executes every handler whose StateFlags5555 is 2,
+//     wherever that value came from. A third-party cleanup handler, an OEM
+//     one, or an excluded built-in (DownloadsFolder) that already carries a 2
+//     — set by another tool, by a prior Breeze run, or by a user who once ran
+//     `cleanmgr /sageset:5555` — would run alongside the selection with no
+//     trace in the result. The allowlist constrains what Breeze may SELECT; it
+//     cannot constrain what the shared profile already says.
+//   - Any write failure aborts BEFORE cleanmgr starts. A half-written profile
+//     is worse than no run: it executes an arbitrary subset that matches
+//     neither what the tech chose nor what the result will claim.
+//   - Nothing is restored afterwards. Profile 5555 is Breeze-owned by
+//     convention, the next run rewrites it wholesale, and "restoring" a
+//     profile another tool may have edited concurrently would be a second
+//     guess at state we do not own.
+//
+// HKLM\SOFTWARE\...\VolumeCaches is trusted as admin-only: a caller who can
+// write there can already run cleanmgr directly. Handler key names are treated
+// as LABELS, not as authenticity — the allowlist is a list of things Breeze
+// offers, not proof that a key of that name is the Microsoft handler.
 //
 // Session-0 caveat (spec §7.2): under the SYSTEM account cleanmgr renders a
 // hidden progress UI and is documented to return before its work finishes or
@@ -3568,6 +4338,10 @@ func (a winCleanmgrAction) SubActions() []SubActionInfo {
 // INFORMATIONAL ONLY, and reports timed_out with partial status at the 60
 // minute cap. The acceptance criterion for this action is the W05 lab run
 // (Task 17), not a unit test — nothing here can prove session-0 behaviour.
+//
+// The process-wide maintenance lock is held by the RUN (catalog.go), not
+// acquired here: two runs rewriting this one shared profile is exactly the
+// interleaving that lock exists to prevent.
 func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 	started := time.Now()
 	binary, ok := resolveBinary(systemRoot() + cleanmgrBinaryRelative)
@@ -3585,24 +4359,44 @@ func (a winCleanmgrAction) Run(ctx context.Context, _ Params) ActionResult {
 		selectedSet[handler.keyName] = true
 	}
 
-	var notes []string
-	subResults := make([]SubActionRun, 0, len(selected))
-	for _, handler := range winCleanmgrHandlers {
+	present, err := presentVolumeCaches()
+	if err != nil {
+		return ActionResult{ID: a.ID(), Status: StatusFailed, ExitCode: 1,
+			DurationMs: time.Since(started).Milliseconds(),
+			Error:      fmt.Sprintf("could not enumerate the Disk Cleanup handlers: %v", err)}
+	}
+
+	// Pass 1: write the whole profile. EVERY subkey on the machine, not just
+	// the allowlisted ones.
+	zeroed := 0
+	for _, keyName := range present {
 		value := uint32(0)
-		if selectedSet[handler.keyName] {
+		if selectedSet[keyName] {
 			value = 2
 		}
-		// A handler this build does not have is not an error — the allowlist
-		// spans several Windows generations by design.
-		if err := setStateFlags(handler.keyName, value); err != nil && selectedSet[handler.keyName] {
-			notes = append(notes, fmt.Sprintf("%s: could not set %s (%v)", handler.keyName, stateFlagsValue, err))
-			subResults = append(subResults, SubActionRun{ID: "win_cleanmgr:" + handler.slug, Status: StatusFailed})
-			continue
+		if err := setStateFlags(keyName, value); err != nil {
+			// Abort before cleanmgr runs. See the profile-hygiene note above:
+			// a partially written profile executes an arbitrary subset.
+			return ActionResult{
+				ID:         a.ID(),
+				Status:     StatusFailed,
+				ExitCode:   1,
+				DurationMs: time.Since(started).Milliseconds(),
+				Error: fmt.Sprintf(
+					"could not set %s on %q (%v); aborted before running cleanmgr so no unintended handler could execute",
+					stateFlagsValue, keyName, err),
+			}
 		}
-		if selectedSet[handler.keyName] {
-			subResults = append(subResults, SubActionRun{ID: "win_cleanmgr:" + handler.slug, Status: StatusCompleted})
+		if value == 0 {
+			zeroed++
 		}
 	}
+
+	subResults := make([]SubActionRun, 0, len(selected))
+	for _, handler := range selected {
+		subResults = append(subResults, SubActionRun{ID: "win_cleanmgr:" + handler.slug, Status: StatusCompleted})
+	}
+	notes := []string{fmt.Sprintf("profile %s: %d handler(s) enabled, %d zeroed", stateFlagsValue, len(selected), zeroed)}
 
 	proc := runProcess(ctx, cleanmgrTimeout, binary, cleanmgrArgs()...)
 	result := ActionResult{
@@ -3659,11 +4453,15 @@ func (winDismCleanupAction) Estimate(ctx context.Context) (int64, bool, string) 
 		return 0, false, ""
 	}
 	proc := runProcess(ctx, windowsEstimateLimit, binary, dismAnalyzeArgs()...)
-	bytes, known := parseDismAnalyze(proc.Stdout)
+	bytes, known, recommended := parseDismAnalyze(proc.Stdout)
 	if !known {
 		return 0, false, ""
 	}
-	return bytes, true, "DISM /AnalyzeComponentStore; the 30-day grace period and the retained backup make this an upper bound"
+	detail := "heuristic: DISM /AnalyzeComponentStore reports component-store overhead, which is not the same as what the cleanup frees"
+	if !recommended {
+		detail += "; Windows does not currently recommend this cleanup"
+	}
+	return bytes, true, detail
 }
 
 func (a winDismCleanupAction) Run(ctx context.Context, _ Params) ActionResult {
@@ -3762,6 +4560,8 @@ MSG
   func platformActions() []Action
   func List(ctx context.Context) ListResult
   func Run(ctx context.Context, runID string, actionIDs []string, params Params) RunResult
+  func RunBudget(actionIDs []string) time.Duration
+  func ActionTimeout(id string) time.Duration
   ```
 
 - [ ] **Step 1: Write the failing test** — create `agent/internal/syscleanup/catalog_test.go`:
@@ -3776,6 +4576,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/maintenance"
 )
 
 type fakeAction struct {
@@ -3989,6 +4791,88 @@ func TestRunReportsUnavailableWithoutExecuting(t *testing.T) {
 	}
 }
 
+// Spec §13 #14: Σ the selected actions' own timeouts + 10 min, capped at 3 h.
+func TestRunBudgetIsTheSumOfSelectedTimeoutsPlusSlack(t *testing.T) {
+	cases := []struct {
+		ids  []string
+		want time.Duration
+	}{
+		{[]string{"linux_pkg_cache_clean"}, 5*time.Minute + 10*time.Minute},
+		{[]string{"linux_pkg_cache_clean", "linux_journal_vacuum"}, 5*time.Minute + 5*time.Minute + 10*time.Minute},
+		// cleanmgr 60 + DISM 90 + 10 = 160 min. A flat two-hour constant
+		// would have reaped this mid-DISM.
+		{[]string{"win_cleanmgr", "win_dism_component_cleanup"}, 160 * time.Minute},
+		// A bare win_cleanmgr and its sub-ids are ONE execution, counted once.
+		{[]string{"win_cleanmgr", "win_cleanmgr:update_cleanup", "win_cleanmgr:setup_log_files"}, 70 * time.Minute},
+		// Unknown ids contribute nothing.
+		{[]string{"linux_pkg_cache_clean", "not_an_action"}, 15 * time.Minute},
+		{nil, 10 * time.Minute},
+	}
+	for _, tc := range cases {
+		if got := RunBudget(tc.ids); got != tc.want {
+			t.Errorf("RunBudget(%v) = %s, want %s", tc.ids, got, tc.want)
+		}
+	}
+	// Cap: every action at once still cannot exceed three hours.
+	if got := RunBudget(ActionIDs); got != 3*time.Hour {
+		t.Fatalf("RunBudget(everything) = %s, want the 3h cap", got)
+	}
+}
+
+// Spec §13 #4/#12: a second run while another maintenance operation holds the
+// lock touches NOTHING and says `busy` — not `failed`, because nothing was
+// attempted and a retry is the right next step.
+func TestRunReportsBusyWithoutTouchingAnythingWhenTheLockIsHeld(t *testing.T) {
+	var ran int32
+	withActions(t, []Action{fakeAction{id: "linux_pkg_cache_clean", available: true, ran: &ran}})
+	withVolumes(t, nil, nil)
+
+	release, err := maintenance.TryAcquire("brew_cleanup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	got := Run(context.Background(), "run-5", []string{"linux_pkg_cache_clean"}, Params{})
+	if atomic.LoadInt32(&ran) != 0 {
+		t.Fatal("no action may execute while the maintenance lock is held")
+	}
+	if len(got.Actions) != 1 || got.Actions[0].Status != StatusBusy {
+		t.Fatalf("Actions = %+v, want a single busy entry", got.Actions)
+	}
+	if !strings.Contains(got.Actions[0].Error, "brew_cleanup") {
+		t.Fatalf("the busy error should name the holder; got %q", got.Actions[0].Error)
+	}
+}
+
+// Spec §13 #14: an action the aggregate budget never reached is `not_started`,
+// which is a different fact from `timed_out` (that one ran and overran).
+func TestRunReportsNotStartedForActionsTheBudgetNeverReached(t *testing.T) {
+	var ran int32
+	withActions(t, []Action{
+		fakeAction{id: "first", available: true, runDelay: 400 * time.Millisecond, ran: &ran},
+		fakeAction{id: "second", available: true, ran: &ran},
+	})
+	withVolumes(t, []VolumeFree{{Mount: "/", FreeBytes: 1}}, []VolumeFree{{Mount: "/", FreeBytes: 2}})
+
+	original := runBudgetForTests
+	t.Cleanup(func() { runBudgetForTests = original })
+	runBudgetForTests = 150 * time.Millisecond
+
+	got := Run(context.Background(), "run-6", []string{"first", "second"}, Params{})
+	if len(got.Actions) != 2 {
+		t.Fatalf("Actions = %+v", got.Actions)
+	}
+	if got.Actions[1].Status != StatusNotStarted {
+		t.Fatalf("Actions[1].Status = %q, want not_started", got.Actions[1].Status)
+	}
+	// The measurement still runs after a budget expiry, or a timed-out run
+	// would report zero bytes for work it really did.
+	if got.FreedBytes != 1 {
+		t.Fatalf("FreedBytes = %d, want the measured 1 even after the budget expired", got.FreedBytes)
+	}
+}
+
 // The closed catalogue, enforced agent-side as defence in depth behind the
 // server's own validation (spec §5.3, §10 item 7).
 func TestRunDropsAnyIDOutsideTheCatalogue(t *testing.T) {
@@ -4021,9 +4905,12 @@ package syscleanup
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/maintenance"
 )
 
 // estimateBudget caps the WHOLE list call's estimation phase (spec §7.3).
@@ -4077,6 +4964,10 @@ var fixedVolumesFn = fixedVolumes
 // advanceVolumeSample is a test hook, called between the two volume readings
 // of a Run. It is a no-op in production.
 var advanceVolumeSample = func() {}
+
+// runBudgetForTests overrides RunBudget when positive, so the not_started
+// branch can be exercised in milliseconds. Zero in production.
+var runBudgetForTests time.Duration
 
 func platformActions() []Action {
 	switch runtime.GOOS {
@@ -4210,30 +5101,140 @@ func selectionFor(actionIDs []string) []Action {
 	return selected
 }
 
+// actionTimeouts is the per-action wall-clock cap, and — summed — the input to
+// the aggregate run budget (spec §13 #14). Mirrored by
+// SYSTEM_CLEANUP_ACTION_TIMEOUT_SECONDS in
+// packages/shared/src/validators/systemCleanup.ts so the server can size the
+// same budget before it queues; shared_ids_test.go compares the two.
+var actionTimeouts = map[string]time.Duration{
+	"win_cleanmgr":               cleanmgrTimeout,
+	"win_dism_component_cleanup": dismCleanupTimeout,
+	"mac_tm_local_snapshots":     darwinSnapshotTimeout,
+	"mac_brew_cleanup":           darwinBrewTimeout,
+	"linux_pkg_cache_clean":      linuxPkgCleanTimeout,
+	"linux_pkg_autoremove":       linuxAutoremoveTimeout,
+	"linux_journal_vacuum":       linuxJournalVacuumTimeout,
+}
+
+// Budget shape (spec §13 #14). Slack covers the probes, the two volume
+// samples and process teardown; the cap stops a pathological selection from
+// reserving a whole shift.
+const (
+	runBudgetSlack = 10 * time.Minute
+	runBudgetMax   = 3 * time.Hour
+)
+
+// ActionTimeout is the wall-clock cap for one action; 0 for an unknown id.
+func ActionTimeout(id string) time.Duration {
+	if handler, ok := winCleanmgrHandlerBySubID(id); ok {
+		_ = handler
+		id = "win_cleanmgr"
+	}
+	return actionTimeouts[id]
+}
+
+// RunBudget sizes one run: Σ the selected actions' own timeouts + 10 minutes,
+// capped at 3 h.
+//
+// A single constant was wrong in both directions: a lone
+// `linux_pkg_cache_clean` would hold a two-hour budget for five minutes of
+// work, while cleanmgr (60 min) plus DISM (90 min) needs 150 and would have
+// been reaped at 120 — mid-DISM, on a component store that is then left
+// half-serviced.
+//
+// Duplicate ids (a bare `win_cleanmgr` alongside its sub-ids) are counted
+// once: they collapse into one execution.
+func RunBudget(actionIDs []string) time.Duration {
+	counted := map[string]bool{}
+	total := time.Duration(0)
+	for _, id := range actionIDs {
+		if !IsKnownActionID(id) {
+			continue
+		}
+		key := id
+		if _, ok := winCleanmgrHandlerBySubID(id); ok {
+			key = "win_cleanmgr"
+		}
+		if counted[key] {
+			continue
+		}
+		counted[key] = true
+		total += actionTimeouts[key]
+	}
+	total += runBudgetSlack
+	if total > runBudgetMax {
+		return runBudgetMax
+	}
+	return total
+}
+
 // Run executes the selected actions SEQUENTIALLY in catalogue order — cleanmgr
-// and DISM must not overlap (spec §7.3) — and measures the free-space delta
-// across the whole run.
+// and DISM must not overlap (spec §7.3) — under the process-wide maintenance
+// lock and one aggregate budget, and measures the free-space delta across the
+// whole run.
+//
+// Three outcomes that are deliberately distinguishable:
+//   - `busy`: another maintenance operation holds the lock. Nothing was
+//     attempted, so this is not a failure and a retry is the right next step
+//     (spec §13 #4/#12). TryAcquire, not Acquire: a tech is watching a
+//     spinner, and blocking inside the run budget would spend it waiting.
+//   - `not_started`: the aggregate budget expired before this action's turn.
+//     Distinct from `timed_out`, which means the action ran and overran its
+//     own cap — the two call for different next steps (re-run the rest vs
+//     investigate this one).
+//   - `unavailable`: reported without being attempted.
 //
 // One action failing never stops the next: a tech who selected four things
 // wants the other three to happen, and the per-action status is what tells
 // them which one did not.
 func Run(ctx context.Context, runID string, actionIDs []string, params Params) RunResult {
+	selected := selectionFor(actionIDs)
+
+	release, err := maintenance.TryAcquire("system_cleanup_run")
+	if err != nil {
+		results := make([]ActionResult, 0, len(selected))
+		for _, action := range selected {
+			results = append(results, ActionResult{
+				ID: action.ID(), Status: StatusBusy, ExitCode: 1,
+				Error: fmt.Sprintf("%v (holder: %s)", err, maintenance.CurrentOwner()),
+			})
+		}
+		return RunResult{RunID: runID, Actions: results, Volumes: []VolumeDelta{}, FreedBytes: 0}
+	}
+	defer release()
+
+	budget := RunBudget(actionIDs)
+	if runBudgetForTests > 0 {
+		budget = runBudgetForTests
+	}
+	budgetCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
 	mounts := fixedVolumesFn()
 	before := sampleVolumes(mounts)
 
-	selected := selectionFor(actionIDs)
 	results := make([]ActionResult, 0, len(selected))
 	for _, action := range selected {
-		if available, reason := action.Available(ctx); !available {
+		if budgetCtx.Err() != nil {
+			results = append(results, ActionResult{
+				ID: action.ID(), Status: StatusNotStarted, ExitCode: 1,
+				Error: "the run budget expired before this action started",
+			})
+			continue
+		}
+		if available, reason := action.Available(budgetCtx); !available {
 			results = append(results, ActionResult{
 				ID: action.ID(), Status: StatusUnavailable, ExitCode: 1, Error: reason,
 			})
 			continue
 		}
-		results = append(results, action.Run(ctx, params))
+		results = append(results, action.Run(budgetCtx, params))
 	}
 
 	advanceVolumeSample()
+	// The measurement uses the PARENT context's lifetime, not budgetCtx: two
+	// disk.Usage calls must still happen after a budget expiry, or a run that
+	// timed out would report zero freed bytes for work it really did.
 	after := sampleVolumes(mounts)
 	volumes, freed := measureFreed(before, after)
 
@@ -4442,11 +5443,12 @@ func handleSystemCleanupRun(_ *Heartbeat, cmd Command) tools.CommandResult {
 		params.JournalVacuumBytes = int64(tools.GetPayloadInt(raw, "journalVacuumBytes", 0))
 	}
 
-	// 110 minutes: strictly inside the server's 2 h SYSTEM_CLEANUP_RUN_TIMEOUT_MS
-	// (apps/api/src/services/commandTimeouts.ts) so the agent's own deadline
-	// fires first and the server receives a truthful timed_out result rather
-	// than reaping a command that is still working.
-	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Minute)
+	// No outer deadline here: syscleanup.Run derives the AGGREGATE budget from
+	// the selection itself (RunBudget, spec §13 #14) and the server stores the
+	// same figure on the run row. A second, flat ceiling at this level could
+	// only disagree with it — and would cut a legitimate 160-minute
+	// cleanmgr+DISM selection short at whatever number was hard-coded here.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	return tools.NewSuccessResult(
@@ -4490,7 +5492,7 @@ func TestSystemCleanupRunRequiresElevation(t *testing.T) {
 - [ ] **Step 7: Run the agent tests and watch them pass**
 
 ```bash
-cd agent && go test -race ./internal/heartbeat/... ./internal/privilege/... ./internal/syscleanup/...
+cd agent && go test -race ./internal/heartbeat/... ./internal/privilege/... ./internal/syscleanup/... ./internal/maintenance/...
 ```
 
 Expected: `ok` for all three packages.
@@ -4516,9 +5518,8 @@ gives a result the server cannot attribute to a cleanup run row, and an empty
 actionIds must never read as "run everything" on a customer's machine.
 
 The run's agent-side deadline is 110 minutes — strictly inside the server's 2 h
-SYSTEM_CLEANUP_RUN_TIMEOUT_MS — so the agent's own timeout fires first and the
-server receives a truthful timed_out result instead of reaping a command that
-is still working.
+the AGGREGATE budget syscleanup.Run derives from the selection — so a
+160-minute cleanmgr+DISM run is not cut short by a flat constant.
 
 system_cleanup_run joins the (warn-only) elevation list; listing does not, since
 it only probes and simulates.
@@ -4553,6 +5554,10 @@ MSG
   export const JOURNAL_VACUUM_DEFAULT_BYTES = 256 * 1024 * 1024;
   export const systemCleanupParamsSchema: z.ZodType<{ journalVacuumBytes?: number }>;
   export const systemCleanupRunBodySchema: z.ZodType<{ actionIds: SystemCleanupActionId[]; params?: { journalVacuumBytes?: number } }>;
+  export const SYSTEM_CLEANUP_ACTION_TIMEOUT_SECONDS: Readonly<Record<string, number>>;
+  export const SYSTEM_CLEANUP_RUN_BUDGET_SLACK_MS: number;
+  export const SYSTEM_CLEANUP_RUN_BUDGET_MAX_MS: number;
+  export function systemCleanupRunBudgetMs(actionIds: readonly string[]): number;
   export const SYSTEM_CLEANUP_RISK_FLAGS: readonly ['long_running','may_require_reboot','may_require_reboot_free_state','removes_driver_rollback','removes_packages'];
   ```
 
@@ -4565,9 +5570,13 @@ import {
   JOURNAL_VACUUM_MAX_BYTES,
   JOURNAL_VACUUM_MIN_BYTES,
   SYSTEM_CLEANUP_ACTION_IDS,
+  SYSTEM_CLEANUP_ACTION_TIMEOUT_SECONDS,
   SYSTEM_CLEANUP_RISK_FLAGS,
+  SYSTEM_CLEANUP_RUN_BUDGET_MAX_MS,
+  SYSTEM_CLEANUP_RUN_BUDGET_SLACK_MS,
   isSystemCleanupActionId,
   systemCleanupRunBodySchema,
+  systemCleanupRunBudgetMs,
 } from './systemCleanup';
 
 describe('SYSTEM_CLEANUP_ACTION_IDS (spec §5.3, §7.2)', () => {
@@ -4679,7 +5688,39 @@ describe('systemCleanupRunBodySchema', () => {
       'may_require_reboot_free_state',
       'removes_driver_rollback',
       'removes_packages',
+      'removes_os_rollback',
+      'removes_recovery_points',
     ]);
+  });
+});
+
+describe('systemCleanupRunBudgetMs (spec §13 #14)', () => {
+  const minutes = (n: number) => n * 60 * 1000;
+
+  it('sums the selected actions timeouts plus slack', () => {
+    expect(systemCleanupRunBudgetMs(['linux_pkg_cache_clean'])).toBe(minutes(15));
+    expect(systemCleanupRunBudgetMs(['linux_pkg_cache_clean', 'linux_journal_vacuum'])).toBe(minutes(20));
+    // 60 + 90 + 10. A flat two-hour constant would have reaped this mid-DISM.
+    expect(systemCleanupRunBudgetMs(['win_cleanmgr', 'win_dism_component_cleanup'])).toBe(minutes(160));
+  });
+
+  it('counts a bare win_cleanmgr and its sub-ids once — they are one execution', () => {
+    expect(systemCleanupRunBudgetMs([
+      'win_cleanmgr', 'win_cleanmgr:update_cleanup', 'win_cleanmgr:setup_log_files',
+    ])).toBe(minutes(70));
+  });
+
+  it('caps at three hours and ignores unknown ids', () => {
+    expect(systemCleanupRunBudgetMs([...SYSTEM_CLEANUP_ACTION_IDS])).toBe(SYSTEM_CLEANUP_RUN_BUDGET_MAX_MS);
+    expect(systemCleanupRunBudgetMs(['not_an_action'])).toBe(SYSTEM_CLEANUP_RUN_BUDGET_SLACK_MS);
+    expect(systemCleanupRunBudgetMs([])).toBe(SYSTEM_CLEANUP_RUN_BUDGET_SLACK_MS);
+  });
+
+  it('covers every top-level catalogue id, so no selection is budgeted at zero', () => {
+    const topLevel = SYSTEM_CLEANUP_ACTION_IDS.filter((id) => !id.startsWith('win_cleanmgr:'));
+    for (const id of topLevel) {
+      expect(SYSTEM_CLEANUP_ACTION_TIMEOUT_SECONDS[id]).toBeGreaterThan(0);
+    }
   });
 });
 ```
@@ -4770,9 +5811,66 @@ export const SYSTEM_CLEANUP_RISK_FLAGS = [
   'may_require_reboot_free_state',
   'removes_driver_rollback',
   'removes_packages',
+  // Spec §13 #15. Two losses a later action cannot undo and that the original
+  // catalogue left undisclosed: deleting Windows.old / $WINDOWS.~BT ends the
+  // "go back to the previous version" window, and deleting the local APFS
+  // snapshots removes the only on-disk restore points a Mac has when its Time
+  // Machine destination is not attached.
+  'removes_os_rollback',
+  'removes_recovery_points',
 ] as const;
 
 export type SystemCleanupRiskFlag = (typeof SYSTEM_CLEANUP_RISK_FLAGS)[number];
+
+/**
+ * Per-action wall-clock caps, mirroring `actionTimeouts` in
+ * `agent/internal/syscleanup/catalog.go`. The agent's `shared_ids_test.go`
+ * reads this table and fails on drift.
+ *
+ * The server needs them because it sizes the run's deadline BEFORE queuing
+ * (spec §13 #14) — the reaper and the route's lazy timeout both read the
+ * stored deadline rather than recomputing it.
+ */
+export const SYSTEM_CLEANUP_ACTION_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
+  win_cleanmgr: 60 * 60,
+  win_dism_component_cleanup: 90 * 60,
+  mac_tm_local_snapshots: 10 * 60,
+  mac_brew_cleanup: 10 * 60,
+  linux_pkg_cache_clean: 5 * 60,
+  linux_pkg_autoremove: 15 * 60,
+  linux_journal_vacuum: 5 * 60,
+};
+
+/** Slack for probes, the two volume samples and process teardown. */
+export const SYSTEM_CLEANUP_RUN_BUDGET_SLACK_MS = 10 * 60 * 1000;
+/** Nothing a single run may exceed, whatever was selected. */
+export const SYSTEM_CLEANUP_RUN_BUDGET_MAX_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Σ the selected actions' own timeouts + slack, capped.
+ *
+ * A single constant was wrong in both directions (spec §13 #14): a lone
+ * `linux_pkg_cache_clean` would hold a two-hour budget for five minutes of
+ * work, while cleanmgr (60 min) + DISM (90 min) needs 150 and would have been
+ * reaped at 120 — mid-DISM.
+ *
+ * Duplicates collapse: a bare `win_cleanmgr` and its `:slug` sub-ids are ONE
+ * execution on the agent, so they are counted once here too or the budget
+ * drifts from the thing it is budgeting.
+ */
+export function systemCleanupRunBudgetMs(actionIds: readonly string[]): number {
+  const counted = new Set<string>();
+  let total = 0;
+  for (const id of actionIds) {
+    const key = id.startsWith('win_cleanmgr:') ? 'win_cleanmgr' : id;
+    if (counted.has(key)) continue;
+    const seconds = SYSTEM_CLEANUP_ACTION_TIMEOUT_SECONDS[key];
+    if (seconds === undefined) continue;
+    counted.add(key);
+    total += seconds * 1000;
+  }
+  return Math.min(total + SYSTEM_CLEANUP_RUN_BUDGET_SLACK_MS, SYSTEM_CLEANUP_RUN_BUDGET_MAX_MS);
+}
 
 /**
  * The ONE client-influenced integer in the whole feature (spec §5.3). Bounds
@@ -4867,7 +5965,7 @@ MSG
 
 **Interfaces:**
 - Consumes: the Go constants from Task 8.
-- Produces: `CommandTypes.SYSTEM_CLEANUP_LIST`, `CommandTypes.SYSTEM_CLEANUP_RUN`, `SYSTEM_CLEANUP_RUN_TIMEOUT_MS`.
+- Produces: `CommandTypes.SYSTEM_CLEANUP_LIST`, `CommandTypes.SYSTEM_CLEANUP_RUN`, the `live_only` `DeliveryTtlClass`, `SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS`.
 
 - [ ] **Step 1: Confirm the cross-language red is still there** (it is the failing test for this task — no new test file is needed for the registries that already have completeness contracts)
 
@@ -4904,53 +6002,144 @@ cd apps/api && npx vitest run src/services/commandOfflinePolicy.test.ts
 
 Expected failure: `every CommandTypes value is EXPLICITLY classified, never left to the fallback` — `expected [ 'system_cleanup_list', 'system_cleanup_run' ] to deeply equal []`. The fallback would have silently made both queueable; failing here is what keeps it a decision.
 
-- [ ] **Step 3: Classify them in the offline-policy registry** — in `apps/api/src/services/commandOfflinePolicy.ts`, in `STANDARD_REVIEWED` immediately after `C.FILESYSTEM_ANALYSIS,`:
+- [ ] **Step 3: Add the `live_only` TTL class and classify both types into it** — in `apps/api/src/services/commandOfflinePolicy.ts`.
+
+Plan amendment 19 (spec §13 #6): `standard` would deliver for **168 hours**. A run the UI already marked failed at its 2 h budget, whose row the tech has closed and moved on from, could still be claimed by the device days later and would then delete things nobody is watching for. The shortest *queueing* class today is `short` at 24 h — 96× the ceiling this finding sets — so the class has to be new.
+
+Extend `DeliveryTtlClass` (`:12`) and `deliveryTtlMs` (`:46`):
 
 ```ts
-  // Disk Cleanup v2 §5.3. `standard` (7 days) is this registry's LONGEST
-  // class — there is no separate "long" class; patch installs and
-  // filesystem_analysis are here too. Listing is a read the user is waiting
-  // on, but it is queued rather than `live` for the same reason
-  // filesystem_analysis is: the tab polls, so a device that reconnects two
-  // minutes later still produces a useful catalogue rather than a
-  // device_offline error the tech has to retry by hand.
-  C.SYSTEM_CLEANUP_LIST,
-  // A run is fire-and-forget by construction: the cleanup_runs row is already
-  // persisted `running`, so a command delivered after a reconnect still
-  // closes out correctly.
-  C.SYSTEM_CLEANUP_RUN,
+/** TTL class = how long a queued row may wait for the device (OD-1). */
+export type DeliveryTtlClass = 'live' | 'live_only' | 'standard' | 'short' | 'power_state';
 ```
 
-- [ ] **Step 4: Classify them in the timeout registry** — in `apps/api/src/services/commandTimeouts.ts`, add `CommandTypes.SYSTEM_CLEANUP_LIST,` to `MEDIUM_TIMEOUT_TYPES` next to `CommandTypes.FILESYSTEM_ANALYSIS`, add `CommandTypes.SYSTEM_CLEANUP_RUN,` to `LONG_TIMEOUT_TYPES`, and export the shared constant at the end of the file:
+```ts
+function envMinutes(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const parsed = raw === undefined || raw === '' ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+```
+
+```ts
+    case 'live_only':
+      // Disk Cleanup v2 (spec §13 #6). Destructive maintenance whose OWNING
+      // ROW has its own clock: a cleanup run is marked failed at its budget,
+      // and a command that outlives that row deletes things with nobody
+      // watching for the result. Fifteen minutes is "the device is here now,
+      // or this never happens" — long enough to survive a reconnect, far
+      // short of the 24 h `short` class, which is the shortest thing that
+      // existed before this.
+      return envMinutes('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', 15) * 60 * 1000;
+```
+
+Then add the class list next to `SHORT` and register both types in it (they are NOT added to `STANDARD_REVIEWED`):
 
 ```ts
 /**
- * The execution budget for one native cleanup run (Disk Cleanup v2 §5.3).
- *
- * Exported from THIS module rather than declared in the route because two
- * independent clocks key off it and must not drift: the stale reaper
- * (jobs/staleCommandReaper.ts, via getCommandTimeoutMs) and the route's lazy
- * `running -> failed ('timed out')` transition. DISM's own 90-minute action
- * cap plus cleanmgr's 60 both sit inside it, and the agent's own deadline
- * (110 minutes, handlers_syscleanup.go) fires first so a truthful timed_out
- * result beats the reaper to the row.
+ * Destructive OS maintenance. Queueable — a device that reconnects inside the
+ * window should still get the work — but only just: the owning
+ * `device_filesystem_cleanup_runs` row is finalised on its own budget, and a
+ * command delivered after that finalisation would act on a run the operator
+ * has already been told failed.
  */
-export const SYSTEM_CLEANUP_RUN_TIMEOUT_MS = TWO_HOURS;
+const LIVE_ONLY: readonly string[] = [
+  C.SYSTEM_CLEANUP_LIST,
+  C.SYSTEM_CLEANUP_RUN,
+];
+```
+
+```ts
+for (const type of LIVE_ONLY) registry[type] = 'live_only';
+```
+
+and include it in the explicit-classification set:
+
+```ts
+export const EXPLICITLY_CLASSIFIED_COMMAND_TYPES: ReadonlySet<string> = Object.freeze(
+  new Set<string>([...LIVE, ...LIVE_ONLY, ...BACKUP_AND_RESTORE, ...SHORT, ...POWER_STATE_TTL_TYPES, ...STANDARD_REVIEWED]),
+) as ReadonlySet<string>;
+```
+
+W01 needs the same class for `file_delete` under `cleanupGuard` (spec §13 #6 names both waves). Whichever wave lands first adds the class body above; the other adds only its registry entries.
+
+Append to `apps/api/src/services/commandOfflinePolicy.test.ts`:
+
+```ts
+  it('delivers destructive cleanup commands live-only, not for a week', () => {
+    expect(COMMAND_OFFLINE_POLICY_REGISTRY.system_cleanup_list).toBe('live_only');
+    expect(COMMAND_OFFLINE_POLICY_REGISTRY.system_cleanup_run).toBe('live_only');
+    expect(deliveryTtlMs('live_only')).toBe(15 * 60 * 1000);
+    // The point of the class: strictly shorter than everything that existed.
+    expect(deliveryTtlMs('live_only')).toBeLessThan(deliveryTtlMs('short'));
+    expect(deliveryTtlMs('live_only')).toBeLessThan(deliveryTtlMs('standard'));
+    // Still QUEUEABLE — a device that reconnects inside the window gets it.
+    expect(defaultOfflinePolicy('system_cleanup_run')).toEqual({ kind: 'queue', deliverWithinMs: 15 * 60 * 1000 });
+  });
+
+  it('live_only TTL is env-tunable with a one-minute floor', () => {
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', '5');
+    expect(deliveryTtlMs('live_only')).toBe(5 * 60 * 1000);
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', '0');
+    expect(deliveryTtlMs('live_only')).toBe(15 * 60 * 1000);
+  });
+```
+
+- [ ] **Step 4: Classify them in the timeout registry** — in `apps/api/src/services/commandTimeouts.ts`, add `CommandTypes.SYSTEM_CLEANUP_LIST,` to `MEDIUM_TIMEOUT_TYPES` next to `CommandTypes.FILESYSTEM_ANALYSIS`, and export the ceiling at the end of the file:
+
+```ts
+/**
+ * The CEILING for one native cleanup run's command row (Disk Cleanup v2 §5.3,
+ * §13 #14).
+ *
+ * It is not the run's budget. The budget is a function of the SELECTION —
+ * `systemCleanupRunBudgetMs` in `@breeze/shared/validators`, Σ the chosen
+ * actions' own timeouts + 10 minutes — and is computed once at queue time and
+ * **stored on the row** as `plan.deadlineAt`. Both clocks that matter read
+ * that stored value: the route's lazy `running → failed ('timed out')`
+ * transition and, through it, the operator's view.
+ *
+ * This constant exists only because `getCommandTimeoutMs` is keyed by TYPE and
+ * cannot see a selection. Three hours is the same cap the budget function
+ * applies, so the reaper can never terminalise a command row while its run is
+ * still legitimately inside its own budget.
+ */
+export const SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS = THREE_HOURS;
+```
+
+`THREE_HOURS` joins the tier constants at the top of the file, and `LONG_TIMEOUT_TYPES` cannot express it (it is `TWO_HOURS`), so `getCommandTimeoutMs` gains one branch before the `LONG_TIMEOUT_TYPES` check:
+
+```ts
+const THREE_HOURS = 3 * 60 * 60 * 1000;
+```
+
+```ts
+  // Disk Cleanup v2: a native run's real budget is per-selection and lives on
+  // the row; this is the ceiling that keeps the reaper from terminalising a
+  // command whose run is still inside it.
+  if (commandType === CommandTypes.SYSTEM_CLEANUP_RUN) return THREE_HOURS;
 ```
 
 - [ ] **Step 5: Pin the timeout classes** — append to `apps/api/src/services/commandTimeouts.test.ts`:
 
 ```ts
-  it('gives a native cleanup run the two-hour budget and a list the medium one', () => {
-    expect(getCommandTimeoutMs('system_cleanup_run')).toBe(2 * 60 * 60 * 1000);
-    expect(SYSTEM_CLEANUP_RUN_TIMEOUT_MS).toBe(getCommandTimeoutMs('system_cleanup_run'));
+  it('caps a native cleanup run at three hours and a list at the medium tier', () => {
+    // The CEILING, not the budget: the real budget is per-selection
+    // (systemCleanupRunBudgetMs) and is stored on the run row. This only has
+    // to be >= the largest budget the function can return, or the reaper
+    // would terminalise a command whose run is still inside its own budget.
+    expect(getCommandTimeoutMs('system_cleanup_run')).toBe(3 * 60 * 60 * 1000);
+    expect(SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS).toBe(getCommandTimeoutMs('system_cleanup_run'));
+    expect(SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      systemCleanupRunBudgetMs([...SYSTEM_CLEANUP_ACTION_IDS]),
+    );
     // 30 minutes: the agent caps its own estimation phase at 3, so this is a
     // pure backstop rather than a working budget.
     expect(getCommandTimeoutMs('system_cleanup_list')).toBe(30 * 60 * 1000);
   });
 ```
 
-(add `SYSTEM_CLEANUP_RUN_TIMEOUT_MS` to the file's existing import from `./commandTimeouts`).
+(add `SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS` to the file's existing import from `./commandTimeouts`, and `SYSTEM_CLEANUP_ACTION_IDS` + `systemCleanupRunBudgetMs` from `@breeze/shared/validators`).
 
 - [ ] **Step 6: Classify them in the partner-trust allowlist** — in `apps/api/src/services/partnerTrust.ts`, in `GATED_COMMAND_TYPES` alphabetically between `'software_update',` and `'start_desktop',`:
 
@@ -4985,9 +6174,10 @@ commandTimeouts, and partnerTrust's GATED_COMMAND_TYPES.
 `standard` is that registry's longest class — there is no separate "long" one;
 patch installs and filesystem_analysis live there too.
 
-SYSTEM_CLEANUP_RUN_TIMEOUT_MS is exported from commandTimeouts rather than
-declared in the route, because the stale reaper and the route's lazy
-running->timed-out transition both key off it and must not drift.
+A new live_only TTL class (15 min) replaces standard (168 h) for both types:
+a run the UI marked failed at its budget must not be claimable days later.
+SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS is the reaper's ceiling; the real budget is
+per-selection and stored on the run row.
 
 Closes the cross-language red the previous commit opened in partnerTrust.test.ts.
 
@@ -5420,7 +6610,7 @@ MSG
 - Modify: `apps/api/src/routes/devices/index.ts` (mount, next to `filesystemRoutes` at `:81`)
 
 **Interfaces:**
-- Consumes (post-W02 schema — stated as a dependency): `deviceFilesystemCleanupRuns` with `kind: text NOT NULL DEFAULT 'files'`, `commandId: uuid`, `scanPath: text`, and the `filesystem_cleanup_run_status` enum carrying `'running'` (spec §4, delivered by W02). Also `getDeviceWithOrgAndSiteCheck`, `SITE_ACCESS_DENIED` (`routes/devices/helpers.ts:188`), `queueCommandForExecution` + `CommandTypes` (`services/commandQueue.ts`), `writeRouteAudit` (`services/auditEvents.ts:144`), `SYSTEM_CLEANUP_RUN_TIMEOUT_MS` (Task 10), everything from Task 11a, `systemCleanupRunBodySchema` (Task 9).
+- Consumes (post-W02 schema — stated as a dependency): `deviceFilesystemCleanupRuns` with `kind: text NOT NULL DEFAULT 'files'`, `commandId: uuid`, `scanPath: text`, and the `filesystem_cleanup_run_status` enum carrying `'running'` (spec §4, delivered by W02). Also `getDeviceWithOrgAndSiteCheck`, `SITE_ACCESS_DENIED` (`routes/devices/helpers.ts:188`), `queueCommandForExecution` + `CommandTypes` (`services/commandQueue.ts`), `writeRouteAudit` (`services/auditEvents.ts:144`), `SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS` (Task 10), `systemCleanupRunBudgetMs` (Task 9), everything from Task 11a, `systemCleanupRunBodySchema` (Task 9).
 - Produces: `export const filesystemSystemCleanupRoutes: Hono`, and — in `services/systemCleanup.ts` — the **queue/start seam W05 reuses** (alignment 17), so `list`/`run` are implemented exactly once for both the human route and the AI tool:
   ```ts
   export interface QueueSystemCleanupListArgs {
@@ -5439,7 +6629,8 @@ MSG
     | { ok: true; commandId: string; cleanupRunId: string }
     | Exclude<SystemCleanupQueueResult, { ok: true }>;
   export function queueSystemCleanupList(args: QueueSystemCleanupListArgs): Promise<SystemCleanupQueueResult>;
-  export function startSystemCleanupRun(args: StartSystemCleanupRunArgs): Promise<SystemCleanupStartResult>;
+  export function startSystemCleanupRun(args: StartSystemCleanupRunArgs): Promise<SystemCleanupStartResult>;  // 409 'run_in_progress' | 409 agent gate
+  export function failSystemCleanupRunAndCancelCommand(args: { runId: string; deviceId: string; orgId: string; error: string }): Promise<boolean>;
   ```
   **These live in the service, not inline in the route.** W05's `system_cleanup` AI tool calls the same two functions (and adds an optional `aiOrigin` to both) — if the bodies stayed in the handler, the AI lane would have to re-implement the agent-version gate, the action-id validation and the `device_filesystem_cleanup_runs` insert, which is exactly the two-call-site drift W01 spent a task deleting on the file engine.
 
@@ -5449,7 +6640,7 @@ Routes:
 |---|---|---|---|
 | POST | `/:id/filesystem/system-cleanup/list` | `DEVICES_EXECUTE` + `requireMfa` | `202 { success, data: { commandId, status } }` · `409 { success:false, error:'agent_update_required', minAgentVersion }` |
 | GET | `/:id/filesystem/system-cleanup/list/:commandId` | `DEVICES_READ` | `200 { success, data: { status: 'running'\|'completed'\|'failed', catalog?, error? } }` · `409 agent_update_required` · `502` on unreadable agent output |
-| POST | `/:id/filesystem/system-cleanup/run` | `DEVICES_EXECUTE` + `requireMfa` | `202 { success, data: { cleanupRunId, commandId } }` · `409` · `500` |
+| POST | `/:id/filesystem/system-cleanup/run` | `DEVICES_EXECUTE` + `requireMfa` | `202 { success, data: { cleanupRunId, commandId } }` · `409 agent_update_required` · `409 run_in_progress` (one native run per device, spec §13 #4) · `500` |
 | GET | `/:id/filesystem/system-cleanup/run/:cleanupRunId` | `DEVICES_READ` | `200 { success, data: { status, actions, volumes, freedBytes, error, requestedAt } }` · `409` |
 
 - [ ] **Step 1: Write the failing test** — create `apps/api/src/routes/devices/filesystemSystemCleanup.test.ts`:
@@ -5461,6 +6652,7 @@ import { Hono } from 'hono';
 const {
   selectMock, insertMock, updateMock,
   queueCommandForExecutionMock, getDeviceWithOrgAndSiteCheckMock, writeRouteAuditMock,
+  failRunAndCancelMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   insertMock: vi.fn(),
@@ -5468,6 +6660,7 @@ const {
   queueCommandForExecutionMock: vi.fn(),
   getDeviceWithOrgAndSiteCheckMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
+  failRunAndCancelMock: vi.fn(),
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -5505,6 +6698,14 @@ vi.mock('../../services/commandQueue', () => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
+
+// Partial mock: the gate, the schemas and the queue/start seam run for real
+// against the mocked db above, but `failSystemCleanupRunAndCancelCommand`
+// opens its own transaction and is asserted on directly.
+vi.mock('../../services/systemCleanup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/systemCleanup')>()),
+  failSystemCleanupRunAndCancelCommand: (...args: unknown[]) => failRunAndCancelMock(...(args as [never])),
+}));
 
 vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol.for('site-access-denied'),
@@ -5666,6 +6867,36 @@ describe('POST /devices/:id/filesystem/system-cleanup/run', () => {
     expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
+  // Spec §13 #4: one native run per device. The claim's committed transaction
+  // is what makes this check see a row a concurrent request just wrote.
+  it('refuses a second run while one is already running on the device', async () => {
+    selectMock.mockReturnValue(selectReturning([{ id: RUN_ID }])); // an in-flight system run
+    const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actionIds: ['linux_pkg_cache_clean'] }),
+    });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({ success: false, error: 'run_in_progress', cleanupRunId: RUN_ID });
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+  });
+
+  // Spec §13 #14: the deadline is derived from the SELECTION and stored, so
+  // the poll route never recomputes it. cleanmgr (60) + DISM (90) + 10 = 160.
+  it('stores a per-selection deadline on the run row', async () => {
+    const valuesSpy = vi.fn(() => ({ returning: () => Promise.resolve([{ id: RUN_ID }]) }));
+    insertMock.mockReturnValue({ values: valuesSpy });
+    await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actionIds: ['win_cleanmgr', 'win_dism_component_cleanup'] }),
+    });
+    const written = valuesSpy.mock.calls[0]?.[0] as { plan: { deadlineAt: string } };
+    const budgetMs = new Date(written.plan.deadlineAt).getTime() - Date.now();
+    expect(budgetMs).toBeGreaterThan(159 * 60 * 1000);
+    expect(budgetMs).toBeLessThanOrEqual(160 * 60 * 1000);
+  });
+
   it('marks the run failed when the command cannot be queued', async () => {
     queueCommandForExecutionMock.mockResolvedValue({ error: 'Device is offline' });
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run`, {
@@ -5694,32 +6925,52 @@ describe('GET /devices/:id/filesystem/system-cleanup/run/:cleanupRunId', () => {
     expect(body.data.volumes[0].freeAfter).toBe(4_000);
   });
 
-  // The lazy timeout: nothing else transitions a `running` row, so a device
-  // that never answers would leave a spinner up forever.
-  it('transitions a running row past the two-hour budget to failed', async () => {
-    const longAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  // The lazy timeout reads the deadline STORED on the row (spec §13 #14) and
+  // cancels the command in the same transaction (spec §13 #6/#13) — telling
+  // the operator a run failed while its command is still deliverable is the
+  // hazard the live_only TTL narrows but does not close.
+  it('fails a running row past its STORED deadline and cancels its command atomically', async () => {
     selectMock.mockReturnValue(selectReturning([{
       id: RUN_ID, deviceId: DEVICE_ID, kind: 'system', status: 'running', error: null,
-      bytesReclaimed: 0, requestedAt: longAgo, executedActions: [],
+      bytesReclaimed: 0, requestedAt: new Date(Date.now() - 20 * 60 * 1000),
+      plan: { actionIds: ['linux_pkg_cache_clean'], deadlineAt: new Date(Date.now() - 60_000).toISOString() },
+      executedActions: [],
     }]));
-    updateMock.mockReturnValue({ set: () => ({ where: () => Promise.resolve([{ id: RUN_ID }]) }) });
+    failRunAndCancelMock.mockResolvedValue(true);
 
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`);
     expect(res.status).toBe(200);
-    const body = await res.json() as any;
-    expect(body.data.status).toBe('failed');
-    expect(body.data.error).toBe('timed out');
-    expect(updateMock).toHaveBeenCalled();
+    await expect(res.json()).resolves.toMatchObject({ data: { status: 'failed', error: 'timed out' } });
+    expect(failRunAndCancelMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: RUN_ID, deviceId: DEVICE_ID, error: 'timed out' }),
+    );
   });
 
-  it('leaves a running row inside the budget alone', async () => {
+  // The deadline is per-selection: a 20-minute-old run of a 160-minute
+  // selection is NOT late, which a flat two-hour constant could not express
+  // in the other direction either.
+  it('leaves a running row inside its stored deadline alone', async () => {
     selectMock.mockReturnValue(selectReturning([{
       id: RUN_ID, deviceId: DEVICE_ID, kind: 'system', status: 'running', error: null,
-      bytesReclaimed: 0, requestedAt: new Date(), executedActions: [],
+      bytesReclaimed: 0, requestedAt: new Date(Date.now() - 20 * 60 * 1000),
+      plan: { actionIds: ['win_cleanmgr', 'win_dism_component_cleanup'], deadlineAt: new Date(Date.now() + 140 * 60 * 1000).toISOString() },
+      executedActions: [],
     }]));
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`);
     await expect(res.json()).resolves.toMatchObject({ data: { status: 'running' } });
-    expect(updateMock).not.toHaveBeenCalled();
+    expect(failRunAndCancelMock).not.toHaveBeenCalled();
+  });
+
+  // A row written before plan.deadlineAt existed falls back to the ceiling,
+  // which is the conservative direction — it waits longer, never less.
+  it('falls back to the three-hour ceiling when the row carries no stored deadline', async () => {
+    selectMock.mockReturnValue(selectReturning([{
+      id: RUN_ID, deviceId: DEVICE_ID, kind: 'system', status: 'running', error: null,
+      bytesReclaimed: 0, requestedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      plan: { actionIds: ['linux_pkg_cache_clean'] }, executedActions: [],
+    }]));
+    await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`);
+    expect(failRunAndCancelMock).not.toHaveBeenCalled();
   });
 
   it('404s a file-kind run — this projection is for system runs only', async () => {
@@ -5804,46 +7055,168 @@ export async function startSystemCleanupRun(
   const gate = systemCleanupAgentGate(args.device);
   if (!gate.ok) return gate;
 
-  // The row is written BEFORE the command is queued so a result that arrives
-  // while this call is still running has something to close. `running` is the
-  // W02 enum label; `kind: 'system'` is what keeps this row out of the file
-  // engine's queries.
-  const [run] = await db
-    .insert(deviceFilesystemCleanupRuns)
-    .values({
-      deviceId: args.device.id,
-      orgId: args.device.orgId,
-      requestedBy: args.requestedBy,
-      kind: 'system',
-      status: 'running',
-      plan: { actionIds: args.actionIds, params: args.params ?? {}, catalogVersion: null },
-    })
-    .returning();
-  if (!run) return { ok: false, status: 503, error: 'Failed to record the cleanup run' };
+  const deadlineAt = new Date(Date.now() + systemCleanupRunBudgetMs(args.actionIds));
 
+  // CLAIM in a short COMMITTED transaction, then dispatch outside it
+  // (spec §13 #5). Three things this buys that the ambient request
+  // transaction did not:
+  //
+  //   1. the single-run-per-device rule is actually enforced. Inside the
+  //      request transaction the `running` row a concurrent request had just
+  //      written was invisible, so two techs clicking Run a second apart both
+  //      passed the check and both queued;
+  //   2. a crash after the agent started deleting cannot roll the row away —
+  //      the claim is committed before anything is dispatched;
+  //   3. the WebSocket push in `queueCommandForExecution` cannot beat the
+  //      commit, so the result handler can never arrive at a row that does
+  //      not exist yet.
+  //
+  // This is why the two POST routes are registered in
+  // SELF_MANAGED_DB_CONTEXT_ROUTES: the auth middleware must NOT have an
+  // ambient transaction open around any of it.
+  const claim = await withDbAccessContext(dbContextFor(args.device), async () =>
+    db.transaction(async (tx) => {
+      // Single run per device (spec §13 #4): a second run would rewrite the
+      // StateFlags5555 profile the first one is executing from. The agent's
+      // maintenance lock catches it too, but reporting `run_in_progress`
+      // here is the answer a tech can act on; `busy` from the agent arrives
+      // minutes later attached to a run row that should not exist.
+      const [inFlight] = await tx
+        .select({ id: deviceFilesystemCleanupRuns.id })
+        .from(deviceFilesystemCleanupRuns)
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.deviceId, args.device.id),
+          eq(deviceFilesystemCleanupRuns.kind, 'system'),
+          eq(deviceFilesystemCleanupRuns.status, 'running'),
+        ))
+        .limit(1);
+      if (inFlight) return { conflict: inFlight.id } as const;
+
+      const [row] = await tx
+        .insert(deviceFilesystemCleanupRuns)
+        .values({
+          deviceId: args.device.id,
+          orgId: args.device.orgId,
+          requestedBy: args.requestedBy,
+          kind: 'system',
+          status: 'running',
+          plan: {
+            actionIds: args.actionIds,
+            params: args.params ?? {},
+            catalogVersion: null,
+            // Stored, not recomputed: the poll route's lazy timeout and any
+            // future reaper read THIS number, so neither has to re-derive a
+            // budget from a selection it would have to re-parse (§13 #14).
+            deadlineAt: deadlineAt.toISOString(),
+          },
+        })
+        .returning({ id: deviceFilesystemCleanupRuns.id });
+      return { runId: row?.id ?? null } as const;
+    }),
+  );
+
+  if ('conflict' in claim) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'run_in_progress',
+      cleanupRunId: claim.conflict,
+    };
+  }
+  if (!claim.runId) return { ok: false, status: 503, error: 'Failed to record the cleanup run' };
+  const runId = claim.runId;
+
+  // Dispatch OUTSIDE any transaction. queueCommandForExecution pushes over the
+  // websocket, and a push inside a held transaction is both the #1105
+  // connection hold and a message the agent can answer before the row commits.
   const queued = await queueCommandForExecution(
     args.device.id,
     CommandTypes.SYSTEM_CLEANUP_RUN,
-    { runId: run.id, actionIds: args.actionIds, params: args.params ?? {} },
+    { runId, actionIds: args.actionIds, params: args.params ?? {} },
     { userId: args.requestedBy ?? undefined },
   );
 
+  // Finalise in a SEPARATE short transaction, either way.
   if (!queued.command) {
     // A `running` row nobody will ever close is worse than no row: the panel
-    // would spin for two hours before the lazy timeout caught it.
-    await db
-      .update(deviceFilesystemCleanupRuns)
-      .set({ status: 'failed', error: queued.error || 'Failed to queue the cleanup run', updatedAt: new Date() })
-      .where(eq(deviceFilesystemCleanupRuns.id, run.id));
+    // would spin until the stored deadline caught it.
+    await withDbAccessContext(dbContextFor(args.device), async () =>
+      db
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'failed', error: queued.error || 'Failed to queue the cleanup run', updatedAt: new Date() })
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, runId),
+          eq(deviceFilesystemCleanupRuns.status, 'running'),
+        )),
+    );
     return { ok: false, status: 503, error: queued.error || 'Failed to queue the cleanup run' };
   }
 
-  await db
-    .update(deviceFilesystemCleanupRuns)
-    .set({ commandId: queued.command.id, updatedAt: new Date() })
-    .where(eq(deviceFilesystemCleanupRuns.id, run.id));
+  await withDbAccessContext(dbContextFor(args.device), async () =>
+    db
+      .update(deviceFilesystemCleanupRuns)
+      .set({ commandId: queued.command!.id, updatedAt: new Date() })
+      .where(eq(deviceFilesystemCleanupRuns.id, runId)),
+  );
 
-  return { ok: true, commandId: queued.command.id, cleanupRunId: run.id };
+  return { ok: true, commandId: queued.command.id, cleanupRunId: runId };
+}
+
+/**
+ * Cancel a run's pending command and mark the run failed, ATOMICALLY
+ * (spec §13 #6, #13).
+ *
+ * The two halves must not be separable. Marking the run failed while its
+ * command is still deliverable is the exact hazard the `live_only` TTL class
+ * narrows but does not close: the operator is told the run failed, and the
+ * device then claims the command and starts deleting. Cancelling the command
+ * without failing the run leaves a row spinning forever.
+ *
+ * Shared by the poll route's lazy timeout and by the org-move cancel branch
+ * (Task 12b), so there is one implementation of "this run is over".
+ */
+export async function failSystemCleanupRunAndCancelCommand(args: {
+  runId: string;
+  deviceId: string;
+  orgId: string;
+  error: string;
+}): Promise<boolean> {
+  return withDbAccessContext(dbContextFor({ orgId: args.orgId }), async () =>
+    db.transaction(async (tx) => {
+      const [run] = await tx
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'failed', error: args.error, updatedAt: new Date() })
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, args.runId),
+          // CAS: a real result that landed first must win.
+          eq(deviceFilesystemCleanupRuns.status, 'running'),
+        ))
+        .returning({ id: deviceFilesystemCleanupRuns.id, commandId: deviceFilesystemCleanupRuns.commandId });
+      if (!run) return false;
+
+      if (run.commandId) {
+        const completedAt = new Date();
+        const [cancelled] = await tx
+          .update(deviceCommands)
+          .set({
+            status: 'cancelled',
+            completedAt,
+            result: { status: 'cancelled', reason: 'cleanup_run_finalised' },
+          })
+          .where(and(
+            eq(deviceCommands.id, run.commandId),
+            eq(deviceCommands.deviceId, args.deviceId),
+            eq(deviceCommands.status, 'pending'),
+          ))
+          .returning({ id: deviceCommands.id });
+        // Losing this CAS is fine and expected: the agent already claimed it,
+        // so a real result is on its way and the late-result branch in the
+        // handler records it without flipping the status back.
+        void cancelled;
+      }
+      return true;
+    }),
+  );
 }
 ```
 
@@ -5876,7 +7249,7 @@ import { db } from '../../db';
 import { deviceCommands, deviceFilesystemCleanupRuns } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { SYSTEM_CLEANUP_RUN_TIMEOUT_MS } from '../../services/commandTimeouts';
+import { SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS } from '../../services/commandTimeouts';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { systemCleanupRunBodySchema } from '@breeze/shared/validators';
 // Queueing lives in the service (Step 3a / alignment 17) — this route file
@@ -5887,6 +7260,7 @@ import {
   MIN_AGENT_VERSION_SYSTEM_CLEANUP,
   isUnknownCommandTypeError,
   parseAgentJson,
+  failSystemCleanupRunAndCancelCommand,
   queueSystemCleanupList,
   startSystemCleanupRun,
   systemCleanupCatalogSchema,
@@ -6027,6 +7401,17 @@ filesystemSystemCleanupRoutes.post(
     // leave a `running` row behind.
     const started = await startSystemCleanupRun({ device, requestedBy: auth.user.id, actionIds, params });
     if (!started.ok) {
+      if (started.status === 409 && started.error === 'run_in_progress') {
+        // Spec §13 #4: one native run per device. The agent's maintenance lock
+        // catches a race that slips past this, but it answers `busy` minutes
+        // later attached to a run row that should never have been created —
+        // this is the answer a tech can act on.
+        return c.json({
+          success: false,
+          error: 'run_in_progress',
+          cleanupRunId: started.cleanupRunId ?? null,
+        }, 409);
+      }
       if (started.status === 409) return agentUpdateRequired(c);
       return c.json({ success: false, error: started.error, code: 'agent_execution_failed' }, started.status === 400 ? 400 : 500);
     }
@@ -6080,20 +7465,29 @@ filesystemSystemCleanupRoutes.get(
     // Lazy timeout. Nothing else transitions a `running` system run: the stale
     // command reaper terminalises the COMMAND, not this row, so a device that
     // never answers would otherwise leave the panel spinning indefinitely.
-    // Same budget the reaper uses, imported from commandTimeouts so the two
-    // clocks cannot drift.
-    if (status === 'running' && Date.now() - new Date(run.requestedAt).getTime() > SYSTEM_CLEANUP_RUN_TIMEOUT_MS) {
-      status = 'failed';
-      error = 'timed out';
-      await db
-        .update(deviceFilesystemCleanupRuns)
-        .set({ status, error, updatedAt: new Date() })
-        .where(and(
-          eq(deviceFilesystemCleanupRuns.id, run.id),
-          // CAS on `running`: a result that landed between the read above and
-          // this write must win, not be overwritten with a timeout.
-          eq(deviceFilesystemCleanupRuns.status, 'running'),
-        ));
+    //
+    // The deadline is the one STORED on the row at claim time (spec §13 #14),
+    // not a constant and not a recomputation: the budget depends on what was
+    // selected, and two places deriving it independently is how they drift.
+    // A row written before this field existed falls back to the maximum,
+    // which is the conservative direction.
+    const plan = (run.plan ?? {}) as { deadlineAt?: unknown };
+    const deadlineAt = typeof plan.deadlineAt === 'string'
+      ? new Date(plan.deadlineAt).getTime()
+      : new Date(run.requestedAt).getTime() + SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS;
+
+    if (status === 'running' && Number.isFinite(deadlineAt) && Date.now() > deadlineAt) {
+      // Cancelling the command and failing the row are ONE transaction
+      // (spec §13 #6/#13): telling the operator a run failed while its command
+      // is still deliverable is the hazard the live_only TTL narrows but does
+      // not close.
+      const finalised = await failSystemCleanupRunAndCancelCommand({
+        runId: run.id, deviceId, orgId: device.orgId, error: 'timed out',
+      });
+      if (finalised) {
+        status = 'failed';
+        error = 'timed out';
+      }
     }
 
     const executed = (run.executedActions ?? {}) as { actions?: unknown[]; volumes?: unknown[] };
@@ -6111,6 +7505,40 @@ filesystemSystemCleanupRoutes.get(
     });
   },
 );
+```
+
+- [ ] **Step 3b: Register both POST routes as self-managed-context routes** (spec §13 #5, plan amendment 18) — in `apps/api/src/middleware/selfManagedDbContextRoutes.ts`, append to `SELF_MANAGED_DB_CONTEXT_ROUTES`:
+
+```ts
+  // Disk Cleanup v2 W04 (spec §13 #5). `startSystemCleanupRun` claims the run
+  // in a SHORT COMMITTED transaction, dispatches the command outside any
+  // transaction, and finalises in a second one. Under the auth middleware's
+  // ambient request transaction none of that works: the `running` row a
+  // concurrent request just wrote is invisible (so the single-run-per-device
+  // check passes twice), a crash after the agent began deleting rolls the
+  // claim away, and the websocket push happens before the commit — the agent
+  // can answer a run row that does not exist yet.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/system-cleanup\/run\/?$/ },
+  // Same reasoning, smaller blast radius: the list route queues a command
+  // (and therefore pushes over the socket) and writes only an audit, which
+  // manages its own context.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/system-cleanup\/list\/?$/ },
+```
+
+Note the pattern must NOT also match the two GET poll routes (`…/list/:commandId`, `…/run/:cleanupRunId`): those are ordinary reads that want the ambient transaction. The `\/?$` anchor after the action segment is what keeps them out, and the test below pins it.
+
+Append to `apps/api/src/middleware/selfManagedDbContextRoutes.test.ts`:
+
+```ts
+  it('opts the two system-cleanup POSTs out of the ambient transaction, and nothing else', () => {
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/run')).toBe(true);
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/list')).toBe(true);
+    // The polls are plain reads — they must keep the request transaction.
+    expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/run/44444444-4444-4444-8444-444444444444')).toBe(false);
+    expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/system-cleanup/list/33333333-3333-4333-8333-333333333333')).toBe(false);
+    // And the file engine's routes are untouched.
+    expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/22222222-2222-4222-8222-222222222222/filesystem/scan')).toBe(false);
+  });
 ```
 
 - [ ] **Step 4: Mount it** — in `apps/api/src/routes/devices/index.ts`, add the import next to the filesystem one (`:16`) and mount it immediately BEFORE `filesystemRoutes` (`:81`):
@@ -6335,11 +7763,27 @@ describe('handleSystemCleanupRunResult (spec §5.3)', () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when the run row is already terminal', async () => {
-    selectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ ...runRow, status: 'executed' }]) }) }) });
+  // Spec §13 #13: a late result is RECORDED, not applied. Flipping a failed
+  // row back to executed would contradict what the operator was told; dropping
+  // it would erase the only evidence that the work actually happened.
+  it('records a result for a finalised run as lateResult without flipping its status', async () => {
+    selectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ ...runRow, status: 'failed' }]) }) }) });
     await handleSystemCleanupRunResult(params());
-    expect(updateMock).not.toHaveBeenCalled();
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const written = setSpy.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(written.status).toBeUndefined();
+    expect(written.bytesReclaimed).toBeUndefined();
+    expect(String(written.executedActions)).toContain('lateResult');
+    // The audit belongs to the run that completed, not to one already closed.
     expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  it('records an UNREADABLE late result too, flagged', async () => {
+    selectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ ...runRow, status: 'executed' }]) }) }) });
+    await handleSystemCleanupRunResult(params({ stdout: 'not json' }));
+    const written = setSpy.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(String(written.executedActions)).toContain('unreadable');
   });
 
   it('is a no-op when the run belongs to another device', async () => {
@@ -6408,10 +7852,39 @@ export async function handleSystemCleanupRunResult(
     ))
     .limit(1);
 
-  // A run that is already terminal has been closed by the lazy timeout or by
-  // a racing duplicate result. Overwriting it would let a late, stale answer
-  // replace the one the user already saw.
-  if (!run || run.status !== 'running') return;
+  if (!run) return;
+
+  // LATE RESULT (spec §13 #13). The run is already terminal — closed by the
+  // lazy timeout, by an org-move cancel, or by a racing duplicate. The answer
+  // is recorded, not applied: flipping a `failed` row back to `executed`
+  // would contradict what the operator was already told and what the audit
+  // already says, while dropping it silently would erase the only evidence
+  // that the work DID happen (which matters when the freed bytes show up on
+  // the next scan and nobody can explain them).
+  if (run.status !== 'running') {
+    const late = parseAgentJson(systemCleanupRunResultSchema, stdout);
+    await db
+      .update(deviceFilesystemCleanupRuns)
+      .set({
+        executedActions: sql`jsonb_set(
+          COALESCE(${deviceFilesystemCleanupRuns.executedActions}, '{}'::jsonb),
+          '{lateResult}',
+          ${JSON.stringify({
+            receivedAt: new Date().toISOString(),
+            commandId: command.id,
+            commandStatus: result.status,
+            ...(late ? { actions: late.actions, volumes: late.volumes, freedBytes: late.freedBytes } : { unreadable: true }),
+          })}::jsonb,
+          true
+        )`,
+        updatedAt: new Date(),
+      })
+      .where(eq(deviceFilesystemCleanupRuns.id, runId));
+    console.warn(
+      `[commandResultHandlers] system_cleanup_run ${command.id} answered a ${run.status} run ${runId}; recorded as lateResult without changing its status`,
+    );
+    return;
+  }
 
   const now = new Date();
   const finish = async (fields: Record<string, unknown>) => {
@@ -6543,6 +8016,175 @@ MSG
 
 ---
 
+### Task 12b: Cancel propagation for system runs
+
+Spec §13 #13. A device org-move, a decommission, or a user cancel terminalises the *command* (`propagateCancelledDeviceCommands`, called from `routes/devices/moveOrg.ts:7`, `routes/devices/core.ts:24` and `routes/devices/commands.ts:29` inside their own transactions). Without a branch, the `device_filesystem_cleanup_runs` row it belonged to stays `running` until its deadline — on a device that has just moved to another org, where the poll route that would notice is no longer reachable from the tech who started it.
+
+**Files:**
+- Modify: `apps/api/src/services/commandCancelPropagation.ts` (`propagateCancelledDeviceCommand`, the branch chain at `:76-126`)
+- Create: `apps/api/src/services/commandCancelPropagation.systemCleanup.test.ts` (Test)
+
+**Interfaces:**
+- Consumes: `DbExecutor` (`commandCancelPropagation.ts:30`), `deviceFilesystemCleanupRuns`.
+- Produces: no new export — one branch inside the existing function.
+
+- [ ] **Step 1: Write the failing test** — create `apps/api/src/services/commandCancelPropagation.systemCleanup.test.ts`:
+
+```ts
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { updateMock, setSpy } = vi.hoisted(() => {
+  const setSpy = vi.fn(() => ({ where: () => Promise.resolve([{ id: 'run-1' }]) }));
+  return { updateMock: vi.fn(() => ({ set: setSpy })), setSpy };
+});
+
+vi.mock('drizzle-orm', () => ({
+  and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
+  eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
+}));
+vi.mock('../db', () => ({ db: { update: updateMock, select: vi.fn(), insert: vi.fn() } }));
+vi.mock('../db/schema', () => ({
+  deploymentResults: { deviceCommandId: 'dr.deviceCommandId', status: 'dr.status' },
+  deviceFilesystemCleanupRuns: { id: 'runs.id', status: 'runs.status', commandId: 'runs.commandId' },
+}));
+vi.mock('./automationActionResults', () => ({ applyAutomationActionTerminal: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./scriptExecutionTerminal', () => ({
+  batchIdFromPayload: () => null,
+  finalizeScriptExecutionTerminal: vi.fn(),
+}));
+
+import { propagateCancelledDeviceCommand } from './commandCancelPropagation';
+
+const completedAt = new Date('2026-09-19T12:00:00Z');
+
+beforeEach(() => { vi.clearAllMocks(); });
+
+describe('system_cleanup_run cancel propagation (spec §13 #13)', () => {
+  it('fails the owning run so it does not sit running on a moved device', async () => {
+    const tx = { update: updateMock, select: vi.fn(), insert: vi.fn() } as never;
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-1',
+      type: 'system_cleanup_run',
+      payload: { runId: 'run-1' },
+      completedAt,
+      executor: tx,
+    });
+
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      error: 'Cancelled before the device received it',
+    }));
+  });
+
+  // The caller's transaction is the org flip itself; joining it is the whole
+  // point, so the branch must use `executor`, never the ambient db.
+  it('writes through the caller transaction, not the ambient db', async () => {
+    const txUpdate = vi.fn(() => ({ set: () => ({ where: () => Promise.resolve([]) }) }));
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-1', type: 'system_cleanup_run', payload: { runId: 'run-1' }, completedAt,
+      executor: { update: txUpdate, select: vi.fn(), insert: vi.fn() } as never,
+    });
+    expect(txUpdate).toHaveBeenCalled();
+  });
+
+  it('is inert without a usable runId', async () => {
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-1', type: 'system_cleanup_run', payload: {}, completedAt,
+      executor: { update: updateMock, select: vi.fn(), insert: vi.fn() } as never,
+    });
+    for (const call of setSpy.mock.calls) {
+      expect((call[0] as Record<string, unknown>).status).not.toBe('failed');
+    }
+  });
+
+  it('leaves other command types alone', async () => {
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-1', type: 'file_delete', payload: { runId: 'run-1' }, completedAt,
+      executor: { update: updateMock, select: vi.fn(), insert: vi.fn() } as never,
+    });
+    for (const call of setSpy.mock.calls) {
+      expect((call[0] as Record<string, unknown>).error).not.toBe('Cancelled before the device received it');
+    }
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+cd apps/api && npx vitest run src/services/commandCancelPropagation.systemCleanup.test.ts
+```
+
+Expected failure: `expected "spy" to be called with arguments: [ ObjectContaining{status: 'failed'} ]` — the branch does not exist, so only the `deploymentResults` update runs.
+
+- [ ] **Step 3: Implement** — in `apps/api/src/services/commandCancelPropagation.ts`, add `deviceFilesystemCleanupRuns` to the `../db/schema` import and insert the branch after the `install_patches` one (`:126`), before the `deploymentResults` update:
+
+```ts
+  // Disk Cleanup v2 (spec §13 #13). A cancelled native cleanup command leaves
+  // its `device_filesystem_cleanup_runs` row `running` — on a device that has
+  // just moved org or been decommissioned, nothing will ever revisit it: the
+  // poll route that applies the lazy deadline is no longer reachable from the
+  // tech who started the run, and the reaper terminalises COMMANDS, not this
+  // row.
+  //
+  // In the caller's transaction (the org flip, the decommission write) for the
+  // same reason every branch above is: a rollback must not leave a cancelled
+  // command beside a run row that still claims to be executing.
+  //
+  // CAS on `running` so a real result that landed first keeps its outcome.
+  if (type === 'system_cleanup_run') {
+    const runId =
+      payload && typeof payload.runId === 'string' && payload.runId.trim().length > 0
+        ? payload.runId
+        : null;
+    if (runId) {
+      await executor
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'failed', error: errorMessage, updatedAt: completedAt })
+        .where(
+          and(
+            eq(deviceFilesystemCleanupRuns.id, runId),
+            eq(deviceFilesystemCleanupRuns.status, 'running'),
+          ),
+        );
+    }
+  }
+```
+
+- [ ] **Step 4: Run it and watch it pass**
+
+```bash
+cd apps/api && npx vitest run src/services/commandCancelPropagation.systemCleanup.test.ts src/services/commandCancelPropagation.test.ts
+```
+
+Expected: both green.
+
+- [ ] **Step 5: Typecheck and commit**
+
+```bash
+pnpm exec tsc --noEmit --project apps/api/tsconfig.json
+git add apps/api/src/services/commandCancelPropagation.ts apps/api/src/services/commandCancelPropagation.systemCleanup.test.ts
+git commit -m "$(cat <<'MSG'
+feat(api): terminalise a system cleanup run when its command is cancelled
+
+Without this branch, an org-move or decommission cancels the command and
+leaves the run row `running` on a device nothing will revisit: the poll route
+that applies the lazy deadline is no longer reachable from the tech who started
+it, and the stale reaper terminalises commands, not this row.
+
+Runs in the CALLER's transaction, like every other branch in this function — a
+rollback must not leave a cancelled command beside a run that still claims to
+be executing — and CAS on `running` so a real result that landed first keeps
+its outcome.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+MSG
+)"
+```
+
+---
+
 ### Task 13: `SystemCleanupPanel`
 
 **Files:**
@@ -6638,7 +8280,7 @@ describe('SystemCleanupPanel', () => {
     expect(screen.getByTestId('system-cleanup-risk-linux_pkg_autoremove-removes_packages')).toBeInTheDocument();
   });
 
-  it('requires the extra acknowledgement when a selected action removes packages', async () => {
+  it('requires the extra acknowledgement, and names the loss, for an irreversible action', async () => {
     listFlow();
     render(<SystemCleanupPanel deviceId={DEVICE} />);
     fireEvent.click(screen.getByTestId('system-cleanup-check'));
@@ -6649,11 +8291,72 @@ describe('SystemCleanupPanel', () => {
 
     const confirm = await screen.findByTestId('system-cleanup-confirm');
     expect(confirm).toBeDisabled();
-    fireEvent.click(screen.getByTestId('system-cleanup-ack-removes-packages'));
+    fireEvent.click(screen.getByTestId('system-cleanup-ack-irreversible'));
     expect(screen.getByTestId('system-cleanup-confirm')).toBeEnabled();
+    // The dialog must name WHICH loss is about to happen — a generic
+    // "are you sure" is the failure mode spec §13 #15 is about.
+    expect(screen.getByTestId('system-cleanup-consequence-removes_packages')).toBeInTheDocument();
   });
 
-  it('does not show the extra acknowledgement when nothing removes packages', async () => {
+  it('arms the same gate for an action that removes OS rollback', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith('/filesystem/system-cleanup/list') && init?.method === 'POST') {
+        return Promise.resolve(json({ success: true, data: { commandId: CMD, status: 'pending' } }, 202));
+      }
+      return Promise.resolve(json({
+        success: true,
+        data: {
+          status: 'completed',
+          catalog: {
+            catalogVersion: 1,
+            volumesBefore: [],
+            actions: [{
+              id: 'win_cleanmgr:previous_installations', label: 'Previous Windows installations',
+              description: 'Removes Windows.old.', os: 'windows', available: true, estimateKnown: false,
+              riskFlags: ['removes_os_rollback'], affectsVolumes: [],
+            }],
+          },
+        },
+      }));
+    });
+
+    render(<SystemCleanupPanel deviceId={DEVICE} />);
+    fireEvent.click(screen.getByTestId('system-cleanup-check'));
+    await screen.findByText('Previous Windows installations');
+    fireEvent.click(screen.getByTestId('system-cleanup-check-win_cleanmgr:previous_installations'));
+    fireEvent.click(screen.getByTestId('system-cleanup-run'));
+
+    expect(await screen.findByTestId('system-cleanup-confirm')).toBeDisabled();
+    expect(screen.getByTestId('system-cleanup-consequence-removes_os_rollback')).toBeInTheDocument();
+  });
+
+  // Spec §13 #4: one native run per device. 409 run_in_progress is a distinct
+  // answer from the agent-update 409 and must not raise the update banner.
+  it('surfaces run_in_progress without claiming the agent needs an update', async () => {
+    fetchWithAuthMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith('/filesystem/system-cleanup/list') && init?.method === 'POST') {
+        return Promise.resolve(json({ success: true, data: { commandId: CMD, status: 'pending' } }, 202));
+      }
+      if (url.endsWith(`/filesystem/system-cleanup/list/${CMD}`)) {
+        return Promise.resolve(json({ success: true, data: { status: 'completed', catalog } }));
+      }
+      return Promise.resolve(json({ success: false, error: 'run_in_progress', cleanupRunId: RUN }, 409));
+    });
+
+    render(<SystemCleanupPanel deviceId={DEVICE} />);
+    fireEvent.click(screen.getByTestId('system-cleanup-check'));
+    await screen.findByText('Package manager cache');
+    fireEvent.click(screen.getByTestId('system-cleanup-check-linux_pkg_cache_clean'));
+    fireEvent.click(screen.getByTestId('system-cleanup-run'));
+    fireEvent.click(await screen.findByTestId('system-cleanup-confirm'));
+
+    expect(await screen.findByTestId('system-cleanup-error')).toHaveTextContent(/already running/i);
+    expect(screen.queryByTestId('system-cleanup-agent-update')).toBeNull();
+  });
+
+  it('does not show the extra acknowledgement when nothing is irreversible', async () => {
     listFlow();
     render(<SystemCleanupPanel deviceId={DEVICE} />);
     fireEvent.click(screen.getByTestId('system-cleanup-check'));
@@ -6663,7 +8366,7 @@ describe('SystemCleanupPanel', () => {
     fireEvent.click(screen.getByTestId('system-cleanup-run'));
 
     await screen.findByTestId('system-cleanup-confirm');
-    expect(screen.queryByTestId('system-cleanup-ack-removes-packages')).toBeNull();
+    expect(screen.queryByTestId('system-cleanup-ack-irreversible')).toBeNull();
     expect(screen.getByTestId('system-cleanup-confirm')).toBeEnabled();
   });
 
@@ -6864,6 +8567,17 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
   };
 
   const handleFailure = useCallback((err: unknown, fallback: string) => {
+    // Two different 409s share a status code and must not share an answer:
+    // `agent_update_required` raises the update banner and disables Run
+    // permanently; `run_in_progress` (spec §13 #4) is transient and the right
+    // advice is "wait for the one that is running".
+    if (err instanceof ActionError && err.status === 409) {
+      const body = err.body as { error?: string } | undefined;
+      if (body?.error === 'run_in_progress') {
+        setError(t("systemCleanupPanel.runInProgress"));
+        return;
+      }
+    }
     const version = readAgentUpdate(err);
     if (version !== null) {
       setMinAgentVersion(version);
@@ -6872,7 +8586,7 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
     }
     if (err instanceof ActionError && err.status === 401) return; // the auth redirect owns this
     setError(err instanceof Error ? err.message : fallback);
-  }, []);
+  }, [t]);
 
   const checkActions = useCallback(async () => {
     abort.current?.abort();
@@ -6927,7 +8641,20 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
     [catalog, selected],
   );
 
-  const needsAcknowledgement = selectedActions.some((action) => action.riskFlags.includes("removes_packages"));
+  // Spec §13 #15. Three losses no later action can undo, each with its own
+  // sentence in the dialog: uninstalled packages, the Windows "go back"
+  // window, and a Mac's only on-disk restore points. Any of them arms the
+  // second checkbox — one generic "are you sure" cannot say WHICH thing is
+  // about to become unrecoverable, and that is the whole value of the step.
+  const ACKNOWLEDGED_RISKS: RiskFlag[] = [
+    "removes_packages",
+    "removes_os_rollback",
+    "removes_recovery_points",
+  ];
+  const consequences = ACKNOWLEDGED_RISKS.filter((flag) =>
+    selectedActions.some((action) => action.riskFlags.includes(flag)),
+  );
+  const needsAcknowledgement = consequences.length > 0;
 
   const executeRun = useCallback(async () => {
     setConfirmOpen(false);
@@ -7125,15 +8852,24 @@ export default function SystemCleanupPanel({ deviceId }: { deviceId: string }) {
         confirmDisabled={needsAcknowledgement && !acknowledged}
       >
         {needsAcknowledgement && (
-          <label className="mt-2 flex items-start gap-2 text-xs">
-            <input
-              type="checkbox"
-              data-testid="system-cleanup-ack-removes-packages"
-              checked={acknowledged}
-              onChange={(event) => setAcknowledged(event.target.checked)}
-            />
-            <span>{t("systemCleanupPanel.confirmRemovesPackages")}</span>
-          </label>
+          <>
+            <ul data-testid="system-cleanup-consequences" className="mt-2 list-disc space-y-1 pl-5 text-xs">
+              {consequences.map((flag) => (
+                <li key={flag} data-testid={`system-cleanup-consequence-${flag}`}>
+                  {t(/* i18n-dynamic */ `systemCleanupPanel.consequence.${flag}`)}
+                </li>
+              ))}
+            </ul>
+            <label className="mt-2 flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                data-testid="system-cleanup-ack-irreversible"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+              />
+              <span>{t("systemCleanupPanel.confirmIrreversible")}</span>
+            </label>
+          </>
         )}
       </ConfirmDialog>
     </section>
@@ -7363,7 +9099,7 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     "agentUpdateRequired": "Update this device's agent to version {{version}} or later to run OS cleanup actions.",
     "confirmTitle": "Run OS cleanup actions?",
     "confirmMessage": "{{count}} action(s) will run on this device. Some can take up to 90 minutes and cannot be undone.",
-    "confirmRemovesPackages": "I understand this uninstalls packages that are no longer required.",
+    "confirmIrreversible": "I understand this uninstalls packages that are no longer required.",
     "freed": "Freed {{size}}",
     "volumeFreed": "{{mount}}: {{size}} freed",
     "risk": {
@@ -7404,7 +9140,7 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     "agentUpdateRequired": "Aktualisieren Sie den Agenten dieses Geräts auf Version {{version}} oder neuer, um Systembereinigungen auszuführen.",
     "confirmTitle": "Systembereinigung ausführen?",
     "confirmMessage": "{{count}} Aktion(en) werden auf diesem Gerät ausgeführt. Einige dauern bis zu 90 Minuten und lassen sich nicht rückgängig machen.",
-    "confirmRemovesPackages": "Mir ist bewusst, dass dabei nicht mehr benötigte Pakete deinstalliert werden.",
+    "confirmIrreversible": "Mir ist bewusst, dass dabei nicht mehr benötigte Pakete deinstalliert werden.",
     "freed": "{{size}} freigegeben",
     "volumeFreed": "{{mount}}: {{size}} freigegeben",
     "risk": {
@@ -7443,7 +9179,7 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     "agentUpdateRequired": "Actualice el agente de este dispositivo a la versión {{version}} o posterior para ejecutar acciones de limpieza del sistema.",
     "confirmTitle": "¿Ejecutar la limpieza del sistema?",
     "confirmMessage": "Se ejecutarán {{count}} acción(es) en este dispositivo. Algunas pueden tardar hasta 90 minutos y no se pueden deshacer.",
-    "confirmRemovesPackages": "Entiendo que esto desinstala paquetes que ya no se necesitan.",
+    "confirmIrreversible": "Entiendo que esto desinstala paquetes que ya no se necesitan.",
     "freed": "Se liberaron {{size}}",
     "volumeFreed": "{{mount}}: {{size}} liberados",
     "risk": {
@@ -7482,7 +9218,7 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     "agentUpdateRequired": "Mettez à jour l'agent de cet appareil vers la version {{version}} ou ultérieure pour exécuter des nettoyages système.",
     "confirmTitle": "Exécuter le nettoyage du système ?",
     "confirmMessage": "{{count}} action(s) vont s'exécuter sur cet appareil. Certaines peuvent durer jusqu'à 90 minutes et sont irréversibles.",
-    "confirmRemovesPackages": "Je comprends que cela désinstalle des paquets qui ne sont plus nécessaires.",
+    "confirmIrreversible": "Je comprends que cela désinstalle des paquets qui ne sont plus nécessaires.",
     "freed": "{{size}} libérés",
     "volumeFreed": "{{mount}} : {{size}} libérés",
     "risk": {
@@ -7521,7 +9257,7 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     "agentUpdateRequired": "Mettez à jour l'agent de cet appareil vers la version {{version}} ou ultérieure pour exécuter des nettoyages système.",
     "confirmTitle": "Exécuter le nettoyage du système?",
     "confirmMessage": "{{count}} action(s) vont s'exécuter sur cet appareil. Certaines peuvent durer jusqu'à 90 minutes et sont irréversibles.",
-    "confirmRemovesPackages": "Je comprends que cela désinstalle des paquets qui ne sont plus nécessaires.",
+    "confirmIrreversible": "Je comprends que cela désinstalle des paquets qui ne sont plus nécessaires.",
     "freed": "{{size}} libérés",
     "volumeFreed": "{{mount}}: {{size}} libérés",
     "risk": {
@@ -7560,7 +9296,7 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     "agentUpdateRequired": "Aggiorna l'agente di questo dispositivo alla versione {{version}} o successiva per eseguire le pulizie di sistema.",
     "confirmTitle": "Eseguire la pulizia del sistema?",
     "confirmMessage": "Verranno eseguite {{count}} azione/i su questo dispositivo. Alcune possono richiedere fino a 90 minuti e non sono reversibili.",
-    "confirmRemovesPackages": "Ho capito che questa operazione disinstalla pacchetti non più necessari.",
+    "confirmIrreversible": "Ho capito che questa operazione disinstalla pacchetti non più necessari.",
     "freed": "Liberati {{size}}",
     "volumeFreed": "{{mount}}: {{size}} liberati",
     "risk": {
@@ -7599,7 +9335,7 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     "agentUpdateRequired": "Atualize o agente deste dispositivo para a versão {{version}} ou posterior para executar limpezas do sistema.",
     "confirmTitle": "Executar a limpeza do sistema?",
     "confirmMessage": "{{count}} ação(ões) serão executadas neste dispositivo. Algumas podem levar até 90 minutos e não podem ser desfeitas.",
-    "confirmRemovesPackages": "Entendo que isso desinstala pacotes que não são mais necessários.",
+    "confirmIrreversible": "Entendo que isso desinstala pacotes que não são mais necessários.",
     "freed": "{{size}} liberados",
     "volumeFreed": "{{mount}}: {{size}} liberados",
     "risk": {
@@ -7638,7 +9374,7 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     "agentUpdateRequired": "Sistem temizliği çalıştırmak için bu cihazın aracısını {{version}} veya sonraki bir sürüme güncelleyin.",
     "confirmTitle": "Sistem temizliği çalıştırılsın mı?",
     "confirmMessage": "Bu cihazda {{count}} işlem çalıştırılacak. Bazıları 90 dakikaya kadar sürebilir ve geri alınamaz.",
-    "confirmRemovesPackages": "Bunun artık gerekmeyen paketleri kaldıracağını anlıyorum.",
+    "confirmIrreversible": "Bunun artık gerekmeyen paketleri kaldıracağını anlıyorum.",
     "freed": "{{size}} boşaltıldı",
     "volumeFreed": "{{mount}}: {{size}} boşaltıldı",
     "risk": {
@@ -7656,6 +9392,22 @@ Expected failure: `expected 'systemCleanupPanel.checkActions' not to contain 'sy
     }
   },
 ```
+
+- [ ] **Step 4b: Apply the quorum delta to all eight catalogues** (spec §13 #4, #14, #15). `confirmRemovesPackages` is **renamed** to `confirmIrreversible` — the gate now covers three losses, not one — and eight keys are added. Placeholders are copied verbatim.
+
+| Key | en | de-DE | es-419 | fr-FR | fr-CA | it-IT | pt-BR | tr-TR |
+|---|---|---|---|---|---|---|---|---|
+| `runInProgress` | An OS cleanup is already running on this device. Wait for it to finish, then try again. | Auf diesem Gerät läuft bereits eine Systembereinigung. Warten Sie, bis sie beendet ist. | Ya hay una limpieza del sistema en curso en este dispositivo. Espere a que termine. | Un nettoyage système est déjà en cours sur cet appareil. Attendez qu'il se termine. | Un nettoyage système est déjà en cours sur cet appareil. Attendez qu'il se termine. | Una pulizia del sistema è già in corso su questo dispositivo. Attendi che finisca. | Já há uma limpeza do sistema em andamento neste dispositivo. Aguarde a conclusão. | Bu cihazda zaten bir sistem temizliği çalışıyor. Bitmesini bekleyin. |
+| `confirmIrreversible` | I understand these changes cannot be undone. | Mir ist bewusst, dass diese Änderungen nicht rückgängig gemacht werden können. | Entiendo que estos cambios no se pueden deshacer. | Je comprends que ces changements sont irréversibles. | Je comprends que ces changements sont irréversibles. | Ho capito che queste modifiche non sono reversibili. | Entendo que estas alterações não podem ser desfeitas. | Bu değişikliklerin geri alınamayacağını anlıyorum. |
+| `consequence.removes_packages` | Packages that are no longer required will be uninstalled. | Nicht mehr benötigte Pakete werden deinstalliert. | Se desinstalarán los paquetes que ya no se necesitan. | Les paquets qui ne sont plus nécessaires seront désinstallés. | Les paquets qui ne sont plus nécessaires seront désinstallés. | I pacchetti non più necessari verranno disinstallati. | Os pacotes que não são mais necessários serão desinstalados. | Artık gerekmeyen paketler kaldırılacak. |
+| `consequence.removes_os_rollback` | This device will no longer be able to roll back to its previous Windows version. | Dieses Gerät kann danach nicht mehr zur vorherigen Windows-Version zurückkehren. | Este dispositivo ya no podrá volver a su versión anterior de Windows. | Cet appareil ne pourra plus revenir à sa version précédente de Windows. | Cet appareil ne pourra plus revenir à sa version précédente de Windows. | Questo dispositivo non potrà più tornare alla versione precedente di Windows. | Este dispositivo não poderá mais voltar à versão anterior do Windows. | Bu cihaz artık önceki Windows sürümüne geri dönemeyecek. |
+| `consequence.removes_recovery_points` | Local snapshots are deleted. If the Time Machine disk is not connected, this device has no other restore points. | Lokale Snapshots werden gelöscht. Ohne angeschlossene Time-Machine-Festplatte hat dieses Gerät keine weiteren Wiederherstellungspunkte. | Se eliminan las instantáneas locales. Si el disco de Time Machine no está conectado, este dispositivo no tiene otros puntos de restauración. | Les instantanés locaux sont supprimés. Si le disque Time Machine n'est pas connecté, cet appareil n'a aucun autre point de restauration. | Les instantanés locaux sont supprimés. Si le disque Time Machine n'est pas branché, cet appareil n'a aucun autre point de restauration. | Le istantanee locali vengono eliminate. Se il disco Time Machine non è collegato, questo dispositivo non ha altri punti di ripristino. | Os instantâneos locais são excluídos. Se o disco do Time Machine não estiver conectado, este dispositivo não terá outros pontos de restauração. | Yerel anlık görüntüler silinir. Time Machine diski bağlı değilse bu cihazın başka geri yükleme noktası kalmaz. |
+| `risk.removes_os_rollback` | ends Windows rollback | beendet Windows-Rollback | fin de la reversión de Windows | fin de la restauration Windows | fin de la restauration Windows | fine del rollback di Windows | encerra a reversão do Windows | Windows geri almayı bitirir |
+| `risk.removes_recovery_points` | removes restore points | entfernt Wiederherstellungspunkte | elimina puntos de restauración | supprime les points de restauration | supprime les points de restauration | rimuove i punti di ripristino | remove pontos de restauração | geri yükleme noktalarını kaldırır |
+| `status.busy` | not started — the device was busy | nicht gestartet – Gerät war beschäftigt | no se inició: el dispositivo estaba ocupado | non démarrée — appareil occupé | non démarrée — appareil occupé | non avviata — dispositivo occupato | não iniciada — o dispositivo estava ocupado | başlatılmadı — cihaz meşguldü |
+| `status.not_started` | not started — the run ran out of time | nicht gestartet – Zeitbudget aufgebraucht | no se inició: se agotó el tiempo | non démarrée — temps épuisé | non démarrée — temps épuisé | non avviata — tempo esaurito | não iniciada — o tempo acabou | başlatılmadı — süre doldu |
+
+Two notes the translator must keep: `status.busy` and `status.not_started` both read "not started" on purpose — from the tech's point of view they are the same outcome with different causes, and the cause is what the rest of the sentence carries. And `runInProgress` is deliberately NOT phrased as an error with the device: it is an ordinary scheduling collision.
 
 - [ ] **Step 5: Run the panel test and the whole i18n suite**
 
@@ -7727,9 +9479,24 @@ Runs the selected catalog actions **sequentially**, in catalog order, and measur
 | `actionIds` | string[] | Yes | A non-empty subset of the catalog's ids |
 | `params.journalVacuumBytes` | int | No | Target size for `linux_journal_vacuum` (64 MiB – 4 GiB, default 256 MiB) |
 
-The response contains `runId`, an `actions[]` array (`id`, optional `subActions[]`, `status` = `completed` / `failed` / `timed_out` / `unavailable`, `exitCode`, `durationMs`, `outputTail`, `error`), `volumes[]` (`mount`, `freeBefore`, `freeAfter`) and `freedBytes`.
+The response contains `runId`, an `actions[]` array (`id`, optional `subActions[]`, `status`, `exitCode`, `durationMs`, `outputTail`, `error`), `volumes[]` (`mount`, `freeBefore`, `freeAfter`) and `freedBytes`.
+
+Per-action `status` values:
+
+| Status | Meaning |
+|---|---|
+| `completed` | The tool ran and exited cleanly |
+| `failed` | The tool ran and reported a problem |
+| `timed_out` | This action overran its own cap and its process tree was terminated |
+| `unavailable` | The tool is not present, or the agent cannot write where it needs to. Never attempted |
+| `busy` | Another maintenance operation (a concurrent run, a patch job's package cleanup) held the agent's maintenance lock. Nothing was attempted; retry |
+| `not_started` | The run's aggregate budget expired before this action's turn |
 
 `freedBytes` is **measured**, not estimated: it is the sum over affected volumes of free-space-after minus free-space-before, floored at zero. One action failing does not stop the next.
+
+The run is bounded by an aggregate budget — the sum of the selected actions' own timeouts plus ten minutes, capped at three hours — computed when the run is queued and recorded on it. Actions run **sequentially**, serialised across the whole agent process against each other and against package-manager maintenance, so two runs can never rewrite one another's Disk Cleanup selection.
+
+Both command types are delivered **live-only**: a queued command expires after fifteen minutes rather than waiting days for a device to come back, because the cleanup run it belongs to is closed out on its own budget and a command that outlives it would act with nobody watching.
 
 <Aside>
   The action catalog is closed. The only input the server accepts is a set of ids from a fixed list plus one bounded integer; every command line the agent runs is built from constants, with absolute binary paths, no shell, a per-action timeout and a 16 KiB output cap. `cleanmgr` handlers that touch user data or recovery state — Downloads, the recovery image, language packs, and all per-user caches — are excluded in code, and DISM is never invoked with `/ResetBase`.
@@ -7763,11 +9530,29 @@ The two engines are deliberately separate. The file engine previews every path b
 
 Never offered, by design: the Downloads folder, the Windows recovery image (`Windows ESD installation files`), language packs, per-user caches and recycle bins (the file engine already covers those), and DISM `/ResetBase`.
 
-### Estimates are upper bounds
+### What you lose, stated before you run it
 
-Every size the panel shows is labelled **"up to"** and means it. DISM reports more reclaimable bytes than `StartComponentCleanup` frees, `journalctl` only vacuums archived files, and macOS does not report a snapshot's size at all. Where a tool's output cannot be read, the action says *size unknown* rather than *0* — a confident zero would read as "nothing to reclaim", which is a different and possibly wrong claim.
+Three of these actions remove something no later action can bring back, and the confirmation dialog names which one rather than asking a generic "are you sure":
 
-After a run, the panel reports **measured** free-space deltas per volume, taken either side of the whole run.
+- **Remove orphaned packages** uninstalls software.
+- **Previous Windows installations** and **Discarded upgrade files** end this device's ability to roll back to its previous Windows version.
+- **Time Machine local snapshots** deletes the only on-disk restore points a Mac has when its backup disk is not connected.
+
+Selecting any of them requires a second, explicit acknowledgement.
+
+### Estimates are approximate — and say which kind
+
+Sizes are labelled, not just shown:
+
+- **"up to X"** — a genuine upper bound, such as a cache directory's current size.
+- **heuristic** — a figure derived indirectly and reliable only to an order of magnitude: the DISM component-store fields (which are store *overhead*, and a direct `StartComponentCleanup` frees an amount related to but not equal to them), the journal's usage-minus-target (only archived journals are vacuumed), and the installed size of the packages `autoremove` would take (unpacked footprint over-counts shared files).
+- **size unknown** — the tool reported nothing the agent can read, or the handler's footprint is not confined to a directory we can measure (Windows `Temporary Files`, Time Machine snapshots). *Unknown* is never rendered as *0*: a confident zero reads as "nothing to reclaim", which is a different and possibly wrong claim.
+
+After a run, the panel reports **measured** free-space deltas per volume, taken either side of the whole run. That figure, not the estimate, is what the run actually achieved.
+
+### One run at a time
+
+A device runs one OS cleanup at a time. Starting a second while one is in flight is refused with *an OS cleanup is already running on this device* — Windows Disk Cleanup is driven by a shared on-disk selection profile, so two overlapping runs would each execute whatever the other wrote last.
 
 ### Requirements
 
@@ -7781,7 +9566,7 @@ and add the four routes to the API Reference table (`:505`):
 ```md
 | `POST` | `/devices/:id/filesystem/system-cleanup/list` | Queue a catalog request; returns a `commandId` | `devices.execute` |
 | `GET` | `/devices/:id/filesystem/system-cleanup/list/:commandId` | Poll the catalog request | `devices.read` |
-| `POST` | `/devices/:id/filesystem/system-cleanup/run` | Run selected actions; returns a `cleanupRunId` | `devices.execute` |
+| `POST` | `/devices/:id/filesystem/system-cleanup/run` | Run selected actions; returns a `cleanupRunId`, or `409 run_in_progress` | `devices.execute` |
 | `GET` | `/devices/:id/filesystem/system-cleanup/run/:cleanupRunId` | Poll the run | `devices.read` |
 ```
 
@@ -7849,7 +9634,7 @@ Expected: no output from the first; the script prints its baseline summary and e
 - [ ] **Step 3: Go lint** (CI runs `golangci-lint` in `--new-from-rev` mode, so only this wave's lines are judged)
 
 ```bash
-cd agent && golangci-lint run --new-from-rev=origin/main ./internal/syscleanup/... ./internal/heartbeat/... ./internal/patching/... ./internal/privilege/...
+cd agent && golangci-lint run --new-from-rev=origin/main ./internal/syscleanup/... ./internal/maintenance/... ./internal/heartbeat/... ./internal/patching/... ./internal/privilege/...
 ```
 
 Expected: no findings. `//nolint:nilerr` on `directorySize`'s walk callbacks is intentional and carries its reason inline.
@@ -7861,6 +9646,9 @@ cd packages/shared && npx vitest run src/validators/systemCleanup.test.ts
 cd apps/api && npx vitest run \
   src/services/systemCleanup.test.ts \
   src/services/commandResultHandlers.systemCleanup.test.ts \
+  src/services/commandCancelPropagation.systemCleanup.test.ts \
+  src/services/commandCancelPropagation.test.ts \
+  src/middleware/selfManagedDbContextRoutes.test.ts \
   src/services/commandOfflinePolicy.test.ts \
   src/services/commandTimeouts.test.ts \
   src/services/partnerTrust.test.ts \
@@ -7926,12 +9714,17 @@ Recorded on the W05 sub-issue with the raw command output attached.
    - (a) PASS = the runner observes the **whole cleanmgr process tree** exiting in session 0 without hanging. FAIL = the action reports `timed_out` at the 60-minute cap, or the agent process is still holding a job-object handle afterwards. This is the criterion that cannot be unit-tested (spec §7.2) and is the reason the gate exists.
    - (b) PASS = after the flagged restart, the **measured free-space delta** on `C:` is non-zero. A zero delta with a `completed` status means the measurement is being taken at the wrong moment and the action is lying about its outcome.
 3. Confirm `DownloadsFolder` is not offered in the catalog on a machine that has one, and that `%SystemDrive%\Windows.old` is untouched when `Previous Installations` is not selected.
+3a. **Profile hygiene (spec §13 #4).** Before the run, set `StateFlags5555 = 2` by hand on `DownloadsFolder` and on one non-Microsoft `VolumeCaches` subkey. PASS = after the run both read `0`, the Downloads folder is intact, and the third-party handler did not execute. FAIL = either still reads `2`, which means a stale flag from any source can ride along with a Breeze selection.
+3b. **Single run per device.** Start a run, then start a second from another browser session. PASS = the second is refused with `409 run_in_progress` and no second `device_filesystem_cleanup_runs` row is created.
+3c. **Budget.** Select `Update Cleanup` + DISM. PASS = the run row's `plan.deadlineAt` is ~160 minutes out, and the run is not marked `timed out` at 120.
 
 **KIT rig `lab-ubuntu-src`:**
 
 4. `linux_pkg_cache_clean` — PASS = `/var/cache/apt/archives` shrinks and the measured delta matches within the noise of concurrent writes.
 5. `linux_journal_vacuum` at the default 256 MiB — PASS = `journalctl --disk-usage` afterwards is at or below the target, and the active journal still contains the current boot.
-6. `linux_pkg_autoremove` — PASS = the **estimate matches the simulated output**: the figure the catalog reported equals what `apt-get -s autoremove` printed at the time of the check.
+6. `linux_pkg_autoremove` — PASS = the catalog's figure equals Σ `dpkg-query -W -f='${Installed-Size}\n'` over exactly the packages `apt-get -s autoremove` listed on its `Remv` lines at the time of the check, × 1024. (Spec §13 #14: `-s` prints no "After this operation" line, so an estimate that *does* come from such a line means a parser matched something it should not have.)
+6a. **Maintenance lock.** Start a `system_cleanup_run`, and while it is in flight trigger a patch install that ends in a `brew`/package cleanup. PASS = the second operation waits or reports `busy`; neither runs concurrently, and nothing reports `completed` for work it did not do.
+6b. **tmutil scope** (macOS rig, with a second APFS volume carrying a local snapshot of the same timestamp). PASS = only the startup volume's snapshots are gone.
 
 **Cross-cutting:**
 
@@ -7971,7 +9764,7 @@ MSG
 | §5.3 agent result handler mirroring `filesystem_analysis` (see amendment 5 — shared registry, both transports) | 12 |
 | §5.3 run status `executed` if ≥1 succeeded else `failed`; `executedActions`; measured `bytesReclaimed`; `approvedAt` | 12 |
 | §5.3 audit `device.filesystem.system_cleanup.run` with ids, per-action status, bytes | 12 |
-| §5.3 `SYSTEM_CLEANUP_RUN_TIMEOUT_MS = 2 h`; a timeout marks the run `failed` with `error: 'timed out'` | 10 (constant), 11b (transition) |
+| §5.3 run timeout; a timeout marks the run `failed` with `error: 'timed out'` — superseded by §13 #14's per-selection budget | 9 (budget fn), 10 (ceiling), 11b (stored deadline + atomic cancel) |
 | §5.3 old-agent 409 via `compareAgentVersions` vs `MIN_AGENT_VERSION_SYSTEM_CLEANUP` | 11a, 11b |
 | §5.3 `unknown command type:` fallback → same 409 on poll | 11a, 11b, 12 |
 | §5.3 `SYSTEM_CLEANUP_ACTION_IDS` shared validator; `journalVacuumBytes` bounds | 9 (+ agent-side clamp in 4) |
@@ -8008,11 +9801,24 @@ MSG
 | §11 Web: 409 renders the update banner; `no-silent-mutations` passes | 13, 14 |
 | §11 docs: `agents/commands.mdx`, native-catalogue part of `filesystem-analysis.mdx` | 16 |
 | §11 lab criteria as the W04 exit gate, executed by W05 | 17 |
+| §13 #4 zero **every** `VolumeCaches` subkey; any write failure aborts before cleanmgr; nothing restored; HKLM trusted as admin-only | 6 |
+| §13 #4/#12 process-wide `maintenance.Lock` shared by the run, DISM and Homebrew cleanup; API single-run-per-device (`409 run_in_progress`) | 2b, 5, 7, 11b, 13 |
+| §13 #5 claim in a short committed transaction → dispatch outside → finalise separately; self-managed-context registration | 11b (Step 3a, 3b) |
+| §13 #6 destructive cleanup commands are live-only; timing a run out cancels its command atomically | 10 (`live_only`), 11b (`failSystemCleanupRunAndCancelCommand`) |
+| §13 #11 `tmutil` mount-point form for both list and delete | 5 |
+| §13 #13 cancel propagation branch; a late result is recorded without flipping status | 12b, 12 |
+| §13 #14 apt estimate via `dpkg-query`; DISM + journal labelled heuristic; "Recommended: No" still reports the sum; brew no-`Would remove` → 0; DO cache from policy; `Temporary Files` unknown; aggregate budget with `not_started` | 4, 5, 6, 7, 9, 10, 11b |
+| §13 #15 `removes_os_rollback` / `removes_recovery_points` + confirm-dialog copy in 8 locales | 1, 5, 6, 9, 13, 15 |
+| §13 narrative: Homebrew uses the bounded runner with the console-user `sudo`, `BrewCleanup` a thin wrapper | 5 |
+
+### Quorum application (spec §13)
+
+Every §13 finding that names W04 is applied in place, with its own amendment (18-26) recording the verified fact behind it. Two findings changed a contract the plan had already written and were rewritten rather than appended to: the fixed `SYSTEM_CLEANUP_RUN_TIMEOUT_MS` became a per-selection budget stored on the row, and `parseAptAutoremoveFreed` became `parseAptAutoremovePackages` + `dpkg-query` because the line it parsed does not exist. Three tests changed polarity and say so in their own comments: `Component Store Cleanup Recommended : No` is no longer a known zero, `capOutput` keeps the tail rather than the head, and the cleanmgr run now zeroes handlers outside the allowlist too.
 
 ### Placeholder scan
 
 `grep -nE 'TODO|TBD|FIXME|XXX|similar to Task|handle edge cases|add validation|\.\.\.$'` over this document returns only:
-- the single permitted branch placeholder `feature/<parent#>-disk-cleanup-v2/wave-<subissue#>` in the header, and the matching `tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS` frontmatter the plan contract requires;
+- the single permitted branch placeholder `feature/<parent#>-disk-cleanup-v2/wave-<subissue#>` in the header, and the matching `tracking_issue: LanternOps/breeze#6326` frontmatter the plan contract requires;
 - `catalogVersion: null` in the run row's `plan` (Task 11b) — a real value, meaning "the catalogue version is recorded on the result, not guessed at queue time";
 - `... [truncated]` inside the output-cap marker string and `[===…99.0%===]` inside the DISM fixture, both literal test data.
 
@@ -8024,5 +9830,5 @@ No task cross-references another for its content; every code step carries a full
 - Go ↔ shared: `ActionIDs` (Task 1) and `SYSTEM_CLEANUP_ACTION_IDS` (Task 9) are compared position-by-position by `shared_ids_test.go`, which is written in Task 1 as a skip and becomes a hard assertion in Task 9 Step 6. `SYSTEM_CLEANUP_RISK_FLAGS` matches the five Go `RiskFlag` constants.
 - API → web: the four route response shapes (Task 11b) match the panel's `Catalog` / `RunProjection` types (Task 13), including `freedBytes`, `volumes[].freeBefore/freeAfter` and the `409 { error, minAgentVersion }` body the panel reads off `ActionError.body`.
 - Bounds appear three times and agree: `systemCleanupParamsSchema` (64 MiB – 4 GiB, Task 9), `clampJournalVacuumBytes` (Task 4), and `journalVacuumDefaultBytes = 256 MiB` used by both `journalVacuumArgs` and `journalVacuumEstimate`.
-- Timeouts nest correctly: agent per-action caps (5–90 min) < the agent's own run deadline (110 min, Task 8) < `SYSTEM_CLEANUP_RUN_TIMEOUT_MS` (2 h, Task 10) = the route's lazy-timeout budget (Task 11b) = the stale reaper's `LONG_TIMEOUT_TYPES` value. The panel's `RUN_POLL_TIMEOUT_MS` (Task 13) equals the same 2 h.
+- Timeouts nest correctly: each action's own cap (5-90 min) < the aggregate budget `RunBudget`/`systemCleanupRunBudgetMs` computes from the SAME per-action table on both sides (Tasks 7, 9) = `plan.deadlineAt` stored at claim time (Task 11b) <= `SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS` = 3 h = the reaper's ceiling for the command row (Task 10) = the panel's `RUN_POLL_TIMEOUT_MS` (Task 13). The agent sets no second flat deadline of its own (Task 8).
 - Schema fields consumed from W02 and used nowhere else: `deviceFilesystemCleanupRuns.kind`, `.commandId`, and the `running` enum label. `scanPath` is read by neither task — system runs are not path-scoped (spec §4's "nullable: system runs are not path-scoped"), and the insert in Task 11b correctly omits it.

@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
+tracking_issue: LanternOps/breeze#6326
 ---
 # Disk Cleanup v2 W02: Multi-Volume — Implementation Plan
 
@@ -25,11 +25,11 @@ Every spec claim this wave depends on was re-verified against the working tree o
 
 2. **The OS column is `devices.os_type`, not `devices.os`.** Spec §4 writes "`<os root from devices.os>`". Verified: `apps/api/src/db/schema/devices.ts:63` is `osType: osTypeEnum('os_type')`, and the enum at `:7` is `pgEnum('os_type', ['windows', 'macos', 'linux'])`. (`device.os` in `apps/web/src/components/devices/DeviceDetails.tsx:833` is the web DTO's field name, which is unrelated to the column.) The migration's backfill `CASE` keys on `d.os_type`.
 
-3. **The snapshot backfill must normalise `raw_payload->>'path'`, not copy it — and rows carrying a dot segment are stored verbatim on purpose.** Spec §4 shows a bare `COALESCE(NULLIF(raw_payload->>'path',''), <os root>)`. Verified that today's scans accept any path (`scanFilesystemBodySchema`, `apps/api/src/routes/devices/filesystem.ts:32-42`) and that defect 6 itself names `c:\` (lower case) as a real shape. A verbatim copy would leave every historical row keyed on a form no normalised read ever matches, i.e. the whole existing snapshot history would vanish from the tab on deploy. The migration therefore mirrors §4's normalisation rules in SQL (separator conversion, repeated-separator collapse, drive-letter upper-casing, trailing-separator strip). The one rule it does NOT mirror is `.`/`..` resolution, which is impractical set-based SQL; a row whose recorded path contains a dot segment is stored **verbatim** and counted in a `RAISE WARNING`. Such a row is inert (it matches no normalised read) and the next scan supersedes it. Deliberately not re-keyed to the OS root, which would fold another volume's candidates into the root preview.
+3. **The snapshot backfill must normalise `raw_payload->>'path'`, not copy it — and rows carrying a dot segment are stored verbatim on purpose.** Spec §4 shows a bare `COALESCE(NULLIF(raw_payload->>'path',''), <os root>)`. Verified that today's scans accept any path (`scanFilesystemBodySchema`, `apps/api/src/routes/devices/filesystem.ts:32-42`) and that defect 6 itself names `c:\` (lower case) as a real shape. A verbatim copy would leave every historical row keyed on a form no normalised read ever matches, i.e. the whole existing snapshot history would vanish from the tab on deploy. The migration therefore mirrors §4's normalisation rules in SQL, in ONE transient helper function (`breeze_w02_normalize_scan_path`, created and dropped inside the migration) that both backfills call, so the two provably agree. The one rule it does NOT mirror is `.`/`..` resolution, which is impractical set-based SQL; a row whose recorded path contains a dot segment is stored **verbatim** and counted in a `RAISE WARNING`. Such a row is inert (it matches no normalised read) and the next scan supersedes it. Deliberately not re-keyed to the OS root, which would fold another volume's candidates into the root preview.
 
-4. **The scan-state PK swap is guarded on the actual column list and names the constraint.** Spec §4's `DROP CONSTRAINT IF EXISTS …; ADD PRIMARY KEY (…)` rebuilds the PK index on every re-apply, and `db:check-drift` re-applies the whole set. Verified the baseline names it `device_filesystem_scan_state_pkey` (`apps/api/migrations/0001-baseline.sql:6920`) and that nothing references it — `git grep "REFERENCES.*device_filesystem" -- apps/api/migrations` is empty, and the only code references are `apps/api/src/services/filesystemAnalysis.ts:131` and `:178`. The migration guards on `pg_constraint.conkey` resolving to exactly `{device_id, scan_path}` and re-adds the constraint under its baseline name, so the Drizzle mirror can pin the same name (`primaryKey({ name: 'device_filesystem_scan_state_pkey', … })`, precedent `apps/api/src/db/schema/currency.ts:24`).
+4. **The scan-state key swap is guarded on the actual column list — but in W02 it is a UNIQUE INDEX, not a primary key (see amendment 15).** Spec §4's `DROP CONSTRAINT IF EXISTS …; ADD PRIMARY KEY (…)` rebuilds the key index on every re-apply, and `db:check-drift` re-applies the whole set. Verified the baseline names the old single-column key `device_filesystem_scan_state_pkey` (`apps/api/migrations/0001-baseline.sql:6920`) and that nothing references it — `git grep "REFERENCES.*device_filesystem" -- apps/api/migrations` is empty, and the only code references are `apps/api/src/services/filesystemAnalysis.ts:131` and `:178`. W02 drops that constraint (which does NOT drop `device_id`'s `NOT NULL`) and creates `device_filesystem_scan_state_device_path_uidx` on `(device_id, scan_path)`, guarded on `pg_index` rather than on a name alone. W03 promotes it with `ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY USING INDEX …`, which keeps the baseline name.
 
-5. **`db:check-drift` does not compare the Drizzle mirror to the database.** Spec §4 says "`db:check-drift` must be clean", which is necessary but weaker than it reads: `apps/api/scripts/check-drift.ts:17-34` states in its own header that schema-vs-live-DB comparison is "intentionally NOT checked here" and that the script only applies the migration set to a fresh database and verifies the `breeze_migrations` ledger. The Drizzle mirror's correctness — composite PK, the three new columns, the index swap — is therefore proved by the replay integration suite in Task 5, which reads `pg_constraint` / `pg_indexes` and round-trips an insert through the Drizzle table objects.
+5. **`db:check-drift` does not compare the Drizzle mirror to the database.** Spec §4 says "`db:check-drift` must be clean", which is necessary but weaker than it reads: `apps/api/scripts/check-drift.ts:17-34` states in its own header that schema-vs-live-DB comparison is "intentionally NOT checked here" and that the script only applies the migration set to a fresh database and verifies the `breeze_migrations` ledger. The Drizzle mirror's correctness — the unique index, the four new columns, the index swap — is therefore proved by the replay integration suite in Task 5, which reads `pg_index` / `pg_indexes` / `information_schema.columns` and round-trips inserts through the Drizzle table objects.
 
 6. **The agent result handler has no OS in scope, so it reads one.** Spec §5.1 says the handler "keys on `command.payload.path` (normalised)", but normalisation is OS-dependent and `handleFilesystemAnalysisCommandResult(command, resultData, orgId)` (`apps/api/src/routes/agents/helpers.ts:1593`) is called with `agent.orgId` only (`apps/api/src/routes/agents/commands.ts:525`); `AgentAuthContext` (`apps/api/src/middleware/agentAuth.ts:21-44`) carries `deviceId`, `agentId`, `orgId`, `siteId`, `partnerId`, `role` — no OS. Task 11 adds one indexed `devices.os_type` lookup ahead of the existing `Promise.all`, and returns without writing a snapshot (with a warning) when the device row is absent, rather than guessing POSIX and mis-keying a Windows device.
 
@@ -41,20 +41,30 @@ Every spec claim this wave depends on was re-verified against the working tree o
 
 10. **`cleanup-execute` gets no `path` field in W02, so it derives one.** §5.2's execute changes (required `cleanupRunId`, `rejectedPaths`, the budget) belong to W01/W03; this wave's §5.2 scope is the preview pinning plus `scanPath` in responses. The pinned lane therefore reads `device_filesystem_cleanup_runs.scan_path` (falling back to `plan.scanPath`, then the OS root); the unpinned fallback lane resolves to the OS root. That IS a behaviour change on the fallback lane — it used to take the newest snapshot of ANY path — and it is precisely defect 6's fix. W03 makes `cleanupRunId` required and deletes the lane.
 
-11. **Cascade registration: verified unchanged, with the greps.** All three tables are already in `CORE_ORG_CASCADE_DELETE_ORDER` (`apps/api/src/services/tenantCascade.ts:443-445`), `CORE_DEVICE_CASCADE_DELETE_TABLES` (`apps/api/src/routes/devices/core.ts:282-283`) and `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (`apps/api/src/routes/devices/core.ts:588`). None carries a `ticket_id`, so `TICKET_ORG_DENORMALIZED_TABLES` / `CUSTOM_ORG_REWRITE_TABLES` (`apps/api/src/services/ticketOrgMoveLockOrder.ts`) are untouched — `git grep device_filesystem` in that file returns nothing. None is append-only, so `AUDIT_ADMIN_REQUIRED_TABLES` is untouched. RLS allowlists are untouched: all three are tenancy shape 1 (direct `org_id`), their policies are `breeze_has_org_access(org_id)` (`apps/api/migrations/2026-04-11-bucket-c-phase-3-device-state-rls.sql:81-89` for scan state, `:92-110` for snapshots) and are primary-key-independent, and `git grep device_filesystem -- apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` returns nothing. **The export policy is the one registry that fires**, because it fires on new COLUMNS — Task 4 adds all five.
+11. **Cascade registration: verified unchanged, with the greps.** All three tables are already in `CORE_ORG_CASCADE_DELETE_ORDER` (`apps/api/src/services/tenantCascade.ts:443-445`), `CORE_DEVICE_CASCADE_DELETE_TABLES` (`apps/api/src/routes/devices/core.ts:282-283`) and `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (`apps/api/src/routes/devices/core.ts:588`). None carries a `ticket_id`, so `TICKET_ORG_DENORMALIZED_TABLES` / `CUSTOM_ORG_REWRITE_TABLES` (`apps/api/src/services/ticketOrgMoveLockOrder.ts`) are untouched — `git grep device_filesystem` in that file returns nothing. None is append-only, so `AUDIT_ADMIN_REQUIRED_TABLES` is untouched. RLS allowlists are untouched: all three are tenancy shape 1 (direct `org_id`), their policies are `breeze_has_org_access(org_id)` (`apps/api/migrations/2026-04-11-bucket-c-phase-3-device-state-rls.sql:81-89` for scan state, `:92-110` for snapshots) and are key-independent, and `git grep device_filesystem -- apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` returns nothing. **The export policy is the one registry that fires**, because it fires on new COLUMNS — Task 4 adds all six (`scan_path` ×3, `kind`, `command_id`, `scan_generation`).
 
 12. **Locale values must not be bare filesystem paths.** `apps/web/src/lib/i18n/localeParity.test.ts:442` fails any locale leaf that "looks like a route or filesystem path". The volume chip therefore interpolates the mount point (`{{mountPoint}}`) rather than storing `C:\` in a catalog, and every new key is translated for real in all eight locales (`en`, `pt-BR`, `es-419`, `fr-FR`, `fr-CA`, `de-DE`, `it-IT`, `tr-TR` — the exact set asserted at `:422`).
 
-13. **The two migration filenames were re-verified against `origin/main` today and they hold.** `git ls-tree -r --name-only origin/main -- apps/api/migrations | grep '\.sql$' | sort | tail` ends at `2026-10-20-140000-tickets-partner-org-composite-fk.sql`, so `2026-10-20-150000-…` and `2026-10-20-150100-…` both sort strictly after everything shipped under `localeCompare`. Spec §4's assumption is correct as of 2026-09-19. Task 2 Step 1 re-runs `scripts/check-migration-naming.sh --against-ref origin/main` at commit time; if `main` has moved past `150100`, bump the time component on BOTH files and record the new names as an amendment 14 here.
-
+13. **Migration filenames re-verified against `origin/main` at 12:10 MDT on 2026-09-19 and BUMPED.** `git ls-tree -r --name-only origin/main -- apps/api/migrations | grep '\.sql$' | sort | tail` now ends with two `2026-10-20-150000-*` files (`bare-metal-recoveries-dr-link`, `partner-api-contract-scopes`) that landed this morning, so the spec's original `150000`/`150100` would have sorted BEFORE `…-partner-api-contract-scopes.sql` and failed `check-migration-naming.sh` rule 3. Both files are therefore `2026-10-20-160000-filesystem-multi-volume.sql` and `2026-10-20-160100-filesystem-cleanup-run-status-running.sql` (W03's contraction migration is `160200`). Task 2 Step 1 re-runs `scripts/check-migration-naming.sh --against-ref origin/main` at commit time; if `main` has moved past `160100`, bump the time component on all three files (this wave's two and W03's) and record it here.
 14. **W02 does NOT remove `DeviceFilesystemTab.tsx` from `runActionAllowlist.ts`.** Spec §8 says the tab "leaves `runActionAllowlist.ts`" — that is a W03 item, when the tab's mutations are rewritten. Verified `apps/web/src/lib/runActionAllowlist.ts:17` lists the file today. W02 adds only GET traffic (the volumes hook) and re-points existing request bodies; it introduces no new mutation, so the entry stays and `no-silent-mutations.test.ts` is unaffected.
+
+> Amendments 15–18 come from the Codex `gpt-6-astra` xhigh quorum review recorded in spec §13 (findings #7, #8 and #18, plus one defect the review's #18 narrative exposed). All three §13 findings are adopted verbatim; they tighten rollout contracts the spec's §4 stated too loosely, and they supersede §4 where the two disagree.
+
+15. **Expand/contract: `scan_path` is NULLABLE in W02; `SET NOT NULL` is W03 (spec §13 #7).** The original plan added the column `NOT NULL` in the same migration as the backfill. On a multi-replica self-host — and on any deployment where the migration lands before the last old replica drains — an old replica's `INSERT INTO device_filesystem_snapshots` supplies no `scan_path` and fails `23502`, so a scan completing mid-deploy loses its snapshot outright. W02 therefore adds `scan_path` nullable on `device_filesystem_snapshots` and `device_filesystem_scan_state`, backfills, and stops. **Hand-off: W03 ships `2026-10-20-15xx00-filesystem-scan-path-not-null.sql`** — `SET NOT NULL` on both columns plus the primary-key promotion in amendment 16 — after W02 is deployed everywhere. The Drizzle mirror declares both columns nullable in W02, so `snapshot.scanPath` is `string | null` and every reader falls back to the scan path it asked for (`snapshot.scanPath ?? scanPath`); that fallback is load-bearing exactly for rows an old replica wrote during the window.
+
+16. **The scan-state composite key is a UNIQUE INDEX in W02, promoted to the primary key in W03 (spec §13 #7).** A primary key requires `NOT NULL`, which amendment 15 defers — but the old single-column `device_filesystem_scan_state_pkey` cannot simply stay, because it permits only ONE row per device and multi-volume scan state is the whole point of the wave. Resolution: W02 drops the single-column constraint (verified in Postgres this does NOT drop `device_id`'s `NOT NULL`, which the baseline set independently) and creates `device_filesystem_scan_state_device_path_uidx` — a nullable-tolerant unique index on `(device_id, scan_path)`. `onConflictDoUpdate({ target: [deviceId, scanPath] })` emits `ON CONFLICT (device_id, scan_path)`, which Postgres infers against a plain unique index exactly as it does against a constraint, so the writer contract works unchanged. W03's migration runs `ALTER TABLE … ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY USING INDEX device_filesystem_scan_state_device_path_uidx`, which promotes the existing index in place and restores the baseline constraint name. **The rolling-deploy caveat is now precise: old replicas' snapshot INSERTS keep working (the column is nullable); their scan-state UPSERTS fail with `42P10` from the moment the single-column key is dropped until they drain, and a re-run scan repairs that state.** The original plan's claim that "the snapshot insert itself still succeeds" was true only of the scan-state failure mode and false for the snapshot column — it is correct only under this expand/contract shape.
+
+17. **The legacy scan-state backfill must not relabel another volume's checkpoint (spec §13 #8).** The original plan set every legacy row's `scan_path` to the device's OS root. A device whose last scan was `D:\` carries a `D:\` checkpoint, `D:\` aggregate and `D:\` hot directories; relabelling that row `C:\` makes the next `C:\` scan resume into `D:\` paths and inherit `D:\` hot directories — defect 6 reintroduced by the migration that fixes it. The backfill now runs in two passes. **Pass A (matched):** take the device's newest snapshot's already-normalised `scan_path` (the snapshot backfill runs first in the same file, so the two agree by construction) and adopt it when it equals the device's OS root or the normalised `mount_point` of one of its `device_disks` rows; the resume state is kept. **Pass B (everything else):** set the OS root but **clear** `checkpoint = '{}'`, `aggregate = '{}'` and `hot_directories = '[]'`, keeping `last_baseline_completed_at` and `last_disk_used_percent` (they are volume-agnostic enough to be worth keeping and a wrong `last_disk_used_percent` only costs one baseline). Cost of pass B is one re-scan. Both counts go to separate `RAISE WARNING`s.
+
+18. **`scan_generation` closes the same-path concurrent-scan race, and the in-flight continuation check was device-wide (spec §13 #18).** Two scans of the same volume can be in flight at once (an auto-resume continuation plus a user-triggered rescan, or two operators), and the later result overwrites the earlier one's checkpoint with a stale frontier. W02 adds `device_filesystem_scan_state.scan_generation uuid` (nullable) = the `filesystem_analysis` command id that started the current run for that `(device, scan_path)`. Every producer writes it after queuing — the scan route, the threshold queue (`maybeQueueThresholdFilesystemAnalysis`) and the auto-resume continuation — through `setFilesystemScanGeneration`, a plain `UPDATE` that is a no-op when no state row exists yet. The result handler **claims** the generation with a single conditional `UPDATE … SET scan_generation = NULL WHERE … AND scan_generation = :commandId RETURNING`, which makes application both exclusive and idempotent: a superseded generation and a duplicate delivery of the same command both fail the claim and are logged and dropped. Separately, while verifying this, the continuation-suppression read at `apps/api/src/routes/agents/helpers.ts:1695-1705` was found to match `deviceCommands.type = 'filesystem_analysis'` with `status IN ('pending','sent')` **for the whole device**, with no path predicate — so an in-flight `C:\` scan silently cancels a `D:\` baseline's auto-resume. Task 11 scopes that read to `payload->>'path' = scanPath`.
 
 ---
 
 ## Global Constraints
 
-- **Schema and code ship in ONE PR.** `upsertFilesystemScanState` currently uses `onConflictDoUpdate({ target: deviceFilesystemScanState.deviceId })` (`apps/api/src/services/filesystemAnalysis.ts:177-180`); after the PK swap that target has no unique index and every upsert fails with `42P10`. Never split this wave into a schema PR and a code PR (spec §4, "Writer contract change").
-- **Migration filenames must sort strictly after every committed migration.** `2026-10-20-150000-filesystem-multi-volume.sql` then `2026-10-20-150100-filesystem-cleanup-run-status-running.sql`; re-check with `bash scripts/check-migration-naming.sh --against-ref origin/main` before pushing (CLAUDE.md, "Schema Migration Workflow").
+- **Schema and code ship in ONE PR.** `upsertFilesystemScanState` currently uses `onConflictDoUpdate({ target: deviceFilesystemScanState.deviceId })` (`apps/api/src/services/filesystemAnalysis.ts:177-180`); once the single-column key is dropped that target names no unique index and every upsert fails with `42P10`. Never split this wave into a schema PR and a code PR (spec §4, "Writer contract change").
+- **Expand only; contract in W03.** Every column this wave adds is nullable or defaulted. No `SET NOT NULL`, no primary key, nothing an old replica can violate (amendments 15–16, spec §13 #7). **W03 owes `2026-10-20-15xx00-filesystem-scan-path-not-null.sql`**: `SET NOT NULL` on `device_filesystem_snapshots.scan_path` and `device_filesystem_scan_state.scan_path`, then `ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY USING INDEX device_filesystem_scan_state_device_path_uidx`. That file is named in the W03 plan and in this PR's body; it is the only contract step, and it must not be attempted here.
+- **Migration filenames must sort strictly after every committed migration.** `2026-10-20-160000-filesystem-multi-volume.sql` then `2026-10-20-160100-filesystem-cleanup-run-status-running.sql`; re-check with `bash scripts/check-migration-naming.sh --against-ref origin/main` before pushing (CLAUDE.md, "Schema Migration Workflow").
 - **The enum add is its own file with no other statements.** A label added by `ALTER TYPE` cannot be used in the transaction that added it, and `autoMigrate` wraps each file in one (spec §4; precedent `apps/api/migrations/2026-10-17-110400-report-type-endpoint-management-review.sql`).
 - **Any migration that writes rows elects system scope first.** `PERFORM set_config('breeze.scope', 'system', true);` as the first statement inside every `DO` block that writes, per `apps/api/src/db/migrationRlsScope.test.ts`. Without it the backfill silently matches zero rows and `RAISE WARNING` prints a truthful-looking `0`. **Never add a file to that suite's `UNSCOPED_DML_BASELINE`.**
 - **Migrations are idempotent and never edited once shipped.** `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP INDEX IF EXISTS`, `pg_constraint` existence checks, backfills gated on `WHERE scan_path IS NULL`. No inner `BEGIN;`/`COMMIT;` — `autoMigrate` owns the transaction.
@@ -80,15 +90,15 @@ Every spec claim this wave depends on was re-verified against the working tree o
 |---|---|
 | `packages/shared/src/utils/scanPath.ts` (+ `.test.ts`) | `ScanPathOsType`, `osRootScanPath`, `normalizeScanPath` — the single definition of the key (Task 1) |
 | `packages/shared/src/utils/index.ts` | barrel export for the above (Task 1) |
-| `apps/api/migrations/2026-10-20-150000-filesystem-multi-volume.sql` | DDL + normalising backfills + the PK swap + `kind`/`command_id` (Task 2) |
-| `apps/api/migrations/2026-10-20-150100-filesystem-cleanup-run-status-running.sql` | `ALTER TYPE … ADD VALUE 'running'`, alone (Task 3) |
-| `apps/api/src/db/schema/filesystem.ts` | Drizzle mirror: `scanPath`, `kind`, `commandId`, the composite PK, the swapped index, the fourth enum label (Task 4) |
-| `apps/api/src/services/tenantExportPolicyRegistry.ts:230-232` | the five new columns classified `included` (Task 4) |
+| `apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql` | nullable `scan_path` ×3 + the two-pass backfills + the `(device_id, scan_path)` unique index + `kind`/`command_id`/`scan_generation` (Task 2) |
+| `apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql` | `ALTER TYPE … ADD VALUE 'running'`, alone (Task 3) |
+| `apps/api/src/db/schema/filesystem.ts` | Drizzle mirror: nullable `scanPath`, `kind`, `commandId`, `scanGeneration`, the unique index, the swapped snapshot index, the fourth enum label (Task 4) |
+| `apps/api/src/services/tenantExportPolicyRegistry.ts:230-232` | the six new columns classified `included` (Task 4) |
 | `apps/api/src/__tests__/integration/filesystemMultiVolumeMigration.integration.test.ts` | backfill correctness, PK/index/constraint shape, replay idempotency (Task 5) |
-| `apps/api/src/services/filesystemAnalysis.ts` (+ `.test.ts`) | every reader/writer takes `scanPath`; `readPlanScanPath` (Task 6) |
+| `apps/api/src/services/filesystemAnalysis.ts` (+ `.test.ts`) | every reader/writer takes `scanPath`; `readPlanScanPath`; `setFilesystemScanGeneration` / `claimFilesystemScanGeneration` (Task 6) |
 | `apps/api/src/services/filesystemVolumes.ts` (+ `.test.ts`) | `NON_SCANNABLE_FS_TYPES`, `isScannableVolume`, `FilesystemVolume`, `listFilesystemVolumes` (Task 7) |
 | `apps/api/src/routes/devices/filesystem.ts` (+ `.test.ts`) | `GET /filesystem/volumes`; `?path=`; root detection; disk-percent by matching volume; `scanPath` pinning and echo (Tasks 8, 9, 10) |
-| `apps/api/src/routes/agents/helpers.ts` (+ `helpers.filesystemAnalysis.test.ts`, `agents.test.ts`) | result handler keyed on the normalised `command.payload.path`; disk-percent delta by matching `device_disks` row (Task 11) |
+| `apps/api/src/routes/agents/helpers.ts` (+ `helpers.filesystemAnalysis.test.ts`, `agents.test.ts`) | result handler keyed on the normalised `command.payload.path`; the generation claim; disk-percent delta by matching `device_disks` row; the path-scoped in-flight check (Task 11) |
 | `apps/api/src/services/aiToolsFilesystem.ts`, `apps/api/src/services/aiToolSchemas.ts` | `path` on `analyze_disk_usage` and `disk_cleanup` (Task 12) |
 | `apps/web/src/components/devices/filesystem/useFilesystemVolumes.ts` (+ `.test.ts`) | abort-safe volumes hook (Task 13) |
 | `apps/web/src/components/devices/filesystem/VolumePicker.tsx` (+ `.test.tsx`) | the chips (Task 13) |
@@ -402,11 +412,15 @@ EOF
 ### Task 2: Migration 1 — the scan-path axis, the PK swap, and the normalising backfills
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-20-150000-filesystem-multi-volume.sql`
+- Create: `apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql`
 
 **Interfaces:**
-- Consumes: `public.devices.os_type` (amendment 2), `public.device_filesystem_snapshots.raw_payload`.
-- Produces: `device_filesystem_snapshots.scan_path text NOT NULL`; index `idx_device_filesystem_snapshots_device_path_captured`; `device_filesystem_scan_state.scan_path text NOT NULL` and `device_filesystem_scan_state_pkey PRIMARY KEY (device_id, scan_path)`; `device_filesystem_cleanup_runs.scan_path text NULL`, `.kind text NOT NULL DEFAULT 'files'` with `device_filesystem_cleanup_runs_kind_chk`, `.command_id uuid NULL`.
+- Consumes: `public.devices.os_type` (amendment 2), `public.device_filesystem_snapshots.raw_payload`, `public.device_disks.mount_point`.
+- Produces:
+  - `device_filesystem_snapshots.scan_path text` — **NULLABLE** (amendment 15); index `idx_device_filesystem_snapshots_device_path_captured`, old `idx_device_filesystem_snapshots_device_captured` dropped.
+  - `device_filesystem_scan_state.scan_path text` — **NULLABLE**; `.scan_generation uuid` NULL (amendment 18); single-column `device_filesystem_scan_state_pkey` dropped; unique index `device_filesystem_scan_state_device_path_uidx (device_id, scan_path)` (amendment 16).
+  - `device_filesystem_cleanup_runs.scan_path text NULL`, `.kind text NOT NULL DEFAULT 'files'` with `device_filesystem_cleanup_runs_kind_chk`, `.command_id uuid NULL`.
+- **Hands off to W03:** `2026-10-20-15xx00-filesystem-scan-path-not-null.sql` — `ALTER COLUMN scan_path SET NOT NULL` on both tables, then `ALTER TABLE public.device_filesystem_scan_state ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY USING INDEX device_filesystem_scan_state_device_path_uidx`. **Not in this wave**; it runs only after W02 is deployed everywhere.
 
 - [ ] **Step 1: Re-verify the filename sorts last (amendment 13)**
 
@@ -415,39 +429,101 @@ git fetch origin main --quiet
 git ls-tree -r --name-only origin/main -- apps/api/migrations | grep -E '\.sql$' | sed 's|.*/||' | sort | tail -3
 ```
 
-Expected: the last line is `2026-10-20-140000-tickets-partner-org-composite-fk.sql` (or something that still sorts before `2026-10-20-150000-`). If anything sorts at or after `2026-10-20-150000-`, pick later time components for BOTH files in this wave, use them everywhere below, and add the new names to this plan's "Plan amendments" as amendment 15 before continuing.
+Expected: the last line is `2026-10-20-150000-partner-api-contract-scopes.sql` (or something that still sorts before `2026-10-20-160000-`). If anything sorts at or after `2026-10-20-160000-`, pick later time components for BOTH files in this wave, use them everywhere below, and add the new names to this plan's "Plan amendments" as amendment 19 before continuing. Leave room above them for W03's contract migration.
 
 - [ ] **Step 2: Write the failing test** — this task's test is Task 5's replay suite, which cannot be written before the migration exists. The red step here is the guard that DOES run now: assert the file is absent and that the naming guard is clean once it lands. Run, before creating the file:
 
 ```bash
-ls apps/api/migrations/2026-10-20-150000-filesystem-multi-volume.sql
+ls apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
 ```
 
-Expected failure: `ls: apps/api/migrations/2026-10-20-150000-filesystem-multi-volume.sql: No such file or directory`.
+Expected failure: `ls: apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql: No such file or directory`.
 
-- [ ] **Step 3: Implement** — create `apps/api/migrations/2026-10-20-150000-filesystem-multi-volume.sql`:
+- [ ] **Step 3: Implement** — create `apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql`:
 
 ```sql
--- Disk Cleanup v2 W02 — the scan-path axis for filesystem analysis (spec §4).
+-- Disk Cleanup v2 W02 — the scan-path axis for filesystem analysis (spec §4,
+-- as amended by the Codex quorum findings in spec §13 #7, #8 and #18).
 --
 -- WHAT THIS FIXES (spec §2 defect 6). Scan state is keyed per DEVICE and
 -- snapshots record no path, so a `D:\` scan resets the `C:\` baseline,
 -- pollutes its hotDirectories, and becomes the "latest" snapshot that a `C:\`
 -- cleanup preview then deletes from.
 --
--- SHIPS WITH ITS CODE. `upsertFilesystemScanState` uses
--- `onConflictDoUpdate({ target: deviceId })`; after the primary-key swap below
--- that target has no unique index and every upsert raises 42P10. The API
--- release that carries this migration MUST also carry the writer change. On a
--- multi-replica self-host the window between migration and the last old
--- replica draining makes old replicas fail scan-state upserts (the snapshot
--- insert itself still succeeds); a re-run scan repairs the state. Documented
--- in the release notes.
+-- EXPAND ONLY (§13 #7). Every column added here is NULLABLE or defaulted, and
+-- there is no primary key and no SET NOT NULL. An old API replica still
+-- draining during the deploy supplies no `scan_path`; a NOT NULL column would
+-- fail its snapshot INSERT with 23502 and lose a completed scan outright.
+-- W03 ships the contract half — `2026-10-20-15xx00-filesystem-scan-path-not-null.sql`
+-- — once W02 is deployed everywhere.
 --
--- IDEMPOTENT. Every DDL statement is guarded, both backfills are gated on
--- `scan_path IS NULL`, and the primary-key swap is a no-op once the key
--- already has the right columns. No inner BEGIN/COMMIT: autoMigrate wraps each
--- file in one transaction.
+-- SHIPS WITH ITS CODE. `upsertFilesystemScanState` uses
+-- `onConflictDoUpdate({ target: deviceId })`; the single-column key is dropped
+-- below, so that target names no unique index and every upsert raises 42P10.
+-- The API release that carries this migration MUST also carry the writer
+-- change. During a multi-replica window old replicas' snapshot inserts keep
+-- working (the column is nullable) while their scan-state upserts fail with
+-- 42P10 until they drain; a re-run scan repairs that state.
+--
+-- IDEMPOTENT. Every DDL statement is guarded and every backfill is gated on
+-- `scan_path IS NULL`. No inner BEGIN/COMMIT: autoMigrate wraps each file in
+-- one transaction.
+
+-- ---------------------------------------------------------------------------
+-- Transient normalisation helper
+-- ---------------------------------------------------------------------------
+-- The SQL mirror of `normalizeScanPath(osType, path)` (packages/shared). Both
+-- backfills below call it, so the two provably agree instead of carrying two
+-- hand-copied CASE chains that can drift. Created and dropped inside this
+-- migration: it is a migration-local tool, never part of the schema.
+--
+-- It does NOT resolve `.`/`..` — impractical set-based SQL. A recorded path
+-- carrying a dot segment is returned UNCHANGED, which makes it inert (it
+-- matches no normalised read) and lets the next scan supersede it.
+-- Deliberately not re-keyed to the OS root, which would fold another volume's
+-- cleanup candidates into the root preview.
+--
+-- A NULL or blank path yields the OS root, so `…(os_type, NULL)` is also how
+-- the callers below spell "this device's OS root".
+DROP FUNCTION IF EXISTS public.breeze_w02_normalize_scan_path(text, text);
+CREATE FUNCTION public.breeze_w02_normalize_scan_path(os_type text, raw_path text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $fn$
+  SELECT CASE
+    WHEN raw_path IS NULL OR btrim(raw_path) = ''
+      THEN CASE WHEN os_type = 'windows' THEN 'C:\' ELSE '/' END
+    WHEN raw_path ~ '(^|[\\/])\.\.?([\\/]|$)'
+      THEN raw_path
+    WHEN os_type = 'windows' THEN (
+      -- '/' -> '\', collapse runs of separators, upper-case the drive letter,
+      -- then drop a trailing separator unless the path IS a volume root.
+      -- The replacement '\\' is a SQL literal of TWO backslashes, which
+      -- regexp_replace's replacement parser reads as ONE literal backslash; a
+      -- lone '\' there would be read as an escape introducer.
+      SELECT CASE
+               WHEN d ~ '^[A-Za-z]:\\$' THEN d
+               WHEN length(d) > 1 AND right(d, 1) = '\' THEN left(d, length(d) - 1)
+               ELSE d
+             END
+        FROM (
+          SELECT CASE WHEN w ~ '^[A-Za-z]:' THEN upper(left(w, 1)) || substr(w, 2) ELSE w END AS d
+            FROM (
+              SELECT regexp_replace(replace(btrim(raw_path), '/', '\'), '\\{2,}', '\\', 'g') AS w
+            ) w0
+        ) d0
+    )
+    ELSE (
+      SELECT CASE
+               WHEN p = '/' THEN '/'
+               WHEN length(p) > 1 AND right(p, 1) = '/' THEN left(p, length(p) - 1)
+               ELSE p
+             END
+        FROM (SELECT regexp_replace(btrim(raw_path), '/{2,}', '/', 'g') AS p) p0
+    )
+  END
+$fn$;
 
 -- ---------------------------------------------------------------------------
 -- device_filesystem_snapshots
@@ -468,78 +544,25 @@ BEGIN
   -- `is_local = true` scopes it to autoMigrate's per-file transaction.
   PERFORM set_config('breeze.scope', 'system', true);
 
-  -- Counted before the UPDATE so the warning can name it. A recorded path
-  -- containing a `.` or `..` segment cannot be reproduced by this SQL mirror
-  -- of normalizeScanPath (dot resolution is impractical set-based SQL), so
-  -- such a row is stored VERBATIM: it matches no normalised read, becomes
-  -- inert history, and the next scan of that volume supersedes it.
-  -- Deliberately NOT re-keyed to the OS root, which would fold another
-  -- volume's cleanup candidates into the root preview.
   SELECT count(*) INTO verbatim_rows
     FROM public.device_filesystem_snapshots
    WHERE scan_path IS NULL
      AND raw_payload->>'path' ~ '(^|[\\/])\.\.?([\\/]|$)';
 
-  WITH src AS (
-    SELECT s.id,
-           d.os_type::text AS os_type,
-           NULLIF(s.raw_payload->>'path', '') AS raw_path
-      FROM public.device_filesystem_snapshots s
-      JOIN public.devices d ON d.id = s.device_id
-     WHERE s.scan_path IS NULL
-  ),
-  sep AS (
-    -- Windows lane: '/' -> '\', then collapse runs of separators. The
-    -- replacement '\\' is a SQL literal of TWO backslashes, which
-    -- regexp_replace's replacement parser reads as ONE literal backslash; a
-    -- lone '\' there would be read as an escape introducer.
-    -- POSIX lane: collapse runs of '/'.
-    SELECT src.id, src.os_type, src.raw_path, w.w0,
-           regexp_replace(COALESCE(src.raw_path, '/'), '/{2,}', '/', 'g') AS p0
-      FROM src
-      CROSS JOIN LATERAL (
-        SELECT regexp_replace(
-                 replace(COALESCE(src.raw_path, 'C:\'), '/', '\'),
-                 '\\{2,}', '\\', 'g') AS w0
-      ) w
-  ),
-  drive AS (
-    SELECT id, os_type, raw_path, p0,
-           CASE WHEN w0 ~ '^[A-Za-z]:' THEN upper(left(w0, 1)) || substr(w0, 2)
-                ELSE w0 END AS w
-      FROM sep
-  ),
-  norm AS (
-    SELECT id,
-           CASE
-             WHEN raw_path ~ '(^|[\\/])\.\.?([\\/]|$)' THEN raw_path
-             WHEN os_type = 'windows' THEN
-               CASE WHEN w ~ '^[A-Za-z]:\\$' THEN w
-                    WHEN length(w) > 1 AND right(w, 1) = '\' THEN left(w, length(w) - 1)
-                    ELSE w END
-             ELSE
-               CASE WHEN p0 = '/' THEN '/'
-                    WHEN length(p0) > 1 AND right(p0, 1) = '/' THEN left(p0, length(p0) - 1)
-                    ELSE p0 END
-           END AS scan_path
-      FROM drive
-  )
   UPDATE public.device_filesystem_snapshots s
-     SET scan_path = norm.scan_path
-    FROM norm
-   WHERE s.id = norm.id;
+     SET scan_path = public.breeze_w02_normalize_scan_path(
+                       d.os_type::text,
+                       NULLIF(s.raw_payload->>'path', ''))
+    FROM public.devices d
+   WHERE d.id = s.device_id
+     AND s.scan_path IS NULL;
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n > 0 THEN
     RAISE WARNING 'backfilled % device_filesystem_snapshots.scan_path (% stored verbatim: recorded path carries a dot segment)', n, verbatim_rows;
   END IF;
 END $$;
 
--- device_id FK-references devices(id) with no ON DELETE, so every snapshot has
--- a device row and the JOIN above is total. If that invariant is ever broken
--- this ALTER fails loudly, which is the correct outcome — do NOT add a silent
--- COALESCE repair here.
-ALTER TABLE public.device_filesystem_snapshots
-  ALTER COLUMN scan_path SET NOT NULL;
+-- NO `SET NOT NULL` here (§13 #7). W03 contracts it.
 
 -- New index FIRST, old index second: never leave the latest-snapshot lookup
 -- without a supporting index, even for the length of one transaction.
@@ -549,60 +572,104 @@ CREATE INDEX IF NOT EXISTS idx_device_filesystem_snapshots_device_path_captured
 DROP INDEX IF EXISTS idx_device_filesystem_snapshots_device_captured;
 
 -- ---------------------------------------------------------------------------
--- device_filesystem_scan_state — composite key
+-- device_filesystem_scan_state — the volume axis and the scan generation
 -- ---------------------------------------------------------------------------
 
 ALTER TABLE public.device_filesystem_scan_state
   ADD COLUMN IF NOT EXISTS scan_path text;
 
+-- The `filesystem_analysis` command id that started the run currently owning
+-- this row (§13 #18). Every producer sets it when queuing; the result handler
+-- claims it, which makes result application both exclusive (a superseded scan
+-- cannot overwrite a newer checkpoint) and idempotent (a duplicate delivery of
+-- the same command id is dropped). No FK: device_commands rows are pruned on
+-- their own schedule and a pruned command must not take the state with it.
+ALTER TABLE public.device_filesystem_scan_state
+  ADD COLUMN IF NOT EXISTS scan_generation uuid;
+
 DO $$
 DECLARE
-  n bigint;
+  matched_rows bigint;
+  reset_rows bigint;
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
-  -- Scan state records no path today, so every existing row IS the OS-root
-  -- scan: one row per device, written by whatever scan ran last. Keying it on
-  -- the OS root preserves exactly that row.
+  -- PASS A — the device's newest snapshot names a path that is still one of
+  -- this device's volumes (or its OS root). That row's checkpoint, aggregate
+  -- and hot directories genuinely belong to that volume, so they are kept.
+  -- The snapshot backfill above already ran, so `s.scan_path` is normalised
+  -- and the two passes agree by construction.
   UPDATE public.device_filesystem_scan_state st
-     SET scan_path = CASE WHEN d.os_type::text = 'windows' THEN 'C:\' ELSE '/' END
+     SET scan_path = n.scan_path
+    FROM public.devices d,
+         LATERAL (
+           SELECT s.scan_path
+             FROM public.device_filesystem_snapshots s
+            WHERE s.device_id = st.device_id
+              AND s.scan_path IS NOT NULL
+            ORDER BY s.captured_at DESC
+            LIMIT 1
+         ) n
+   WHERE d.id = st.device_id
+     AND st.scan_path IS NULL
+     AND (
+       n.scan_path = public.breeze_w02_normalize_scan_path(d.os_type::text, NULL)
+       OR EXISTS (
+         SELECT 1
+           FROM public.device_disks dd
+          WHERE dd.device_id = st.device_id
+            AND public.breeze_w02_normalize_scan_path(d.os_type::text, dd.mount_point) = n.scan_path
+       )
+     );
+  GET DIAGNOSTICS matched_rows = ROW_COUNT;
+
+  -- PASS B — everything else (§13 #8). Labelling these rows the OS root is the
+  -- only defensible choice, but their resume state may belong to a DIFFERENT
+  -- volume: a device whose last scan was `D:\` carries a `D:\` checkpoint,
+  -- `D:\` aggregate and `D:\` hot directories, and relabelling that row `C:\`
+  -- makes the next `C:\` scan resume into `D:\` paths — defect 6 reintroduced
+  -- by the migration that fixes it. So the label is applied and the resume
+  -- state is CLEARED. Cost: one full re-scan of that volume.
+  -- `last_baseline_completed_at` and `last_disk_used_percent` are kept: a
+  -- stale percent costs at most one baseline, and the completion timestamp is
+  -- what stops the tab reading as "never scanned".
+  UPDATE public.device_filesystem_scan_state st
+     SET scan_path = public.breeze_w02_normalize_scan_path(d.os_type::text, NULL),
+         checkpoint = '{}'::jsonb,
+         aggregate = '{}'::jsonb,
+         hot_directories = '[]'::jsonb
     FROM public.devices d
    WHERE d.id = st.device_id
      AND st.scan_path IS NULL;
-  GET DIAGNOSTICS n = ROW_COUNT;
-  IF n > 0 THEN
-    RAISE WARNING 'backfilled % device_filesystem_scan_state.scan_path to the OS root', n;
+  GET DIAGNOSTICS reset_rows = ROW_COUNT;
+
+  IF matched_rows > 0 OR reset_rows > 0 THEN
+    RAISE WARNING 'backfilled % device_filesystem_scan_state rows from their newest snapshot volume', matched_rows;
+    RAISE WARNING 'reset % device_filesystem_scan_state rows to the OS root and cleared checkpoint/aggregate/hot_directories (volume unknown)', reset_rows;
   END IF;
 END $$;
 
-ALTER TABLE public.device_filesystem_scan_state
-  ALTER COLUMN scan_path SET NOT NULL;
+-- NO `SET NOT NULL` here (§13 #7). W03 contracts it.
 
 DO $$
 BEGIN
-  -- Guarded on the ACTUAL key columns, not on the constraint's name: an
-  -- unguarded DROP/ADD pair rebuilds the primary-key index on every re-apply,
-  -- and db:check-drift re-applies the whole migration set. Re-added under the
-  -- baseline name (0001-baseline.sql:6920) so the Drizzle mirror can pin it.
-  -- Nothing FK-references this table, so the drop has no dependents.
-  IF NOT EXISTS (
-    SELECT 1
-      FROM pg_constraint c
-     WHERE c.conrelid = 'public.device_filesystem_scan_state'::regclass
-       AND c.contype = 'p'
-       AND (
-         SELECT array_agg(a.attname::text ORDER BY k.ord)
-           FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
-           JOIN pg_attribute a
-             ON a.attrelid = c.conrelid AND a.attnum = k.attnum
-       ) = ARRAY['device_id', 'scan_path']
-  ) THEN
-    ALTER TABLE public.device_filesystem_scan_state
-      DROP CONSTRAINT IF EXISTS device_filesystem_scan_state_pkey;
-    ALTER TABLE public.device_filesystem_scan_state
-      ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY (device_id, scan_path);
-  END IF;
+  -- The single-column key has to go NOW, not in W03: it permits exactly one
+  -- row per device, and multi-volume scan state is the point of the wave.
+  -- Dropping a PRIMARY KEY does NOT drop its columns' NOT NULL in Postgres, so
+  -- device_id stays non-nullable.
+  ALTER TABLE public.device_filesystem_scan_state
+    DROP CONSTRAINT IF EXISTS device_filesystem_scan_state_pkey;
 END $$;
+
+-- A nullable-tolerant UNIQUE INDEX, not a primary key (§13 #7, plan amendment
+-- 16): a primary key would require the NOT NULL that W03 owns. `ON CONFLICT
+-- (device_id, scan_path)` infers this index exactly as it would a constraint,
+-- so the writer contract is identical. W03 promotes it in place with
+-- `ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY USING INDEX
+-- device_filesystem_scan_state_device_path_uidx`, which restores the baseline
+-- constraint name.
+CREATE UNIQUE INDEX IF NOT EXISTS device_filesystem_scan_state_device_path_uidx
+  ON public.device_filesystem_scan_state (device_id, scan_path);
 
 -- ---------------------------------------------------------------------------
 -- device_filesystem_cleanup_runs
@@ -630,16 +697,21 @@ BEGIN
 END $$;
 
 -- The queued system_cleanup_run command (W04). No FK: device_commands rows are
--- pruned on their own schedule, and a pruned command must not delete the run
--- that records what was done.
+-- pruned independently, and a pruned command must not delete the run that
+-- records what was done.
 ALTER TABLE public.device_filesystem_cleanup_runs
   ADD COLUMN IF NOT EXISTS command_id uuid;
+
+-- ---------------------------------------------------------------------------
+-- Clean up the migration-local helper
+-- ---------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.breeze_w02_normalize_scan_path(text, text);
 ```
 
 - [ ] **Step 4: Run the naming guard and watch it pass**
 
 ```bash
-git add apps/api/migrations/2026-10-20-150000-filesystem-multi-volume.sql
+git add apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
 bash scripts/check-migration-naming.sh --staged
 bash scripts/check-migration-naming.sh --against-ref origin/main
 ```
@@ -662,26 +734,59 @@ cd apps/api && npx vitest run src/db/autoMigrate.test.ts
 
 Expected: `Test Files  1 passed (1)` — the filename matches the runner's `^\d{4}-.*\.sql$` pattern, adds nothing to the closed `2026-08-06` block, and every migration path referenced from `apps/api/src` still resolves.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Prove this migration adds no NOT NULL and no primary key (amendment 15)**
 
 ```bash
-git add apps/api/migrations/2026-10-20-150000-filesystem-multi-volume.sql
+grep -nE 'SET NOT NULL|ADD PRIMARY KEY|PRIMARY KEY \(' apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
+```
+
+Expected: **no output.** This is the expand half; a single `SET NOT NULL` here loses a snapshot for every scan an old replica completes during the deploy (spec §13 #7). The contract half is W03's file.
+
+- [ ] **Step 8: Prove the helper does not leak into the schema**
+
+```bash
+grep -c 'DROP FUNCTION IF EXISTS public.breeze_w02_normalize_scan_path' apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
+```
+
+Expected: `2` — once before the `CREATE` (so a half-applied earlier attempt cannot block it) and once at the end of the file. The helper is a migration-local tool and must not survive it.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add apps/api/migrations/2026-10-20-160000-filesystem-multi-volume.sql
 git commit -m "$(cat <<'EOF'
-feat(db): scan-path axis for filesystem analysis (spec §4)
+feat(db): scan-path axis for filesystem analysis (expand half)
+
+Spec §4 as amended by the Codex quorum findings in §13 (#7, #8, #18).
 
 Adds scan_path to device_filesystem_snapshots / _scan_state / _cleanup_runs,
-re-keys scan state on (device_id, scan_path), swaps the snapshot index to
-(device_id, scan_path, captured_at DESC), and adds kind + command_id for W04.
+scan_generation to scan state, kind + command_id to cleanup runs, and swaps the
+snapshot index to (device_id, scan_path, captured_at DESC).
 
-Both backfills elect breeze.scope=system first and report their row counts. A
-snapshot whose recorded path carries a dot segment is stored verbatim — it
-matches no normalised read and the next scan supersedes it — rather than being
-re-keyed to the OS root, which would fold another volume's cleanup candidates
-into the root preview.
+EXPAND ONLY. Every column is nullable or defaulted and nothing gains a NOT NULL
+or a primary key: an old replica draining during the deploy supplies no
+scan_path, and a NOT NULL column would fail its snapshot INSERT with 23502 and
+lose a completed scan. The scan-state key becomes a nullable-tolerant UNIQUE
+INDEX on (device_id, scan_path) — the single-column key has to go now because
+it permits only one row per device. W03 contracts: SET NOT NULL on both columns
+and PRIMARY KEY USING INDEX.
 
-The primary-key swap is guarded on the actual key columns so a re-apply is a
-true no-op. The writer change ships in the same release: after this,
-onConflictDoUpdate({ target: deviceId }) raises 42P10.
+Both backfills call ONE migration-local normalisation helper, so the snapshot
+and scan-state passes provably agree; the helper is dropped at the end of the
+file. A snapshot whose recorded path carries a dot segment is stored verbatim —
+it matches no normalised read and the next scan supersedes it — rather than
+re-keyed to the OS root, which would fold another volume's candidates into the
+root preview.
+
+The scan-state backfill runs in two passes. Pass A adopts the device's newest
+snapshot's volume when it still matches a device_disks mount point or the OS
+root, keeping the resume state. Pass B labels the row the OS root but CLEARS
+checkpoint/aggregate/hot_directories, because that state may belong to another
+volume and resuming a D:\ checkpoint into C:\ would reintroduce defect 6 inside
+the migration that fixes it. Both counts are reported.
+
+The writer change ships in the same release: once the single-column key is
+dropped, onConflictDoUpdate({ target: deviceId }) raises 42P10.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 EOF
@@ -693,7 +798,7 @@ EOF
 ### Task 3: Migration 2 — the `running` cleanup-run status, alone in its file
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-20-150100-filesystem-cleanup-run-status-running.sql`
+- Create: `apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql`
 
 **Interfaces:**
 - Consumes: the `filesystem_cleanup_run_status` enum (`apps/api/migrations/0006-filesystem-analysis.sql:8`).
@@ -702,12 +807,12 @@ EOF
 - [ ] **Step 1: Write the failing check**
 
 ```bash
-ls apps/api/migrations/2026-10-20-150100-filesystem-cleanup-run-status-running.sql
+ls apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql
 ```
 
-Expected failure: `ls: apps/api/migrations/2026-10-20-150100-filesystem-cleanup-run-status-running.sql: No such file or directory`.
+Expected failure: `ls: apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql: No such file or directory`.
 
-- [ ] **Step 2: Implement** — create `apps/api/migrations/2026-10-20-150100-filesystem-cleanup-run-status-running.sql`:
+- [ ] **Step 2: Implement** — create `apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql`:
 
 ```sql
 -- Disk Cleanup v2 W02: the `running` cleanup-run status (spec §4). W04's
@@ -726,7 +831,7 @@ ALTER TYPE filesystem_cleanup_run_status ADD VALUE IF NOT EXISTS 'running';
 - [ ] **Step 3: Run the guards and watch them pass**
 
 ```bash
-git add apps/api/migrations/2026-10-20-150100-filesystem-cleanup-run-status-running.sql
+git add apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql
 bash scripts/check-migration-naming.sh --staged
 bash scripts/check-migration-naming.sh --against-ref origin/main
 cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts
@@ -737,7 +842,7 @@ Expected: the two guard scripts exit 0; `Test Files  2 passed (2)`.
 - [ ] **Step 4: Prove the file contains exactly one statement**
 
 ```bash
-grep -c ';' apps/api/migrations/2026-10-20-150100-filesystem-cleanup-run-status-running.sql
+grep -c ';' apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql
 ```
 
 Expected: `1`. More than one statement in an enum-add file is the bug this file's separation exists to prevent.
@@ -745,7 +850,7 @@ Expected: `1`. More than one statement in an enum-add file is the bug this file'
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-20-150100-filesystem-cleanup-run-status-running.sql
+git add apps/api/migrations/2026-10-20-160100-filesystem-cleanup-run-status-running.sql
 git commit -m "$(cat <<'EOF'
 feat(db): add the `running` filesystem cleanup-run status
 
@@ -768,14 +873,17 @@ EOF
 - Create: `apps/api/src/db/schema/filesystem.test.ts` (Test)
 
 **Interfaces:**
-- Consumes: `primaryKey` from `drizzle-orm/pg-core`.
+- Consumes: `uniqueIndex` from `drizzle-orm/pg-core`. (**Not** `primaryKey` — amendment 16.)
 - Produces:
   ```ts
   export const filesystemCleanupRunStatusEnum: PgEnum<['previewed','executed','failed','running']>;
-  // deviceFilesystemSnapshots.scanPath: text NOT NULL
+  // deviceFilesystemSnapshots.scanPath: text | null            (NULLABLE in W02, amendment 15)
   // deviceFilesystemCleanupRuns.scanPath: text | null; .kind: text; .commandId: string | null
-  // deviceFilesystemScanState: composite PK (deviceId, scanPath), named device_filesystem_scan_state_pkey
+  // deviceFilesystemScanState.scanPath: text | null; .scanGeneration: string | null
+  //   + uniqueIndex('device_filesystem_scan_state_device_path_uidx') on (deviceId, scanPath)
+  //   and NO primaryKey — W03 promotes the index.
   ```
+- **Hands off to W03:** flip both `scanPath` columns to `.notNull()` and replace the `uniqueIndex` with `primaryKey({ name: 'device_filesystem_scan_state_pkey', columns: [table.deviceId, table.scanPath] })` in the same PR as the contract migration.
 
 - [ ] **Step 1: Write the failing test** — create `apps/api/src/db/schema/filesystem.test.ts`:
 
@@ -799,11 +907,14 @@ import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegi
  * other.
  */
 describe('filesystem schema — the scan-path axis (spec §4)', () => {
-  it('records scan_path on snapshots, NOT NULL', () => {
+  it('records scan_path on snapshots, NULLABLE in W02', () => {
+    // Expand/contract (amendment 15, spec §13 #7): an old replica still
+    // draining supplies no scan_path, and NOT NULL here would fail its
+    // snapshot INSERT with 23502 and lose a completed scan. W03 contracts.
     const column = getTableConfig(deviceFilesystemSnapshots).columns
       .find((c) => c.name === 'scan_path');
     expect(column).toBeDefined();
-    expect(column!.notNull).toBe(true);
+    expect(column!.notNull).toBe(false);
   });
 
   it('indexes snapshots on (device_id, scan_path, captured_at) and drops the old two-column index', () => {
@@ -812,12 +923,30 @@ describe('filesystem schema — the scan-path axis (spec §4)', () => {
     expect(indexes).not.toContain('idx_device_filesystem_snapshots_device_captured');
   });
 
-  it('keys scan state on (device_id, scan_path) under the baseline constraint name', () => {
+  it('keys scan state on a UNIQUE INDEX over (device_id, scan_path), not a primary key', () => {
+    // Amendment 16: a primary key needs the NOT NULL W03 owns, and the old
+    // single-column key had to go now because it permits one row per device.
+    // ON CONFLICT (device_id, scan_path) infers a plain unique index exactly
+    // as it would a constraint, so the writer contract is unchanged.
     const config = getTableConfig(deviceFilesystemScanState);
-    expect(config.primaryKeys).toHaveLength(1);
-    const pk = config.primaryKeys[0]!;
-    expect(pk.getName()).toBe('device_filesystem_scan_state_pkey');
-    expect(pk.columns.map((c) => c.name)).toEqual(['device_id', 'scan_path']);
+    expect(config.primaryKeys).toHaveLength(0);
+    const unique = config.indexes.find(
+      (i) => i.config.name === 'device_filesystem_scan_state_device_path_uidx',
+    );
+    expect(unique, 'the (device_id, scan_path) unique index is missing').toBeDefined();
+    expect(unique!.config.unique).toBe(true);
+    expect(unique!.config.columns.map((c) => (c as { name: string }).name))
+      .toEqual(['device_id', 'scan_path']);
+  });
+
+  it('records a nullable scan_path and scan_generation on scan state', () => {
+    const byName = new Map(
+      getTableConfig(deviceFilesystemScanState).columns.map((c) => [c.name, c]),
+    );
+    expect(byName.get('scan_path')?.notNull).toBe(false);
+    // The filesystem_analysis command id owning the current run (amendment 18).
+    expect(byName.get('scan_generation')).toBeDefined();
+    expect(byName.get('scan_generation')!.notNull).toBe(false);
   });
 
   it('gives cleanup runs a nullable scan_path, a kind and a command_id', () => {
@@ -850,7 +979,7 @@ describe('filesystem schema — the scan-path axis (spec §4)', () => {
 describe('tenant export policy — W02 columns', () => {
   const expected: Array<[string, string[]]> = [
     ['device_filesystem_snapshots', ['scan_path']],
-    ['device_filesystem_scan_state', ['scan_path']],
+    ['device_filesystem_scan_state', ['scan_path', 'scan_generation']],
     ['device_filesystem_cleanup_runs', ['scan_path', 'kind', 'command_id']],
   ];
 
@@ -888,7 +1017,7 @@ import {
   real,
   text,
   index,
-  primaryKey
+  uniqueIndex
 } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
 import { organizations } from './orgs';
@@ -896,7 +1025,7 @@ import { users } from './users';
 
 export const filesystemSnapshotTriggerEnum = pgEnum('filesystem_snapshot_trigger', ['on_demand', 'threshold']);
 // `running` is last because that is the order ALTER TYPE added it
-// (2026-10-20-150100-…), which is the order Postgres sorts the labels in.
+// (2026-10-20-160100-…), which is the order Postgres sorts the labels in.
 export const filesystemCleanupRunStatusEnum = pgEnum('filesystem_cleanup_run_status', ['previewed', 'executed', 'failed', 'running']);
 
 export const deviceFilesystemSnapshots = pgTable('device_filesystem_snapshots', {
@@ -908,8 +1037,14 @@ export const deviceFilesystemSnapshots = pgTable('device_filesystem_snapshots', 
    * through `normalizeScanPath(osType, path)` (`@breeze/shared`) — a snapshot
    * keyed on a raw `c:\` would never be found by a `C:\` read, which is
    * defect 6.
+   *
+   * NULLABLE in W02 by design (expand/contract, spec §13 #7): an API replica
+   * still draining during the deploy writes snapshots without it, and NOT NULL
+   * would reject those inserts and lose the scan. Every reader therefore falls
+   * back to the scan path it asked for (`snapshot.scanPath ?? scanPath`).
+   * W03's contract migration flips this to `.notNull()`.
    */
-  scanPath: text('scan_path').notNull(),
+  scanPath: text('scan_path'),
   capturedAt: timestamp('captured_at').defaultNow().notNull(),
   trigger: filesystemSnapshotTriggerEnum('trigger').notNull().default('on_demand'),
   partial: boolean('partial').notNull().default(false),
@@ -960,8 +1095,21 @@ export const deviceFilesystemCleanupRuns = pgTable('device_filesystem_cleanup_ru
 
 export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
-  /** Second half of the primary key — one checkpoint/baseline per VOLUME. */
-  scanPath: text('scan_path').notNull(),
+  /**
+   * Second half of the key — one checkpoint/baseline per VOLUME. Nullable in
+   * W02 for the same expand/contract reason as the snapshot column; W03 flips
+   * it and promotes the unique index below to the primary key.
+   */
+  scanPath: text('scan_path'),
+  /**
+   * The `filesystem_analysis` command id that started the run currently owning
+   * this row (spec §13 #18). Producers set it when queuing
+   * (`setFilesystemScanGeneration`); the result handler CLAIMS it with a
+   * conditional update that nulls it, which makes result application both
+   * exclusive (a superseded scan cannot overwrite a newer checkpoint) and
+   * idempotent (a duplicate delivery of the same command id is dropped).
+   */
+  scanGeneration: uuid('scan_generation'),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   lastRunMode: text('last_run_mode').notNull().default('baseline'),
   lastBaselineCompletedAt: timestamp('last_baseline_completed_at'),
@@ -972,12 +1120,15 @@ export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state',
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  // Named explicitly so it matches the constraint the migration re-adds
-  // (the baseline's name). Precedent: schema/currency.ts:24.
-  pk: primaryKey({
-    name: 'device_filesystem_scan_state_pkey',
-    columns: [table.deviceId, table.scanPath],
-  }),
+  // A UNIQUE INDEX, not a primary key (amendment 16): a primary key requires
+  // the NOT NULL that W03 owns, while the old single-column key had to be
+  // dropped in W02 because it permits only one row per device. `ON CONFLICT
+  // (device_id, scan_path)` infers this index exactly as it would a
+  // constraint, so `upsertFilesystemScanState` is unaffected. W03 replaces
+  // this with `primaryKey({ name: 'device_filesystem_scan_state_pkey', … })`
+  // via `ADD CONSTRAINT … PRIMARY KEY USING INDEX`.
+  devicePathUidx: uniqueIndex('device_filesystem_scan_state_device_path_uidx')
+    .on(table.deviceId, table.scanPath),
 }));
 ```
 
@@ -985,14 +1136,15 @@ export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state',
 
 ```ts
   // W02 multi-volume (spec §4): scan_path is a normalised path string, kind is
-  // a closed catalog value ('files'|'system'), command_id is a plain
-  // device_commands identifier. All three are ordinary customer-visible
+  // a closed catalog value ('files'|'system'), and command_id / scan_generation
+  // are plain device_commands identifiers. All four are ordinary
+  // customer-visible
   // operational data — no open container, no SUSPICIOUS_NAME_PARTS hit — so
   // `included`. `plan` and `executed_actions` stay `excludedOpen` (jsonb), so
   // a system run's action list does not appear in a tenant export while kind,
   // status, bytes_reclaimed and requested_at do. Accepted.
   "device_filesystem_cleanup_runs": tablePolicy("org_id", {"included":["id","device_id","org_id","scan_path","kind","command_id","requested_by","requested_at","approved_at","bytes_reclaimed","status","error","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["plan","executed_actions"]}),
-  "device_filesystem_scan_state": tablePolicy("org_id", {"included":["device_id","scan_path","org_id","last_run_mode","last_baseline_completed_at","last_disk_used_percent","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint","aggregate","hot_directories"]}),
+  "device_filesystem_scan_state": tablePolicy("org_id", {"included":["device_id","scan_path","scan_generation","org_id","last_run_mode","last_baseline_completed_at","last_disk_used_percent","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint","aggregate","hot_directories"]}),
   "device_filesystem_snapshots": tablePolicy("org_id", {"included":["id","device_id","org_id","scan_path","captured_at","trigger","partial","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["summary","largest_files","largest_dirs","temp_accumulation","old_downloads","unrotated_logs","trash_usage","duplicate_candidates","cleanup_candidates","errors","raw_payload"]}),
 ```
 
@@ -1002,7 +1154,7 @@ export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state',
 cd apps/api && npx vitest run src/db/schema/filesystem.test.ts
 ```
 
-Expected: `Test Files  1 passed (1)`, 10 tests passed.
+Expected: `Test Files  1 passed (1)`, 12 tests passed.
 
 - [ ] **Step 6: Prove the cascade lists genuinely need no change (amendment 11)**
 
@@ -1024,7 +1176,7 @@ Expected: **no output.** No filesystem table carries a `ticket_id`, so the ticke
 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 ```
 
-Expected: no output. `deviceId` losing `.primaryKey()` is not a type change (it stays `notNull`), and nothing switches exhaustively on the cleanup-run status enum — verified: the only consumers are `routes/devices/filesystem.ts:303`, `services/aiToolsFilesystem.ts:290` and `services/aiAgents/actRevalidation.ts:148`, all of which compare against a single literal.
+Expected: no output. Nothing reads `scanPath` off a row yet — Tasks 9 and 10 introduce those reads and carry the `?? scanPath` fallbacks the nullable column requires (amendment 15). `deviceId` losing `.primaryKey()` is not a type change (it stays `notNull`), and nothing switches exhaustively on the cleanup-run status enum — verified: the only consumers are `routes/devices/filesystem.ts:303`, `services/aiToolsFilesystem.ts:290` and `services/aiAgents/actRevalidation.ts:148`, all of which compare against a single literal.
 
 - [ ] **Step 8: Commit**
 
@@ -1033,14 +1185,19 @@ git add apps/api/src/db/schema/filesystem.ts apps/api/src/db/schema/filesystem.t
 git commit -m "$(cat <<'EOF'
 feat(db): mirror the scan-path axis in Drizzle and classify the new columns
 
-Spec §4. Composite PK on (device_id, scan_path) under the baseline constraint
-name, the swapped snapshot index, scan_path/kind/command_id on cleanup runs,
-and the fourth cleanup-run status label.
+Spec §4 as amended by §13 #7 and #18. Nullable scan_path on snapshots and scan
+state, scan_generation on scan state, a UNIQUE INDEX (not a primary key) over
+(device_id, scan_path), the swapped snapshot index, scan_path/kind/command_id
+on cleanup runs, and the fourth cleanup-run status label.
 
-Five new columns classified `included` in CORE_TENANT_EXPORT_POLICY — the one
+Six new columns classified `included` in CORE_TENANT_EXPORT_POLICY — the one
 registration list that fires on a new COLUMN rather than a new table, and the
 one that otherwise only reddens under Integration Tests. filesystem.test.ts
 moves that failure into Test API.
+
+scanPath is `string | null` here by design, so every later reader falls back to
+the scan path it asked for — that fallback is what keeps a row written by an
+old replica mid-deploy readable.
 
 Cascade lists verified unchanged: all three tables are already in
 CORE_ORG_CASCADE_DELETE_ORDER, CORE_DEVICE_CASCADE_DELETE_TABLES and
@@ -1071,8 +1228,8 @@ EOF
 
 ```ts
 /**
- * Live-Postgres proof for 2026-10-20-150000-filesystem-multi-volume.sql and
- * 2026-10-20-150100-filesystem-cleanup-run-status-running.sql (spec §4).
+ * Live-Postgres proof for 2026-10-20-160000-filesystem-multi-volume.sql and
+ * 2026-10-20-160100-filesystem-cleanup-run-status-running.sql (spec §4).
  *
  * Prerequisites:
  *   pnpm test-stack up
@@ -1089,7 +1246,7 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
-const MIGRATION = '2026-10-20-150000-filesystem-multi-volume.sql';
+const MIGRATION = '2026-10-20-160000-filesystem-multi-volume.sql';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 async function seedDevice(osType: 'windows' | 'linux') {
@@ -1107,10 +1264,8 @@ async function seedDevice(osType: 'windows' | 'linux') {
 }
 
 /**
- * Inserts a snapshot with scan_path forced back to NULL — the pre-migration
- * shape. The column is NOT NULL on a migrated database, so the constraint is
- * dropped for the duration; the migration's own `SET NOT NULL` restores it,
- * which is also what proves that statement runs.
+ * Inserts a snapshot with scan_path NULL — the pre-migration shape, and also
+ * exactly what an old API replica writes during a rolling deploy.
  */
 async function seedPreMigrationSnapshot(
   deviceId: string,
@@ -1134,19 +1289,24 @@ async function scanPathOf(snapshotId: string): Promise<string | null> {
   return rows[0]?.scan_path ?? null;
 }
 
-async function dropScanPathNotNull() {
+/**
+ * W02 leaves both `scan_path` columns NULLABLE (expand/contract, spec §13 #7),
+ * so a pre-migration row can be seeded directly — no constraint has to be
+ * dropped and put back, and nothing this suite does is visible to another
+ * suite even momentarily. When W03's contract migration lands, THIS is the
+ * helper that has to come back.
+ */
+async function clearScanPaths(ids: string[]) {
+  if (ids.length === 0) return;
   await getTestDb().execute(sql`
-    ALTER TABLE device_filesystem_snapshots ALTER COLUMN scan_path DROP NOT NULL
-  `);
-  await getTestDb().execute(sql`
-    ALTER TABLE device_filesystem_scan_state ALTER COLUMN scan_path DROP NOT NULL
+    UPDATE device_filesystem_snapshots SET scan_path = NULL
+     WHERE id = ANY(${sql.raw(`ARRAY['${ids.join("','")}']::uuid[]`)})
   `);
 }
 
-describe('2026-10-20-150000 — snapshot scan_path backfill', () => {
+describe('2026-10-20-160000 — snapshot scan_path backfill', () => {
   runDb('normalises a Windows path: lower-case drive, mixed separators, repeats, trailing slash', async () => {
     const { deviceId, orgId } = await seedDevice('windows');
-    await dropScanPathNotNull();
     const id = await seedPreMigrationSnapshot(deviceId, orgId, 'c:/Users//Todd/');
 
     await replayMigration(MIGRATION);
@@ -1159,7 +1319,6 @@ describe('2026-10-20-150000 — snapshot scan_path backfill', () => {
 
   runDb('keeps the trailing separator on a Windows volume root', async () => {
     const { deviceId, orgId } = await seedDevice('windows');
-    await dropScanPathNotNull();
     const root = await seedPreMigrationSnapshot(deviceId, orgId, 'c:\\');
     const second = await seedPreMigrationSnapshot(deviceId, orgId, 'd:/');
 
@@ -1171,7 +1330,6 @@ describe('2026-10-20-150000 — snapshot scan_path backfill', () => {
 
   runDb('normalises a POSIX path and keeps / as /', async () => {
     const { deviceId, orgId } = await seedDevice('linux');
-    await dropScanPathNotNull();
     const nested = await seedPreMigrationSnapshot(deviceId, orgId, '//var//tmp/');
     const root = await seedPreMigrationSnapshot(deviceId, orgId, '/');
 
@@ -1184,7 +1342,6 @@ describe('2026-10-20-150000 — snapshot scan_path backfill', () => {
   runDb('falls back to the OS root when the snapshot recorded no path', async () => {
     const windows = await seedDevice('windows');
     const linux = await seedDevice('linux');
-    await dropScanPathNotNull();
     const noKey = await seedPreMigrationSnapshot(windows.deviceId, windows.orgId, null);
     const empty = await seedPreMigrationSnapshot(linux.deviceId, linux.orgId, '');
 
@@ -1199,7 +1356,6 @@ describe('2026-10-20-150000 — snapshot scan_path backfill', () => {
     // inert history. Re-keying it to '/' would fold another directory's
     // cleanup candidates into the root preview, which is the bug, not the fix.
     const { deviceId, orgId } = await seedDevice('linux');
-    await dropScanPathNotNull();
     const dotted = await seedPreMigrationSnapshot(deviceId, orgId, '/opt/app/../data');
 
     await replayMigration(MIGRATION);
@@ -1208,13 +1364,11 @@ describe('2026-10-20-150000 — snapshot scan_path backfill', () => {
     expect(await scanPathOf(dotted)).not.toBe('/');
   });
 
-  runDb('restores NOT NULL on both tables after the backfill', async () => {
-    const { deviceId, orgId } = await seedDevice('linux');
-    await dropScanPathNotNull();
-    await seedPreMigrationSnapshot(deviceId, orgId, '/');
-
-    await replayMigration(MIGRATION);
-
+  runDb('leaves BOTH scan_path columns nullable — W02 is the expand half', async () => {
+    // Spec §13 #7 / amendment 15. This assertion is the guard on the rollout
+    // contract: a NOT NULL here rejects the snapshot INSERT of every old API
+    // replica still draining during the deploy (23502) and loses a completed
+    // scan. W03's contract migration flips it, and flips this expectation.
     const rows = (await getTestDb().execute(sql`
       SELECT table_name, is_nullable
         FROM information_schema.columns
@@ -1224,50 +1378,178 @@ describe('2026-10-20-150000 — snapshot scan_path backfill', () => {
        ORDER BY table_name
     `)) as unknown as Array<{ table_name: string; is_nullable: string }>;
     expect(rows).toEqual([
-      { table_name: 'device_filesystem_scan_state', is_nullable: 'NO' },
-      { table_name: 'device_filesystem_snapshots', is_nullable: 'NO' },
+      { table_name: 'device_filesystem_scan_state', is_nullable: 'YES' },
+      { table_name: 'device_filesystem_snapshots', is_nullable: 'YES' },
     ]);
+  });
+
+  runDb('accepts an old replica\u2019s snapshot insert with no scan_path at all', async () => {
+    // The rollout case stated as a test rather than as prose.
+    const { deviceId, orgId } = await seedDevice('windows');
+    const id = await seedPreMigrationSnapshot(deviceId, orgId, null);
+    expect(await scanPathOf(id)).toBeNull();
   });
 });
 
-describe('2026-10-20-150000 — scan-state key and the rest of the shape', () => {
-  runDb('backfills scan state to the OS root of its device', async () => {
-    const windows = await seedDevice('windows');
-    const linux = await seedDevice('linux');
+describe('2026-10-20-160000 — scan-state key and the rest of the shape', () => {
+  /** Seeds a legacy scan-state row: no scan_path, with resume state attached. */
+  async function seedLegacyScanState(
+    deviceId: string,
+    orgId: string,
+    checkpointPath: string,
+  ) {
+    await getTestDb().execute(sql`
+      INSERT INTO device_filesystem_scan_state
+        (device_id, org_id, scan_path, last_run_mode, last_baseline_completed_at,
+         last_disk_used_percent, checkpoint, aggregate, hot_directories)
+      VALUES (${deviceId}, ${orgId}, NULL, 'baseline', '2026-09-18T00:00:00Z', 71,
+              ${JSON.stringify({ pendingDirs: [{ path: checkpointPath, depth: 1 }] })}::jsonb,
+              ${JSON.stringify({ path: checkpointPath })}::jsonb,
+              ${JSON.stringify([checkpointPath])}::jsonb)
+    `);
+  }
+
+  async function scanStateOf(deviceId: string) {
+    const rows = (await getTestDb().execute(sql`
+      SELECT scan_path, checkpoint, aggregate, hot_directories,
+             last_baseline_completed_at, last_disk_used_percent, scan_generation
+        FROM device_filesystem_scan_state WHERE device_id = ${deviceId}
+    `)) as unknown as Array<Record<string, unknown>>;
+    return rows[0]!;
+  }
+
+  runDb('PASS A: adopts the volume of the device\u2019s newest snapshot when it still matches a disk', async () => {
+    // Spec §13 #8. The row's checkpoint genuinely belongs to D:\, the device
+    // still reports a D:\ disk, so the label is adopted and the resume state
+    // is KEPT — no re-scan is imposed on a device we can place correctly.
+    const { deviceId, orgId } = await seedDevice('windows');
     const db = getTestDb();
-    await dropScanPathNotNull();
-    for (const seeded of [windows, linux]) {
-      await db.execute(sql`
-        INSERT INTO device_filesystem_scan_state (device_id, org_id, scan_path)
-        VALUES (${seeded.deviceId}, ${seeded.orgId}, NULL)
-      `);
-    }
+    await db.execute(sql`
+      INSERT INTO device_disks (device_id, org_id, mount_point, fs_type, total_gb, used_gb, free_gb, used_percent)
+      VALUES (${deviceId}, ${orgId}, 'd:/', 'NTFS', 2000, 100, 1900, 5)
+    `);
+    await seedPreMigrationSnapshot(deviceId, orgId, 'D:\\');
+    await seedLegacyScanState(deviceId, orgId, 'D:\\media');
 
     await replayMigration(MIGRATION);
 
-    const rows = (await db.execute(sql`
-      SELECT device_id, scan_path FROM device_filesystem_scan_state
-       WHERE device_id IN (${windows.deviceId}, ${linux.deviceId})
-    `)) as unknown as Array<{ device_id: string; scan_path: string }>;
-    const byDevice = new Map(rows.map((r) => [r.device_id, r.scan_path]));
-    expect(byDevice.get(windows.deviceId)).toBe('C:\\');
-    expect(byDevice.get(linux.deviceId)).toBe('/');
+    const state = await scanStateOf(deviceId);
+    expect(state.scan_path).toBe('D:\\');
+    expect(state.checkpoint).toEqual({ pendingDirs: [{ path: 'D:\\media', depth: 1 }] });
+    expect(state.hot_directories).toEqual(['D:\\media']);
   });
 
-  runDb('keys scan state on (device_id, scan_path) under the baseline name', async () => {
-    const rows = (await getTestDb().execute(sql`
-      SELECT c.conname,
+  runDb('PASS A: adopts the OS root when the newest snapshot names it, even with no disk rows', async () => {
+    const { deviceId, orgId } = await seedDevice('linux');
+    await seedPreMigrationSnapshot(deviceId, orgId, '/');
+    await seedLegacyScanState(deviceId, orgId, '/var');
+
+    await replayMigration(MIGRATION);
+
+    const state = await scanStateOf(deviceId);
+    expect(state.scan_path).toBe('/');
+    expect(state.hot_directories).toEqual(['/var']);
+  });
+
+  runDb('PASS B: a D:\\ checkpoint under a device with no matching disk is CLEARED, not relabelled', async () => {
+    // THE case spec §13 #8 is about. The device reports only C:, so the D:\
+    // resume state cannot be placed. Relabelling the row C:\ and keeping the
+    // checkpoint would make the next C:\ scan resume into D:\ paths and
+    // inherit D:\ hot directories — defect 6, reintroduced by the migration
+    // that fixes it. The label is applied; the resume state is dropped.
+    const { deviceId, orgId } = await seedDevice('windows');
+    const db = getTestDb();
+    await db.execute(sql`
+      INSERT INTO device_disks (device_id, org_id, mount_point, fs_type, total_gb, used_gb, free_gb, used_percent)
+      VALUES (${deviceId}, ${orgId}, 'C:\\', 'NTFS', 500, 400, 100, 80)
+    `);
+    await seedPreMigrationSnapshot(deviceId, orgId, 'D:\\');
+    await seedLegacyScanState(deviceId, orgId, 'D:\\media');
+
+    await replayMigration(MIGRATION);
+
+    const state = await scanStateOf(deviceId);
+    expect(state.scan_path).toBe('C:\\');
+    expect(state.checkpoint).toEqual({});
+    expect(state.aggregate).toEqual({});
+    expect(state.hot_directories).toEqual([]);
+    // Kept: a stale percent costs at most one baseline, and the completion
+    // timestamp is what stops the tab reading as "never scanned".
+    expect(state.last_baseline_completed_at).not.toBeNull();
+    expect(state.last_disk_used_percent).toBe(71);
+  });
+
+  runDb('PASS B: a device with no snapshots at all falls back to the OS root with state cleared', async () => {
+    const { deviceId, orgId } = await seedDevice('linux');
+    await seedLegacyScanState(deviceId, orgId, '/data');
+
+    await replayMigration(MIGRATION);
+
+    const state = await scanStateOf(deviceId);
+    expect(state.scan_path).toBe('/');
+    expect(state.hot_directories).toEqual([]);
+  });
+
+  runDb('adds scan_generation, nullable and initially unset', async () => {
+    const { deviceId, orgId } = await seedDevice('linux');
+    await seedLegacyScanState(deviceId, orgId, '/data');
+
+    await replayMigration(MIGRATION);
+
+    expect((await scanStateOf(deviceId)).scan_generation).toBeNull();
+  });
+
+  runDb('replaces the single-column primary key with a UNIQUE INDEX over (device_id, scan_path)', async () => {
+    // Amendment 16: a primary key needs the NOT NULL W03 owns, but the old
+    // single-column key cannot stay — it permits one row per device.
+    const db = getTestDb();
+    const pk = (await db.execute(sql`
+      SELECT count(*)::int AS n FROM pg_constraint
+       WHERE conrelid = 'public.device_filesystem_scan_state'::regclass AND contype = 'p'
+    `)) as unknown as Array<{ n: number }>;
+    expect(pk[0]!.n).toBe(0);
+
+    const idx = (await db.execute(sql`
+      SELECT i.relname AS name, ix.indisunique AS uniq,
              (SELECT array_agg(a.attname::text ORDER BY k.ord)
-                FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
-                JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum)
+                FROM unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord)
+                JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum)
                AS cols
-        FROM pg_constraint c
-       WHERE c.conrelid = 'public.device_filesystem_scan_state'::regclass
-         AND c.contype = 'p'
-    `)) as unknown as Array<{ conname: string; cols: string[] }>;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.conname).toBe('device_filesystem_scan_state_pkey');
-    expect(rows[0]!.cols).toEqual(['device_id', 'scan_path']);
+        FROM pg_index ix
+        JOIN pg_class i ON i.oid = ix.indexrelid
+       WHERE ix.indrelid = 'public.device_filesystem_scan_state'::regclass
+         AND i.relname = 'device_filesystem_scan_state_device_path_uidx'
+    `)) as unknown as Array<{ name: string; uniq: boolean; cols: string[] }>;
+    expect(idx).toHaveLength(1);
+    expect(idx[0]!.uniq).toBe(true);
+    expect(idx[0]!.cols).toEqual(['device_id', 'scan_path']);
+  });
+
+  runDb('the unique index is a usable ON CONFLICT target', async () => {
+    // What `upsertFilesystemScanState` does. Postgres infers a plain unique
+    // index from the column list exactly as it would a constraint; if this
+    // fails, every scan-state upsert raises 42P10 in production.
+    const { deviceId, orgId } = await seedDevice('windows');
+    const db = getTestDb();
+    for (const mode of ['baseline', 'incremental']) {
+      await db.execute(sql`
+        INSERT INTO device_filesystem_scan_state (device_id, org_id, scan_path, last_run_mode)
+        VALUES (${deviceId}, ${orgId}, 'D:\\', ${mode})
+        ON CONFLICT (device_id, scan_path) DO UPDATE SET last_run_mode = EXCLUDED.last_run_mode
+      `);
+    }
+    const rows = (await db.execute(sql`
+      SELECT last_run_mode FROM device_filesystem_scan_state WHERE device_id = ${deviceId}
+    `)) as unknown as Array<{ last_run_mode: string }>;
+    expect(rows).toEqual([{ last_run_mode: 'incremental' }]);
+  });
+
+  runDb('does NOT leave the migration-local normalisation helper behind', async () => {
+    const rows = (await getTestDb().execute(sql`
+      SELECT count(*)::int AS n FROM pg_proc
+       WHERE proname = 'breeze_w02_normalize_scan_path'
+    `)) as unknown as Array<{ n: number }>;
+    expect(rows[0]!.n).toBe(0);
   });
 
   runDb('lets one device hold independent state for two volumes', async () => {
@@ -1344,11 +1626,22 @@ describe('2026-10-20-150000 — scan-state key and the rest of the shape', () =>
 
     expect(afterSecond).toBe(afterFirst);
 
+    // Still exactly one unique index over (device_id, scan_path) and still no
+    // primary key — the DROP CONSTRAINT IF EXISTS / CREATE UNIQUE INDEX IF NOT
+    // EXISTS pair has to be a true no-op, not an index rebuild per replay.
+    const idx = (await db.execute(sql`
+      SELECT count(*)::int AS n FROM pg_class i
+        JOIN pg_index ix ON ix.indexrelid = i.oid
+       WHERE ix.indrelid = 'public.device_filesystem_scan_state'::regclass
+         AND i.relname = 'device_filesystem_scan_state_device_path_uidx'
+    `)) as unknown as Array<{ n: number }>;
+    expect(idx[0]!.n).toBe(1);
+
     const pk = (await db.execute(sql`
       SELECT count(*)::int AS n FROM pg_constraint
        WHERE conrelid = 'public.device_filesystem_scan_state'::regclass AND contype = 'p'
     `)) as unknown as Array<{ n: number }>;
-    expect(pk[0]!.n).toBe(1);
+    expect(pk[0]!.n).toBe(0);
   });
 });
 
@@ -1377,7 +1670,7 @@ Expected failure BEFORE Tasks 2 and 3 are applied to the test database: `column 
 cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/filesystemMultiVolumeMigration.integration.test.ts
 ```
 
-Expected: `Test Files  1 passed (1)`, 13 tests passed.
+Expected: `Test Files  1 passed (1)`, 21 tests passed.
 
 - [ ] **Step 4: Prove the integration-suite coverage contract is satisfied**
 
@@ -1419,9 +1712,18 @@ This seeds the production shapes (lower-case drive, mixed separators, repeated
 separators, trailing slash, missing path, dot segment), replays the file, and
 asserts the result byte for byte against what normalizeScanPath returns.
 
-Also pins the half db:check-drift explicitly does not check: the composite
-primary key and its name, the index swap, the kind CHECK, the four enum labels,
-and that one device can hold independent state for two volumes.
+Pins the two rollout contracts the quorum found (spec §13 #7, #8): both
+scan_path columns stay NULLABLE so an old replica's snapshot insert still
+lands, and the scan-state backfill adopts a legacy row's real volume when the
+newest snapshot still matches a disk (state kept) but CLEARS
+checkpoint/aggregate/hot_directories when it cannot (a D:\ checkpoint is never
+relabelled C:\).
+
+Also pins the half db:check-drift explicitly does not check: the unique index
+over (device_id, scan_path) with no primary key, that it works as an ON
+CONFLICT target, the index swap, the kind CHECK, the four enum labels,
+scan_generation, that the migration-local helper is dropped, and that one
+device can hold independent state for two volumes.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 EOF
@@ -1451,6 +1753,10 @@ EOF
   export async function getFilesystemScanState(deviceId: string, scanPath: string);
   export async function upsertFilesystemScanState(deviceId: string, orgId: string, scanPath: string, updates: {...});
   export function readPlanScanPath(plan: unknown): string | null;
+  // Scan generation (amendment 18, spec §13 #18):
+  export async function setFilesystemScanGeneration(deviceId: string, scanPath: string, commandId: string): Promise<void>;
+  export type ScanGenerationClaim = 'claimed' | 'superseded' | 'already_applied' | 'absent';
+  export async function claimFilesystemScanGeneration(deviceId: string, scanPath: string, commandId: string): Promise<ScanGenerationClaim>;
   ```
 
 > **This task is behaviour-preserving on purpose.** Every existing caller is pinned to `osRootScanPath(device.osType)`. Today there is exactly one scan-state row per device and one snapshot stream per device; keying both on the OS root is the SAME row and the SAME stream. Tasks 9–12 then replace the pin with the real per-volume path, one surface at a time, so no task leaves the repo red and each is reviewable on its own.
@@ -1502,17 +1808,85 @@ describe('upsertFilesystemScanState — conflict target (spec §4 writer contrac
 });
 ```
 
-This second describe needs the module under test to see a mocked `db`, so add at the TOP of `apps/api/src/services/filesystemAnalysis.test.ts`, above the existing imports:
+and a third describe for the scan generation (amendment 18) — this is the contract that stops a superseded scan overwriting a newer checkpoint, and it is the only place a mocked test can see the conditional `WHERE`:
+
+```ts
+describe('scan generation (spec §13 #18)', () => {
+  function mockUpdateReturning(rows: unknown[]) {
+    const returning = vi.fn().mockResolvedValue(rows);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as never);
+    return { set, where, returning };
+  }
+
+  function mockSelectRows(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as never);
+  }
+
+  it('setFilesystemScanGeneration updates the row and never inserts one', async () => {
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.update).mockReturnValue({ set } as never);
+
+    await setFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1');
+
+    // A plain UPDATE, not an upsert: a first-ever scan has no state row yet,
+    // and the handler's `absent` branch covers that case by applying the
+    // result rather than dropping it.
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ scanGeneration: 'cmd-1' }));
+  });
+
+  it('claims the generation when the command id matches, clearing it in the same statement', async () => {
+    const { set } = mockUpdateReturning([{ deviceId: 'device-1' }]);
+
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('claimed');
+
+    // Nulling it IS the idempotency marker: the same command cannot claim twice.
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ scanGeneration: null }));
+  });
+
+  it('reports superseded when a DIFFERENT generation owns the row', async () => {
+    mockUpdateReturning([]);
+    mockSelectRows([{ scanGeneration: 'cmd-2' }]);
+
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('superseded');
+  });
+
+  it('reports already_applied for a duplicate delivery of the same command', async () => {
+    // The claim nulled the generation the first time round, so the second
+    // delivery finds a row with no generation and must NOT re-apply.
+    mockUpdateReturning([]);
+    mockSelectRows([{ scanGeneration: null }]);
+
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('already_applied');
+  });
+
+  it('reports absent when there is no scan-state row at all', async () => {
+    mockUpdateReturning([]);
+    mockSelectRows([]);
+
+    await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-1')).resolves.toBe('absent');
+  });
+});
+```
+
+These describes need the module under test to see a mocked `db`, so add at the TOP of `apps/api/src/services/filesystemAnalysis.test.ts`, above the existing imports:
 
 ```ts
 import { vi } from 'vitest';
 
 vi.mock('../db', () => ({
-  db: { select: vi.fn(), insert: vi.fn() },
+  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn() },
 }));
 ```
 
-and extend the existing import from `./filesystemAnalysis` with `readPlanScanPath` and `upsertFilesystemScanState`, and add `import { db } from '../db';`.
+and extend the existing import from `./filesystemAnalysis` with `readPlanScanPath`, `upsertFilesystemScanState`, `setFilesystemScanGeneration` and `claimFilesystemScanGeneration`, and add `import { db } from '../db';`.
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -1644,6 +2018,13 @@ export async function upsertFilesystemScanState(
     checkpoint?: unknown;
     aggregate?: unknown;
     hotDirectories?: unknown;
+    /**
+     * Deliberately absent from this type. The generation is owned by
+     * `setFilesystemScanGeneration` (producers) and
+     * `claimFilesystemScanGeneration` (the handler), both of which are plain
+     * UPDATEs. Letting it ride along on the upsert would let the handler's
+     * final write resurrect a generation it had just claimed.
+     */
   }
 ) {
   const now = new Date();
@@ -1676,9 +2057,12 @@ export async function upsertFilesystemScanState(
     .insert(deviceFilesystemScanState)
     .values(insertValues)
     .onConflictDoUpdate({
-      // The composite primary key (2026-10-20-150000). A single-column target
-      // here names no unique index and every upsert raises 42P10 — which is
-      // why this change and that migration ship in one release (spec §4).
+      // The (device_id, scan_path) key (2026-10-20-160000). It is a UNIQUE
+      // INDEX in W02, not a primary key (amendment 16) — Postgres infers
+      // either one from this column list, so nothing here changes when W03
+      // promotes it. A single-column target names no unique index at all once
+      // the old key is dropped, and every upsert raises 42P10, which is why
+      // this change and that migration ship in one release (spec §4).
       target: [deviceFilesystemScanState.deviceId, deviceFilesystemScanState.scanPath],
       set: updateSet,
     })
@@ -1701,6 +2085,83 @@ Append `readPlanScanPath` at the end of the file, next to `readPlanPreviewCandid
 export function readPlanScanPath(plan: unknown): string | null {
   const record = asRecord(plan);
   return asString(record?.scanPath);
+}
+
+/**
+ * Records which `filesystem_analysis` command owns the current run for this
+ * volume (spec §13 #18). Called by every producer right after queuing: the
+ * scan route, the threshold queue, and the auto-resume continuation.
+ *
+ * A plain UPDATE, never an upsert. A first-ever scan has no scan-state row
+ * yet, and inventing one here would need an orgId the threshold path does not
+ * hold; the result handler's `absent` branch covers that case by applying the
+ * result rather than dropping it.
+ */
+export async function setFilesystemScanGeneration(
+  deviceId: string,
+  scanPath: string,
+  commandId: string
+): Promise<void> {
+  await db
+    .update(deviceFilesystemScanState)
+    .set({ scanGeneration: commandId, updatedAt: new Date() })
+    .where(and(
+      eq(deviceFilesystemScanState.deviceId, deviceId),
+      eq(deviceFilesystemScanState.scanPath, scanPath),
+    ));
+}
+
+export type ScanGenerationClaim = 'claimed' | 'superseded' | 'already_applied' | 'absent';
+
+/**
+ * Claims the right to apply `commandId`'s result to this volume's scan state
+ * (spec §13 #18). One conditional UPDATE does both jobs:
+ *
+ *  - EXCLUSIVITY — two scans of the same volume can be in flight at once (an
+ *    auto-resume continuation plus a user-triggered rescan, or two operators).
+ *    Only the command the row currently names can claim it, so a superseded
+ *    scan can no longer overwrite a newer run's checkpoint with a stale
+ *    frontier.
+ *  - IDEMPOTENCY — the claim NULLS the generation, so a duplicate delivery of
+ *    the same command id finds nothing to claim and is dropped.
+ *
+ * `absent` (no state row) applies the result deliberately: a device whose
+ * state row has not been created yet, or was removed, must not lose a
+ * completed scan to a bookkeeping row that never existed.
+ *
+ * NOTE: this guards RESULT APPLICATION only. A scan queued between the claim
+ * and the handler's final `upsertFilesystemScanState` can still have its row
+ * overwritten by the older run's checkpoint — the pre-existing last-writer-wins
+ * window, unchanged by this wave and much narrower than the one it closes.
+ */
+export async function claimFilesystemScanGeneration(
+  deviceId: string,
+  scanPath: string,
+  commandId: string
+): Promise<ScanGenerationClaim> {
+  const claimed = await db
+    .update(deviceFilesystemScanState)
+    .set({ scanGeneration: null, updatedAt: new Date() })
+    .where(and(
+      eq(deviceFilesystemScanState.deviceId, deviceId),
+      eq(deviceFilesystemScanState.scanPath, scanPath),
+      eq(deviceFilesystemScanState.scanGeneration, commandId),
+    ))
+    .returning({ deviceId: deviceFilesystemScanState.deviceId });
+
+  if (claimed.length > 0) return 'claimed';
+
+  const [state] = await db
+    .select({ scanGeneration: deviceFilesystemScanState.scanGeneration })
+    .from(deviceFilesystemScanState)
+    .where(and(
+      eq(deviceFilesystemScanState.deviceId, deviceId),
+      eq(deviceFilesystemScanState.scanPath, scanPath),
+    ))
+    .limit(1);
+
+  if (!state) return 'absent';
+  return state.scanGeneration === null ? 'already_applied' : 'superseded';
 }
 ```
 
@@ -2614,6 +3075,43 @@ describe('POST /devices/:id/filesystem/scan — per-volume (spec §5.1)', () => 
     );
   });
 
+  it('records the queued command as this volume\u2019s scan generation', async () => {
+    // Amendment 18 / spec §13 #18 — without this the result handler has
+    // nothing to claim and two concurrent scans of one volume race.
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(windowsDevice as never);
+    vi.mocked(listFilesystemVolumes).mockResolvedValue(twoWindowsVolumes() as never);
+    vi.mocked(getFilesystemScanState).mockResolvedValue(null as never);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-gen', status: 'sent', createdAt: new Date() },
+    } as never);
+
+    await app.request(`/devices/${deviceId}/filesystem/scan`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'D:\\' }),
+    });
+
+    expect(setFilesystemScanGeneration).toHaveBeenCalledWith(deviceId, 'D:\\', 'cmd-gen');
+  });
+
+  it('does not record a generation when the command could not be queued', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(windowsDevice as never);
+    vi.mocked(listFilesystemVolumes).mockResolvedValue(twoWindowsVolumes() as never);
+    vi.mocked(getFilesystemScanState).mockResolvedValue(null as never);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({ command: null, error: 'offline' } as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/scan`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'D:\\' }),
+    });
+
+    expect(res.status).toBe(500);
+    // A generation with no command behind it would make the NEXT real result
+    // look superseded and be dropped.
+    expect(setFilesystemScanGeneration).not.toHaveBeenCalled();
+  });
+
   it('falls back to a baseline when the scanned volume reports no disk row', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(windowsDevice as never);
     vi.mocked(listFilesystemVolumes).mockResolvedValue([
@@ -2717,7 +3215,12 @@ filesystemRoutes.get(
         // The normalised key this snapshot is stored under — what the client
         // sends back on the next request. `path` below is the raw string the
         // agent actually walked, which the tab has always displayed.
-        scanPath: snapshot.scanPath,
+        //
+        // `?? scanPath` because the column is nullable in W02 (amendment 15),
+        // and the ONE shape that produces a null is a row an old API replica
+        // wrote mid-deploy. The row was SELECTed by `scanPath`, so the
+        // fallback is exact rather than a guess.
+        scanPath: snapshot.scanPath ?? scanPath,
         capturedAt: snapshot.capturedAt,
         trigger: snapshot.trigger,
         partial: snapshot.partial,
@@ -2792,6 +3295,23 @@ In the command payload (`:208-217`), replace `...payload,` with an explicit spre
       resumeAttempt: 0,
     };
 ```
+
+Record this volume's scan generation immediately after the successful `queueCommandForExecution`, above `writeRouteAudit` (`:237`):
+
+```ts
+    // Amendment 18 / spec §13 #18. Two scans of the SAME volume can be in
+    // flight at once (an auto-resume continuation plus a user-triggered
+    // rescan, or two operators), and without a generation the later result
+    // overwrites the earlier one's checkpoint with a stale frontier. A plain
+    // UPDATE, not an upsert: a first-ever scan has no state row yet and the
+    // result handler's `absent` branch applies that result rather than
+    // dropping it.
+    await setFilesystemScanGeneration(deviceId, scanPath, queued.command.id);
+```
+
+(add `setFilesystemScanGeneration` to the `../../services/filesystemAnalysis` import.)
+
+Add `setFilesystemScanGeneration: vi.fn()` to the `vi.mock('../../services/filesystemAnalysis', …)` factory at `:57-68` of `filesystem.test.ts` and import it, or the two assertions in Step 1 have nothing to watch.
 
 Add `scanPath` to the audit details (`:243-249`, replacing `path: payload.path,`):
 
@@ -3066,13 +3586,16 @@ then pin the volume on the stored run and echo it:
       .values({
         deviceId,
         orgId: device.orgId,
-        scanPath: snapshot.scanPath,
+        // `?? scanPath` because the column is nullable in W02 (amendment 15):
+        // the row was SELECTed BY `scanPath`, so the fallback is exact, and it
+        // keeps a snapshot an old replica wrote mid-deploy previewable.
+        scanPath: snapshot.scanPath ?? scanPath,
         requestedBy: auth.user.id,
         plan: {
           snapshotId: snapshot.id,
           // Pinned alongside snapshotId so execute can recover the volume
           // without a `path` field of its own (spec §5.2).
-          scanPath: snapshot.scanPath,
+          scanPath: snapshot.scanPath ?? scanPath,
           categories: categories ?? safeCleanupCategories,
           preview,
         },
@@ -3080,14 +3603,14 @@ then pin the volume on the stored run and echo it:
       })
 ```
 
-add `scanPath: snapshot.scanPath` to the audit `details`, and to the 200 body:
+add `scanPath: snapshot.scanPath ?? scanPath` to the audit `details`, and to the 200 body:
 
 ```ts
     return c.json({
       success: true,
       data: {
         cleanupRunId: cleanupRun?.id ?? null,
-        scanPath: snapshot.scanPath,
+        scanPath: snapshot.scanPath ?? scanPath,
         ...preview,
       },
     });
@@ -3217,8 +3740,8 @@ EOF
 - Modify: `apps/api/src/routes/agents/helpers.filesystemAnalysis.test.ts` (extend)
 
 **Interfaces:**
-- Consumes: `normalizeScanPath`, `osRootScanPath` (`@breeze/shared`); `devices`, `deviceDisks` (already imported in that file).
-- Produces: `handleFilesystemAnalysisCommandResult` writes the snapshot and the scan state under `normalizeScanPath(osType, command.payload.path)`; `getFilesystemThresholdScanPath(osType)` returns the normalised OS root.
+- Consumes: `normalizeScanPath`, `osRootScanPath` (`@breeze/shared`); `claimFilesystemScanGeneration`, `setFilesystemScanGeneration` (Task 6); `devices`, `deviceDisks` (already imported in that file).
+- Produces: `handleFilesystemAnalysisCommandResult` writes the snapshot and the scan state under `normalizeScanPath(osType, command.payload.path)`, and only after claiming that volume's scan generation; `getFilesystemThresholdScanPath(osType)` returns the normalised OS root; the threshold queue and the auto-resume continuation both record their new generation; the continuation-suppression read is scoped to the same `scan_path`.
 
 > **Why the extra query (amendment 6).** Normalisation is OS-dependent and this handler has no OS in scope: it is called with `agent.orgId` only, and `AgentAuthContext` carries no OS. One indexed primary-key lookup on `devices` is the cost; guessing POSIX would silently key every Windows device on `/` and re-create defect 6 inside the fix.
 
@@ -3298,6 +3821,82 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
     expect(updates.lastDiskUsedPercent).toBeNull();
   });
 
+  it('drops a result whose command is no longer this volume\u2019s generation', async () => {
+    // Amendment 18 / spec §13 #18. A continuation and a user-triggered rescan
+    // of the same volume can both be in flight; without this the older result
+    // overwrites the newer run's checkpoint with a stale frontier.
+    vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
+    vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('superseded' as never);
+    selectQueue.push([{ osType: 'windows' }]);
+
+    await handleFilesystemAnalysisCommandResult(windowsCommand('D:\\'), result(), ORG_ID);
+
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+    expect(upsertFilesystemScanState).not.toHaveBeenCalled();
+  });
+
+  it('drops a DUPLICATE delivery of the same command (idempotent application)', async () => {
+    vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
+    vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('already_applied' as never);
+    selectQueue.push([{ osType: 'windows' }]);
+
+    await handleFilesystemAnalysisCommandResult(windowsCommand('D:\\'), result(), ORG_ID);
+
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+    expect(upsertFilesystemScanState).not.toHaveBeenCalled();
+  });
+
+  it('APPLIES a result when no scan-state row exists yet, rather than losing the scan', async () => {
+    vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
+    vi.mocked(readCheckpointPendingDirectories).mockReturnValue([]);
+    vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('absent' as never);
+    selectQueue.push([{ osType: 'windows' }]);
+    selectQueue.push([{ mountPoint: 'D:\\', usedPercent: 5 }]);
+
+    await handleFilesystemAnalysisCommandResult(windowsCommand('D:\\'), result(), ORG_ID);
+
+    expect(saveFilesystemSnapshot).toHaveBeenCalled();
+  });
+
+  it('claims the generation for the SCANNED volume, not the device', async () => {
+    vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
+    vi.mocked(readCheckpointPendingDirectories).mockReturnValue([]);
+    vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('claimed' as never);
+    selectQueue.push([{ osType: 'windows' }]);
+    selectQueue.push([{ mountPoint: 'D:\\', usedPercent: 5 }]);
+
+    await handleFilesystemAnalysisCommandResult(windowsCommand('d:/'), result(), ORG_ID);
+
+    expect(claimFilesystemScanGeneration).toHaveBeenCalledWith(
+      DEVICE_ID, 'D:\\', '00000000-0000-4000-8000-0000000000cc',
+    );
+  });
+
+  it('suppresses an auto-resume only on an in-flight scan of the SAME volume', async () => {
+    // Found while wiring the generation (amendment 18): the continuation
+    // check matched any in-flight filesystem_analysis on the DEVICE, so a
+    // running C:\ scan silently cancelled a D:\ baseline's auto-resume and
+    // the D:\ baseline never finished.
+    vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
+    vi.mocked(readCheckpointPendingDirectories).mockReturnValue([{ path: 'D:\\media', depth: 1 }]);
+    vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('claimed' as never);
+    selectQueue.push([{ osType: 'windows' }]);
+    selectQueue.push([{ mountPoint: 'D:\\', usedPercent: 5 }]);
+    selectQueue.push([]); // the path-scoped in-flight probe finds nothing for D:\
+
+    await handleFilesystemAnalysisCommandResult(windowsCommand('D:\\'), result(), ORG_ID);
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'filesystem_analysis',
+      expect.objectContaining({ path: 'D:\\', resumeAttempt: 1 }),
+      expect.anything(),
+    );
+    // And the continuation records its OWN generation, or its result is
+    // dropped as superseded the moment it comes back.
+    expect(setFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, 'D:\\', 'resume-1');
+  });
+
   it('writes nothing at all when the device row cannot be resolved', async () => {
     vi.mocked(mergeFilesystemAnalysisPayload).mockReturnValue({ scanMode: 'baseline' });
     selectQueue.push([]); // devices read returns nothing
@@ -3318,9 +3917,18 @@ cd apps/api && npx vitest run src/routes/agents/helpers.filesystemAnalysis.test.
 
 Expected failure: `AssertionError: expected "saveFilesystemSnapshot" to have been called with [ …, 'D:\\', … ]` — Task 6's `W02_TRANSITIONAL_SCAN_PATH` is still `'/'`.
 
-- [ ] **Step 3: Implement** — in `apps/api/src/routes/agents/helpers.ts`:
+- [ ] **Step 3: Implement**
 
-Add `normalizeScanPath, osRootScanPath` to the `@breeze/shared` import, delete the `W02_TRANSITIONAL_SCAN_PATH` constant Task 6 added, and replace `getFilesystemThresholdScanPath` (`:1517-1520`):
+First extend the suite's service mock so the new functions exist — in `apps/api/src/routes/agents/helpers.filesystemAnalysis.test.ts`, add to the `vi.mock('../../services/filesystemAnalysis', …)` factory (`:57-65`) and to the import below it:
+
+```ts
+  claimFilesystemScanGeneration: vi.fn(async () => 'claimed'),
+  setFilesystemScanGeneration: vi.fn(),
+```
+
+Then in `apps/api/src/routes/agents/helpers.ts`:
+
+Add `normalizeScanPath, osRootScanPath` to the `@breeze/shared` import, add `claimFilesystemScanGeneration` and `setFilesystemScanGeneration` to the `../../services/filesystemAnalysis` import, delete the `W02_TRANSITIONAL_SCAN_PATH` constant Task 6 added, and replace `getFilesystemThresholdScanPath` (`:1517-1520`):
 
 ```ts
 /**
@@ -3334,6 +3942,18 @@ export function getFilesystemThresholdScanPath(osType: unknown): string {
 ```
 
 (The `:1564` call site is unchanged — it already passes `device.osType` — and the queued payload's `path` is therefore already normalised. The threshold COOLDOWN at `:1530-1562` stays device-wide on purpose: a scan of any volume in the last N minutes is evidence the device is already being looked at, and per-volume cooldowns would let a 6-volume server queue 6 threshold scans at once.)
+
+The threshold insert must also record its generation, or the result it produces is dropped as `superseded` whenever a row already exists. Change the `db.insert(deviceCommands)` at `:1565-1584` to return its id and follow it with the generation write:
+
+```ts
+  const [thresholdCommand] = await db.insert(deviceCommands).values({
+    // …the payload block is unchanged…
+  }).returning({ id: deviceCommands.id });
+
+  if (thresholdCommand) {
+    await setFilesystemScanGeneration(device.id, path, thresholdCommand.id);
+  }
+```
 
 Replace the body of `handleFilesystemAnalysisCommandResult` from the `// orgId comes from…` comment (`:1617`) through the `currentDiskUsedPercent` assignment (`:1631`):
 
@@ -3361,6 +3981,19 @@ Replace the body of `handleFilesystemAnalysisCommandResult` from the `// orgId c
   // sends the normalised form; normalising again is what makes an in-flight
   // command queued by the PREVIOUS release land on the right key too.
   const scanPath = normalizeScanPath(osType, asString(payload.path) ?? osRootScanPath(osType));
+
+  // Claim this volume's scan generation BEFORE anything is written (spec §13
+  // #18). `claimed` is the only outcome that owns the row; `absent` applies
+  // anyway rather than losing a completed scan to a bookkeeping row that does
+  // not exist yet. `superseded` and `already_applied` are dropped, which is
+  // what makes application exclusive and idempotent.
+  const claim = await claimFilesystemScanGeneration(command.deviceId, scanPath, command.id);
+  if (claim === 'superseded' || claim === 'already_applied') {
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} (device ${command.deviceId}, path ${scanPath}) dropped: ${claim}`
+    );
+    return;
+  }
 
   // The scan-state read and the disk-usage read are independent; run them
   // together. The disk figure is only consumed by the scan-state upsert below.
@@ -3400,7 +4033,27 @@ and `:1670` becomes:
   await upsertFilesystemScanState(command.deviceId, orgId, scanPath, {
 ```
 
-Finally, in the auto-resume block, make the resumed command carry the same normalised key (`:1711-1718`):
+Scope the continuation-suppression probe to this volume (`:1695-1705`). Today it matches any in-flight `filesystem_analysis` on the DEVICE, so a running `C:\` scan silently cancels a `D:\` baseline's auto-resume and that baseline never finishes (amendment 18):
+
+```ts
+  const [inFlightScan] = await db
+    .select({ id: deviceCommands.id })
+    .from(deviceCommands)
+    .where(
+      and(
+        eq(deviceCommands.deviceId, command.deviceId),
+        eq(deviceCommands.type, filesystemAnalysisCommandType),
+        // Scan-path scoped: a C:\ scan must not suppress a D:\ continuation.
+        // Producers write the NORMALISED path into the payload, so this is an
+        // equality test, not a pattern match.
+        sql`${deviceCommands.payload}->>'path' = ${scanPath}`,
+        sql`${deviceCommands.status} IN ('pending', 'sent')`
+      )
+    )
+    .limit(1);
+```
+
+Finally, in the auto-resume block, make the resumed command carry the same normalised key and record its own generation (`:1711-1739`):
 
 ```ts
   const nextPayload: Record<string, unknown> = {
@@ -3415,13 +4068,46 @@ Finally, in the auto-resume block, make the resumed command carry the same norma
   };
 ```
 
+and after EACH of the two ways the continuation can be created — the `queueCommandForExecution` success branch and the direct `db.insert(deviceCommands)` fallback — record the new generation before returning. Change the success branch from `if (queued.command) { return; }` to:
+
+```ts
+  if (queued.command) {
+    // The continuation owns this volume from here. Without it, the claim in
+    // this same handler has already nulled the generation, so the
+    // continuation's own result would come back as `already_applied` and be
+    // dropped — the resumed baseline would never complete.
+    await setFilesystemScanGeneration(command.deviceId, scanPath, queued.command.id);
+    return;
+  }
+```
+
+and give the fallback insert the same treatment:
+
+```ts
+  const [fallbackCommand] = await db.insert(deviceCommands).values({
+    deviceId: command.deviceId,
+    type: filesystemAnalysisCommandType,
+    payload: nextPayload,
+    status: 'pending',
+    createdBy: command.createdBy,
+  }).returning({ id: deviceCommands.id });
+
+  if (fallbackCommand) {
+    await setFilesystemScanGeneration(command.deviceId, scanPath, fallbackCommand.id);
+  }
+```
+
 - [ ] **Step 4: Run it and watch it pass**
 
 ```bash
 cd apps/api && npx vitest run src/routes/agents/helpers.filesystemAnalysis.test.ts src/routes/agents.test.ts
 ```
 
-Expected: `Test Files  2 passed (2)`. The four pre-existing cases in `helpers.filesystemAnalysis.test.ts` each push one `selectQueue` entry for the disks read; they now need a `devices` entry pushed FIRST — add `selectQueue.push([{ osType: 'linux' }]);` ahead of each existing `selectQueue.push([{ usedPercent: … }]);` and change those entries to `[{ mountPoint: '/', usedPercent: … }]`. That is a fixture change, not an assertion change: the cases still assert baseline completion and orgId threading exactly as before.
+Expected: `Test Files  2 passed (2)`. Two fixture adjustments, neither of which is an assertion change:
+- The four pre-existing cases in `helpers.filesystemAnalysis.test.ts` each push one `selectQueue` entry for the disks read; they now need a `devices` entry pushed FIRST — add `selectQueue.push([{ osType: 'linux' }]);` ahead of each existing `selectQueue.push([{ usedPercent: … }]);` and change those entries to `[{ mountPoint: '/', usedPercent: … }]`.
+- `claimFilesystemScanGeneration` defaults to `'claimed'` in the mock factory, so every pre-existing case applies its result exactly as before; only the four new drop/absent cases override it.
+
+The cases still assert baseline completion and orgId threading exactly as before.
 
 - [ ] **Step 5: Prove the transitional pin is gone**
 
@@ -3439,11 +4125,26 @@ git add apps/api/src/routes/agents/helpers.ts apps/api/src/routes/agents/helpers
 git commit -m "$(cat <<'EOF'
 fix(agents): key filesystem results on the volume that was scanned
 
-Spec §5.1. The result handler resolves the device's OS (AgentAuthContext
-carries none — one indexed PK lookup), normalises command.payload.path, and
-writes the snapshot and the scan state under that key. A result whose device
-row cannot be resolved writes nothing rather than guessing POSIX and keying a
-Windows device on '/'.
+Spec §5.1 plus §13 #18. The result handler resolves the device's OS
+(AgentAuthContext carries none — one indexed PK lookup), normalises
+command.payload.path, and writes the snapshot and the scan state under that
+key. A result whose device row cannot be resolved writes nothing rather than
+guessing POSIX and keying a Windows device on '/'.
+
+It then CLAIMS that volume's scan generation before writing anything. Two scans
+of one volume can be in flight at once (an auto-resume continuation plus a
+user-triggered rescan), and the later result used to overwrite the earlier
+one's checkpoint with a stale frontier. The claim nulls the generation in the
+same statement, so application is exclusive AND idempotent: a superseded
+generation and a duplicate delivery are both logged and dropped. A device with
+no scan-state row still applies, so no completed scan is lost to missing
+bookkeeping. The threshold queue and both continuation paths record their own
+generation.
+
+Also fixes a defect the generation work exposed: the continuation-suppression
+probe matched any in-flight filesystem_analysis on the DEVICE, so a running C:\
+scan silently cancelled a D:\ baseline's auto-resume and that baseline never
+finished. It is now scoped to payload->>'path'.
 
 The disk-percent baseline comes from the disk whose mount point IS the scanned
 volume, instead of an arbitrary `LIMIT 1` row: a D:\ scan used to record C:'s
@@ -3727,11 +4428,13 @@ In the preview lane, pin the volume on the run and echo it:
           .values({
             deviceId,
             orgId: access.device.orgId,
-            scanPath: snapshot.scanPath,
+            // `?? scanPath`: the column is nullable in W02 (amendment 15) and
+            // the row was SELECTed by `scanPath`, so the fallback is exact.
+            scanPath: snapshot.scanPath ?? scanPath,
             requestedBy: safeRequestedBy,
             plan: {
               snapshotId: snapshot.id,
-              scanPath: snapshot.scanPath,
+              scanPath: snapshot.scanPath ?? scanPath,
               categories: requestedCategories ?? safeCleanupCategories,
               preview,
             },
@@ -3742,7 +4445,7 @@ In the preview lane, pin the volume on the run and echo it:
 ```ts
         return JSON.stringify({
           cleanupRunId: cleanupRun?.id ?? null,
-          scanPath: snapshot.scanPath,
+          scanPath: snapshot.scanPath ?? scanPath,
           snapshotId: snapshot.id,
 ```
 
@@ -3752,12 +4455,12 @@ and in the execute lane, the same two edits:
         .values({
           deviceId,
           orgId: access.device.orgId,
-          scanPath: snapshot.scanPath,
+          scanPath: snapshot.scanPath ?? scanPath,
           requestedBy: safeRequestedBy,
           approvedAt: new Date(),
           plan: {
             snapshotId: snapshot.id,
-            scanPath: snapshot.scanPath,
+            scanPath: snapshot.scanPath ?? scanPath,
             requestedPaths,
             selectedPaths: selected.map((candidate) => candidate.path),
           },
@@ -3766,7 +4469,7 @@ and in the execute lane, the same two edits:
 ```ts
       return JSON.stringify({
         cleanupRunId: cleanupRun?.id ?? null,
-        scanPath: snapshot.scanPath,
+        scanPath: snapshot.scanPath ?? scanPath,
         snapshotId: snapshot.id,
 ```
 
@@ -5062,7 +5765,22 @@ git diff --stat origin/main...HEAD -- apps/api/src/services/tenantCascade.ts app
 
 Expected: the first grep lists the three tables in all three device/org cascade lists; the second returns **nothing**; the third returns **no output** — this wave changes no cascade list, which is a claim the diff has to back.
 
-- [ ] **Step 7: Prove the scan-path sweep is complete**
+- [ ] **Step 7: Prove this wave contracted nothing (amendments 15–16)**
+
+```bash
+git diff origin/main...HEAD -- apps/api/migrations | grep -nE '^\+.*(SET NOT NULL|ADD PRIMARY KEY|PRIMARY KEY \()'
+git grep -n "notNull()" -- apps/api/src/db/schema/filesystem.ts | grep scan_path
+```
+
+Expected: **no output from either.** Both `scan_path` columns are nullable and there is no primary key on `device_filesystem_scan_state` until W03's contract migration. A hit here means an old replica loses a snapshot the moment this deploys.
+
+```bash
+git grep -n 'device_filesystem_scan_state_device_path_uidx' -- apps/api
+```
+
+Expected: the migration, the Drizzle mirror and the replay suite — three files. W03's plan must name this index; if its plan does not, say so in the PR before merging.
+
+- [ ] **Step 8: Prove the scan-path sweep is complete**
 
 ```bash
 git grep -n "=== 'C:\\\\\\\\'\|'C:\\\\\\\\'" -- apps/api/src apps/web/src | grep -v test | grep -v scanPath.ts
@@ -5076,7 +5794,7 @@ git grep -n 'deviceFilesystemSnapshots\.\|deviceFilesystemScanState\.' -- apps e
 
 Expected: matches only inside `apps/api/src/services/filesystemAnalysis.ts` and `apps/api/src/routes/agents/helpers.ts` (the threshold cooldown read). Any other file touching those tables directly would be a reader that bypasses the scan-path key.
 
-- [ ] **Step 8: Lint**
+- [ ] **Step 9: Lint**
 
 ```bash
 pnpm --filter @breeze/api lint
@@ -5085,7 +5803,7 @@ pnpm --filter @breeze/web lint
 
 Expected: clean.
 
-- [ ] **Step 9: Tear down the local stack**
+- [ ] **Step 10: Tear down the local stack**
 
 ```bash
 pnpm test-stack down
@@ -5094,7 +5812,7 @@ docker compose ls -a --format json | jq -r '.[] | select(.ConfigFiles|test("bree
 
 Expected: the second command lists nothing this session brought up. Nothing reaps a local stack for you.
 
-- [ ] **Step 10: Open the PR**
+- [ ] **Step 11: Open the PR**
 
 ```bash
 gh pr create --base main --title "Disk Cleanup v2 W02: multi-volume filesystem analysis" --body "$(cat <<'EOF'
@@ -5113,26 +5831,58 @@ Spec: `docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md` §4, §5.1,
 
 ## Schema and code ship together
 
-`upsertFilesystemScanState`'s `ON CONFLICT` target moves with the primary key.
-A single-column target names no unique index after the migration and raises
-`42P10`, so this cannot be split into a schema PR and a code PR.
+`upsertFilesystemScanState`'s `ON CONFLICT` target moves with the key. Once the
+single-column key is dropped a `target: deviceId` names no unique index and
+raises `42P10`, so this cannot be split into a schema PR and a code PR.
 
-On a multi-replica self-host, the window between the migration and the last old
-replica draining makes old replicas fail scan-state upserts — the snapshot
-insert still succeeds, and a re-run scan repairs the state. Release-notes item.
+## Expand only — W03 owes the contract migration
+
+Per the Codex quorum finding in spec §13 #7, this wave adds **no** `NOT NULL`
+and **no** primary key. `scan_path` is nullable on both tables and the
+scan-state key is a nullable-tolerant `UNIQUE INDEX`
+(`device_filesystem_scan_state_device_path_uidx`).
+
+**W03 must ship `2026-10-20-15xx00-filesystem-scan-path-not-null.sql`:**
+`SET NOT NULL` on both `scan_path` columns, then
+`ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY USING INDEX
+device_filesystem_scan_state_device_path_uidx`. It runs only once W02 is
+deployed everywhere.
+
+Rolling-deploy behaviour, precisely: old replicas' snapshot INSERTs keep
+working (the column is nullable, and every reader falls back to the key it
+queried by); their scan-state UPSERTs fail with `42P10` from the moment the
+single-column key is dropped until they drain, and a re-run scan repairs that
+state. Release-notes item.
 
 ## Migrations
 
-- `2026-10-20-150000-filesystem-multi-volume.sql` — `scan_path` on all three
-  tables, the `(device_id, scan_path)` scan-state key, the swapped snapshot
-  index, `kind` + `command_id` on cleanup runs. Both backfills elect
-  `breeze.scope = 'system'` and report their counts.
-- `2026-10-20-150100-filesystem-cleanup-run-status-running.sql` — the enum add,
+- `2026-10-20-160000-filesystem-multi-volume.sql` — nullable `scan_path` on all
+  three tables, `scan_generation` on scan state, the `(device_id, scan_path)`
+  unique index, the swapped snapshot index, `kind` + `command_id` on cleanup
+  runs. Both backfills elect `breeze.scope = 'system'`, share one
+  migration-local normalisation helper, and report their counts.
+- `2026-10-20-160100-filesystem-cleanup-run-status-running.sql` — the enum add,
   alone in its file.
+
+The scan-state backfill runs in two passes (§13 #8): a legacy row keeps its
+checkpoint only when the device's newest snapshot names a volume the device
+still reports; otherwise the row is labelled the OS root and its
+`checkpoint`/`aggregate`/`hot_directories` are cleared, because resuming a
+`D:\` checkpoint into `C:\` would reintroduce defect 6.
+
+## Concurrency
+
+`device_filesystem_scan_state.scan_generation` (§13 #18) records the command id
+owning each volume's current run. The result handler claims it with one
+conditional UPDATE, which makes result application exclusive (a superseded scan
+cannot overwrite a newer checkpoint) and idempotent (a duplicate delivery is
+dropped). The continuation-suppression probe, which matched any in-flight scan
+on the DEVICE and so let a `C:\` scan cancel a `D:\` auto-resume, is now
+scoped to the same path.
 
 ## Registration lists
 
-`CORE_TENANT_EXPORT_POLICY` gains five columns, all `included` — the one list
+`CORE_TENANT_EXPORT_POLICY` gains six columns, all `included` — the one list
 that fires on a new COLUMN. Every cascade list is verified unchanged and the
 diff shows no edit to any of them: all three tables were already registered,
 none carries a `ticket_id`, none is append-only, and all three are tenancy
@@ -5146,7 +5896,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 11: Watch CI and report**
+- [ ] **Step 12: Watch CI and report**
 
 ```bash
 gh pr checks --watch
@@ -5164,14 +5914,18 @@ Expected: `CI Success` green. `gh pr checks` exits non-zero while checks are pen
 |---|---|---|
 | Two migrations, names sorting after everything shipped, re-checked against `origin/main` | §4 | 2 (Step 1), 3, 16 (Step 1) |
 | Enum add alone in its own file | §4 | 3 |
-| `scan_path` on snapshots, NOT NULL, backfilled from `raw_payload->>'path'` else the OS root from `devices.os_type` | §4 | 2 (exact SQL `CASE`), 5 (proof) |
+| `scan_path` on snapshots, backfilled from `raw_payload->>'path'` else the OS root from `devices.os_type` — **nullable in W02** | §4, §13 #7 | 2 (one shared SQL helper), 5 (proof) |
+| Expand/contract: no `SET NOT NULL`, no primary key; W03 ships `…-filesystem-scan-path-not-null.sql` | §13 #7 | 2 (Step 7), 4 (Interfaces hand-off), 5, 16 (Step 7) |
+| Scan-state backfill adopts a matching volume and CLEARS resume state otherwise | §13 #8 | 2 (two passes), 5 (four cases) |
+| `scan_generation` column, producers set it, handler claims it; superseded and duplicate results dropped | §13 #18 | 2, 4, 6, 9, 11 |
+| Continuation suppression scoped to the same `scan_path` | §13 #18 (adjacent defect) | 11 |
 | New `(device_id, scan_path, captured_at DESC)` index created before the old one is dropped | §4 | 2, 5 |
-| `scan_path` on scan state, composite primary key `(device_id, scan_path)` | §4 | 2, 5 |
+| `scan_path` on scan state; the composite key as a UNIQUE INDEX in W02, promoted in W03 | §4, §13 #7 | 2, 4, 5 |
 | `scan_path` (nullable), `kind` + CHECK, `command_id` (no FK) on cleanup runs | §4 | 2, 5 |
 | `running` cleanup-run status | §4 | 3, 4, 5 |
 | Idempotent; `set_config('breeze.scope','system',true)` before every write; `RAISE WARNING` row counts | §4, CLAUDE.md | 2, 2 (Step 5) |
-| Drizzle mirror incl. composite PK | §4 | 4 |
-| Export-policy registry entries for all five new columns | §4 | 4, 5 (Step 5), 16 (Step 4) |
+| Drizzle mirror incl. the unique index (not a PK) and `scanGeneration` | §4, §13 #7 | 4 |
+| Export-policy registry entries for all six new columns | §4 | 4, 5 (Step 5), 16 (Step 4) |
 | RLS allowlists and cascade lists unchanged — and proved so | §4 | 4 (Step 6), 16 (Step 6), amendment 11 |
 | `upsertFilesystemScanState` conflict target becomes `(deviceId, scanPath)` | §4 | 6 |
 | Every scan-state and snapshot reader/writer takes `scanPath` | §4 | 6 (all), 9/10/11/12 (real paths) |
@@ -5190,17 +5944,19 @@ Expected: `CI Success` green. `gh pr checks` exits non-zero while checks are pen
 | Migration replay test, `db:check-drift`, `tenant-export-policy`, `tenantExportErasureRoundtrip`, `migrationRlsScope`, `rls-coverage`, route tests, web tests | §11 | 5, 16 |
 | Docs: the volumes part of `filesystem-analysis.mdx` | §11 | 15 |
 
+**Owed to W03 by this wave** (state it in the W03 plan, not just here): `2026-10-20-15xx00-filesystem-scan-path-not-null.sql` — `SET NOT NULL` on `device_filesystem_snapshots.scan_path` and `device_filesystem_scan_state.scan_path`, then `ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY USING INDEX device_filesystem_scan_state_device_path_uidx`; the matching Drizzle flip (`.notNull()` on both columns, `uniqueIndex` → `primaryKey({ name: 'device_filesystem_scan_state_pkey', … })`); dropping the `?? scanPath` fallbacks in `routes/devices/filesystem.ts` and `services/aiToolsFilesystem.ts`; and flipping Task 5's "leaves BOTH scan_path columns nullable" assertion to `NO`.
+
 **Deliberately NOT in this wave** (and where each lives): the `contentsOnly`/`permanent`/`cleanupGuard` dispatch payload, the rooted rule table, the per-volume recycle bin and the accumulator fixes → W01. Required `cleanupRunId`, `rejectedPaths`, the execute budget, the tab split and its finished panels, run history and retention, and removing `DeviceFilesystemTab.tsx` from `runActionAllowlist.ts` → W03. The native cleaner catalog and both `system_cleanup` command types → W04. The `system_cleanup` AI tool, every tier/registry/label/timeout entry, `actRevalidation`/`actVerify`, the built-in playbook, the lab proof and the remaining five docs pages → W05.
 
 ### Placeholder scan
 
 `grep -nE 'TBD|TODO|FIXME|similar to Task|handle edge cases|add validation'` over this document returns exactly two lines, both in this section's own quoting of the pattern and in the frontmatter:
-- `tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS`, which the plan contract requires verbatim until registration;
+- `tracking_issue: LanternOps/breeze#6326`, which the plan contract requires verbatim until registration;
 - this paragraph.
 
 Also present and deliberate: `<parent#>` / `<subissue#>` in the **Branch** line, the PR body's `Closes`, and the Global Constraints — the one placeholder pair the contract allows. `amendment 15` in amendment 13 and Task 16 Step 1 is an instruction to ADD an amendment if the migration names stop sorting last, not an unfilled slot.
 
-Every code step carries a complete code block. No step says "similar to" another; the repeated fragments (the device-access preamble, the `values({...})` shapes) are written out in full each time.
+Amendments now run 1–18; 15–18 carry the Codex quorum findings from spec §13 (#7, #8, #18 and the adjacent continuation-suppression defect), and the forward references in amendment 13 and Task 16 Step 1 point at amendment 19. Every code step carries a complete code block. No step says "similar to" another; the repeated fragments (the device-access preamble, the `values({...})` shapes) are written out in full each time.
 
 ### Type-consistency check
 
@@ -5208,8 +5964,11 @@ Every code step carries a complete code block. No step says "similar to" another
 - `normalizeScanPath(osType: unknown, path: string)` takes `unknown` for the OS so every caller can pass `device.osType` (`'windows' | 'macos' | 'linux'`), `(device as { osType?: unknown }).osType` (the route's loosely-typed device), or `deviceRow.osType` without a cast. `ScanPathOsType` is exported for callers that want the narrow type.
 - `saveFilesystemSnapshot(deviceId, orgId, trigger, scanPath, payload)` — `scanPath` at index 3, all scalars before the blob. The two positional destructures in `agents.test.ts` are updated in the same task (amendment 7).
 - `getLatestFilesystemCleanupSnapshot` now projects `{ id, scanPath, capturedAt, partial, cleanupCandidates }`. `buildCleanupPreview(snapshot)` needs only `{ id, cleanupCandidates }`, so the widened projection satisfies it structurally with no signature change.
+- Both `scanPath` columns are `text | null` in W02 (amendment 15), so `snapshot.scanPath` is `string | null`. Every read site uses `snapshot.scanPath ?? scanPath` — exact rather than a guess, because the row was SELECTed by that key — and W03's contract migration removes the need for it. `deviceFilesystemScanState.scanPath` is never read off a row in this wave, only queried by.
+- `scanGeneration` is `string | null` and is deliberately absent from `upsertFilesystemScanState`'s `updates` type: it is owned by `setFilesystemScanGeneration` and `claimFilesystemScanGeneration`, so the handler's final upsert cannot resurrect a generation it just claimed.
+- `ScanGenerationClaim` is a four-member string union; the handler branches on two of them (`superseded`, `already_applied`) and falls through on the other two, so adding a fifth member would not silently change behaviour but also would not be caught by the compiler — the four cases are pinned by tests in Tasks 6 and 11 instead.
 - `filesystemCleanupRunStatusEnum.enumValues` widens from three literals to four. Verified no exhaustive switch exists over it: the only consumers are `routes/devices/filesystem.ts:303`, `services/aiToolsFilesystem.ts:290` and `services/aiAgents/actRevalidation.ts:148`, each comparing against a single literal.
-- `deviceFilesystemScanState.deviceId` changes from `.primaryKey()` to `.notNull()`; both produce a non-nullable `string` in `$inferSelect`, so no consumer's type changes.
+- `deviceFilesystemScanState.deviceId` changes from `.primaryKey()` to `.notNull()`; both produce a non-nullable `string` in `$inferSelect`, so no consumer's type changes. The table now declares a `uniqueIndex` and no `primaryKey`, which Drizzle permits; `onConflictDoUpdate({ target: [deviceId, scanPath] })` emits the same `ON CONFLICT (device_id, scan_path)` either way, and Postgres infers a plain unique index exactly as it would a constraint (pinned by a live test in Task 5).
 
 ### Open questions for the reviewer
 

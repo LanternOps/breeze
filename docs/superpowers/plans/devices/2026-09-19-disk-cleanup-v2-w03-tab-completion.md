@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
+tracking_issue: LanternOps/breeze#6326
 ---
 # Disk Cleanup v2 W03: Tab Completion and Consolidation — Implementation Plan
 
@@ -7,11 +7,11 @@ tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
 
 **Goal:** Finish the Disk Cleanup tab so a tech can go select → execute → result → history without leaving it, make `cleanupRunId` mandatory on `cleanup-execute` so nothing is ever deleted that was not previewed, add the paginated cleanup-run history endpoints plus a daily retention sweep that stops the run table growing forever, and delete the duplicate disk-cleanup surface from File Manager so the concept has exactly one home.
 
-**Architecture:** No schema, no agent change. On the API, `cleanup-execute` stops inserting a second run row and instead *claims* the pinned `previewed` run (`status='running'`, W02's enum label) and finalises it in place, which makes one row the whole lifecycle of one cleanup; two new read routes (`GET /filesystem/cleanup-runs`, `GET /filesystem/cleanup-runs/:runId`) are thin Hono glue over a new `services/filesystemCleanupRuns.ts` that owns the keyset query and the cursor codec; a new daily BullMQ worker (`jobs/filesystemCleanupRunRetention.ts`) deletes abandoned previews at 7 days and trims the candidates blob out of finished runs at 90 days. On the web, the 958-line `DeviceFilesystemTab.tsx` is split into `components/devices/filesystem/` — pure utils, two data hooks that each own an `AbortController`, and three presentational panels — and the tab becomes a composer that mounts VolumePicker (W02) → scan controls → snapshot panels → cleanup panel → run history. File Manager keeps a button that navigates to `/devices/:id#filesystem` and nothing else.
+**Architecture:** No new table, no new column, no agent change — the one migration is W02's expand/contract closing (`scan_path` to NOT NULL, scan state keyed by `(device_id, scan_path)`). On the API, `cleanup-execute` becomes a self-managed-context route that stops inserting a second run row and instead *claims* the pinned `previewed` run in a committed short transaction (`status='running'`, W02's enum label), dispatches outside any transaction, and finalises it in a second one, which makes one row the whole lifecycle of one cleanup; two new read routes (`GET /filesystem/cleanup-runs`, `GET /filesystem/cleanup-runs/:runId`) are thin Hono glue over a new `services/filesystemCleanupRuns.ts` that owns the keyset query and the cursor codec; a new daily BullMQ worker (`jobs/filesystemCleanupRunRetention.ts`) deletes abandoned previews at 7 days and trims the candidates blob out of finished runs at 90 days. On the web, the 958-line `DeviceFilesystemTab.tsx` is split into `components/devices/filesystem/` — pure utils, two data hooks that each own an `AbortController`, and three presentational panels — and the tab becomes a composer that mounts VolumePicker (W02) → scan controls → snapshot panels → cleanup panel → run history. File Manager keeps a button that navigates to `/devices/:id#filesystem` and nothing else.
 
 **Tech Stack:** TypeScript (Hono API, Drizzle ORM over postgres-js, BullMQ), React 19 islands under Astro, Vitest (API unit + web jsdom), i18next with 8 locale catalogs, Starlight MDX docs.
 
-**Spec:** `docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md` — §2 defect 4 and the preview-row-retention half of defect 10; §3 row W03; §5.2 (required `cleanupRunId`, `GET /filesystem/cleanup-runs?limit=&cursor=`, `GET /filesystem/cleanup-runs/:runId`, the daily retention job); §8 in full **except** the VolumePicker / `useFilesystemVolumes` (W02) and `SystemCleanupPanel.tsx` (W04); §11's web + API bullets for those items; §11's docs bullet, limited to the "finished tab" and run-history parts of `apps/docs/src/content/docs/features/filesystem-analysis.mdx`.
+**Spec:** `docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md` — §13 findings #2, #5, #7, #13 and #16 (the Codex `xhigh` quorum table, all five owned by W03); §2 defect 4 and the preview-row-retention half of defect 10; §3 row W03; §5.2 (required `cleanupRunId`, `GET /filesystem/cleanup-runs?limit=&cursor=`, `GET /filesystem/cleanup-runs/:runId`, the daily retention job); §8 in full **except** the VolumePicker / `useFilesystemVolumes` (W02) and `SystemCleanupPanel.tsx` (W04); §11's web + API bullets for those items; §11's docs bullet, limited to the "finished tab" and run-history parts of `apps/docs/src/content/docs/features/filesystem-analysis.mdx`.
 
 **Branch:** `feature/<parent#>-disk-cleanup-v2/wave-<subissue#>`
 
@@ -25,7 +25,7 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 
 2. **The spec's retention rule ("trims `plan.candidates`") does not match the stored JSON shape.** The preview route writes `plan = { snapshotId, categories, preview }` (`routes/devices/filesystem.ts:298-302`) and `readPlanPreviewCandidates` reads `plan.preview.candidates` (`services/filesystemAnalysis.ts:384-391`). There is no `plan.candidates`. The retention job therefore trims the JSON path `{preview,candidates}`.
 
-3. **`cleanup-execute` is changed from INSERT-a-second-row to claim-and-finalise the pinned run.** Today preview inserts one row (`filesystem.ts:292-305`) and execute inserts *another* (`filesystem.ts:423-441`), so one cleanup leaves two rows and the executed row's `plan` carries no candidates at all — which makes the spec's own 90-day trim a no-op and makes defect 10's "preview rows never pruned" strictly worse (the candidates blob would be stored twice if the executed row copied it). Claiming the pinned row instead gives: one row per cleanup, a meaningful trim, replay protection (`WHERE status='previewed'` is an atomic claim, so a double-submitted Execute cannot delete twice), and the same insert-then-update lifecycle §5.3 specifies for W04's system runs — which is what "record into the same run table" (§1) is supposed to mean. This is the only behaviour in this wave the spec does not literally state; it is recorded here rather than done silently.
+3. **`cleanup-execute` is changed from INSERT-a-second-row to claim-and-finalise the pinned run, in three separate transactions.** Today preview inserts one row (`filesystem.ts:292-305`) and execute inserts *another* (`filesystem.ts:423-441`), so one cleanup leaves two rows and the executed row's `plan` carries no candidates at all — which makes the spec's own 90-day trim a no-op and makes defect 10's "preview rows never pruned" strictly worse (the candidates blob would be stored twice if the executed row copied it). Claiming the pinned row instead gives: one row per cleanup, a meaningful trim, replay protection (`WHERE status='previewed'` is an atomic claim, so a double-submitted Execute cannot delete twice), and the same insert-then-update lifecycle §5.3 specifies for W04's system runs — which is what "record into the same run table" (§1) is supposed to mean. This is the only behaviour in this wave the spec does not literally state; it is recorded here rather than done silently.
 
 4. **The claim uses W02's `'running'` enum label, and the retention job ages stale `kind='files'` runs out of it.** A `running` row whose API process died mid-dispatch would otherwise sit in the history forever (retention only deletes `previewed` and only trims `executed`/`failed`). The retention job therefore also fails `kind='files'` runs stuck in `running` for more than 24 h to `failed` with `error: 'interrupted'`. It is scoped to `kind='files'` on purpose: W04's `system_cleanup_run` legitimately stays `running` for up to its 2 h timeout and owns its own terminal transition.
 
@@ -57,25 +57,47 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 
 18. **Cross-wave alignment pass (2026-09-19): this plan was corrected to the names W01 and W02 actually produce.** Four seams had drifted because the five plans were written in parallel. (a) **W01's execute contract**: the route holds `outcome` from `runCleanupExecution`, persists `executedActions` as the envelope `{ partial, budgetMs, actions }` (W01 amendment 8) and answers through `okJson`/`failJson` with `counts`, `partial` and `budgetMs` in `data` — Task 1's Step 5 previously wrote a bare `actions` array and dropped all three fields, which would have blanked FileManager's amber panel and the result panel's truncation notice. `CleanupExecuteResult` (Task 6) gains `partial`/`budgetMs`/`counts` to match. (b) **W02's volume seam**: `useFilesystemVolumes(deviceId)` returns `{ volumes, loading, error?, reload }` and holds **no** selection, and `VolumePicker` takes `selectedScanPath: string` + `loading` + `error` — not `{ selected, select }`. Task 13's composer therefore owns `selectedScanPath` state seeded from `osRootScanPath(osType)`, exactly as W02's own mount did before the split. (c) **`runActionAllowlist.ts`**: W01 Task 12 removes the tab from `RUN_ACTION_MIGRATION_BACKLOG` and bumps the count `146 → 147`; this wave only adds `filesystem/CleanupPanel.tsx` (`147 → 148`). (d) **Locales**: W01 Task 13 deletes `be1DiskCleanupIntelligence` and `text`; Task 13 here only re-values `scanRunning`. (e) **`actionCount` reads both shapes** — Task 2's SQL counted only a bare `jsonb` array, so every post-W01 run would have reported `0`; it now also unwraps the envelope's `actions` key. (f) **W02 Task 10's `scanPath` on the execute response** is preserved by the rewritten handler — it now comes from the claimed row rather than being re-derived.
 
+19. **The self-managed-context registry is `apps/api/src/middleware/selfManagedDbContextRoutes.ts`, not a list inside `db/index.ts`.** `db/index.ts:642` is `withDbAccessContext` itself; the opt-out list is `SELF_MANAGED_DB_CONTEXT_ROUTES` (an array of `{ method, pattern }` matched against `c.req.path` *including* the `/api/v1` prefix), consulted by `authMiddleware` at `middleware/auth.ts:802` and by the portal's at `routes/portal/auth.ts:364`, with a predicate test at `middleware/selfManagedDbContextRoutes.test.ts`. The per-phase runner every registered handler uses is `withAuthDbAccessContext(auth, fn)` (`auth.ts:536` — `runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn))`). The file's own header is explicit that `runOutsideDbContext` alone does **not** help: it re-routes the AsyncLocalStorage `db` lookup and leaves the middleware's outer `baseDb.transaction` open. Registration is the only way to not have that transaction at all.
+
+20. **The dispatched `file_delete` payload has to carry `cleanupRunId`, which spec §5.2's payload shape omits.** §13 #13 requires a `commandCancelPropagation` branch that cancels the owning run, and that module is handed only `{ commandId, type, payload }` (`commandCancelPropagation.ts:32-36`) — with no run id in the payload there is nothing to key on. Task 1 adds the field (the agent ignores unknown keys, `GetPayloadBool`/`GetPayloadString` defaults) and Task 17 consumes it.
+
+21. **`executed_actions` is a JSON ARRAY, so a `lateResults` key cannot live on it.** The column is `jsonb('executed_actions').notNull().default([])` (`db/schema/filesystem.ts:51`) and Task 2's `actionCount` calls `jsonb_array_length` on it. A late result is therefore appended as an ordinary array entry tagged `lateResult: true` (plus `commandId` and `receivedAt`) rather than nested under a `lateResults` key — same information, no schema change, and `actionCount` keeps working. Flagged here rather than done silently, because the review text asked for `executed_actions.lateResults[]`.
+
+22. **The preview TTL is a route-level rule, not a SQL predicate.** `CLEANUP_PREVIEW_TTL_HOURS = 24` is checked after the claim (so an expired run is not left dangling as `previewed` for another request to grab mid-check) and the claim is released back to `previewed` on the expiry path. The integration test pins that the database alone does **not** enforce it, so the route check is load-bearing rather than belt-and-braces.
+
+23. **`pinDiskCleanup` currently authorises against "the newest previewed run", which is the bug §13 #16 names.** Verified at `services/aiAgents/actRevalidation.ts:142-151`: it selects the newest `status='previewed'` row for `(deviceId, orgId)` and validates the model's paths against *that* plan. A second preview between the agent's preview and its execute silently swaps the authorised plan. Task 19 makes the act target carry `cleanupRunId` and looks the run up by id.
+
+24. **Playbook variables are substituted exactly once, before the first step runs.** `playbookActExecutor.ts:805` calls `resolvePlaybookSteps(row.steps, variables, run.deviceId)` and hands the fully-resolved array to `runPlaybookSteps`, so a `{{cleanupRunId}}` token in the execute step can only ever be filled from the model's own `execute_playbook` input — never from the preview step that precedes it. Task 20 adds a late, per-step re-resolution against a closed allowlist of harvested outputs, preserving the #3826 `deviceId` hardening (`:338-366`) on the second pass.
+
+25. **The AI lane needs the same claim/finalise treatment, and it is W03's now.** Amendment 10 recorded that `services/aiToolsFilesystem.ts:255-370` runs its own lane and is therefore *not broken* by the route's required `cleanupRunId`. §13 #16 supersedes the "leave it to W05" half of that: the executor and act-mode pinning move into this wave so the requirement and its consumers ship together. Tasks 18-20 do that; amendment 10's factual claim (the tool does not call the route) still holds and is why they are parallel changes rather than caller updates.
+
+26. **The migration filename must sort after two `2026-10-20-150000-*` files already on `origin/main`.** Verified 2026-09-19: `origin/main` carries `2026-10-20-150000-bare-metal-recoveries-dr-link.sql` and `2026-10-20-150000-partner-api-contract-scopes.sql`, so the spec's "the newest file is `…-140000-tickets-partner-org-composite-fk.sql`" is stale. `2026-10-20-160200-filesystem-scan-path-not-null.sql` sorts after both and after W02's `150100`. Task 16 re-checks with `scripts/check-migration-naming.sh --against-ref origin/main` before committing, because the pre-push hook re-runs it against a moving `origin/main`.
+
+27. **W03 now ships a migration, so its Global Constraints change.** The "no schema, no migration" line in the original draft was true of the spec's W03 row; §13 #7 moves the `SET NOT NULL` contraction here. The wave still adds no new table and no new **column**, so the RLS allowlists, the cascade lists and `CORE_TENANT_EXPORT_POLICY` are all unchanged — the export policy fires on a new column, and nullability is not one.
+
 ---
 
 ## Global Constraints
 
-- **No schema, no migration, no agent change.** Spec §3 row W03: Schema = none, Agent release = no. Nothing in this wave may touch `apps/api/migrations/`, `apps/api/src/db/schema/`, or `agent/`. `pnpm db:check-drift` must stay clean because nothing moved.
-- **No new tenant-scoped table**, so no `rls-coverage.integration.test.ts` allowlist change, no `CORE_ORG_CASCADE_DELETE_ORDER` entry, and no `CORE_TENANT_EXPORT_POLICY` entry. Those contracts fire on a new table or a new **column**; this wave adds neither. (`device_filesystem_cleanup_runs` is already registered in all of them.)
+- **No agent change.** Spec §3 row W03: Agent release = no. Nothing in this wave may touch `agent/`.
+- **Exactly one migration**, `2026-10-20-160200-filesystem-scan-path-not-null.sql` (Task 16, spec §13 #7 — the contract half of W02's expand/contract). It is idempotent, elects `SELECT set_config('breeze.scope','system',true)` before its first write, reports every repaired row count through `RAISE WARNING`, and opens no inner `BEGIN;`. `pnpm db:check-drift` must be clean after the Drizzle mirror is updated in the same task.
+- **No new tenant-scoped table and no new column**, so no `rls-coverage.integration.test.ts` allowlist change, no `CORE_ORG_CASCADE_DELETE_ORDER` entry, and no `CORE_TENANT_EXPORT_POLICY` entry. Those contracts fire on a new table or a new **column**; changing a column's nullability and a table's primary key is neither. (`device_filesystem_cleanup_runs`, `device_filesystem_snapshots` and `device_filesystem_scan_state` are already registered in all of them.)
+- **`cleanup-execute` holds no DB transaction across the agent round-trip** (spec §13 #5). It is registered in `middleware/selfManagedDbContextRoutes.ts` and opens its own short `withAuthDbAccessContext` blocks around the claim and the finalise. Two contracts follow from that and are tested, not assumed: a committed claim is visible to a second connection, and a finalise that throws leaves the row `running` rather than rolling it back to `previewed`.
+- **A destructive step never runs against a plan older than `CLEANUP_PREVIEW_TTL_HOURS = 24`** (spec §13 #2), on the route, in the AI tool, and in act-mode revalidation — one constant, three enforcement points, each with its own red test.
 - **Every web mutation goes through `runAction`** (`apps/web/src/lib/runAction.ts`), with the documented catch shape: `if (err instanceof ActionError && err.status === 401) return;` then `if (!(err instanceof ActionError)) showToast({ type: 'error', … })`. `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` must pass with the tab in `TARGET_GLOBS` and out of `RUN_ACTION_MIGRATION_BACKLOG` — W01 did that move; this wave adds `filesystem/CleanupPanel.tsx` (alignment 18).
 - **Every poll owns an `AbortController` tied to unmount** (spec §8; defect 9 is "poll loop survives unmount"). No `setTimeout` chain may outlive the component that started it.
 - **`key=` props use a stable id**, never an optional `path` (spec §8).
 - **All new strings exist in all 8 locales** — `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/` — with real translations, not English copies: `lib/i18n/localeParity.test.ts` pins the key sets and `lib/i18n/translationCoverage.test.ts` fails on exact-English duplicates past each namespace's reviewed baseline.
 - **File-size guideline:** each new file under `components/devices/filesystem/` stays under ~300 lines; `DeviceFilesystemTab.tsx` ends the wave as a composer, not a 958-line component.
 - **Test placement is alongside source** (`Foo.tsx` → `Foo.test.tsx`, `foo.ts` → `foo.test.ts`).
-- **Test commands:** API `cd apps/api && npx vitest run <path>`; web `cd apps/web && npx vitest run <path>`. **Never** `pnpm --filter <pkg> test -- --run <path>` — pnpm forwards the literal `--`, vitest stops flag parsing there, and the whole suite runs in watch mode. Vitest path filters are plain substrings, so sibling files are listed explicitly.
+- **Test commands:** API `cd apps/api && npx vitest run <path>`; web `cd apps/web && npx vitest run <path>`; the two suites that need a real database run under their own config — `cd apps/api && npx vitest run --config vitest.integration.config.ts <path>` after `pnpm test-stack up`, and `pnpm test-stack down` when finished (nothing reaps it for you). **Never** `pnpm --filter <pkg> test -- --run <path>` — pnpm forwards the literal `--`, vitest stops flag parsing there, and the whole suite runs in watch mode. Vitest path filters are plain substrings, so sibling files are listed explicitly.
 - **Typecheck commands** (exactly what CI's `typecheck` job runs): API — `pnpm exec tsc --noEmit --project apps/api/tsconfig.json` from the repo root; Web — `cd apps/web && pnpm exec astro check`.
-- **Rigor is medium.** This wave touches a destructive device action (`file_delete` dispatch) but adds no table, no RLS surface and no migration: red-first on every task, typecheck, the affected suites per task, then the full `apps/api` and `apps/web` unit suites before the PR. No RLS or integration contract suite is required — but the four registry/contract suites named in Task 5 are, because a new BullMQ Worker trips all of them.
+- **Rigor is high for Tasks 1, 16, 17 and 19, medium elsewhere.** Those four touch a destructive device action's transaction boundary, a schema contraction, a cancel path shared with org-move, and the unattended-execution authorisation gate. Red-first everywhere; the full `apps/api` and `apps/web` unit suites plus the integration suites named in Tasks 1 and 16 before the PR.
+- **Rigor was medium** This wave touches a destructive device action (`file_delete` dispatch) but adds no table, no RLS surface and no migration: red-first on every task, typecheck, the affected suites per task, then the full `apps/api` and `apps/web` unit suites before the PR. No RLS or integration contract suite is required — but the four registry/contract suites named in Task 5 are, because a new BullMQ Worker trips all of them.
 - Branch `feature/<parent#>-disk-cleanup-v2/wave-<subissue#>`; PR body contains `Closes #<subissue#>`. `get_feature_status` before starting the wave, `start_wave` when the branch exists.
 - Commit after every task with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
-**Why this task order.** The API contract comes first (Tasks 1–5) so the web work has something real to type against and so the wave can be reviewed in two halves. Inside the web half, the leaves come before the trunk: pure utils (6), then the locale keys every component renders (7), then the two hooks (8, 9), then the three panels (10, 11, 12), then the MOUNT task (13) that wires them into the page and proves the composition renders — past waves shipped green components that were never mounted, so 13 is not optional and its page-level test is the acceptance criterion for §8. File Manager consolidation (14) comes after the tab is real, so the link it adds points at something finished. Docs (15) come last. The repo compiles and its suites pass after every task.
+**Why this task order.** Tasks 1–15 are the original delivery order; Tasks 16–20 were added after the Codex `xhigh` quorum review (spec §13) and are appended rather than interleaved so the earlier task numbers stay stable for anyone already reading this plan. Their real dependencies are: **Task 16** (the `SET NOT NULL` contraction) is independent of everything else here and can be done at any point once W02 is *deployed*, not merely merged; **Task 17** depends on Task 1 (it consumes the `cleanupRunId` Task 1 puts in the dispatch payload) and on Task 2 (it extends that service); **Tasks 18–20** must land in the SAME PR as Task 1 — that is the whole point of §13 #16, since requiring `cleanupRunId` without them breaks the AI executor and act-mode pinning. Within the original block: the API contract comes first (Tasks 1–5) so the web work has something real to type against and so the wave can be reviewed in two halves. Inside the web half, the leaves come before the trunk: pure utils (6), then the locale keys every component renders (7), then the two hooks (8, 9), then the three panels (10, 11, 12), then the MOUNT task (13) that wires them into the page and proves the composition renders — past waves shipped green components that were never mounted, so 13 is not optional and its page-level test is the acceptance criterion for §8. File Manager consolidation (14) comes after the tab is real, so the link it adds points at something finished. Docs (15) come last. The repo compiles and its suites pass after every task.
 
 ---
 
@@ -99,22 +121,121 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 | `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` | `TARGET_GLOBS` += `filesystem/CleanupPanel.tsx`, count `147 → 148` (Task 13; the backlog removal is W01's) |
 | `apps/web/src/components/remote/FileManager.tsx` (+ `.test.tsx`), `apps/web/src/locales/*/remote.json` | disk section removed, "Open Disk Cleanup" link added, `fileManager.disk.*` reduced to 3 keys (Task 14) |
 | `apps/docs/src/content/docs/features/filesystem-analysis.mdx`, `apps/api/src/data/docsIndex.json` | finished-tab + run-history docs, index regenerated (Task 15) |
+| `apps/api/src/middleware/selfManagedDbContextRoutes.ts` (+ `.test.ts`) | `cleanup-execute` opts out of the ambient request transaction (Task 1) |
+| `apps/api/src/__tests__/integration/filesystemCleanupExecute.integration.test.ts` | two-connection claim visibility + crash boundary, real Postgres (Task 1) |
+| `apps/api/migrations/2026-10-20-160200-filesystem-scan-path-not-null.sql`, `apps/api/src/db/schema/filesystem.ts` | `scan_path` NOT NULL, `(device_id, scan_path)` primary key, Drizzle mirror (Task 16) |
+| `apps/api/src/services/commandCancelPropagation.ts` (+ `.test.ts`) | org-move cancels an in-flight cleanup run (Task 17) |
+| `apps/api/src/services/aiToolSchemas.ts`, `apps/api/src/services/aiToolsFilesystem.ts` (+ `cleanupRunPin.test.ts`) | AI `disk_cleanup` requires a pinned run and carries it from its own preview (Task 18) |
+| `apps/api/src/services/aiAgents/actManifest.ts`, `actRevalidation.ts`, `actVerify.ts` | act target carries `cleanupRunId`; `pinDiskCleanup` looks the run up by id (Task 19) |
+| `apps/api/src/services/aiAgents/playbookActExecutor.ts`, `apps/api/src/services/builtInPlaybooks.ts` | playbook variables resolve after the step that produces them (Task 20) |
 
 ---
 
-### Task 1: `cleanupRunId` becomes required, and execute claims the pinned run
+### Task 1: `cleanup-execute` becomes a self-managed-context route that claims, dispatches, then finalises
+
+Spec §13 finding #5: today the claim and the command insert happen inside the ambient request transaction, so a concurrent execute cannot see the claim, and a crash after the files are gone rolls the row back to `previewed` — the deletion has happened and the record says it has not. Finding #2 adds a preview TTL. Both land here.
 
 **Files:**
 - Modify: `apps/api/src/routes/devices/filesystem.ts` (schema `:48-54`; execute handler `:331-471`)
-- Modify (Test): `apps/api/src/routes/devices/filesystem.test.ts` (`:190-232` is the case that must change; new cases appended before the site-scope cases at `:344`)
+- Modify: `apps/api/src/middleware/selfManagedDbContextRoutes.ts` (`SELF_MANAGED_DB_CONTEXT_ROUTES`, before the closing `];` at `:263`)
+- Modify (Test): `apps/api/src/middleware/selfManagedDbContextRoutes.test.ts` (the `MATCH` / `NO_MATCH` tables)
+- Modify (Test): `apps/api/src/routes/devices/filesystem.test.ts` (`:190-232` is the case that must change; new cases appended before the site-scope cases)
+- Create (Test): `apps/api/src/__tests__/integration/filesystemCleanupExecute.integration.test.ts`
 
 **Interfaces:**
-- Consumes (from W01, assumed merged, **with these exact names**): the execute handler calls `runCleanupExecution` (`services/filesystemCleanupExecution.ts`) with `budgetMs: CLEANUP_EXECUTE_BUDGET_MS` and holds its result in a local `outcome` — `outcome.actions` (per-path `status ∈ 'completed' | 'failed' | 'skipped_locked' | 'rejected' | 'skipped_budget'`), `outcome.rejectedPaths`, `outcome.bytesReclaimed`, `outcome.partial`, `outcome.budgetMs` — plus the derived `counts` record and `dispatchedPaths` array, and the `okJson`/`failJson` envelope helpers W01 Task 10 introduced in this file. It persists `executedActions` as W01's **envelope** `{ partial, budgetMs, actions }` (W01 amendment 8), never a bare array. This task changes **only** three things in that handler — the body schema, the pinned-run lookup, and the persistence call — and leaves W01's dispatch, budget, counts and response fields exactly as they stand.
+- Consumes (from W01, assumed merged — see amendment 18a for the names): `runCleanupExecution` performs the bounded dispatch (`permanent`, `cleanupGuard`, `contentsOnly`, `CLEANUP_EXECUTE_BUDGET_MS`) and returns the envelope `{ partial, budgetMs, actions }` plus `counts`, with per-path `status ∈ 'completed' | 'failed' | 'skipped_locked' | 'rejected' | 'skipped_budget'` and `rejectedPaths`; `okJson` / `failJson` are W01's response helpers; `executed_actions` is stored as that envelope. This task changes the body schema, the candidate resolution, the transaction shape and the persistence call, and leaves W01's dispatch/budget code as it stands. If W01 reshaped the block, apply the same changes to its version — the red tests in Step 1 are the contract, not the diff.
 - Consumes (from W02, assumed merged): `filesystemCleanupRunStatusEnum` includes `'running'`; `deviceFilesystemCleanupRuns` has `scanPath` and `kind` columns.
-- Consumes (unchanged): `readPlanPreviewCandidates(plan: unknown): FilesystemCleanupCandidate[]` from `services/filesystemAnalysis.ts`.
-- Produces: `POST /devices/:id/filesystem/cleanup-execute` with `cleanupRunId` required; `409 { success:false, error:'cleanup_run_not_previewable', data:{ cleanupRunId, status } }` when the pinned run is not `previewed`; the pinned row updated in place to `executed`/`failed`.
+- Consumes: `withAuthDbAccessContext(auth, fn)` from `../../middleware/auth` (`auth.ts:536` — `runOutsideDbContext` → `withDbAccessContext(dbAccessContextFromAuth(auth), fn)`); `isSelfManagedDbContextRoute` from `../../middleware/selfManagedDbContextRoutes`, consulted by `authMiddleware` at `auth.ts:802`.
+- Produces:
+  - `POST /devices/:id/filesystem/cleanup-execute` registered as a **self-managed-context route**, so `authMiddleware` opens no ambient request transaction for it.
+  - `cleanupRunId` required.
+  - `409 { success:false, error:'run_not_previewed', data:{ cleanupRunId, status } }` when the claim matches no row and the run exists in a non-`previewed` state.
+  - `409 { success:false, error:'preview_expired', data:{ cleanupRunId, requestedAt, ttlHours } }` when the pinned run is older than `CLEANUP_PREVIEW_TTL_HOURS = 24`.
+  - `export const CLEANUP_PREVIEW_TTL_HOURS = 24;` from `routes/devices/filesystem.ts`.
+  - Every dispatched `file_delete` payload carries `cleanupRunId`, so `commandCancelPropagation` (Task 17) can find the owning run.
 
-- [ ] **Step 1: Write the failing tests** — in `apps/api/src/routes/devices/filesystem.test.ts`, replace the whole `it('executes cleanup...')` case that currently posts without a `cleanupRunId` with the five cases below, and keep every other case as-is:
+- [ ] **Step 1: Write the failing unit tests** — in `apps/api/src/routes/devices/filesystem.test.ts`, replace the `it('executes cleanup...')` case that posts without a `cleanupRunId` with the cases below, and keep every other case as-is.
+
+**Before the cases below**, add the two helpers they share. `runCleanupExecution` is W01's dispatch seam (amendment 18a), so it is what these tests stub and assert on — not `executeCommand`, which W01 moved behind it:
+
+```ts
+import { runCleanupExecution } from '../../services/filesystemCleanupExecution';
+
+/** W01's envelope, built from a per-path action list. */
+const executionOutcome = (actions: Array<Record<string, unknown>>) => ({
+  partial: false,
+  budgetMs: 240_000,
+  actions,
+  counts: { completed: 0, failed: 0, skipped_locked: 0, rejected: 0, skipped_budget: 0, ...Object.fromEntries(
+    actions.reduce((m, a) => m.set(a.status as string, ((m.get(a.status as string) ?? 0) as number) + 1), new Map()),
+  ) },
+  rejectedPaths: [],
+  bytesReclaimed: actions.filter((a) => a.status === 'completed').reduce((n, a) => n + (a.sizeBytes as number), 0),
+});
+```
+
+Add `vi.mock('../../services/filesystemCleanupExecution', () => ({ runCleanupExecution: vi.fn() }));` alongside the file's other mocks, and take the module path and the exported name from W01's own suite rather than this plan if they differ.
+
+First extend the two mocks at the top of the file. `db` gains `update`:
+
+```ts
+vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  db: {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+  }
+}));
+```
+
+the schema mock gains the columns the claim reads:
+
+```ts
+vi.mock('../../db/schema', () => ({
+  deviceDisks: {
+    deviceId: 'deviceId',
+    usedPercent: 'usedPercent',
+  },
+  deviceFilesystemCleanupRuns: {
+    id: 'id',
+    deviceId: 'deviceId',
+    plan: 'plan',
+    status: 'status',
+    scanPath: 'scanPath',
+    kind: 'kind',
+    requestedAt: 'requestedAt',
+  },
+}));
+```
+
+and the auth mock gains the per-phase runner the handler now uses:
+
+```ts
+vi.mock('../../middleware/auth', () => ({
+  authMiddleware: vi.fn((c: any, next: any) => {
+    c.set('auth', {
+      user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+      scope: 'organization',
+      orgId: 'org-123',
+      partnerId: null,
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: (orgId: string) => orgId === 'org-123'
+    });
+    return next();
+  }),
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Records the phase boundaries: the assertion that matters is that the
+  // dispatch happens BETWEEN two of these, not inside one.
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+```
+
+Then the cases (importing `withAuthDbAccessContext` alongside the other mocked symbols):
 
 ```ts
   it('rejects cleanup-execute with no cleanupRunId (W03: pinning is mandatory)', async () => {
@@ -127,31 +248,29 @@ Every spec claim this wave leans on was re-verified against the working tree on 
     });
 
     expect(res.status).toBe(400);
-    // The fallback branch is gone: no snapshot may be consulted, and nothing
-    // may be deleted, when the caller did not pin a previewed run.
     expect(getLatestFilesystemCleanupSnapshot).not.toHaveBeenCalled();
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(runCleanupExecution).not.toHaveBeenCalled();
   });
 
-  it('claims the pinned run before dispatching and finalises the SAME row', async () => {
+  it('claims the run in a COMMITTED context, dispatches OUTSIDE any context, finalises in another', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
     const runId = '22222222-2222-2222-2222-222222222222';
 
-    // The claim is an UPDATE ... WHERE status='previewed' RETURNING, so the
-    // route reads the plan off the claim, not off a prior SELECT.
-    const claimReturning = vi.fn().mockResolvedValue([
-      { id: runId, plan: { preview: { candidates: [] } }, scanPath: 'C:\\' },
-    ]);
-    const finalReturning = vi.fn().mockResolvedValue([{ id: runId }]);
+    const claimReturning = vi.fn().mockResolvedValue([{
+      id: runId,
+      plan: { preview: { candidates: [] } },
+      scanPath: 'C:\\',
+      requestedAt: new Date(),
+    }]);
     const setMock = vi.fn()
       .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: claimReturning }) })
-      .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: finalReturning }) });
+      .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: runId }]) }) });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
 
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({ status: 'completed' } as never);
+    vi.mocked(runCleanupExecution).mockResolvedValue(executionOutcome([{ path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, status: 'completed' }]) as never);
 
     const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
       method: 'POST',
@@ -161,33 +280,57 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.success).toBe(true);
-    // The pinned id comes back — NOT a freshly inserted second run.
     expect(body.data.cleanupRunId).toBe(runId);
-    expect(body.data.bytesReclaimed).toBe(4096);
     expect(db.insert).not.toHaveBeenCalled();
-    // Claim first (status running), finalise second (status executed).
+
+    // Exactly two DB phases, and the dispatch is between them. A single
+    // withAuthDbAccessContext wrapping the whole handler is the bug (§13 #5):
+    // the claim would be invisible to a concurrent request until the response.
+    expect(vi.mocked(withAuthDbAccessContext)).toHaveBeenCalledTimes(2);
+    const [claimPhase, finalisePhase] = vi.mocked(withAuthDbAccessContext).mock.invocationCallOrder;
+    const [dispatch] = vi.mocked(runCleanupExecution).mock.invocationCallOrder;
+    expect(claimPhase).toBeLessThan(dispatch);
+    expect(dispatch).toBeLessThan(finalisePhase);
     expect(setMock.mock.calls[0][0]).toMatchObject({ status: 'running' });
     expect(setMock.mock.calls[1][0]).toMatchObject({ status: 'executed', bytesReclaimed: 4096 });
-    expect(setMock.mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(executeCommand).mock.invocationCallOrder[0],
-    );
   });
 
-  it('answers 409 and deletes nothing when the pinned run is no longer previewed', async () => {
+  it('carries the cleanupRunId into every file_delete payload', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
     const runId = '22222222-2222-2222-2222-222222222222';
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn()
+        .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: runId, plan: {}, scanPath: '/', requestedAt: new Date() }]) }) })
+        .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: runId }]) }) }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
+    ] as never);
+    vi.mocked(runCleanupExecution).mockResolvedValue(executionOutcome([{ path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, status: 'completed' }]) as never);
 
-    // The claim matches no row (already executed, or a concurrent submit won).
+    await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: runId }),
+    });
+
+    // Without this, an org-move that cancels the queued command has no way to
+    // find the run it belonged to (Task 17).
+    const [args] = vi.mocked(runCleanupExecution).mock.calls[0]!;
+    expect(args).toMatchObject({ payloadExtras: { cleanupRunId: runId } });
+  });
+
+  it('answers 409 run_not_previewed and deletes nothing when the claim matches no row', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    const runId = '22222222-2222-2222-2222-222222222222';
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
       }),
     } as never);
-    // The follow-up read that explains WHY finds the row in a terminal state.
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ status: 'executed' }]) }),
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ status: 'running' }]) }),
       }),
     } as never);
 
@@ -199,10 +342,38 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 
     expect(res.status).toBe(409);
     const body = await res.json();
-    expect(body.success).toBe(false);
-    expect(body.error).toBe('cleanup_run_not_previewable');
-    expect(body.data).toMatchObject({ cleanupRunId: runId, status: 'executed' });
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(body.error).toBe('run_not_previewed');
+    expect(body.data).toMatchObject({ cleanupRunId: runId, status: 'running' });
+    expect(runCleanupExecution).not.toHaveBeenCalled();
+  });
+
+  it('answers 409 preview_expired for a run older than the TTL, and releases the claim', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    const runId = '22222222-2222-2222-2222-222222222222';
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const releaseSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const setMock = vi.fn()
+      .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: runId, plan: { preview: { candidates: [] } }, scanPath: '/', requestedAt: stale }]) }) })
+      .mockImplementationOnce(releaseSet);
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
+    ] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: runId }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('preview_expired');
+    expect(body.data).toMatchObject({ cleanupRunId: runId, ttlHours: 24 });
+    expect(runCleanupExecution).not.toHaveBeenCalled();
+    // The claim is released so the operator can still see the run as a preview
+    // and the retention sweep does not have to rescue it.
+    expect(setMock.mock.calls[1][0]).toMatchObject({ status: 'previewed' });
   });
 
   it('answers 404 when the pinned run does not exist for this device', async () => {
@@ -228,23 +399,48 @@ Every spec claim this wave leans on was re-verified against the working tree on 
     });
 
     expect(res.status).toBe(404);
-    expect(executeCommand).not.toHaveBeenCalled();
+    expect(runCleanupExecution).not.toHaveBeenCalled();
+  });
+
+  it('leaves the row RUNNING when the finaliser throws after the files are gone', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    const runId = '22222222-2222-2222-2222-222222222222';
+    const setMock = vi.fn()
+      .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: runId, plan: {}, scanPath: '/', requestedAt: new Date() }]) }) })
+      .mockImplementationOnce(() => { throw new Error('connection reset'); });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
+    ] as never);
+    vi.mocked(runCleanupExecution).mockResolvedValue(executionOutcome([{ path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, status: 'completed' }]) as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: runId }),
+    });
+
+    // The deletion HAPPENED. The response must say so rather than 200-ing, and
+    // the row must stay `running` — never roll back to `previewed`, which would
+    // re-offer an already-deleted candidate set. Retention sweeps it to
+    // `failed` after 24h (Task 4).
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe('cleanup_finalize_failed');
+    expect(setMock.mock.calls.some(([value]: [Record<string, unknown>]) => value.status === 'previewed')).toBe(false);
   });
 
   it('releases the claim back to failed when every action fails', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
     const runId = '22222222-2222-2222-2222-222222222222';
-    const claimReturning = vi.fn().mockResolvedValue([
-      { id: runId, plan: { preview: { candidates: [] } }, scanPath: '/' },
-    ]);
     const setMock = vi.fn()
-      .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: claimReturning }) })
+      .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: runId, plan: {}, scanPath: '/', requestedAt: new Date() }]) }) })
       .mockReturnValueOnce({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: runId }]) }) });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
     vi.mocked(readPlanPreviewCandidates).mockReturnValue([
       { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
     ] as never);
-    vi.mocked(executeCommand).mockResolvedValue({ status: 'failed', error: 'boom' } as never);
+    vi.mocked(runCleanupExecution).mockResolvedValue(executionOutcome([{ path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, status: 'failed', error: 'boom' }]) as never);
 
     const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
       method: 'POST',
@@ -254,98 +450,108 @@ Every spec claim this wave leans on was re-verified against the working tree on 
 
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.success).toBe(false);
     expect(body.error).toBe('all cleanup actions failed');
     expect(setMock.mock.calls[1][0]).toMatchObject({ status: 'failed' });
   });
 ```
 
-Also extend the `db` mock at the top of the file so `update` exists — change `apps/api/src/routes/devices/filesystem.test.ts:4-12` to:
+- [ ] **Step 2: Write the failing self-managed-route predicate test** — in `apps/api/src/middleware/selfManagedDbContextRoutes.test.ts`, add to the `MATCH` table:
 
 ```ts
-vi.mock('../../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: {
-    select: vi.fn(),
-    insert: vi.fn(),
-    update: vi.fn(),
-  }
-}));
+    // Disk Cleanup v2 W03 (spec §13 #5) — cleanup-execute claims its run in a
+    // COMMITTED short transaction, dispatches file_delete commands to a device
+    // over the agent round-trip (up to CLEANUP_EXECUTE_BUDGET_MS = 240s), then
+    // finalises in a second short transaction. Inside the ambient request
+    // transaction the claim is invisible to a concurrent execute and rolls back
+    // on a crash that has already deleted the files.
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute/'],
+    ['post', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
 ```
 
-and the schema mock at `:14-24` so the new columns the claim reads are present:
+and to the `NO_MATCH` table (the read and preview routes keep the ambient transaction — they make no device round-trip):
 
 ```ts
-vi.mock('../../db/schema', () => ({
-  deviceDisks: {
-    deviceId: 'deviceId',
-    usedPercent: 'usedPercent',
-  },
-  deviceFilesystemCleanupRuns: {
-    id: 'id',
-    deviceId: 'deviceId',
-    plan: 'plan',
-    status: 'status',
-    scanPath: 'scanPath',
-    kind: 'kind',
-  },
-}));
+    ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-preview'],
+    ['GET', '/api/v1/devices/abc-123/filesystem/cleanup-runs'],
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [ ] **Step 3: Run both and watch them fail**
 
 ```bash
-cd apps/api && npx vitest run src/routes/devices/filesystem.test.ts
+cd apps/api && npx vitest run src/routes/devices/filesystem.test.ts src/middleware/selfManagedDbContextRoutes.test.ts
 ```
 
-Expected failure: `rejects cleanup-execute with no cleanupRunId` fails with `expected 200 to be 400`, and the four new cases fail with `TypeError: db.update is not a function` (the route still inserts).
+Expected failure: `rejects cleanup-execute with no cleanupRunId` fails with `expected 200 to be 400`; the phase-ordering case fails with `expected "spy" to be called 2 times, but got 0 times` (the handler still relies on the ambient transaction); and the predicate test fails with `expected false to be true` for the `cleanup-execute` path.
 
-- [ ] **Step 3: Make `cleanupRunId` required** — in `apps/api/src/routes/devices/filesystem.ts`, replace the schema at `:48-54`:
+- [ ] **Step 4: Register the route as self-managed** — in `apps/api/src/middleware/selfManagedDbContextRoutes.ts`, add before the closing `];`:
 
 ```ts
+  // Disk Cleanup v2 W03 (spec §13 #5). `cleanup-execute` claims its pinned run
+  // (`UPDATE … WHERE status='previewed' RETURNING`) and must COMMIT that claim
+  // before dispatching, for two reasons the ambient request transaction defeats:
+  //   - a concurrent execute on the same run must see `running` and get a 409,
+  //     which it cannot while the claim is uncommitted in another transaction;
+  //   - a crash between the deletes and the finalise must leave the row
+  //     `running`, not roll it back to `previewed` — the files are already gone,
+  //     and re-offering that candidate set is a lie about the device's state.
+  // The dispatch itself is an agent round-trip bounded by
+  // CLEANUP_EXECUTE_BUDGET_MS (240s); holding a pooled connection
+  // idle-in-transaction across it is the #1105 pool-poison class on its own.
+  // The handler opens its own short `withAuthDbAccessContext` blocks around the
+  // claim and the finalise, and runs the dispatch between them.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/filesystem\/cleanup-execute\/?$/ },
+```
+
+- [ ] **Step 5: Make `cleanupRunId` required and add the TTL constant** — in `apps/api/src/routes/devices/filesystem.ts`, replace the schema at `:48-54`:
+
+```ts
+/**
+ * How long a pinned cleanup preview stays executable (spec §13 #2). Pinning a
+ * path pins neither its contents nor its identity: a `contentsOnly` trash
+ * candidate is "whatever is in the bin at execution", and a temp file can be
+ * replaced between preview and execute. A day-old plan is a guess about a
+ * machine nobody has looked at since, so it expires rather than executing.
+ */
+export const CLEANUP_PREVIEW_TTL_HOURS = 24;
+
 const cleanupExecuteBodySchema = z.object({
   paths: z.array(z.string().min(1).max(4096)).min(1).max(200),
   // W03 (spec §5.2, §10.1): REQUIRED. Deleting from "whatever snapshot is now
   // latest" is exactly the race the pinning exists to prevent, and both real
-  // callers hold an id from their own preview — the tab (W03) and the AI tool
-  // (its own lane, W05). There is no caller left that needs the fallback, so
-  // the fallback is gone rather than merely discouraged.
+  // callers hold an id from their own preview — the tab (W03 Task 13) and the
+  // AI tool (W03 Task 18). There is no caller left that needs the fallback.
   cleanupRunId: z.string().guid(),
 });
 ```
 
-- [ ] **Step 4: Replace the candidate resolution with an atomic claim** — in the same file, replace the whole `let candidates …` block (currently `:351-384`, ending with the `} else { … }` fallback) with:
+- [ ] **Step 6: Claim in a committed short context, then check the TTL** — replace the whole `let candidates …` block (currently `:351-384`, ending with the `} else { … }` fallback) with:
 
 ```ts
-    // Atomic claim. `WHERE status = 'previewed'` is what makes a double-
-    // submitted Execute safe: the second request matches zero rows and never
-    // reaches a dispatch, instead of deleting the same paths twice. The claim
-    // also returns the pinned plan, so no separate SELECT can observe a
-    // different row than the one we just moved.
-    const [claimed] = await db
-      .update(deviceFilesystemCleanupRuns)
-      .set({
-        status: 'running',
-        approvedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
-        eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
-        eq(deviceFilesystemCleanupRuns.status, 'previewed'),
-      ))
-      .returning({
-        id: deviceFilesystemCleanupRuns.id,
-        plan: deviceFilesystemCleanupRuns.plan,
-        scanPath: deviceFilesystemCleanupRuns.scanPath,
-      });
+    // PHASE 1 — claim, in its own short transaction that COMMITS before any
+    // file is deleted (spec §13 #5). `WHERE status = 'previewed'` makes this an
+    // atomic claim: a second, concurrent Execute matches zero rows and answers
+    // 409 instead of deleting the same paths twice.
+    const claimed = await withAuthDbAccessContext(auth, async () => {
+      const [row] = await db
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'running', approvedAt: new Date(), updatedAt: new Date() })
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
+          eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
+          eq(deviceFilesystemCleanupRuns.status, 'previewed'),
+        ))
+        .returning({
+          id: deviceFilesystemCleanupRuns.id,
+          plan: deviceFilesystemCleanupRuns.plan,
+          scanPath: deviceFilesystemCleanupRuns.scanPath,
+          requestedAt: deviceFilesystemCleanupRuns.requestedAt,
+        });
+      if (row) return { kind: 'claimed' as const, row };
 
-    if (!claimed) {
-      // Distinguish "no such run for this device" (404) from "that run is not
-      // previewable any more" (409). A bare 404 on the second case reads as a
-      // bug in the client; the operator needs to know the run already ran.
+      // Distinguish "no such run for this device" from "that run is not
+      // previewable any more". A bare 404 on the second reads as a client bug;
+      // the operator needs to know the run already ran.
       const [existing] = await db
         .select({ status: deviceFilesystemCleanupRuns.status })
         .from(deviceFilesystemCleanupRuns)
@@ -354,25 +560,45 @@ const cleanupExecuteBodySchema = z.object({
           eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
         ))
         .limit(1);
-      if (!existing) {
-        return c.json({ success: false, error: 'Cleanup run not found' }, 404);
-      }
+      return existing
+        ? { kind: 'not_previewed' as const, status: existing.status }
+        : { kind: 'missing' as const };
+    });
+
+    if (claimed.kind === 'missing') {
+      return c.json({ success: false, error: 'Cleanup run not found' }, 404);
+    }
+    if (claimed.kind === 'not_previewed') {
       return c.json({
         success: false,
-        error: 'cleanup_run_not_previewable',
-        data: { cleanupRunId, status: existing.status },
+        error: 'run_not_previewed',
+        data: { cleanupRunId, status: claimed.status },
       }, 409);
     }
 
-    const candidates = readPlanPreviewCandidates(claimed.plan);
-    if (candidates.length === 0) {
-      // The pinned run carries no previewable candidates (a corrupt or
-      // hand-edited plan). Put it back where it was rather than leaving it
-      // stuck in `running` with nothing ever finalising it.
+    /** Put a claimed-but-undispatched run back so it stays visible as a preview. */
+    const releaseClaim = () => withAuthDbAccessContext(auth, async () => {
       await db
         .update(deviceFilesystemCleanupRuns)
         .set({ status: 'previewed', approvedAt: null, updatedAt: new Date() })
         .where(eq(deviceFilesystemCleanupRuns.id, cleanupRunId));
+    });
+
+    const requestedAt = claimed.row.requestedAt instanceof Date
+      ? claimed.row.requestedAt
+      : new Date(claimed.row.requestedAt as unknown as string);
+    if (Date.now() - requestedAt.getTime() > CLEANUP_PREVIEW_TTL_HOURS * 3_600_000) {
+      await releaseClaim();
+      return c.json({
+        success: false,
+        error: 'preview_expired',
+        data: { cleanupRunId, requestedAt: requestedAt.toISOString(), ttlHours: CLEANUP_PREVIEW_TTL_HOURS },
+      }, 409);
+    }
+
+    const candidates = readPlanPreviewCandidates(claimed.row.plan);
+    if (candidates.length === 0) {
+      await releaseClaim();
       return c.json({
         success: false,
         error: 'Pinned cleanup run has no previewable candidates (its stored preview is unavailable). Re-run the cleanup preview.',
@@ -380,43 +606,85 @@ const cleanupExecuteBodySchema = z.object({
     }
 ```
 
-- [ ] **Step 5: Finalise the claimed row instead of inserting a new one** — replace the `const [cleanupRun] = await db.insert(deviceFilesystemCleanupRuns)…returning();` block (currently `:423-441`) with:
+- [ ] **Step 7: Carry the run id into the dispatch payload** — in W01's dispatch loop, add `cleanupRunId` to the `file_delete` payload (keeping W01's `permanent` / `cleanupGuard` / `contentsOnly` exactly as they are):
+
+```ts
+      const outcome = await runCleanupExecution({
+        deviceId,
+        userId: auth.user.id,
+        candidates: selected,
+        // Not read by the agent. It is what lets a cancel-on-event sweep
+        // (device org-move) find the run each dispatched command belongs to —
+        // see services/commandCancelPropagation.ts (Task 17). W01 spreads this
+        // bag into every file_delete payload alongside `permanent`,
+        // `cleanupGuard` and `contentsOnly`; if its parameter is named
+        // differently, pass the field however W01 accepts extra payload keys
+        // and keep the assertion in Step 1's third case as the contract.
+        payloadExtras: { cleanupRunId },
+      });
+```
+
+Two things about this call. It runs with **no** ambient DB context — that is the point of the self-managed registration: the agent round-trip never holds a pooled connection. And `outcome` is W01's envelope (amendment 18a): `{ partial, budgetMs, actions }` plus the derived `counts`, `bytesReclaimed`, `rejectedPaths` and `failedCount` the handler already computes from it. Do not unwrap it into a bare array — FileManager's amber panel and the result panel's truncation notice both read `partial` and `budgetMs`.
+
+- [ ] **Step 8: Finalise in a second short context** — replace the `const [cleanupRun] = await db.insert(deviceFilesystemCleanupRuns)…returning();` block (currently `:423-441`) with:
 
 ```ts
     const planRecord =
-      claimed.plan && typeof claimed.plan === 'object' && !Array.isArray(claimed.plan)
-        ? (claimed.plan as Record<string, unknown>)
+      claimed.row.plan && typeof claimed.row.plan === 'object' && !Array.isArray(claimed.row.plan)
+        ? (claimed.row.plan as Record<string, unknown>)
         : {};
 
-    await db
-      .update(deviceFilesystemCleanupRuns)
-      .set({
-        status: runStatus,
-        // W01 amendment 8: the envelope, not a bare array — `partial` is how a
-        // budget-truncated run tells the history it stopped early.
-        executedActions: {
-          partial: outcome.partial,
-          budgetMs: outcome.budgetMs,
-          actions: outcome.actions,
-        },
-        bytesReclaimed: outcome.bytesReclaimed,
-        error: runError,
-        updatedAt: new Date(),
-        // The pinned preview STAYS in `plan` — it is what the 90-day retention
-        // trim later removes, and what `GET /cleanup-runs/:runId` renders.
-        plan: {
-          ...planRecord,
-          executedBy: auth.user.id,
-          requestedPaths: requested,
-          selectedPaths: dispatchedPaths,
-          rejectedPaths: outcome.rejectedPaths,
-        },
-      })
-      .where(eq(deviceFilesystemCleanupRuns.id, cleanupRunId))
-      .returning({ id: deviceFilesystemCleanupRuns.id });
+    // PHASE 3 — finalise, in its own short transaction. If this throws the
+    // files are ALREADY gone, so the row must stay `running`: rolling it back
+    // to `previewed` would re-offer a candidate set that no longer exists.
+    // Retention (Task 4) ages a stuck file run to `failed` after 24h.
+    try {
+      await withAuthDbAccessContext(auth, async () => {
+        await db
+          .update(deviceFilesystemCleanupRuns)
+          .set({
+            status: runStatus,
+            // W01 amendment 8's envelope, NOT a bare array — Task 2's
+            // `actionCount` unwraps `actions` out of it and the web result
+            // panel reads `partial`/`budgetMs` off it.
+            executedActions: { partial: outcome.partial, budgetMs: outcome.budgetMs, actions },
+            bytesReclaimed,
+            error: failedCount > 0 ? `${failedCount} cleanup action(s) failed` : null,
+            updatedAt: new Date(),
+            // The pinned preview STAYS in `plan` — it is what the 90-day
+            // retention trim removes and what the detail route renders.
+            plan: {
+              ...planRecord,
+              executedBy: auth.user.id,
+              requestedPaths: requested,
+              selectedPaths: selected.map((candidate) => candidate.path),
+              rejectedPaths,
+            },
+          })
+          .where(eq(deviceFilesystemCleanupRuns.id, cleanupRunId))
+          .returning({ id: deviceFilesystemCleanupRuns.id });
+      });
+    } catch (err) {
+      console.error('[filesystem] cleanup finalize failed AFTER deletion', {
+        deviceId, cleanupRunId, error: err instanceof Error ? err.message : String(err),
+      });
+      return failJson(c, 'cleanup_finalize_failed', 500, {
+        cleanupRunId,
+        scanPath: claimed.row.scanPath,
+        status: 'running',
+        bytesReclaimed,
+        selectedCount: selected.length,
+        failedCount,
+        rejectedPaths,
+        counts: outcome.counts,
+        partial: outcome.partial,
+        budgetMs: outcome.budgetMs,
+        actions,
+      });
+    }
 ```
 
-Then update the audit call and the response so both carry the pinned id (the local `cleanupRun` variable no longer exists):
+Then the audit and the response, both carrying the pinned id (the local `cleanupRun` variable no longer exists):
 
 ```ts
     writeRouteAudit(c, {
@@ -427,77 +695,211 @@ Then update the audit call and the response so both carry the pinned id (the loc
       resourceName: device.hostname,
       details: {
         cleanupRunId,
-        scanPath: claimed.scanPath,
+        scanPath: claimed.row.scanPath,
         requestedCount: requested.length,
-        selectedCount: dispatchedPaths.length,
-        failedCount: counts.failed,
-        rejectedCount: counts.rejected,
-        skippedLockedCount: counts.skipped_locked,
-        skippedBudgetCount: counts.skipped_budget,
-        rejectedPaths: outcome.rejectedPaths,
-        partial: outcome.partial,
-        bytesReclaimed: outcome.bytesReclaimed,
+        selectedCount: selected.length,
+        rejectedCount: rejectedPaths.length,
+        failedCount,
+        bytesReclaimed,
       },
       result: runStatus === 'executed' ? 'success' : 'failure',
     });
 
-    // Same field set W01 Task 10 shipped, with the pinned id replacing the
-    // freshly-inserted one. Dropping `counts`, `partial` or `budgetMs` here
-    // would silently blind FileManager's amber panel and the result panel.
+    // W01's unified envelope helpers (spec §5.2 "every 2xx is { success: true,
+    // data }"), and W01's full `data` shape — `counts`, `partial` and
+    // `budgetMs` are load-bearing for the web result panel, `scanPath` is
+    // W02 Task 10's field and now comes off the claimed row.
     const responseData = {
       cleanupRunId,
-      // W02 Task 10's contract: every cleanup response carries the volume it
-      // acted on. The pinned row is the authority now that execute claims it.
-      scanPath: claimed.scanPath,
+      scanPath: claimed.row.scanPath,
       status: runStatus,
-      bytesReclaimed: outcome.bytesReclaimed,
-      selectedCount: dispatchedPaths.length,
-      failedCount: counts.failed,
-      counts,
-      rejectedPaths: outcome.rejectedPaths,
+      bytesReclaimed,
+      selectedCount: selected.length,
+      failedCount,
+      rejectedPaths,
+      counts: outcome.counts,
       partial: outcome.partial,
       budgetMs: outcome.budgetMs,
-      actions: outcome.actions,
+      actions,
     };
 
     if (runStatus !== 'executed') {
       return failJson(c, 'all cleanup actions failed', 500, responseData);
     }
-
     return okJson(c, responseData);
 ```
 
-- [ ] **Step 6: Run the tests and watch them pass**
+Add the import at the top of the file:
 
-```bash
-cd apps/api && npx vitest run src/routes/devices/filesystem.test.ts
+```ts
+import { authMiddleware, requireMfa, requireScope, requirePermission, withAuthDbAccessContext } from '../../middleware/auth';
 ```
 
-Expected: all cases PASS, including the pre-existing pinned-run, rejected-path and site-scope cases.
+- [ ] **Step 9: Run the unit tests and watch them pass**
 
-- [ ] **Step 7: Typecheck**
+```bash
+cd apps/api && npx vitest run src/routes/devices/filesystem.test.ts src/middleware/selfManagedDbContextRoutes.test.ts
+```
+
+Expected: every case PASSES, including the pre-existing pinned-run, rejected-path and site-scope cases.
+
+- [ ] **Step 10: Write the failing two-connection visibility + crash-boundary integration test** — the unit tests above prove the SHAPE (two phases, dispatch between them); only a real Postgres proves the claim is actually visible to a second connection. Create `apps/api/src/__tests__/integration/filesystemCleanupExecute.integration.test.ts`:
+
+```ts
+/**
+ * Spec §13 #5 — the claim must be COMMITTED before the dispatch, and must
+ * survive a crash that happens after the files are gone.
+ *
+ * These two properties are invisible to a mocked-db unit test by construction:
+ * visibility is a property of a second connection, and "does not roll back" is
+ * a property of a committed transaction. Both need a real database.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../../db';
+import { deviceFilesystemCleanupRuns } from '../../db/schema';
+import { CLEANUP_PREVIEW_TTL_HOURS } from '../../routes/devices/filesystem';
+import { createIntegrationTenant, destroyIntegrationTenant, type IntegrationTenant } from './helpers/tenant';
+
+let tenant: IntegrationTenant;
+
+/** The exact claim the route performs, callable from either connection. */
+async function claim(runId: string, deviceId: string): Promise<string | null> {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .update(deviceFilesystemCleanupRuns)
+      .set({ status: 'running', approvedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(deviceFilesystemCleanupRuns.id, runId),
+        eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
+        eq(deviceFilesystemCleanupRuns.status, 'previewed'),
+      ))
+      .returning({ id: deviceFilesystemCleanupRuns.id });
+    return row?.id ?? null;
+  });
+}
+
+async function insertPreviewedRun(requestedAt = new Date()): Promise<string> {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db.insert(deviceFilesystemCleanupRuns).values({
+      deviceId: tenant.deviceId,
+      orgId: tenant.orgId,
+      requestedBy: tenant.userId,
+      requestedAt,
+      scanPath: '/',
+      kind: 'files',
+      plan: { preview: { candidates: [{ path: '/tmp/a', category: 'temp_files', sizeBytes: 1, safe: true }], estimatedBytes: 1 } },
+      status: 'previewed',
+    }).returning({ id: deviceFilesystemCleanupRuns.id });
+    return row!.id;
+  });
+}
+
+async function readStatus(runId: string): Promise<string | null> {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ status: deviceFilesystemCleanupRuns.status })
+      .from(deviceFilesystemCleanupRuns)
+      .where(eq(deviceFilesystemCleanupRuns.id, runId))
+      .limit(1);
+    return row?.status ?? null;
+  });
+}
+
+describe('cleanup-execute claim semantics (real Postgres)', () => {
+  beforeAll(async () => { tenant = await createIntegrationTenant(); });
+  afterAll(async () => { await destroyIntegrationTenant(tenant); });
+
+  it('a committed claim is immediately visible to a second connection', async () => {
+    const runId = await insertPreviewedRun();
+
+    const first = await claim(runId, tenant.deviceId);
+    expect(first).toBe(runId);
+
+    // Second connection, after the first claim's transaction committed.
+    const second = await claim(runId, tenant.deviceId);
+    expect(second).toBeNull();
+    expect(await readStatus(runId)).toBe('running');
+  });
+
+  it('two concurrent claims produce exactly one winner', async () => {
+    const runId = await insertPreviewedRun();
+    const [a, b] = await Promise.all([claim(runId, tenant.deviceId), claim(runId, tenant.deviceId)]);
+    expect([a, b].filter((v) => v !== null)).toHaveLength(1);
+  });
+
+  it('a throw after the claim leaves the row running, never back at previewed', async () => {
+    const runId = await insertPreviewedRun();
+    await claim(runId, tenant.deviceId);
+
+    // Simulate the finalise phase dying. It is a SEPARATE transaction, so its
+    // rollback cannot touch the committed claim.
+    await expect(
+      withSystemDbAccessContext(async () => {
+        await db.update(deviceFilesystemCleanupRuns)
+          .set({ status: 'executed', updatedAt: new Date() })
+          .where(eq(deviceFilesystemCleanupRuns.id, runId));
+        throw new Error('connection reset');
+      }),
+    ).rejects.toThrow('connection reset');
+
+    expect(await readStatus(runId)).toBe('running');
+  });
+
+  it('a run older than the TTL is still claimable but must be rejected by the route', async () => {
+    const stale = new Date(Date.now() - (CLEANUP_PREVIEW_TTL_HOURS + 1) * 3_600_000);
+    const runId = await insertPreviewedRun(stale);
+    expect(await claim(runId, tenant.deviceId)).toBe(runId);
+    // The TTL is a route-level rule, not a SQL predicate — this pins that the
+    // database alone does NOT enforce it, so the route check is load-bearing.
+    expect(await readStatus(runId)).toBe('running');
+  });
+});
+```
+
+**Before writing it, open `apps/api/src/__tests__/integration/` and copy the tenant-fixture helper the neighbouring suites already use** (`rls-coverage.integration.test.ts` and `orgLifecycleFoundations.integration.test.ts` are the two canonical ones). If the helper module or its exported names differ from `createIntegrationTenant` / `destroyIntegrationTenant` / `IntegrationTenant`, use whatever those suites use — do not add a second fixture layer.
+
+- [ ] **Step 11: Run the integration suite (needs a real database)**
+
+```bash
+pnpm test-stack up
+cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/filesystemCleanupExecute.integration.test.ts
+pnpm test-stack down
+```
+
+Expected: 4 tests PASS. Tear the stack down when finished — nothing reaps it for you.
+
+- [ ] **Step 12: Typecheck**
 
 ```bash
 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 ```
 
-Expected: no errors. A `Type '"running"' is not assignable` error here means W02 has not merged — stop and rebase rather than widening the enum in this wave.
+Expected: no errors. A `Type '"running"' is not assignable` error means W02 has not merged — stop and rebase rather than widening the enum in this wave.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
-git add apps/api/src/routes/devices/filesystem.ts apps/api/src/routes/devices/filesystem.test.ts
+git add apps/api/src/routes/devices/filesystem.ts apps/api/src/routes/devices/filesystem.test.ts \
+  apps/api/src/middleware/selfManagedDbContextRoutes.ts \
+  apps/api/src/middleware/selfManagedDbContextRoutes.test.ts \
+  apps/api/src/__tests__/integration/filesystemCleanupExecute.integration.test.ts
 git commit -m "$(cat <<'EOF'
-feat(filesystem): require cleanupRunId and claim the pinned run on execute
+feat(filesystem): cleanup-execute claims, dispatches, then finalises — in three transactions
 
-cleanup-execute no longer falls back to "whatever snapshot is newest": the
-pinned run id is required, and the route claims that row with an atomic
-UPDATE ... WHERE status='previewed' before dispatching a single file_delete.
-A double-submitted Execute now matches zero rows and answers 409 instead of
-deleting the same paths twice, and one cleanup is one row for its whole
-lifecycle (previewed -> running -> executed/failed) instead of two.
+Spec §13 #5: the claim used to live in the ambient request transaction, where
+a concurrent execute could not see it and a crash after the files were gone
+rolled it back to `previewed` — re-offering a candidate set that no longer
+existed. cleanup-execute is now a self-managed-context route: it claims the
+pinned run with a committed `UPDATE … WHERE status='previewed'`, dispatches
+every file_delete outside any transaction, and finalises in a second short
+one. A finalise that throws leaves the row `running`, never `previewed`.
 
-Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §5.2, §10.1
+cleanupRunId is required, a preview older than CLEANUP_PREVIEW_TTL_HOURS=24
+is refused with 409 preview_expired (§13 #2), and every dispatched payload
+carries the run id so a cancel-on-event sweep can find its owner.
+
+Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §5.2, §10.1, §13 #2, §13 #5
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 EOF
@@ -2448,7 +2850,7 @@ Purely additive: no existing key changes value and none is removed, so nothing g
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: 40 new leaves under `deviceFilesystemTab` in every catalog — 36 scalars plus the nested `categories` (4) and `status` (4) objects, counted as leaves.
+- Produces: 43 new leaves under `deviceFilesystemTab` in every catalog — 39 scalars plus the nested `categories` (4) and `status` (4) objects, counted as leaves. Three of them serve Task 1's contracts: `confirmContentsNote` (spec §13 #2 — the confirm dialog must say that trash targets delete their contents *at execution*, not what the preview listed) and the two 409 copy strings `errorPreviewExpired` / `errorRunNotPreviewed`.
 
 - [ ] **Step 1: Write the failing test** — no new test file. The guards already exist and are the contract: `localeParity.test.ts` (identical key sets), `translationCoverage.test.ts` (no exact-English copies past baseline), `keyUsage.test.ts` (every literal `t()` key resolves in `en`). Run them now to establish the green baseline you must preserve:
 
@@ -2462,6 +2864,9 @@ Expected: PASS. (If either is already red on your base, stop and rebase — you 
 
 ```json
     "title": "Disk Cleanup",
+    "confirmContentsNote": "Trash and recycle-bin targets delete whatever they contain at the moment this runs, not what the preview listed.",
+    "errorPreviewExpired": "This cleanup preview is more than 24 hours old. Run Cleanup Preview again.",
+    "errorRunNotPreviewed": "This cleanup run has already been executed or is still running. Run Cleanup Preview again.",
     "cleanupTitle": "Select what to clean",
     "cleanupPreviewRequired": "Run Cleanup Preview to choose what to delete.",
     "categories": {
@@ -2511,6 +2916,9 @@ Expected: PASS. (If either is already red on your base, stop and rebase — you 
 
 ```json
     "title": "Datenträgerbereinigung",
+    "confirmContentsNote": "Papierkorb-Ziele löschen den Inhalt zum Ausführungszeitpunkt, nicht den in der Vorschau aufgelisteten.",
+    "errorPreviewExpired": "Diese Bereinigungsvorschau ist älter als 24 Stunden. Führen Sie die Bereinigungsvorschau erneut aus.",
+    "errorRunNotPreviewed": "Dieser Bereinigungslauf wurde bereits ausgeführt oder läuft noch. Führen Sie die Bereinigungsvorschau erneut aus.",
     "cleanupTitle": "Auswählen, was bereinigt wird",
     "cleanupPreviewRequired": "Führen Sie zuerst die Bereinigungsvorschau aus, um auszuwählen, was gelöscht wird.",
     "categories": {
@@ -2560,6 +2968,9 @@ Expected: PASS. (If either is already red on your base, stop and rebase — you 
 
 ```json
     "title": "Limpieza de disco",
+    "confirmContentsNote": "Los objetivos de papelera eliminan lo que contengan en el momento de la ejecución, no lo que listó la vista previa.",
+    "errorPreviewExpired": "Esta vista previa de limpieza tiene más de 24 horas. Ejecute la vista previa de limpieza otra vez.",
+    "errorRunNotPreviewed": "Esta limpieza ya se ejecutó o sigue en curso. Ejecute la vista previa de limpieza otra vez.",
     "cleanupTitle": "Seleccionar qué limpiar",
     "cleanupPreviewRequired": "Ejecute la vista previa de limpieza para elegir qué eliminar.",
     "categories": {
@@ -2609,6 +3020,9 @@ Expected: PASS. (If either is already red on your base, stop and rebase — you 
 
 ```json
     "title": "Nettoyage du disque",
+    "confirmContentsNote": "Les cibles de corbeille suppriment leur contenu au moment de l’exécution, pas celui listé dans l’aperçu.",
+    "errorPreviewExpired": "Cet aperçu de nettoyage a plus de 24 heures. Relancez l’aperçu du nettoyage.",
+    "errorRunNotPreviewed": "Ce nettoyage a déjà été exécuté ou est encore en cours. Relancez l’aperçu du nettoyage.",
     "cleanupTitle": "Sélectionner ce qui doit être nettoyé",
     "cleanupPreviewRequired": "Lancez l’aperçu du nettoyage pour choisir ce qui sera supprimé.",
     "categories": {
@@ -2658,6 +3072,9 @@ Expected: PASS. (If either is already red on your base, stop and rebase — you 
 
 ```json
     "title": "Pulizia disco",
+    "confirmContentsNote": "Gli elementi del cestino eliminano ciò che contengono al momento dell'esecuzione, non quanto elencato nell'anteprima.",
+    "errorPreviewExpired": "Questa anteprima di pulizia ha più di 24 ore. Esegui di nuovo l'anteprima pulizia.",
+    "errorRunNotPreviewed": "Questa pulizia è già stata eseguita o è ancora in corso. Esegui di nuovo l'anteprima pulizia.",
     "cleanupTitle": "Seleziona cosa pulire",
     "cleanupPreviewRequired": "Esegui l'anteprima pulizia per scegliere cosa eliminare.",
     "categories": {
@@ -2707,6 +3124,9 @@ Expected: PASS. (If either is already red on your base, stop and rebase — you 
 
 ```json
     "title": "Limpeza de disco",
+    "confirmContentsNote": "Alvos de lixeira excluem o que contiverem no momento da execução, não o que a prévia listou.",
+    "errorPreviewExpired": "Esta prévia de limpeza tem mais de 24 horas. Execute a prévia de limpeza novamente.",
+    "errorRunNotPreviewed": "Esta limpeza já foi executada ou ainda está em andamento. Execute a prévia de limpeza novamente.",
     "cleanupTitle": "Selecione o que limpar",
     "cleanupPreviewRequired": "Execute a prévia de limpeza para escolher o que excluir.",
     "categories": {
@@ -2756,6 +3176,9 @@ Expected: PASS. (If either is already red on your base, stop and rebase — you 
 
 ```json
     "title": "Disk Temizleme",
+    "confirmContentsNote": "Çöp kutusu hedefleri, önizlemede listeleneni değil, çalıştırma anındaki içeriği siler.",
+    "errorPreviewExpired": "Bu temizleme önizlemesi 24 saatten eski. Temizleme Önizlemesi'ni yeniden çalıştırın.",
+    "errorRunNotPreviewed": "Bu temizleme zaten yürütüldü veya hâlâ çalışıyor. Temizleme Önizlemesi'ni yeniden çalıştırın.",
     "cleanupTitle": "Nelerin temizleneceğini seçin",
     "cleanupPreviewRequired": "Neyin silineceğini seçmek için Temizleme Önizlemesi'ni çalıştırın.",
     "categories": {
@@ -3947,7 +4370,7 @@ This is the component §2 defect 4 is about: the tab that stops at a preview, an
 
 **Interfaces:**
 - Consumes: `runAction`, `ActionError` from `@/lib/runAction`; `showToast` from `@/components/shared/Toast`; `ConfirmDialog` from `@/components/shared/ConfirmDialog`; `fetchWithAuth` from `@/stores/auth`; `formatBytes`, `selectedBytes`, `summariseActionStatuses`, `CleanupCandidate`, `FilesystemCleanupPreview`, `CleanupExecuteResult` from `./filesystemTabUtils`.
-- Consumes (API, from W01 + this wave's Task 1): `POST /devices/:id/filesystem/cleanup-execute` with body `{ cleanupRunId: string; paths: string[] }` → `{ success: true, data: CleanupExecuteResult }`.
+- Consumes (API, from W01 + this wave's Task 1): `POST /devices/:id/filesystem/cleanup-execute` with body `{ cleanupRunId: string; paths: string[] }` → `{ success: true, data: CleanupExecuteResult }`; on failure `409 { success:false, error:'preview_expired' | 'run_not_previewed' }`, which `runAction`'s `friendly(code)` hook maps to localized copy (the raw token would otherwise be toasted verbatim — `runAction.ts:104-118` falls back to `body.error` when there is no `code`).
 - Produces:
   ```ts
   export default function CleanupPanel(props: {
@@ -4143,6 +4566,32 @@ describe('CleanupPanel', () => {
     expect(screen.getByTestId('cleanup-candidate-checkbox-C:\\Windows\\Temp\\big')).toBeChecked();
   });
 
+  it('states that trash targets delete their contents at execution time', async () => {
+    render(<CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={preview()} onExecuted={vi.fn()} />);
+    await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
+    await userEvent.click(screen.getByTestId('cleanup-execute'));
+
+    const dialog = await screen.findByTestId('cleanup-confirm-dialog');
+    expect(within(dialog).getByTestId('cleanup-confirm-contents-note'))
+      .toHaveTextContent('at the moment this runs');
+  });
+
+  it('translates a 409 preview_expired instead of toasting the raw token', async () => {
+    fetchMock.mockResolvedValue(json({ success: false, error: 'preview_expired' }, 409));
+    render(<CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={preview()} onExecuted={vi.fn()} />);
+
+    await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
+    await userEvent.click(screen.getByTestId('cleanup-execute'));
+    await userEvent.click(await screen.findByTestId('cleanup-confirm-button'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        message: 'This cleanup preview is more than 24 hours old. Run Cleanup Preview again.',
+      }),
+    ));
+  });
+
   it('clears the selection when the preview is replaced', () => {
     const { rerender } = render(
       <CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={preview()} onExecuted={vi.fn()} />,
@@ -4294,6 +4743,13 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
           body: JSON.stringify({ cleanupRunId: pinnedRunId, paths: selectedPaths }),
         }),
         errorFallback: t('deviceFilesystemTab.cleanupFailed'),
+        // The API answers 409 with a machine token in `error` and no `code`,
+        // so without this the operator is shown "preview_expired" verbatim.
+        friendly: (code) => {
+          if (code === 'preview_expired') return t('deviceFilesystemTab.errorPreviewExpired');
+          if (code === 'run_not_previewed') return t('deviceFilesystemTab.errorRunNotPreviewed');
+          return undefined;
+        },
         parseSuccess: (body) => (body as { data: CleanupExecuteResult }).data,
         successMessage: (value) =>
           t('deviceFilesystemTab.cleanupFinished', { size: formatBytes(value.bytesReclaimed) }),
@@ -4486,6 +4942,13 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
               </li>
             ))}
           </ul>
+          {/* Spec §13 #2: pinning a path does not pin its contents. A
+              contentsOnly trash target deletes whatever is in the bin when the
+              command runs, which can be more than the preview listed — say so
+              here rather than letting the operator infer a frozen list. */}
+          <p className="mt-2 text-muted-foreground" data-testid="cleanup-confirm-contents-note">
+            {t('deviceFilesystemTab.confirmContentsNote')}
+          </p>
         </div>
       </ConfirmDialog>
     </div>
@@ -5483,8 +5946,8 @@ page-level test renders the whole layout against a two-volume Windows device
 fixture, because a wave that ships green components nobody mounted has shipped
 nothing.
 
-Both remaining mutations go through runAction, so the tab leaves
-RUN_ACTION_MIGRATION_BACKLOG and joins TARGET_GLOBS alongside CleanupPanel.
+Both remaining mutations go through runAction; W01 already moved the tab off
+RUN_ACTION_MIGRATION_BACKLOG, so this only adds CleanupPanel to TARGET_GLOBS.
 The BE-1 heading and the ">=" codemod key are gone from all 8 catalogs and
 scanRunning is a single interpolated string instead of a dangling "(".
 
@@ -5717,10 +6180,14 @@ Content-Type: application/json
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `cleanupRunId` | uuid | Yes | The run returned by `cleanup-preview`. Must still be in `previewed` status and belong to this device. |
+| `cleanupRunId` | uuid | Yes | The run returned by `cleanup-preview`. Must still be in `previewed` status, belong to this device, and be less than 24 hours old. |
 | `paths` | array | Yes | Paths to delete. Must appear in the pinned run's candidate set. Min 1, max 200 entries. Max 4096 characters per path. |
 
-The API claims the run before dispatching anything: the status moves `previewed → running` in a single conditional update, so a double-submitted Execute matches no row and answers `409 cleanup_run_not_previewable` instead of deleting the same paths twice. When the dispatch finishes, the same row is finalised to `executed` or `failed` — one cleanup is one row, from preview to result.
+The API claims the run before dispatching anything: the status moves `previewed → running` in a single conditional update, **committed on its own**, so a double-submitted Execute matches no row and answers `409 run_not_previewed` instead of deleting the same paths twice. The deletions then run with no database transaction held, and the same row is finalised to `executed` or `failed` in a second short transaction — one cleanup is one row, from preview to result.
+
+Because the claim commits before anything is deleted, an API process that dies mid-run leaves the row `running` rather than reverting it to `previewed`. That is deliberate: the files are already gone, and re-offering that candidate set would be a lie about the device. The retention job marks such a run `failed` with `error: "interrupted"` after 24 hours.
+
+A preview expires after 24 hours (`409 preview_expired`). Pinning a path pins neither its contents nor its identity — a trash or recycle-bin target deletes **whatever it contains when the command runs**, not what the preview listed, and the confirmation dialog says so.
 
 Paths that are not in the pinned set are reported in `rejectedPaths` and never dispatched. Per-path `status` is one of `completed`, `failed`, `skipped_locked`, `rejected` or `skipped_budget`.
 ````
@@ -5756,6 +6223,7 @@ A daily maintenance job keeps the table bounded:
 | Abandoned previews | `previewed` runs older than 7 days | The row is deleted. |
 | Finished runs | `executed` / `failed` runs older than 90 days | Only `plan.preview.candidates` is removed; the summary, the status, the reclaimed bytes and `executedActions` stay. A `plan.preview.candidatesTrimmedAt` timestamp records when. |
 | Interrupted runs | file runs left in `running` for over 24 hours | Marked `failed` with `error: "interrupted"` (an API process died between claiming the run and finalising it). |
+| Cancelled runs | the device is moved to another organization while a run is in flight | Marked `failed` with `error: "cancelled: device moved"`, in the same transaction as the org move. |
 
 Self-hosters can tune the windows with `FILESYSTEM_CLEANUP_PREVIEW_RETENTION_DAYS` (default 7, max 90) and `FILESYSTEM_CLEANUP_PLAN_RETENTION_DAYS` (default 90, max 365), and the batch bounds with `FILESYSTEM_CLEANUP_RETENTION_BATCH_SIZE` / `FILESYSTEM_CLEANUP_RETENTION_MAX_BATCHES`.
 ````
@@ -5782,9 +6250,17 @@ File Manager no longer runs disk cleanup. It carries an **Open Disk Cleanup** bu
 - [ ] **Step 6: Fix the two stale troubleshooting entries** — replace the `### "No valid cleanup paths selected from latest previewable candidates" (400)` heading and body (`:534-543`) with:
 
 ````markdown
-### `cleanup_run_not_previewable` (409)
+### `run_not_previewed` (409)
 
 The pinned cleanup run has already been executed, is currently running, or was claimed by another request. Run **Cleanup Preview** again to pin a fresh run — a run is single-use by design, so that a resubmitted form cannot delete the same paths twice.
+
+### `preview_expired` (409)
+
+The pinned run is more than 24 hours old. Pinning a path does not freeze its contents, so a day-old plan is a guess about a machine nobody has looked at since. Run **Cleanup Preview** again; the expired run is put back into `previewed` state and remains visible in the history.
+
+### A run stuck at `Running`
+
+An API process died between claiming the run and finalising it. The files it had already deleted are gone; the retention job marks the run `failed` with `error: "interrupted"` after 24 hours. A result that arrives from the device after the run is finalised is appended to the run's actions tagged `lateResult` and never changes the run's status.
 
 ### "No valid cleanup paths selected from the pinned cleanup run" (400)
 
@@ -5797,7 +6273,7 @@ Every path you submitted was outside the pinned run's candidate set. Paths outsi
 cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-green-meadow-232b && npx tsx scripts/build-docs-index.ts
 ```
 
-Expected: `apps/api/src/data/docsIndex.json` changes — the `features/filesystem-analysis` entry gains the "Cleanup Run History", "Retention", "In the dashboard" and `cleanup_run_not_previewable` headings. Never hand-edit this file.
+Expected: `apps/api/src/data/docsIndex.json` changes — the `features/filesystem-analysis` entry gains the "Cleanup Run History", "Retention", "In the dashboard", `run_not_previewed`, `preview_expired` and "A run stuck at `Running`" headings. Never hand-edit this file.
 
 - [ ] **Step 8: Verify the docs build**
 
@@ -5811,7 +6287,14 @@ Expected: no errors. (This is what CI's `docs-check` job runs.)
 
 ```bash
 cd apps/api && npx vitest run src/routes/devices/filesystem.test.ts \
+  src/middleware/selfManagedDbContextRoutes.test.ts \
   src/services/filesystemCleanupRuns.test.ts \
+  src/services/commandCancelPropagation.test.ts \
+  src/services/aiToolsFilesystem.cleanupRunPin.test.ts \
+  src/services/aiAgents/actRevalidation.test.ts \
+  src/services/aiAgents/actVerify.test.ts \
+  src/services/aiAgents/playbookActExecutor.test.ts \
+  src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts \
   src/jobs/filesystemCleanupRunRetention.test.ts \
   src/services/workerRegistry.test.ts \
   src/services/workerRegistry.filesystemCleanupRunRetention.test.ts \
@@ -5841,7 +6324,15 @@ pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 cd apps/web && pnpm exec astro check
 ```
 
-Expected: green. This wave adds no migration and no schema, so `pnpm db:check-drift` needs no run for a change of its own — but run it once anyway to prove the claim, and expect "no drift".
+Expected: green. Then the two database-backed suites this wave added, and the drift check its migration makes load-bearing:
+
+```bash
+pnpm test-stack up
+cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/filesystemCleanupExecute.integration.test.ts
+export DATABASE_URL="postgresql://breeze:breeze@localhost:5433/breeze"   # the port pnpm test-stack printed
+pnpm db:migrate && pnpm db:check-drift
+pnpm test-stack down
+```
 
 - [ ] **Step 11: Commit**
 
@@ -5861,6 +6352,1174 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 EOF
 )"
 ```
+
+---
+
+### Task 16: Contract `scan_path` to NOT NULL and swap the scan-state primary key
+
+Spec §13 #7: W02 ships the column nullable with a backfill and a unique index so a multi-replica rollout cannot break old writers; W03 ships the contraction once W02 is deployed. Expand/contract, two waves, on purpose.
+
+**Files:**
+- Create: `apps/api/migrations/2026-10-20-160200-filesystem-scan-path-not-null.sql`
+- Modify: `apps/api/src/db/schema/filesystem.ts` (`deviceFilesystemSnapshots` `:20-41`, `deviceFilesystemScanState` `:61-72`)
+- Modify (Test): `apps/api/src/db/autoMigrate.test.ts` (no edit if the ordering assertions are generic; run it either way)
+
+**Interfaces:**
+- Consumes (from W02, assumed merged): `device_filesystem_snapshots.scan_path` and `device_filesystem_scan_state.scan_path` exist, are **nullable**, are fully backfilled, and `device_filesystem_scan_state` carries a UNIQUE index on `(device_id, scan_path)` with `device_id` still the primary key.
+- Produces: both columns `NOT NULL`; `device_filesystem_scan_state` primary key is `(device_id, scan_path)` and the interim unique index is dropped; the Drizzle mirror matches, so `pnpm db:check-drift` is clean.
+
+- [ ] **Step 1: Verify the filename sorts last, and watch the guard fail if it does not**
+
+```bash
+cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-green-meadow-232b && \
+  git ls-tree -r --name-only origin/main -- apps/api/migrations | sed 's|.*/||' | grep '\.sql$' | sort | tail -3
+```
+
+Verified 2026-09-19: `origin/main` already holds **two** `2026-10-20-150000-*` files (`bare-metal-recoveries-dr-link`, `partner-api-contract-scopes`), so the spec's "the newest file is `…-140000-tickets-partner-org-composite-fk.sql`" is stale. `150200` sorts after both of those and after W02's `150100`. If the command above shows anything newer than `2026-10-20-150200`, rename this file (bumping only the time component) before committing — and re-check at push time:
+
+```bash
+bash scripts/check-migration-naming.sh --against-ref origin/main
+```
+
+- [ ] **Step 2: Write the migration** — create `apps/api/migrations/2026-10-20-160200-filesystem-scan-path-not-null.sql`:
+
+```sql
+-- Disk Cleanup v2 W03 (spec §4, §13 #7) — the CONTRACT half of the expand/
+-- contract pair. W02 added `scan_path` nullable, backfilled it, and gave
+-- device_filesystem_scan_state a UNIQUE index on (device_id, scan_path) so an
+-- old replica writing NULL during the rolling deploy could not fail. By the
+-- time this runs, every replica writes the column.
+--
+-- Idempotent throughout: re-applying is a no-op.
+
+-- Any write below runs as the table OWNER under FORCE ROW LEVEL SECURITY, and
+-- breeze_current_scope() defaults to 'none' — without this the cleanup UPDATEs
+-- match zero rows SILENTLY and the RAISE WARNING prints a truthful-looking 0.
+SELECT set_config('breeze.scope', 'system', true);
+
+-- Defensive: W02's backfill should have left nothing, but SET NOT NULL on a
+-- table with one stray NULL aborts the whole migration. Repair and SAY SO —
+-- a silent fix destroys the forensic trail (lesson from 2026-06-10-c).
+DO $$
+DECLARE n bigint;
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  UPDATE device_filesystem_snapshots s
+     SET scan_path = COALESCE(
+       NULLIF(s.raw_payload->>'path', ''),
+       CASE WHEN d.os_type = 'windows' THEN 'C:\' ELSE '/' END
+     )
+    FROM devices d
+   WHERE d.id = s.device_id
+     AND s.scan_path IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN
+    RAISE WARNING 'filesystem scan_path contraction: repaired % snapshot rows W02 left NULL', n;
+  END IF;
+END $$;
+
+DO $$
+DECLARE n bigint;
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  -- Scan state carries no raw payload to recover a path from, and relabelling
+  -- a row as the OS root can resume a D:\ checkpoint into C:\ (spec §13 #8).
+  -- W02 owns the correct backfill; anything still NULL here is a row W02 could
+  -- not attribute, so its resumable state is cleared rather than guessed.
+  UPDATE device_filesystem_scan_state st
+     SET scan_path = CASE WHEN d.os_type = 'windows' THEN 'C:\' ELSE '/' END,
+         checkpoint = '{}'::jsonb,
+         aggregate = '{}'::jsonb,
+         hot_directories = '[]'::jsonb
+    FROM devices d
+   WHERE d.id = st.device_id
+     AND st.scan_path IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN
+    RAISE WARNING 'filesystem scan_path contraction: cleared resumable state on % scan-state rows W02 left NULL', n;
+  END IF;
+END $$;
+
+ALTER TABLE device_filesystem_snapshots ALTER COLUMN scan_path SET NOT NULL;
+ALTER TABLE device_filesystem_scan_state ALTER COLUMN scan_path SET NOT NULL;
+
+-- Primary-key swap. The table has no FK referrers (verified: no other table
+-- references device_filesystem_scan_state), and its RLS policy is on org_id,
+-- so it is PK-independent.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'device_filesystem_scan_state'::regclass
+       AND contype = 'p'
+       AND conname = 'device_filesystem_scan_state_pkey'
+       AND array_length(conkey, 1) = 1
+  ) THEN
+    ALTER TABLE device_filesystem_scan_state DROP CONSTRAINT device_filesystem_scan_state_pkey;
+    ALTER TABLE device_filesystem_scan_state
+      ADD CONSTRAINT device_filesystem_scan_state_pkey PRIMARY KEY (device_id, scan_path);
+  END IF;
+END $$;
+
+-- The interim unique index W02 shipped is now redundant with the PK's own
+-- index; dropping it removes one index to maintain on every scan-state upsert.
+DROP INDEX IF EXISTS idx_device_filesystem_scan_state_device_path;
+```
+
+- [ ] **Step 3: Run the migration-guard and ordering tests, and watch them pass**
+
+```bash
+bash scripts/check-migration-naming.sh --against-ref origin/main
+cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts
+```
+
+Expected: both PASS. `migrationRlsScope.test.ts` carries a frozen baseline of 122 pre-existing offenders — this file must NOT join it, which the `SELECT set_config(...)` at the top and the `PERFORM set_config(...)` inside each `DO` block are there to guarantee.
+
+- [ ] **Step 4: Update the Drizzle mirror** — in `apps/api/src/db/schema/filesystem.ts`, make `scanPath` non-nullable on both tables and give the scan-state table its composite primary key:
+
+```ts
+export const deviceFilesystemSnapshots = pgTable('device_filesystem_snapshots', {
+  // … unchanged columns …
+  scanPath: text('scan_path').notNull(),
+  // … unchanged columns …
+}, (table) => ({
+  devicePathCapturedIdx: index('idx_device_filesystem_snapshots_device_path_captured')
+    .on(table.deviceId, table.scanPath, table.capturedAt),
+}));
+
+export const deviceFilesystemScanState = pgTable('device_filesystem_scan_state', {
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  scanPath: text('scan_path').notNull(),
+  // … unchanged columns …
+}, (table) => ({
+  pk: primaryKey({ columns: [table.deviceId, table.scanPath] }),
+}));
+```
+
+Add `primaryKey` to the `drizzle-orm/pg-core` import. Note `deviceId` loses `.primaryKey()` and gains `.notNull()` — a composite key is declared in the table-extras callback, not on the column.
+
+- [ ] **Step 5: Prove the schema and the migrations agree**
+
+```bash
+pnpm test-stack up
+export DATABASE_URL="postgresql://breeze:breeze@localhost:5433/breeze"   # the port pnpm test-stack printed
+pnpm db:migrate
+pnpm db:check-drift
+pnpm test-stack down
+```
+
+Expected: the migration applies, and `db:check-drift` reports no drift. Re-running `pnpm db:migrate` a second time before tearing down proves idempotency.
+
+- [ ] **Step 6: Confirm no cascade or export-policy registration changes**
+
+```bash
+grep -n 'device_filesystem' apps/api/src/services/tenantCascade.ts apps/api/src/routes/devices/core.ts apps/api/src/services/tenantExportPolicyRegistry.ts
+```
+
+Expected: all three tables already present. This wave adds **no column** — it only changes nullability and a key — so `CORE_TENANT_EXPORT_POLICY` (which fires on a new column) needs no entry, and neither do the cascade lists. Record that in the PR body rather than leaving it to inference.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add apps/api/migrations/2026-10-20-160200-filesystem-scan-path-not-null.sql \
+  apps/api/src/db/schema/filesystem.ts
+git commit -m "$(cat <<'EOF'
+feat(db): contract filesystem scan_path to NOT NULL and key scan state by (device_id, scan_path)
+
+The contract half of the expand/contract pair (spec §13 #7): W02 shipped the
+column nullable with a backfill and an interim unique index so a rolling
+multi-replica deploy could not break an old writer; this runs once W02 is
+out. Defensive repairs report their row counts, elect system scope first, and
+clear rather than guess a scan-state row W02 could not attribute — relabelling
+one as the OS root can resume a D:\ checkpoint into C:\.
+
+Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §4, §13 #7, §13 #8
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 17: Cancel an in-flight cleanup run, and record a late result without rewriting history
+
+Spec §13 #13. A device org-move cancels every pending command for the device in the same transaction as the org flip (`routes/devices/moveOrg.ts:487-523`), but nothing told the owning cleanup run — it would sit `running` until the retention sweep. And a `file_delete` result that arrives after the run is finalised must be recorded, not dropped, and must not flip a terminal status.
+
+**Files:**
+- Modify: `apps/api/src/services/commandCancelPropagation.ts` (a new branch alongside the `install_patches` one at `:101-126`)
+- Modify (Test): `apps/api/src/services/commandCancelPropagation.test.ts`
+- Modify: `apps/api/src/services/filesystemCleanupRuns.ts` (Task 2) — add `cancelCleanupRunForCommand` and `recordLateCleanupResult`
+- Modify (Test): `apps/api/src/services/filesystemCleanupRuns.test.ts`
+
+**Interfaces:**
+- Consumes: `DbExecutor` (`commandCancelPropagation.ts:30`), `propagateCancelledDeviceCommand`'s `{ commandId, type, payload, completedAt, executor }` shape; the `cleanupRunId` Task 1 puts in every `file_delete` payload.
+- Produces:
+  ```ts
+  export async function cancelCleanupRunForCommand(params: {
+    cleanupRunId: string; reason: string; completedAt: Date; executor?: DbExecutor;
+  }): Promise<boolean>;
+  export async function recordLateCleanupResult(params: {
+    cleanupRunId: string; commandId: string; path: string;
+    status: string; error?: string | null; completedAt: Date;
+  }): Promise<'recorded' | 'ignored'>;
+  ```
+
+- [ ] **Step 1: Write the failing tests** — append to `apps/api/src/services/filesystemCleanupRuns.test.ts`:
+
+```ts
+describe('cancelCleanupRunForCommand', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('fails only a RUNNING file run, and says so in the error column', async () => {
+    const whereMock = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: RUN_A }]) });
+    const setMock = vi.fn().mockReturnValue({ where: whereMock });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
+
+    const cancelled = await cancelCleanupRunForCommand({
+      cleanupRunId: RUN_A,
+      reason: 'cancelled: device moved',
+      completedAt: new Date('2026-09-19T10:00:00.000Z'),
+    });
+
+    expect(cancelled).toBe(true);
+    expect(setMock.mock.calls[0][0]).toMatchObject({
+      status: 'failed',
+      error: 'cancelled: device moved',
+    });
+  });
+
+  it('returns false when the run was already terminal', async () => {
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+
+    expect(await cancelCleanupRunForCommand({
+      cleanupRunId: RUN_A, reason: 'cancelled: device moved', completedAt: new Date(),
+    })).toBe(false);
+  });
+});
+
+describe('recordLateCleanupResult', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('ignores a result for a run that is still running — the route owns that finalise', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ status: 'running', executedActions: [] }]),
+        }),
+      }),
+    } as never);
+
+    expect(await recordLateCleanupResult({
+      cleanupRunId: RUN_A, commandId: 'cmd-1', path: '/tmp/a',
+      status: 'completed', completedAt: new Date(),
+    })).toBe('ignored');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('appends a lateResult entry to a finalised run WITHOUT changing its status', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            status: 'executed',
+            executedActions: [{ path: '/tmp/a', category: 'temp_files', sizeBytes: 1, status: 'skipped_budget' }],
+          }]),
+        }),
+      }),
+    } as never);
+    const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as never);
+
+    expect(await recordLateCleanupResult({
+      cleanupRunId: RUN_A, commandId: 'cmd-1', path: '/tmp/a',
+      status: 'completed', completedAt: new Date('2026-09-19T11:00:00.000Z'),
+    })).toBe('recorded');
+
+    const written = setMock.mock.calls[0][0] as { executedActions: Array<Record<string, unknown>>; status?: unknown };
+    // The original action row is untouched; the late one is additive and tagged.
+    expect(written.executedActions).toHaveLength(2);
+    expect(written.executedActions[1]).toMatchObject({
+      path: '/tmp/a', status: 'completed', lateResult: true, commandId: 'cmd-1',
+    });
+    // Status must NOT be in the update set at all — a late `completed` cannot
+    // turn a `failed` run into a success after the operator has read it.
+    expect(written).not.toHaveProperty('status');
+  });
+});
+```
+
+and append to `apps/api/src/services/commandCancelPropagation.test.ts`:
+
+```ts
+  it('fails the owning cleanup run when a cleanup file_delete is cancelled', async () => {
+    const { cancelCleanupRunForCommand } = await import('./filesystemCleanupRuns');
+    const spy = vi.mocked(cancelCleanupRunForCommand);
+    spy.mockResolvedValue(true);
+
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-1',
+      type: 'file_delete',
+      payload: { path: '/tmp/a', cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      completedAt: new Date('2026-09-19T10:00:00.000Z'),
+      executor: executorStub,
+    });
+
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({
+      cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      reason: 'cancelled: device moved',
+      executor: executorStub,
+    }));
+  });
+
+  it('is a no-op for an ordinary File Manager delete, which has no cleanup run', async () => {
+    const { cancelCleanupRunForCommand } = await import('./filesystemCleanupRuns');
+    const spy = vi.mocked(cancelCleanupRunForCommand);
+
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-2',
+      type: 'file_delete',
+      payload: { path: '/tmp/a' },
+      completedAt: new Date(),
+      executor: executorStub,
+    });
+
+    expect(spy).not.toHaveBeenCalled();
+  });
+```
+
+(add `vi.mock('./filesystemCleanupRuns', () => ({ cancelCleanupRunForCommand: vi.fn() }));` next to the file's existing mocks, and reuse whatever `executorStub` the suite already builds for the `script` / `install_patches` cases.)
+
+- [ ] **Step 2: Run them and watch them fail**
+
+```bash
+cd apps/api && npx vitest run src/services/filesystemCleanupRuns.test.ts src/services/commandCancelPropagation.test.ts
+```
+
+Expected failure: `cancelCleanupRunForCommand is not a function` / `recordLateCleanupResult is not exported`, and `expected "cancelCleanupRunForCommand" to be called` in the propagation suite.
+
+- [ ] **Step 3: Implement the two run-level operations** — append to `apps/api/src/services/filesystemCleanupRuns.ts`:
+
+```ts
+/** Anything that can run these UPDATEs: the ambient `db`, or a caller's open tx. */
+type CleanupRunExecutor = Pick<typeof db, 'update' | 'select'>;
+
+/**
+ * Terminalise a cleanup run whose dispatched command was cancelled (spec §13
+ * #13). Only a `running` run moves; a `previewed` one was never dispatched and
+ * an already-terminal one keeps the outcome the operator has read.
+ *
+ * Takes the caller's executor because the cancel-on-event paths (device
+ * org-move, decommission) run inside their own transaction and must
+ * terminalise the owning record atomically with the cancel itself.
+ */
+export async function cancelCleanupRunForCommand(params: {
+  cleanupRunId: string;
+  reason: string;
+  completedAt: Date;
+  executor?: CleanupRunExecutor;
+}): Promise<boolean> {
+  const executor = params.executor ?? db;
+  const [row] = await executor
+    .update(deviceFilesystemCleanupRuns)
+    .set({ status: 'failed', error: params.reason, updatedAt: params.completedAt })
+    .where(and(
+      eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId),
+      eq(deviceFilesystemCleanupRuns.status, 'running'),
+    ))
+    .returning({ id: deviceFilesystemCleanupRuns.id });
+  return Boolean(row);
+}
+
+/**
+ * Record a `file_delete` result that arrived after its run was finalised.
+ *
+ * It is appended to `executed_actions` tagged `lateResult: true` and the run's
+ * `status` is deliberately NOT in the update set: a late `completed` must never
+ * turn a run the operator has already read as `failed` into a success, and a
+ * late `failed` must not reopen a closed one. Dropping it instead would lose
+ * the only record that the device eventually acted.
+ */
+export async function recordLateCleanupResult(params: {
+  cleanupRunId: string;
+  commandId: string;
+  path: string;
+  status: string;
+  error?: string | null;
+  completedAt: Date;
+}): Promise<'recorded' | 'ignored'> {
+  const [run] = await db
+    .select({
+      status: deviceFilesystemCleanupRuns.status,
+      executedActions: deviceFilesystemCleanupRuns.executedActions,
+    })
+    .from(deviceFilesystemCleanupRuns)
+    .where(eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId))
+    .limit(1);
+
+  // `previewed` was never dispatched; `running` is still owned by the route
+  // that claimed it, and that route writes the authoritative action list.
+  if (!run || run.status === 'previewed' || run.status === 'running') return 'ignored';
+
+  const existing = Array.isArray(run.executedActions) ? run.executedActions : [];
+  await db
+    .update(deviceFilesystemCleanupRuns)
+    .set({
+      executedActions: [
+        ...existing,
+        {
+          path: params.path,
+          status: params.status,
+          error: params.error ?? undefined,
+          commandId: params.commandId,
+          lateResult: true,
+          receivedAt: params.completedAt.toISOString(),
+        },
+      ],
+      updatedAt: params.completedAt,
+    })
+    .where(eq(deviceFilesystemCleanupRuns.id, params.cleanupRunId));
+
+  return 'recorded';
+}
+```
+
+- [ ] **Step 4: Add the cancel branch** — in `apps/api/src/services/commandCancelPropagation.ts`, after the `install_patches` block:
+
+```ts
+  // Disk Cleanup v2 W03 (spec §13 #13). A cleanup `file_delete` carries the id
+  // of the run that dispatched it (routes/devices/filesystem.ts). Cancelling
+  // the command without terminalising that run leaves it `running` until the
+  // 24-hour retention sweep, which is the same "waiting forever on a delivery
+  // that will never happen" this module exists to prevent.
+  //
+  // DYNAMIC import for the same reason as the patch branch above: keeping this
+  // module a leaf. An ordinary File Manager delete carries no `cleanupRunId`
+  // and falls through untouched.
+  if (type === 'file_delete') {
+    const cleanupRunId =
+      payload && typeof payload.cleanupRunId === 'string' && payload.cleanupRunId.length > 0
+        ? payload.cleanupRunId
+        : null;
+    if (cleanupRunId) {
+      const { cancelCleanupRunForCommand } = await import('./filesystemCleanupRuns');
+      // Not try/caught, exactly like the two branches above: `executor` is
+      // frequently the caller's open transaction (the org-move flip), and
+      // swallowing a failure here would commit a cancelled command alongside a
+      // run still claiming to be `running`.
+      await cancelCleanupRunForCommand({
+        cleanupRunId,
+        reason: 'cancelled: device moved',
+        completedAt,
+        executor,
+      });
+    }
+  }
+```
+
+- [ ] **Step 5: Run the tests and watch them pass**
+
+```bash
+cd apps/api && npx vitest run src/services/filesystemCleanupRuns.test.ts src/services/commandCancelPropagation.test.ts src/routes/devices/moveOrg.test.ts
+```
+
+Expected: all three PASS. `moveOrg.test.ts` is included because it exercises `propagateCancelledDeviceCommands` end-to-end and is the suite a mis-typed branch would redden.
+
+- [ ] **Step 6: Typecheck and commit**
+
+```bash
+pnpm exec tsc --noEmit --project apps/api/tsconfig.json
+git add apps/api/src/services/filesystemCleanupRuns.ts apps/api/src/services/filesystemCleanupRuns.test.ts \
+  apps/api/src/services/commandCancelPropagation.ts apps/api/src/services/commandCancelPropagation.test.ts
+git commit -m "$(cat <<'EOF'
+feat(filesystem): cancel an in-flight cleanup run, and keep late results out of its verdict
+
+A device org-move cancels every pending command in the org-flip transaction,
+but nothing told the cleanup run that dispatched them — it sat `running` until
+the retention sweep. commandCancelPropagation now has a file_delete branch
+keyed on the payload's cleanupRunId (an ordinary File Manager delete carries
+none and falls through), terminalising the run in the caller's transaction.
+
+A result that arrives after a run is finalised is appended to executed_actions
+tagged lateResult, with `status` deliberately absent from the update set: a
+late success must not rewrite a failure the operator has already read.
+
+Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §13 #13
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 18: AI `disk_cleanup` — `cleanupRunId` required on execute, carried from the tool's own preview
+
+Spec §13 #16 moves this out of W05: requiring `cleanupRunId` and fixing its consumers have to land together, or the AI executor and act-mode pinning are broken between the two waves. The AI tool runs its own lane (`services/aiToolsFilesystem.ts:255-370` never calls the route), so this is a parallel change, not a caller update.
+
+**Files:**
+- Modify: `apps/api/src/services/aiToolSchemas.ts` (`disk_cleanup`, `:998-1007`)
+- Modify: `apps/api/src/services/aiToolsFilesystem.ts` (the `disk_cleanup` handler, `:255-370`)
+- Create (Test): `apps/api/src/services/aiToolsFilesystem.cleanupRunPin.test.ts`
+
+**Interfaces:**
+- Consumes: `buildCleanupPreview`, `getLatestFilesystemCleanupSnapshot`, `readPlanPreviewCandidates`, `safeCleanupCategories` from `services/filesystemAnalysis`; `CLEANUP_PREVIEW_TTL_HOURS` from `routes/devices/filesystem` (Task 1).
+- Produces:
+  - `disk_cleanup` input schema gains `cleanupRunId: uuid.optional()` with a refinement: `action === 'execute'` requires **either** an explicit `cleanupRunId` **or** a run the tool pinned during this same agent run.
+  - The handler's `execute` branch resolves its candidates from that pinned run (`readPlanPreviewCandidates`) instead of re-deriving them from the newest snapshot, refuses a run past the TTL, and claims/finalises the run in place exactly as the route does — one row per cleanup on this lane too.
+  - `export function pinnedCleanupRunFor(sessionKey: string): string | undefined` and `export function rememberCleanupRun(sessionKey: string, runId: string): void` — a bounded in-process map keyed by `${auth.user.id}:${deviceId}`, so `preview` → `execute` inside one agent run needs no model-supplied id.
+
+- [ ] **Step 1: Write the failing test** — create `apps/api/src/services/aiToolsFilesystem.cleanupRunPin.test.ts` following the mock shape of the existing `aiToolsFilesystem.diskCleanupRequestedBy.test.ts` (copy its `vi.mock` block verbatim; do not invent a second harness):
+
+```ts
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+// …the same vi.mock block as aiToolsFilesystem.diskCleanupRequestedBy.test.ts…
+
+describe('disk_cleanup run pinning (spec §13 #16)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('rejects execute with neither an explicit cleanupRunId nor a pinned one', async () => {
+    const out = JSON.parse(await callTool('disk_cleanup', {
+      deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a'],
+    }));
+    expect(out.error).toContain('cleanupRunId');
+    // Nothing may be dispatched without a pinned plan.
+    expect(aiExecuteCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('remembers the run id from its own preview and uses it on the next execute', async () => {
+    const preview = JSON.parse(await callTool('disk_cleanup', {
+      deviceId: DEVICE_ID, action: 'preview',
+    }));
+    expect(preview.cleanupRunId).toBe(RUN_ID);
+
+    aiExecuteCommandMock.mockResolvedValue({ status: 'completed' });
+    const executed = JSON.parse(await callTool('disk_cleanup', {
+      deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a'],
+    }));
+
+    expect(executed.cleanupRunId).toBe(RUN_ID);
+    // Resolved from the PINNED plan, never re-derived from the latest snapshot.
+    expect(readPlanPreviewCandidatesMock).toHaveBeenCalled();
+  });
+
+  it('honours an explicit cleanupRunId over the pinned one', async () => {
+    await callTool('disk_cleanup', { deviceId: DEVICE_ID, action: 'preview' });
+    aiExecuteCommandMock.mockResolvedValue({ status: 'completed' });
+
+    const out = JSON.parse(await callTool('disk_cleanup', {
+      deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a'], cleanupRunId: OTHER_RUN_ID,
+    }));
+    expect(out.cleanupRunId).toBe(OTHER_RUN_ID);
+  });
+
+  it('refuses a pinned run older than the preview TTL', async () => {
+    claimReturnsRun({ requestedAt: new Date(Date.now() - 25 * 3_600_000) });
+    const out = JSON.parse(await callTool('disk_cleanup', {
+      deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a'], cleanupRunId: RUN_ID,
+    }));
+    expect(out.error).toBe('preview_expired');
+    expect(aiExecuteCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('finalises the pinned run instead of inserting a second one', async () => {
+    claimReturnsRun({});
+    aiExecuteCommandMock.mockResolvedValue({ status: 'completed' });
+    await callTool('disk_cleanup', {
+      deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a'], cleanupRunId: RUN_ID,
+    });
+    expect(dbInsertMock).not.toHaveBeenCalled();
+    expect(dbUpdateMock).toHaveBeenCalled();
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+cd apps/api && npx vitest run src/services/aiToolsFilesystem.cleanupRunPin.test.ts
+```
+
+Expected failure: the first case fails with `expected undefined to contain 'cleanupRunId'` — the handler still accepts a bare `paths` execute and derives its own candidates.
+
+- [ ] **Step 3: Widen the schema** — in `apps/api/src/services/aiToolSchemas.ts`, replace the `disk_cleanup` entry:
+
+```ts
+  disk_cleanup: z.object({
+    deviceId: uuid,
+    action: z.enum(['preview', 'execute']),
+    categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
+    paths: z.array(cleanupPath).min(1).max(200).optional(),
+    maxCandidates: z.number().int().min(1).max(200).optional(),
+    // W03 (spec §5.2, §13 #16). Optional in the SCHEMA, mandatory in the
+    // HANDLER: the tool remembers the run its own `preview` created, so a
+    // playbook step that cannot see a previous step's output still executes
+    // against a pinned plan. The handler refuses an execute with neither.
+    cleanupRunId: uuid.optional(),
+  }).refine(
+    (data) => data.action === 'preview' || (data.action === 'execute' && Array.isArray(data.paths) && data.paths.length > 0),
+    { message: 'paths are required for execute action' }
+  ),
+```
+
+- [ ] **Step 4: Implement the pin and rewrite the execute branch** — in `apps/api/src/services/aiToolsFilesystem.ts`:
+
+```ts
+/**
+ * Run ids this tool pinned during a preview, keyed by `${userId}:${deviceId}`
+ * (spec §9: "the tool's own state carries it between the two calls").
+ *
+ * In-process and bounded — an agent run is executed by one worker process, and
+ * a lost pin degrades to "the model must pass cleanupRunId", never to an
+ * unpinned delete. A plain Map with an insertion cap rather than a DB row: this
+ * is a hint, not a durable fact, and the authoritative pin is the run row.
+ */
+const MAX_PINNED_CLEANUP_RUNS = 500;
+const pinnedCleanupRuns = new Map<string, string>();
+
+export function rememberCleanupRun(sessionKey: string, runId: string): void {
+  if (pinnedCleanupRuns.size >= MAX_PINNED_CLEANUP_RUNS) {
+    const oldest = pinnedCleanupRuns.keys().next().value;
+    if (oldest !== undefined) pinnedCleanupRuns.delete(oldest);
+  }
+  pinnedCleanupRuns.set(sessionKey, runId);
+}
+
+export function pinnedCleanupRunFor(sessionKey: string): string | undefined {
+  return pinnedCleanupRuns.get(sessionKey);
+}
+```
+
+In the `preview` branch, after the insert, remember it:
+
+```ts
+        if (cleanupRun?.id) rememberCleanupRun(`${auth.user.id}:${deviceId}`, cleanupRun.id);
+```
+
+Replace the whole `execute` branch's candidate resolution and persistence. It now mirrors the route (Task 1) — claim, dispatch, finalise — with the same TTL rule:
+
+```ts
+      const sessionKey = `${auth.user.id}:${deviceId}`;
+      const runId = typeof input.cleanupRunId === 'string' && input.cleanupRunId
+        ? input.cleanupRunId
+        : pinnedCleanupRunFor(sessionKey);
+      if (!runId) {
+        return JSON.stringify({
+          error: 'cleanupRunId is required for execute — run disk_cleanup with action "preview" first',
+        });
+      }
+
+      const [claimed] = await db
+        .update(deviceFilesystemCleanupRuns)
+        .set({ status: 'running', approvedAt: new Date(), updatedAt: new Date() })
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, runId),
+          eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
+          eq(deviceFilesystemCleanupRuns.status, 'previewed'),
+        ))
+        .returning({
+          id: deviceFilesystemCleanupRuns.id,
+          plan: deviceFilesystemCleanupRuns.plan,
+          requestedAt: deviceFilesystemCleanupRuns.requestedAt,
+        });
+      if (!claimed) {
+        return JSON.stringify({ error: 'run_not_previewed', cleanupRunId: runId });
+      }
+
+      const requestedAt = claimed.requestedAt instanceof Date
+        ? claimed.requestedAt
+        : new Date(claimed.requestedAt as unknown as string);
+      if (Date.now() - requestedAt.getTime() > CLEANUP_PREVIEW_TTL_HOURS * 3_600_000) {
+        await db.update(deviceFilesystemCleanupRuns)
+          .set({ status: 'previewed', approvedAt: null, updatedAt: new Date() })
+          .where(eq(deviceFilesystemCleanupRuns.id, runId));
+        return JSON.stringify({ error: 'preview_expired', cleanupRunId: runId, ttlHours: CLEANUP_PREVIEW_TTL_HOURS });
+      }
+
+      const pinnedCandidates = readPlanPreviewCandidates(claimed.plan);
+      const byPath = new Map(pinnedCandidates.map((candidate) => [candidate.path, candidate]));
+```
+
+the dispatch loop keeps `aiExecuteCommand` but carries the run id, exactly like the route:
+
+```ts
+        const commandResult = await aiExecuteCommand(auth, 'disk_cleanup', deviceId, 'file_delete', {
+          path: candidate.path,
+          recursive: true,
+          permanent: true,
+          cleanupGuard: true,
+          cleanupRunId: runId,
+        }, { userId: auth.user.id, timeoutMs: 30_000 });
+```
+
+and the tail finalises instead of inserting:
+
+```ts
+      await db
+        .update(deviceFilesystemCleanupRuns)
+        .set({
+          status: runStatus,
+          executedActions: actions,
+          bytesReclaimed,
+          error: failedCount > 0 ? `${failedCount} cleanup action(s) failed` : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(deviceFilesystemCleanupRuns.id, runId));
+
+      return JSON.stringify({
+        cleanupRunId: runId,
+        status: runStatus,
+        bytesReclaimed,
+        selectedCount: selected.length,
+        failedCount,
+        actions,
+      });
+```
+
+- [ ] **Step 5: Run the AI-tool suites and watch them pass**
+
+```bash
+cd apps/api && npx vitest run src/services/aiToolsFilesystem.cleanupRunPin.test.ts \
+  src/services/aiToolsFilesystem.diskCleanupRequestedBy.test.ts \
+  src/services/aiToolsFilesystem.fileWriteCap.test.ts \
+  src/services/aiToolSchemas.test.ts
+```
+
+Expected: all PASS. List the sibling files explicitly — a `src/services/aiToolsFilesystem` substring filter also matches unrelated files, and a trailing slash would skip these dotted siblings entirely.
+
+- [ ] **Step 6: Typecheck and commit**
+
+```bash
+pnpm exec tsc --noEmit --project apps/api/tsconfig.json
+git add apps/api/src/services/aiToolSchemas.ts apps/api/src/services/aiToolsFilesystem.ts \
+  apps/api/src/services/aiToolsFilesystem.cleanupRunPin.test.ts
+git commit -m "$(cat <<'EOF'
+feat(ai): disk_cleanup executes only against a pinned cleanup run
+
+Spec §13 #16 pulls this out of W05 so the requirement and its consumer land
+together. The tool remembers the run its own preview created (keyed by
+user+device) and the execute branch resolves candidates from that pinned plan
+instead of re-deriving them from the newest snapshot, claims the run before
+dispatching, refuses one past the 24h preview TTL, and finalises it in place
+instead of inserting a second row.
+
+Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §9, §13 #2, §13 #16
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 19: `pinDiskCleanup` pins the run the preview created, not "the newest previewed run"
+
+**Files:**
+- Modify: `apps/api/src/services/aiAgents/actManifest.ts` (`ActTarget` `:32`, `diskCleanupExecute.normalizeTarget` `:134-152`)
+- Modify: `apps/api/src/services/aiAgents/actRevalidation.ts` (`pinDiskCleanup` `:137-173`, the `case 'disk_cleanup'` dispatch at `:258`)
+- Modify: `apps/api/src/services/aiAgents/actVerify.ts` (`actTargetSummary` `:413`)
+- Modify (Test): `apps/api/src/services/aiAgents/actRevalidation.test.ts`, `apps/api/src/services/aiAgents/actVerify.test.ts` (`:236`, `:337`)
+
+**Interfaces:**
+- Consumes: `deviceFilesystemCleanupRuns`, `readPlanPreviewCandidates`, `ACT_DISK_CLEANUP_MAX_BYTES_V1`.
+- Produces: `ActTarget` gains the run id — `{ kind: 'disk_cleanup'; cleanupRunId: string; paths: string[] }`; `pinDiskCleanup` looks the run up **by id**, requires `status='previewed'`, enforces the TTL, and denies when the id is absent.
+
+- [ ] **Step 1: Write the failing test** — append to `apps/api/src/services/aiAgents/actRevalidation.test.ts`:
+
+```ts
+  it('denies an unattended disk_cleanup with no pinned run id', async () => {
+    const result = await revalidateActExecution(argsFor({
+      toolName: 'disk_cleanup',
+      input: { deviceId: RUN_DEVICE, action: 'execute', paths: ['/tmp/a'] },
+    }));
+    expect(result).toMatchObject({ ok: false });
+    expect('deny' in result && result.deny).toContain('cleanupRunId');
+  });
+
+  it('pins the run by id — a NEWER previewed run must not be substituted', async () => {
+    // Two previewed runs exist; the call names the older one. The old
+    // "newest previewed run" lookup would have authorised the wrong plan.
+    selectReturns([{ plan: OLD_PLAN, status: 'previewed', requestedAt: new Date() }]);
+    const result = await revalidateActExecution(argsFor({
+      toolName: 'disk_cleanup',
+      input: { deviceId: RUN_DEVICE, action: 'execute', cleanupRunId: OLD_RUN_ID, paths: ['/tmp/old'] },
+    }));
+    expect(result).toMatchObject({ ok: true });
+    expect(whereClauseText()).toContain(OLD_RUN_ID);
+  });
+
+  it('denies a pinned run that is no longer previewed', async () => {
+    selectReturns([{ plan: OLD_PLAN, status: 'executed', requestedAt: new Date() }]);
+    const result = await revalidateActExecution(argsFor({
+      toolName: 'disk_cleanup',
+      input: { deviceId: RUN_DEVICE, action: 'execute', cleanupRunId: OLD_RUN_ID, paths: ['/tmp/old'] },
+    }));
+    expect('deny' in result && result.deny).toContain('no longer previewable');
+  });
+
+  it('denies a pinned run past the preview TTL', async () => {
+    selectReturns([{ plan: OLD_PLAN, status: 'previewed', requestedAt: new Date(Date.now() - 25 * 3_600_000) }]);
+    const result = await revalidateActExecution(argsFor({
+      toolName: 'disk_cleanup',
+      input: { deviceId: RUN_DEVICE, action: 'execute', cleanupRunId: OLD_RUN_ID, paths: ['/tmp/old'] },
+    }));
+    expect('deny' in result && result.deny).toContain('expired');
+  });
+```
+
+and change the two `actVerify.test.ts` fixtures that build a target (`:236`, `:337`) to include `cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'`, plus assert the summary names it:
+
+```ts
+    expect(actTargetSummary({ kind: 'disk_cleanup', cleanupRunId: RUN_ID, paths: ['/tmp/a', '/tmp/b', '/tmp/c'] }))
+      .toBe(`3 path(s) from run ${RUN_ID}`);
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+```bash
+cd apps/api && npx vitest run src/services/aiAgents/actRevalidation.test.ts src/services/aiAgents/actVerify.test.ts
+```
+
+Expected failure: TypeScript rejects `cleanupRunId` on the `disk_cleanup` target shape, and the new deny cases fail with `expected { ok: true } to match { ok: false }` — the current `pinDiskCleanup` happily authorises against the newest previewed run.
+
+- [ ] **Step 3: Carry the run id on the target** — in `apps/api/src/services/aiAgents/actManifest.ts`:
+
+```ts
+  | { kind: 'disk_cleanup'; cleanupRunId: string; paths: string[] }
+```
+
+and in `diskCleanupExecute.normalizeTarget`, after the existing `paths` validation:
+
+```ts
+    const cleanupRunId = readString(input, 'cleanupRunId');
+    if (!cleanupRunId) {
+      // Unattended execution must name the plan it was authorised against.
+      // "Whatever was previewed most recently" is not an identity: a second
+      // preview between the model's two calls silently swaps the plan.
+      return { ok: false, reason: 'cleanupRunId is required for an unattended disk_cleanup execute' };
+    }
+    return { ok: true, target: { kind: 'disk_cleanup', cleanupRunId, paths } };
+```
+
+- [ ] **Step 4: Pin by id** — in `apps/api/src/services/aiAgents/actRevalidation.ts`, replace the body of `pinDiskCleanup`:
+
+```ts
+async function pinDiskCleanup(
+  target: Extract<ActTarget, { kind: 'disk_cleanup' }>,
+  run: RevalidateActExecutionArgs['run'],
+): Promise<PinStepResult> {
+  return inSystemDbContext(async () => {
+    // BY ID (spec §13 #16). The previous lookup took the newest `previewed`
+    // run for the device, so a preview created between the model's preview and
+    // its execute silently became the authorised plan — the exact "pin the
+    // identity, not the shape" failure the act gate exists to prevent. Still
+    // scoped by device AND org: a run id from another tenant must not resolve.
+    const [pinned] = await db
+      .select({
+        plan: deviceFilesystemCleanupRuns.plan,
+        status: deviceFilesystemCleanupRuns.status,
+        requestedAt: deviceFilesystemCleanupRuns.requestedAt,
+      })
+      .from(deviceFilesystemCleanupRuns)
+      .where(and(
+        eq(deviceFilesystemCleanupRuns.id, target.cleanupRunId),
+        eq(deviceFilesystemCleanupRuns.deviceId, run.deviceId),
+        eq(deviceFilesystemCleanupRuns.orgId, run.orgId),
+      ))
+      .limit(1);
+
+    if (!pinned) {
+      return { ok: false, deny: 'The pinned disk-cleanup run does not exist for this device' };
+    }
+    if (pinned.status !== 'previewed') {
+      return { ok: false, deny: `The pinned disk-cleanup run is no longer previewable (status: ${pinned.status})` };
+    }
+
+    const requestedAt = pinned.requestedAt instanceof Date
+      ? pinned.requestedAt
+      : new Date(pinned.requestedAt as unknown as string);
+    if (Date.now() - requestedAt.getTime() > CLEANUP_PREVIEW_TTL_HOURS * 3_600_000) {
+      return { ok: false, deny: `The pinned disk-cleanup preview has expired (older than ${CLEANUP_PREVIEW_TTL_HOURS}h)` };
+    }
+
+    const candidatePaths = new Set(readPlanPreviewCandidates(pinned.plan).map((c) => c.path));
+    const outside = target.paths.find((p) => !candidatePaths.has(p));
+    if (outside) {
+      return { ok: false, deny: `Path "${outside}" is not part of the pinned cleanup run` };
+    }
+
+    const estimatedBytes = readEstimatedBytes(pinned.plan);
+    if (estimatedBytes > ACT_DISK_CLEANUP_MAX_BYTES_V1) {
+      return {
+        ok: false,
+        deny: `Cleanup plan (${estimatedBytes} bytes) exceeds the act-mode byte bound (${ACT_DISK_CLEANUP_MAX_BYTES_V1})`,
+      };
+    }
+
+    return { ok: true, extra: {} };
+  });
+}
+```
+
+Add the import: `import { CLEANUP_PREVIEW_TTL_HOURS } from '../../routes/devices/filesystem';` — and if that edge would create an import cycle (`tsc` will say so), move the constant to `services/filesystemAnalysis.ts` and re-export it from the route instead of duplicating the number.
+
+- [ ] **Step 5: Name the run in the summary** — in `apps/api/src/services/aiAgents/actVerify.ts`:
+
+```ts
+    case 'disk_cleanup': return `${target.paths.length} path(s) from run ${target.cleanupRunId}`;
+```
+
+- [ ] **Step 6: Run the act suites and watch them pass**
+
+```bash
+cd apps/api && npx vitest run src/services/aiAgents/actRevalidation.test.ts \
+  src/services/aiAgents/actVerify.test.ts \
+  src/services/aiAgents/actManifest.test.ts \
+  src/services/aiAgents/runLoop.test.ts
+```
+
+Expected: all PASS. `runLoop.test.ts` builds `{ kind: 'disk_cleanup', paths: [...] }` fixtures at `:1269` and `:1304`; both need `cleanupRunId` added, and that is exactly the compile error that tells you no other fixture was missed.
+
+- [ ] **Step 7: Typecheck and commit**
+
+```bash
+pnpm exec tsc --noEmit --project apps/api/tsconfig.json
+git add apps/api/src/services/aiAgents/actManifest.ts apps/api/src/services/aiAgents/actRevalidation.ts \
+  apps/api/src/services/aiAgents/actVerify.ts apps/api/src/services/aiAgents/actRevalidation.test.ts \
+  apps/api/src/services/aiAgents/actVerify.test.ts apps/api/src/services/aiAgents/runLoop.test.ts
+git commit -m "$(cat <<'EOF'
+fix(ai-agents): pin an unattended disk cleanup to a run id, not to "the newest preview"
+
+pinDiskCleanup authorised paths against whichever previewed run was newest for
+the device, so a preview created between the agent's preview and its execute
+silently became the authorised plan. The act target now carries the
+cleanupRunId, the lookup is by id (still scoped to the run's device and org),
+and a run that is no longer `previewed` or is past the 24h preview TTL is
+denied rather than executed.
+
+Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §13 #2, §13 #16
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 20: Playbook variables resolve after the step that produces them
+
+`resolvePlaybookSteps` runs ONCE, before the first step (`playbookActExecutor.ts:805`), against the model's `execute_playbook` variables. So the Disk Cleanup built-in's execute step cannot receive a `cleanupRunId` its own preview step produced — the variable does not exist yet when substitution happens. Spec §13 #16's "playbook variable ordering".
+
+**Files:**
+- Modify: `apps/api/src/services/aiAgents/playbookActExecutor.ts` (`resolveVariable`/`resolvePlaybookSteps` `:318-368`, `runPlaybookSteps` `:599-…`, the call site `:805`)
+- Modify: `apps/api/src/services/builtInPlaybooks.ts` (the Disk Cleanup execute step, `:46-56`)
+- Modify (Test): `apps/api/src/services/aiAgents/playbookActExecutor.test.ts`
+
+**Interfaces:**
+- Consumes: `parseJsonObject` (`playbookActExecutor.ts:374`), the existing `deviceId` hardening (spread-last + post-substitution force, `:338-366`).
+- Produces: `runPlaybookSteps` re-resolves each step's `toolInput` immediately before that step runs, against the original variables **plus** outputs harvested from completed steps; a `disk_cleanup` preview step contributes `cleanupRunId`. The built-in's execute step declares `cleanupRunId: '{{cleanupRunId}}'`.
+
+- [ ] **Step 1: Write the failing test** — append to `apps/api/src/services/aiAgents/playbookActExecutor.test.ts`:
+
+```ts
+  it('resolves {{cleanupRunId}} from the PREVIOUS step’s output, not from the caller variables', async () => {
+    const steps = [
+      { type: 'act', name: 'Preview', tool: 'disk_cleanup',
+        toolInput: { deviceId: '{{deviceId}}', action: 'preview' } },
+      { type: 'act', name: 'Execute', tool: 'disk_cleanup',
+        toolInput: { deviceId: '{{deviceId}}', action: 'execute', cleanupRunId: '{{cleanupRunId}}', paths: '{{cleanupPaths}}' } },
+    ];
+    const executeToolFn = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({ cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', candidates: [] }))
+      .mockResolvedValueOnce(JSON.stringify({ status: 'executed' }));
+
+    await runPlaybookSteps(resolvePlaybookSteps(steps as never, { cleanupPaths: ['/tmp/a'] }, DEVICE_ID), {
+      ...baseCtx, deps: { ...baseCtx.deps, executeToolFn },
+    });
+
+    const executeInput = executeToolFn.mock.calls[1]![1] as Record<string, unknown>;
+    expect(executeInput.cleanupRunId).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    // The array variable still keeps its type through the late resolution.
+    expect(executeInput.paths).toEqual(['/tmp/a']);
+  });
+
+  it('leaves an unresolved {{cleanupRunId}} token alone so normalizeTarget fails closed', async () => {
+    const steps = [
+      { type: 'act', name: 'Execute', tool: 'disk_cleanup',
+        toolInput: { deviceId: '{{deviceId}}', action: 'execute', cleanupRunId: '{{cleanupRunId}}', paths: ['/tmp/a'] } },
+    ];
+    const executeToolFn = vi.fn();
+    const outcome = await runPlaybookSteps(resolvePlaybookSteps(steps as never, {}, DEVICE_ID), {
+      ...baseCtx, deps: { ...baseCtx.deps, executeToolFn },
+    });
+
+    expect(outcome.execution).toBe('failed');
+    expect(executeToolFn).not.toHaveBeenCalled();
+  });
+
+  it('still forces deviceId back to the run device after late resolution', async () => {
+    const steps = [
+      { type: 'act', name: 'Preview', tool: 'disk_cleanup', toolInput: { deviceId: '{{deviceId}}', action: 'preview' } },
+      { type: 'act', name: 'Execute', tool: 'disk_cleanup',
+        toolInput: { deviceId: '{{deviceId}}', action: 'execute', cleanupRunId: '{{cleanupRunId}}', paths: ['/tmp/a'] } },
+    ];
+    const executeToolFn = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({ cleanupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }))
+      .mockResolvedValueOnce(JSON.stringify({ status: 'executed' }));
+
+    await runPlaybookSteps(
+      resolvePlaybookSteps(steps as never, { deviceId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' }, DEVICE_ID),
+      { ...baseCtx, deps: { ...baseCtx.deps, executeToolFn } },
+    );
+
+    // The #3826 hardening must survive the second substitution pass.
+    expect((executeToolFn.mock.calls[1]![1] as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+  });
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+cd apps/api && npx vitest run src/services/aiAgents/playbookActExecutor.test.ts
+```
+
+Expected failure: `expected '{{cleanupRunId}}' to be 'aaaaaaaa-…'` — the token is never substituted because the variable did not exist at the single up-front resolution.
+
+- [ ] **Step 3: Harvest step outputs and re-resolve late** — in `apps/api/src/services/aiAgents/playbookActExecutor.ts`, export the two helpers the loop now needs and add the harvester:
+
+```ts
+/**
+ * Variables a completed step contributes to the ones that follow it.
+ *
+ * Deliberately a CLOSED allowlist, not "merge the whole JSON result": a step's
+ * output is model-adjacent data, and letting it introduce arbitrary variables
+ * would let a tool result rewrite a later step's `deviceId` — the exact attack
+ * the #3826 hardening below closes at the other end. Today exactly one key is
+ * harvested, from exactly one tool.
+ */
+export function harvestStepVariables(step: PlaybookStep, output: string | undefined): Record<string, unknown> {
+  if (step.tool !== 'disk_cleanup') return {};
+  const parsed = parseJsonObject(output);
+  const runId = parsed && typeof parsed.cleanupRunId === 'string' ? parsed.cleanupRunId : null;
+  return runId ? { cleanupRunId: runId } : {};
+}
+
+/** The same substitution `resolvePlaybookSteps` does, for ONE step, late. */
+export function resolveStepLate(
+  step: PlaybookStep,
+  variables: Record<string, unknown>,
+  deviceId: string,
+): PlaybookStep {
+  const allVariables: Record<string, unknown> = { ...variables, deviceId };
+  const resolvedInput = step.toolInput
+    ? (resolveVariable(step.toolInput, allVariables) as Record<string, unknown>)
+    : step.toolInput;
+  // #3826: the post-substitution force runs again here, or the late pass would
+  // be a second, unhardened path to the same field.
+  if (resolvedInput && 'deviceId' in resolvedInput) {
+    resolvedInput.deviceId = deviceId;
+  }
+  return { ...step, toolInput: resolvedInput };
+}
+```
+
+In `runPlaybookSteps`, carry a mutable bag and re-resolve at the top of the loop body:
+
+```ts
+export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Promise<RunStepsOutcome> {
+  const results: PlaybookStepResult[] = [];
+  /** Variables produced by steps that have already run (spec §13 #16). The
+   *  up-front pass in resolvePlaybookSteps cannot see these by construction —
+   *  they do not exist until the step that produces them has completed. */
+  const producedVariables: Record<string, unknown> = {};
+  // … existing locals unchanged …
+
+  for (let i = 0; i < steps.length && !stop; i++) {
+    const step = Object.keys(producedVariables).length > 0
+      ? resolveStepLate(steps[i]!, producedVariables, ctx.run.deviceId)
+      : steps[i]!;
+    // … the existing body, unchanged, then after a step completes: …
+```
+
+and immediately after each `diagnose` / `act` step pushes a `completed` result:
+
+```ts
+        Object.assign(producedVariables, harvestStepVariables(step, output));
+```
+
+The up-front `resolvePlaybookSteps` pass stays exactly as it is: a token with no matching variable is left untouched there, which is what lets the late pass fill it and what keeps `normalizeTarget`'s fail-closed rejection for a token nobody ever supplies.
+
+- [ ] **Step 4: Declare the variable in the built-in** — in `apps/api/src/services/builtInPlaybooks.ts`, the Disk Cleanup execute step (`:46-56`):
+
+```ts
+      {
+        type: 'act',
+        name: 'Execute cleanup',
+        description: 'Delete selected cleanup candidates from the run the preview step pinned.',
+        tool: 'disk_cleanup',
+        toolInput: {
+          deviceId: '{{deviceId}}',
+          action: 'execute',
+          // Produced by the preview step above, substituted after it runs.
+          // Never a caller-supplied variable: the model must not be able to
+          // point an execute at a plan it did not just create.
+          cleanupRunId: '{{cleanupRunId}}',
+          paths: '{{cleanupPaths}}',
+        },
+      },
+```
+
+- [ ] **Step 5: Run the playbook suites and watch them pass**
+
+```bash
+cd apps/api && npx vitest run src/services/aiAgents/playbookActExecutor.test.ts \
+  src/services/aiAgents/playbookActExecutor.dbcontext.test.ts \
+  src/services/builtInPlaybooks.test.ts
+```
+
+Expected: all PASS, including the pre-existing `a bare {{cleanupPaths}} token resolves to the real array, not a comma-joined string` case at `:663` — the late pass must not regress type preservation.
+
+- [ ] **Step 6: Typecheck and commit**
+
+```bash
+pnpm exec tsc --noEmit --project apps/api/tsconfig.json
+git add apps/api/src/services/aiAgents/playbookActExecutor.ts \
+  apps/api/src/services/aiAgents/playbookActExecutor.test.ts \
+  apps/api/src/services/builtInPlaybooks.ts
+git commit -m "$(cat <<'EOF'
+fix(ai-agents): playbook variables resolve after the step that produces them
+
+resolvePlaybookSteps substituted once, before the first step, against the
+model's execute_playbook variables — so the Disk Cleanup built-in's execute
+step could never receive a cleanupRunId its own preview step created. Steps
+are now re-resolved immediately before they run, against a bag of variables
+harvested from completed steps through a closed allowlist (one key, one
+tool), with the #3826 deviceId force applied to the late pass too.
+
+Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §13 #16
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+
+## PR body
+
+The PR description must carry, in this order:
+
+- `Closes #<subissue#>`.
+- **What ships:** the finished Disk Cleanup tab; `cleanupRunId` required and single-use; the cleanup-run history endpoints and their daily retention; File Manager reduced to a link; and the five §13 contracts this wave owns — self-managed transactions (#5), the 24-hour preview TTL (#2), the `scan_path` NOT NULL contraction (#7), cancellation and late results (#13), and the AI/act parity moved out of W05 (#16).
+- **Settings/registry statement:** no new table, no new column, no new setting. Unchanged and stated as such: `rls-coverage.integration.test.ts` allowlists, `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_DEVICE_CASCADE_DELETE_TABLES`, `CORE_DEVICE_ORG_DENORMALIZED_TABLES`, `CORE_TENANT_EXPORT_POLICY`. Changed: `JOB_SCHEDULES`, `RETENTION_JOB_NAMES`, `WORKER_REGISTRY`, `WORKER_READINESS_MANIFEST` (Task 5), `SELF_MANAGED_DB_CONTEXT_ROUTES` (Task 1), `TARGET_GLOBS` (Task 13 — the `RUN_ACTION_MIGRATION_BACKLOG` removal is W01's).
+- **Deploy order:** Task 16's migration contracts a column W02 added nullable. It must not merge until W02 is **deployed**, not merely merged — say which release that was.
+- **Behaviour changes a reviewer should look for:** a cleanup run is now single-use (a resubmitted Execute gets 409, not a second deletion); a crashed run stays `Running` until the retention sweep instead of reverting to `Previewed`; an unattended `disk_cleanup` now requires a run id and is denied without one.
+- **What was verified against a real database:** the two-connection claim visibility and crash-boundary suite (Task 1 Step 11) and `pnpm db:migrate` + `pnpm db:check-drift` (Task 16 Step 5), with the commands run.
 
 ---
 
@@ -5902,13 +7561,19 @@ EOF
 | §11 web bullets — select → execute payload carries `cleanupRunId` and only checked paths; partial failure renders amber; `no-silent-mutations` passes | 11, 13 |
 | §11 API bullets — required `cleanupRunId`; the history routes | 1, 3 |
 | §11 docs — "finished tab" and run-history parts of `filesystem-analysis.mdx` | 15 |
-| **Explicitly out of scope for W03** — VolumePicker / `useFilesystemVolumes` (W02), `SystemCleanupPanel.tsx` and the 409 agent-update banner (W04), AI-tool parity (W05), the multi-volume rewrite of the docs' scanning sections (W02/W05) | consumed, never authored |
+| §13 #5 — claim/dispatch/finalise in separate transactions; self-managed-context route; two-connection visibility test; crash-boundary test | 1 |
+| §13 #2 — `CLEANUP_PREVIEW_TTL_HOURS = 24`, 409 `preview_expired`; confirm dialog states "current contents at execution" | 1 (route), 7 + 11 (copy), 18 (AI lane), 19 (act gate) |
+| §13 #7 — expand/contract: W03 ships the `scan_path` `SET NOT NULL` migration and the PK swap | 16 |
+| §13 #13 — cancellation (org-move cancels an in-flight run) and late results recorded without flipping status | 17 |
+| §13 #16 — AI `disk_cleanup` schema + tool pinning, `pinDiskCleanup`, playbook variable ordering move from W05 into W03 | 18, 19, 20 |
+| **Explicitly out of scope for W03** — VolumePicker / `useFilesystemVolumes` (W02), `SystemCleanupPanel.tsx` and the 409 agent-update banner (W04), the `system_cleanup` AI tool and the docs' multi-volume/native-catalog rewrites (W04/W05) | consumed, never authored |
 
 ### Placeholder scan
 
 `grep -nE 'TBD|TODO|FIXME|\.\.\.$|similar to Task|add validation|handle edge cases|XXX' ` over the plan returns only:
-- the frontmatter `tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS`, which the common brief mandates verbatim;
+- the frontmatter `tracking_issue: LanternOps/breeze#6326`, which the common brief mandates verbatim;
 - `<parent#>` / `<subissue#>` in the Branch line, in the Global Constraints branch/`Closes` line, and in one source comment in Task 5 — which the brief names as the only allowed placeholder.
+- One deliberate `…the same vi.mock block as aiToolsFilesystem.diskCleanupRequestedBy.test.ts…` instruction in Task 18 Step 1, and the `// … existing locals unchanged …` / `// … unchanged columns …` markers in Tasks 16 and 20. These point at a specific existing block to copy or preserve rather than standing in for unwritten work; reproducing a 40-line mock harness verbatim would invite it to drift from the sibling suite it must match.
 
 Every code step carries a complete code block; no step cross-references another task's code, and the two places where the same helper shape recurs (the drizzle mock chains in the API tests) are written out in full rather than referenced.
 
@@ -5921,3 +7586,8 @@ Every code step carries a complete code block; no step cross-references another 
 - `bytesReclaimed` is a Drizzle `bigint({ mode: 'number' })`; both service functions re-wrap it in `Number(... ?? 0)` so a driver that hands back a string cannot turn `formatBytes` into `"-"`.
 - The retention job's three statements are raw `sql` against literal identifiers, so the `'running'`/`'files'` tokens are strings rather than the Drizzle enum type — the enum is exercised through the route (Task 1), which is where a missing W02 label fails the typecheck loudly.
 - `DeviceFilesystemTabProps` is unchanged (`deviceId`, `osType`, `onOpenFiles?`), so `DeviceDetails.tsx:830-838` compiles untouched; `FileManagerProps` is unchanged, so `RemoteFilesPage.tsx` and `RemoteToolsPage.tsx` compile untouched.
+- `ActTarget`'s `disk_cleanup` variant gains a REQUIRED `cleanupRunId: string` (Task 19), which is a compile error at every existing construction site — `actVerify.test.ts:236`, `:337` and `runLoop.test.ts:1269`, `:1304`. That is the intended discovery mechanism: an optional field would have let a fixture (and therefore a code path) keep the old unpinned shape silently.
+- `CLEANUP_PREVIEW_TTL_HOURS` has exactly one definition, exported from `routes/devices/filesystem.ts` and imported by the AI tool (Task 18) and the act gate (Task 19). Task 19 names the one condition under which it moves: if importing a route module from `services/aiAgents/` creates a cycle, the constant moves to `services/filesystemAnalysis.ts` and the route re-exports it — never a second copy of the number.
+- `cancelCleanupRunForCommand` takes `Pick<typeof db, 'update' | 'select'>`, structurally compatible with `commandCancelPropagation.ts`'s own `DbExecutor` (`Pick<typeof db, 'update' | 'select' | 'insert'>`), so the caller's open transaction passes through without a cast.
+- The late-result entry is an ordinary `executedActions` array member with three extra keys (`lateResult`, `commandId`, `receivedAt`); Task 2's `actionCount` counts it, and `CleanupAction` on the web side treats unknown extra keys as excess-property-free because the value arrives as parsed JSON, not as an object literal.
+- After Task 16, `deviceFilesystemScanState.deviceId` is `.notNull()` without `.primaryKey()` and the key is declared in the table-extras callback. Every existing reader selects by `deviceId` (and, after W02, `scanPath`), so no query type changes; `db:check-drift` is the proof, not inspection.

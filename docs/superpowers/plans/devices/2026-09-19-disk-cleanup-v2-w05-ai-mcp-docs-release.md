@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
+tracking_issue: LanternOps/breeze#6326
 ---
 # Disk Cleanup v2 W05: AI and MCP Tools, Docs, Lab Proof, Release Gate — Implementation Plan
 
@@ -19,8 +19,8 @@ tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
 
 ## Global Constraints
 
-- **No schema, no migration, no Go.** W05 adds no table, no column, no `apps/api/migrations/*.sql` file and no `agent/**` change. Task 18 Step 4 proves it with `git diff --stat`. The migration-naming rule, the `SELECT set_config('breeze.scope','system',true)` rule and `pnpm db:check-drift` are therefore **not** exercised by this wave; they belong to W02.
-- **`go test -race ./...` is not run by this wave** — no Go source changes. The Go suites that gate the agent release were already run by W01 and W04; Task 17 re-verifies their *behaviour* on real hardware instead.
+- **No schema, no migration, no Go.** W05 adds no table, no column, no `apps/api/migrations/*.sql` file and no `agent/**` change. Task 15 Step 4 proves it with `git diff --stat`. The migration-naming rule, the `SELECT set_config('breeze.scope','system',true)` rule and `pnpm db:check-drift` are therefore **not** exercised by this wave; they belong to W02.
+- **`go test -race ./...` is not run by this wave** — no Go source changes. The Go suites that gate the agent release were already run by W01 and W04; Task 14 re-verifies their *behaviour* on real hardware instead.
 - **Test files live alongside source** — `services/aiToolsFilesystem.ts` → `services/aiToolsFilesystem.systemCleanup.test.ts`, never a separate `__tests__` directory.
 - **Test command form:** `cd apps/api && npx vitest run <path>` / `cd apps/web && npx vitest run <path>` / `cd packages/shared && npx vitest run <path>` / `cd apps/mobile && npx vitest run <path>`. **Never** `pnpm --filter <pkg> test -- --run <path>` — pnpm forwards the literal `--` and vitest swallows `--run`, which runs the whole suite in watch mode (CLAUDE.md "Two traps").
 - **Vitest path filters are plain substrings, not globs and not directory prefixes.** List sibling files explicitly and check the reported file count.
@@ -29,10 +29,10 @@ tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
 - **i18n in all 8 locales.** Three new keys land in `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/settings.json` with **real translations** — `translationCoverage.test.ts` caps exact-English duplicates per namespace and an untranslated key eats that headroom.
 - **File-size guideline (soft, 500 lines).** `aiToolsFilesystem.ts` is 376 lines today. The `system_cleanup` handler is kept THIN (registration + access check + delegation) and its body lives in `services/systemCleanup.ts`, so the file lands around 500 rather than 620.
 - **Every registry this wave touches gets its own step naming the exact file, the exact line, and the exact contract test that goes red.** The cascade-registration history in this repo is contract tests 5/5, code review 0/5; the AI-tool registration history (#2605, #2814, #3300) is identical.
-- **Rigor:** medium. Red first on every task, typecheck, the affected suites, then the full `apps/api` unit suite before the PR. W05 adds no tenant-scoped table and no DB context change, so no RLS or integration contract suite is required — but Task 18 runs `rls-coverage` and `tenantCascade` anyway because the wave sits inside a feature that does touch them.
+- **Rigor:** medium. Red first on every task, typecheck, the affected suites, then the full `apps/api` unit suite before the PR. W05 adds no tenant-scoped table and no DB context change, so no RLS or integration contract suite is required — but Task 15 runs `rls-coverage` and `tenantCascade` anyway because the wave sits inside a feature that does touch them.
 - Commit after every task with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. PR body contains `Closes #<subissue#>`. `get_feature_status` before starting, `start_wave` on the sub-issue.
 
-**Why this task order.** Tasks 1–7 build `system_cleanup` from the inside out: the service seam first (so the tool has something to call), then the registration checklist in dependency order — a tool with a definition but no `TOOL_TIERS` entry fails `aiAgentSdkTools.registryParity.contract.test.ts`, and a tool in `TOOL_TIERS` with no `tool()` declaration fails `aiAgentSdkTools.mcpCoverage.test.ts`, so both land in the same task rather than leaving one red. Tasks 8–10 change the *existing* `disk_cleanup`/`analyze_disk_usage` contract and the act-mode plumbing that depends on it. Tasks 11–13 finish the mirrors (web, mobile/shared, MCP surface). Tasks 14–16 are documentation and release notes, which are only writable once the tier tables are final — `aiGuardrailsAiDocs.parity.test.ts` compares the published page against the live guardrail tables, so a docs edit before Task 4 would be red by construction. Task 17 is the lab gate for W04. Task 18 closes the wave and states what "the agent release is unblocked" means.
+**Why this task order.** Tasks 1–7 build `system_cleanup` from the inside out: the service seam first (so the tool has something to call), then the registration checklist in dependency order — a tool with a definition but no `TOOL_TIERS` entry fails `aiAgentSdkTools.registryParity.contract.test.ts`, and a tool in `TOOL_TIERS` with no `tool()` declaration fails `aiAgentSdkTools.mcpCoverage.test.ts`, so both land in the same task rather than leaving one red. Tasks 8–10 finish the mirrors (web, shared/mobile, the MCP surface). Tasks 11–13 are documentation and release notes, which are only writable once the tier tables are final — `aiGuardrailsAiDocs.parity.test.ts` compares the published page against the live guardrail tables, so a docs edit before Task 4 would be red by construction. Task 14 is the lab gate for W04. Task 15 closes the wave and states what "the agent release is unblocked" means. The `disk_cleanup` act/AI pinning tasks that used to sit between Task 7 and the mirrors are gone — see amendment B8.
 
 ---
 
@@ -52,11 +52,14 @@ W05 is not independent (spec §3: "release wave"). It consumes, by exact name:
 | `systemCleanupAgentGate(device)` | `apps/api/src/services/systemCleanup.ts` | Task 1, Task 2 |
 | `queueSystemCleanupList(args)` | `apps/api/src/services/systemCleanup.ts` | Task 1, Task 2 |
 | `startSystemCleanupRun(args)` | `apps/api/src/services/systemCleanup.ts` | Task 1, Task 2 |
-| command types `system_cleanup_list`, `system_cleanup_run` | `services/commandQueue.ts` `CommandTypes`, `services/commandOfflinePolicy.ts`, `services/partnerTrust.ts`, agent `heartbeat/handlers.go` | Task 1 (dispatch), Task 17 (lab) |
-| routes `POST /devices/:id/filesystem/system-cleanup/{list,run}` (+ the two W04-owned poll routes) | `apps/api/src/routes/devices/filesystemSystemCleanup.ts` (a sibling module, **not** `filesystem.ts` — W04 File Structure) | Task 14/15 (docs), Task 17 (lab) |
-| `normalizeScanPath(osType, path)` | `packages/shared/src/utils/scanPath.ts` | Task 8 |
-| `getLatestFilesystemCleanupSnapshot(deviceId, scanPath)` | `apps/api/src/services/filesystemAnalysis.ts` (W02 adds the second parameter) | Task 8 |
-| route `POST /filesystem/cleanup-execute` requires `cleanupRunId` | `apps/api/src/routes/devices/filesystem.ts` (W03) | Task 8 (the tool matches the route) |
+| command types `system_cleanup_list`, `system_cleanup_run` | `services/commandQueue.ts` `CommandTypes`, `services/commandOfflinePolicy.ts`, `services/partnerTrust.ts`, agent `heartbeat/handlers.go` | Task 1 (dispatch), Task 14 (lab) |
+| routes `POST /devices/:id/filesystem/system-cleanup/{list,run}` (+ the two W04-owned poll routes) | `apps/api/src/routes/devices/filesystemSystemCleanup.ts` (a sibling module, **not** `filesystem.ts` — W04 File Structure) | Tasks 11/12 (docs), Task 14 (lab) |
+| `normalizeScanPath(osType, path)` | `packages/shared/src/utils/scanPath.ts` (W02) | Task 12 (docs only) |
+| `getLatestFilesystemCleanupSnapshot(deviceId, scanPath)` | `apps/api/src/services/filesystemAnalysis.ts` (W02 adds the second parameter) | Task 12 (docs only) |
+| route `POST /filesystem/cleanup-execute` requires `cleanupRunId` | `apps/api/src/routes/devices/filesystem.ts` (W03) | Tasks 11/12 (docs), Task 14 (lab) |
+| AI tool `disk_cleanup` requires `cleanupRunId` on `execute` and carries it from its own `preview`; `path` + `cleanupRunId` added to `aiToolsFilesystem.ts`'s definition, `toolInputSchemas.disk_cleanup` and the SDK `tool()` shape | `apps/api/src/services/aiToolsFilesystem.ts`, `aiToolSchemas.ts`, `aiAgentSdkTools.ts` (**W03** — amendment B8) | Task 10 (asserted), Tasks 11/12 (documented) |
+| `ActTarget` variant `{ kind: 'disk_cleanup'; cleanupRunId: string; paths: string[] }`; `pinDiskCleanup` reads the run BY ID; `actTargetSummary` unchanged | `apps/api/src/services/aiAgents/actManifest.ts`, `actRevalidation.ts`, `actVerify.ts` (**W03**) | — (W05 asserts nothing here) |
+| built-in `Disk Cleanup` playbook passes `cleanupRunId`; `playbookActExecutor.ts` variable-ordering fix | `apps/api/src/services/builtInPlaybooks.ts`, `aiAgents/playbookActExecutor.ts` (**W03**) | Task 11 (`playbooks.mdx` only) |
 
 **Amendment A1 — the four service functions are W04 deliverables, and W05 only extends them (resolved 2026-09-19).** `systemCleanupAgentGate`, `queueSystemCleanupList` and `startSystemCleanupRun` ship from `apps/api/src/services/systemCleanup.ts` in **W04 Task 11b Step 3a** (W04 amendment 17): its two route handlers call them and no longer import `CommandTypes`/`queueCommandForExecution` at all. The earlier conditional "W05 extracts them if W04 inlined them" is **withdrawn** — Task 1 performs no extraction and adds no route edit. Task 1 does exactly two things: it threads an optional `aiOrigin` through both argument types into `queueCommandForExecution`, and it adds `awaitSystemCleanupResult`. If the three exports are missing when you get here, W04 has not merged — stop and rebase; do not re-create them, because a second copy of the agent-version gate and the `device_filesystem_cleanup_runs` insert is exactly the two-call-site drift W01 spent a task deleting on the file engine. **Type-name reservation:** W04 already exports `SystemCleanupRunResult` from this module (its Zod-parsed *agent payload*, Task 11a), so the queue/start discriminated union is named `SystemCleanupStartResult`.
 
@@ -71,9 +74,9 @@ W05 is not independent (spec §3: "release wave"). It consumes, by exact name:
 
 ### B. Verified corrections to §9
 
-**Amendment B1 — `deviceArgs` is an ARRAY, and omitting it fails OPEN, not with `-32602`.** Spec §9.2 says "`system_cleanup` declares `deviceArgs: 'deviceId'` or MCP calls fail with `-32602`". Verified: the field is `deviceArgs?: readonly string[]` (`apps/api/src/services/aiTools.ts:140`), so the declaration is `deviceArgs: ['deviceId']`. And `collectSuppliedDeviceIds` (`apps/api/src/routes/mcpExecutionOrg.ts:114-131`) returns `[]` for a tool with **no** `deviceArgs`, which makes `resolveMcpExecutionContext` fall through to `resolveMcpExecutionOrgId` — `auth.orgId` or `accessibleOrgIds[0]`. So a missing declaration does not error: it silently attributes the ledger and the audit row to the *caller's* first accessible org rather than the device's own org. `-32602` is only returned when `McpExecutionOrgError` is thrown (mixed-org array, malformed id, inaccessible device). The consequence of forgetting the declaration is therefore a cross-tenant **misattribution**, which is worse than an error and is exactly why `aiTools.deviceArgsCoverage.contract.test.ts` exists. Task 2 declares it and Task 13 pins it.
+**Amendment B1 — `deviceArgs` is an ARRAY, and omitting it fails OPEN, not with `-32602`.** Spec §9.2 says "`system_cleanup` declares `deviceArgs: 'deviceId'` or MCP calls fail with `-32602`". Verified: the field is `deviceArgs?: readonly string[]` (`apps/api/src/services/aiTools.ts:140`), so the declaration is `deviceArgs: ['deviceId']`. And `collectSuppliedDeviceIds` (`apps/api/src/routes/mcpExecutionOrg.ts:114-131`) returns `[]` for a tool with **no** `deviceArgs`, which makes `resolveMcpExecutionContext` fall through to `resolveMcpExecutionOrgId` — `auth.orgId` or `accessibleOrgIds[0]`. So a missing declaration does not error: it silently attributes the ledger and the audit row to the *caller's* first accessible org rather than the device's own org. `-32602` is only returned when `McpExecutionOrgError` is thrown (mixed-org array, malformed id, inaccessible device). The consequence of forgetting the declaration is therefore a cross-tenant **misattribution**, which is worse than an error and is exactly why `aiTools.deviceArgsCoverage.contract.test.ts` exists. Task 2 declares it and Task 10 pins it.
 
-**Amendment B2 — the API rate-limit table is `TOOL_RATE_LIMITS`, not `RATE_LIMIT_CONFIGS`.** Spec §9.3 item 4 names `RATE_LIMIT_CONFIGS` as an `aiGuardrails.ts` table. Verified: `aiGuardrails.ts:1527` declares `const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>` — module-private, read only by `checkToolRateLimit` at `:2521`. `RATE_LIMIT_CONFIGS` is the **web** mirror, `apps/web/src/components/ai-risk/tierConfig.ts:299`, and is item 12's concern. Task 4 edits `TOOL_RATE_LIMITS`; Task 11 edits `RATE_LIMIT_CONFIGS`.
+**Amendment B2 — the API rate-limit table is `TOOL_RATE_LIMITS`, not `RATE_LIMIT_CONFIGS`.** Spec §9.3 item 4 names `RATE_LIMIT_CONFIGS` as an `aiGuardrails.ts` table. Verified: `aiGuardrails.ts:1527` declares `const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>` — module-private, read only by `checkToolRateLimit` at `:2521`. `RATE_LIMIT_CONFIGS` is the **web** mirror, `apps/web/src/components/ai-risk/tierConfig.ts:299`, and is item 12's concern. Task 4 edits `TOOL_RATE_LIMITS`; Task 8 edits `RATE_LIMIT_CONFIGS`.
 
 **Amendment B3 — "both guardrail tables" means `TIER3_ACTIONS` + `TIER3_SUPERVISED_ACTIONS`, and the test that goes red is `aiGuardrails.approvalScope.contract.test.ts`.** Spec §9.3 item 4 names `aiToolPermissionsCatalogParity.contract.test.ts` and `aiGuardrails.agentPrincipal.contract.test.ts`. Verified: neither of those checks scope classification. `aiGuardrails.approvalScope.contract.test.ts:63-75` asserts "every per-action tier-3 pair is in exactly one scope table" — a `TIER3_ACTIONS.system_cleanup = ['run']` with no matching `TIER3_SUPERVISED_ACTIONS` (or `TIER3_FOUR_EYES_ACTIONS`) entry fails there, and only there. `aiToolPermissionsCatalogParity` checks that every `{resource, action}` pair exists in `PERMISSION_GRANTS` (both `devices:read` and `devices:execute` already do). Task 4 runs all three.
 
@@ -83,33 +86,26 @@ W05 is not independent (spec §3: "release wave"). It consumes, by exact name:
 
 **Amendment B6 — both tools stay listed, and the appended sentence is exact.** `isToolWhollyGatedOverMcp` (`mcpServer.ts:1014-1032`) suppresses a tool only when its base tier is ≥3 or when *every* value of its `action` enum is in `TIER3_ACTIONS`. `disk_cleanup` (enum `['preview','execute']`, `TIER3_ACTIONS = ['execute']`) and `system_cleanup` (enum `['list','run']`, `TIER3_ACTIONS = ['run']`) are both mixed multiplexers and both stay listed. `analyze_disk_usage` has no `action` enum at all, so `gatedActionsForTool` returns `[]` and its description is unchanged. The note `tools/list` appends (`mcpServer.ts:1163-1166`) is literally:
 `(Actions "run" require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
-— not the spec's paraphrase "Actions "execute"/"run" require interactive approval". Task 14 quotes the real string in `mcp-server.mdx`.
+— not the spec's paraphrase "Actions "execute"/"run" require interactive approval". Task 11 quotes the real string in `mcp-server.mdx`.
 
 **Amendment B7 — `MCP_TOOL_COUNT_APPROX` has headroom but is not unconditional.** `mcpGuidance.ts:8` hard-codes `200`; `mcpGuidancePromptTools.test.ts:63` asserts `Math.abs(registered.size - 200) <= 10`, i.e. the live registry must stay in `[190, 210]`. A static count of distinct tool-name literals under `services/aiTools*.ts` + `services/workspace/` gives 188 today, so the live figure (which also includes the session-aware M365/Google tables) is near the top of that band. Task 2 Step 6 runs the test; **if it reports a count of 211, bump `MCP_TOOL_COUNT_APPROX` from `200` to `210`** (the test's own instruction: "bump to the nearest ten"). That is the only edit permitted to `mcpGuidance.ts` in this wave — §9.2's "no prompt changes" is otherwise correct: verified, none of the five `MCP_PROMPTS` (fleet-triage, device-investigate, patch-remediate, incident-kickoff, turnkey-setup) mentions disk cleanup.
 
-**Amendment B8 — `analyze_disk_usage` already has `path`; `disk_cleanup` does not.** Verified: `path` is present today in `aiToolsFilesystem.ts:139` (`input_schema`), `aiToolSchemas.ts:988` (`path: safePath.optional()`) and `aiAgentSdkTools.ts:1748` (SDK shape). What it does *not* have is normalisation or path-keyed snapshot selection — `aiToolsFilesystem.ts:161-162` takes the raw string and `isRootScopedScan` is a bare `scanPath === defaultPath` equality against a hard-coded `'C:\\'`/`'/'`. `disk_cleanup` has no `path` property in any of the three declarations. Task 8's tests therefore assert **behaviour** (normalised value dispatched, path-keyed snapshot read, `cleanupRunId` enforced), not field presence, so they are red today regardless of which wave added the field.
+**Amendment B8 — SCOPE CHANGE: every `disk_cleanup` act/AI pinning task moves to W03 (Codex quorum, spec §13 table row 16).** The spec puts §9.1's `disk_cleanup` changes in W05, and the previous revision of this plan implemented them here as Tasks 8, 9 and 10. The quorum moved them to W03 so that the route requirement and every consumer of it land in one reviewable change — which is the right call: the AI tool, the act manifest and the built-in playbook are all *consumers* of "execute is pinned to a previewed run", and splitting a contract from its consumers across two waves leaves the act path briefly unable to run the one built-in playbook that most needs it. **Deleted from W05:** the `disk_cleanup` definition/Zod/SDK-shape change (`path` + required `cleanupRunId`, the pinned-plan re-filter, `rejectedPaths`, the 200-path cap, the execute-budget cut-off and the AI-lane execute audit); the `ActTarget` + `pinDiskCleanup` + `actVerify` fixes; the `builtInPlaybooks.ts` step change and the `playbookActExecutor.ts` variable-ordering fix. All are now Consumes (table above). **No `path` finalisation remains for W05 either** — `analyze_disk_usage` already carries `path` today (`aiToolsFilesystem.ts:139`, `aiToolSchemas.ts:988`, `aiAgentSdkTools.ts:1748`); W02 owns its normalisation and path-keyed snapshot read, W03 owns `disk_cleanup`'s copy. W05 therefore touches `aiToolsFilesystem.ts` only to ADD the `system_cleanup` registration, and touches `aiToolSchemas.ts`/`aiAgentSdkTools.ts` only to add that tool's schema and declaration.
 
-**Amendment B9 — `safePath` blocks `C:\Users\*\AppData`.** `aiToolSchemas.ts:44` puts `'C:\\Users\\*\\AppData'` in `BLOCKED_PATH_PREFIXES`, and `analyze_disk_usage.path` is a `safePath`. A volume root (`C:\`, `D:\`, `/`, `/data`) is unaffected, which is the only shape this wave's UI and AI flows produce. `disk_cleanup.path` (Task 8) uses `safePath` too, for the same reason and with the same limitation. Widening it is out of scope; recorded so the next author does not discover it as a mystery validation failure.
+Four facts verified while the work was still in scope, recorded so W03 does not re-derive them and so this plan's docs tasks describe the real end state: (a) `safePath` blocks `C:\Users\*\AppData` (`aiToolSchemas.ts:44`), which volume roots never hit but a deep `path` would; (b) `aiToolsFilesystem.diskCleanupRequestedBy.test.ts`'s `vi.mock('./filesystemAnalysis', …)` factory (`:53-65`) exports exactly six names and must gain `readPlanPreviewCandidates` when W03's handler imports it, or the suite dies with `No "readPlanPreviewCandidates" export is defined on the mock`; (c) `pinDiskCleanup` (`actRevalidation.ts:137-173`) reads "the newest `previewed` run for this device+org", and `resolvePlaybookSteps` (`playbookActExecutor.ts:352-368`) substitutes every `{{token}}` once BEFORE the step loop — so the built-in playbook's execute step cannot see the id its own preview step returns; (d) §2 defect 5 (the AI lane storing an empty snapshot on unparseable stdout, `aiToolsFilesystem.ts:185-186`, versus the guarded agent lane at `routes/agents/helpers.ts:1608-1615`) is W01's, and no W05 task touches that handler.
 
-**Amendment B10 — `disk_cleanup`'s Zod schema is a `ZodEffects`, so `system_cleanup`'s must not be.** `toolInputSchemas.disk_cleanup` ends in `.refine(...)` (`aiToolSchemas.ts:1004-1007`), which produces a `ZodEffects` with no `.shape`. `toolActionEnum` (`services/aiToolActions.ts:52-54`) reads `toolInputSchemas[tool].shape[key].options` and silently contributes nothing for such a tool — it survives today only because the Anthropic `input_schema` enum is the other half of the union. Task 3 keeps `system_cleanup`'s schema a plain `z.object` (action-id membership is expressed as `z.enum(SYSTEM_CLEANUP_ACTION_IDS)`, and "actionIds required for run" is enforced in the handler exactly as `disk_cleanup`'s handler already enforces "paths required for execute" at `aiToolsFilesystem.ts:310-312`), so both enum sources stay live.
+**Amendment B9 — `disk_cleanup`'s Zod schema is a `ZodEffects`, so `system_cleanup`'s must not be.** `toolInputSchemas.disk_cleanup` ends in `.refine(...)` (`aiToolSchemas.ts:1004-1007`), which produces a `ZodEffects` with no `.shape`. `toolActionEnum` (`services/aiToolActions.ts:52-54`) reads `toolInputSchemas[tool].shape[key].options` and silently contributes nothing for such a tool — it survives today only because the Anthropic `input_schema` enum is the other half of the union. Task 3 keeps `system_cleanup`'s schema a plain `z.object` (action-id membership is expressed as `z.enum(SYSTEM_CLEANUP_ACTION_IDS)`, and "actionIds required for run" is enforced in the handler exactly as `disk_cleanup`'s handler already enforces "paths required for execute" at `aiToolsFilesystem.ts:310-312`), so both enum sources stay live.
 
-**Amendment B11 — no `ActOperation` for `system_cleanup` needs no derivation change.** Spec §9.3 item 8 says "the contract test's `unreachableTools`/`actEligible` derivation is updated accordingly". Verified: `actEligible` is derived from `ACT_MANIFEST` membership (`agentToolCatalog.contract.test.ts:106-127`), so a tool with no manifest entry is `actEligible: false` for free; and `listUnreachableRegisteredTools()` (snapshotted at `agentToolCatalog.contract.test.ts:54`) lists registered tools that are *not* reachable — `system_cleanup` becomes reachable the moment it has a `TOOL_TIERS` entry, so it never enters that snapshot and the `.snap` file needs no regeneration. Task 7 adds positive assertions instead of "updating a derivation".
+**Amendment B10 — no `ActOperation` for `system_cleanup` needs no derivation change.** Spec §9.3 item 8 says "the contract test's `unreachableTools`/`actEligible` derivation is updated accordingly". Verified: `actEligible` is derived from `ACT_MANIFEST` membership (`agentToolCatalog.contract.test.ts:106-127`), so a tool with no manifest entry is `actEligible: false` for free; and `listUnreachableRegisteredTools()` (snapshotted at `agentToolCatalog.contract.test.ts:54`) lists registered tools that are *not* reachable — `system_cleanup` becomes reachable the moment it has a `TOOL_TIERS` entry, so it never enters that snapshot and the `.snap` file needs no regeneration. Task 7 adds positive assertions instead of "updating a derivation".
 
-**Amendment B12 — the built-in playbook's new step is a `diagnose` step, so `isKnownSafeNonMutatingActStep` is unchanged.** Spec §9.3 item 11 says "`playbookActExecutor.ts` classification updated". Verified: `runPlaybookSteps` (`playbookActExecutor.ts:626-630`) dispatches a `diagnose` step straight through `executeToolFn` with no manifest gate; only `act` steps hit `resolveActOperation` and the `isKnownSafeNonMutatingActStep` allowlist (`:423`). Making the new `system_cleanup list` step a `diagnose` step is both simpler and safer than widening a safety allowlist, so the plan does that and the allowlist is untouched. The `playbookActExecutor.ts` change that IS required is different and the spec does not name it: **step-output chaining for `cleanupRunId`** (see B13).
+**Amendment B11 — the AI lane must carry `aiOrigin` into the W04 service.** Spec §9 does not mention it. Verified: `services/aiDispatch.ts` is the only door AI code may use to reach a device, and `aiDispatch.contract.test.ts:73` restricts its `AI_FILE` scan to `^apps/api/src/services/(aiTools[^/]*\.ts|aiAgents/.*\.ts)$`. `services/systemCleanup.ts` is outside that regex, so it can call `queueCommandForExecution` directly **without tripping any test** — which would put an AI-decided `system_cleanup run` on a device with no origin, the exact attribution hole #5022 W01 closed. Task 1 adds an optional `aiOrigin?: AiOriginRef` to both service functions and forwards it; Task 2's handler passes `requireAiOrigin(auth, 'system_cleanup')`, which throws when absent.
 
-**Amendment B13 — `{{cleanupRunId}}` cannot come from the step list; the executor must chain it.** `resolvePlaybookSteps` (`playbookActExecutor.ts:352-368`) substitutes every `{{token}}` **once, before the loop**, from the model's `variables` bag plus a forced `deviceId`. There is no step-output chaining, so a `cleanupRunId` produced by the `preview` step cannot reach the `execute` step. Today that does not matter because `pinDiskCleanup` (`actRevalidation.ts:137-173`) re-reads "the newest `previewed` run for this device+org" — which is precisely the race the required `cleanupRunId` exists to close (spec §10 item 1). Task 9 changes the pin to read **by id**, and Task 10 adds a narrow chaining pass in `runPlaybookSteps` so the built-in playbook keeps working.
+**Amendment B12 — the `dev-*` agent version passes the 409 gate, which is what makes the lab run possible.** `parseComparableVersion` (`agentEditionCompat.ts:26-46`) returns `null` for `dev-1789…` (core token `dev` is not digits), and `compareAgentVersions` returns `0` for an unparseable side (`:48-52`). So `compareAgentVersions(device.agentVersion, MIN_AGENT_VERSION_SYSTEM_CLEANUP) < 0` is false and a `make dev-push` build is **not** blocked by the W04 gate. This is consistent with every other version gate in the repo (they all fail open on an unparseable version) and is recorded here as a verified fact, not a defect: Task 14 depends on it.
 
-**Amendment B14 — the AI lane must carry `aiOrigin` into the W04 service.** Spec §9 does not mention it. Verified: `services/aiDispatch.ts` is the only door AI code may use to reach a device, and `aiDispatch.contract.test.ts:73` restricts its `AI_FILE` scan to `^apps/api/src/services/(aiTools[^/]*\.ts|aiAgents/.*\.ts)$`. `services/systemCleanup.ts` is outside that regex, so it can call `queueCommandForExecution` directly **without tripping any test** — which would put an AI-decided `system_cleanup run` on a device with no origin, the exact attribution hole #5022 W01 closed. Task 1 adds an optional `aiOrigin?: AiOriginRef` to both service functions and forwards it; Task 2's handler passes `requireAiOrigin(auth, 'system_cleanup')`, which throws when absent.
+**Amendment B13 — `aiToolLabel('system_cleanup', …, { action: 'list' })` renders "Checked cleanup", colliding with `disk_cleanup preview`.** Spec §9.3 item 14 says the label "derives to a sensible label". Verified against `packages/shared/src/utils/aiToolLabels.ts:129-145`: a read-only `action` forces `VERB_FORMS.get` regardless of the tool's own leading verb, and the subject is `words.slice(1)` — so `system_cleanup` + `list` → "Checked cleanup" and `disk_cleanup` + `preview` → "Checked cleanup" as well. Two different tools rendering an identical chat caption is a real defect, not a cosmetic one. Task 9 makes the one-line fix (fall back to `titleCaseToolName` when the read-only override applies to a tool whose own leading verb is unmapped), which yields "System cleanup" and "Disk cleanup" and changes nothing for the mapped-verb tools the existing tests pin. The `apps/mobile` mirror (`screens/chat/components/toolIndicatorLogic.ts:232-234`) gets the same edit.
 
-**Amendment B15 — the `dev-*` agent version passes the 409 gate, which is what makes the lab run possible.** `parseComparableVersion` (`agentEditionCompat.ts:26-46`) returns `null` for `dev-1789…` (core token `dev` is not digits), and `compareAgentVersions` returns `0` for an unparseable side (`:48-52`). So `compareAgentVersions(device.agentVersion, MIN_AGENT_VERSION_SYSTEM_CLEANUP) < 0` is false and a `make dev-push` build is **not** blocked by the W04 gate. This is consistent with every other version gate in the repo (they all fail open on an unparseable version) and is recorded here as a verified fact, not a defect: Task 17 depends on it.
+**Amendment B14 — `mcp-server.mdx` carries pre-2026-08-02 text about Tier 3 over MCP.** Lines 368-369 ("Tier 3+ tools are included if the key has `ai:execute`" / the `ai:execute_admin` sentence) and the "Production allowlist for destructive tools" section (:479-491) describe the model that the hard deny replaced: a wholly-Tier-3 tool is no longer listed at all, and a Tier-3 *action* is denied before the scope gate, the allowlist and the step-up check ever run. Task 11 corrects the numbered list and adds the hard-deny subsection. Rewriting the step-up and production-allowlist sections is out of this wave's scope and is called out in the PR body as a follow-up.
 
-**Amendment B16 — `aiToolLabel('system_cleanup', …, { action: 'list' })` renders "Checked cleanup", colliding with `disk_cleanup preview`.** Spec §9.3 item 14 says the label "derives to a sensible label". Verified against `packages/shared/src/utils/aiToolLabels.ts:129-145`: a read-only `action` forces `VERB_FORMS.get` regardless of the tool's own leading verb, and the subject is `words.slice(1)` — so `system_cleanup` + `list` → "Checked cleanup" and `disk_cleanup` + `preview` → "Checked cleanup" as well. Two different tools rendering an identical chat caption is a real defect, not a cosmetic one. Task 12 makes the one-line fix (fall back to `titleCaseToolName` when the read-only override applies to a tool whose own leading verb is unmapped), which yields "System cleanup" and "Disk cleanup" and changes nothing for the mapped-verb tools the existing tests pin. The `apps/mobile` mirror (`screens/chat/components/toolIndicatorLogic.ts:232-234`) gets the same edit.
-
-**Amendment B17 — the empty-snapshot guard (§2 defect 5) is W01's, and W05 pins it rather than re-implementing it.** `aiToolsFilesystem.ts:185-186` stores whatever `parseFilesystemAnalysisStdout` returns, including `{}` on unparseable stdout, while the agent lane guards it (`routes/agents/helpers.ts:1608-1615`). §9.1 lists it as context for `disk_cleanup`, and §3 puts "Fixes every verified defect" in W01. Task 8's suite therefore carries the assertion as a **regression pin** so a W05 refactor of this handler cannot drop it. If that assertion fails when first run, W01 did not close it — fix it in Task 8 with the same guard shape `helpers.ts` uses (refuse to save when the parsed payload has no `summary` object) and say so in the PR body.
-
-**Amendment B18 — `mcp-server.mdx` carries pre-2026-08-02 text about Tier 3 over MCP.** Lines 368-369 ("Tier 3+ tools are included if the key has `ai:execute`" / the `ai:execute_admin` sentence) and the "Production allowlist for destructive tools" section (:479-491) describe the model that the hard deny replaced: a wholly-Tier-3 tool is no longer listed at all, and a Tier-3 *action* is denied before the scope gate, the allowlist and the step-up check ever run. Task 14 corrects the numbered list and adds the hard-deny subsection. Rewriting the step-up and production-allowlist sections is out of this wave's scope and is called out in the PR body as a follow-up.
-
-**Amendment B19 — `aiToolsFilesystem.diskCleanupRequestedBy.test.ts` mocks `./filesystemAnalysis` with a fixed factory.** Its `vi.mock('./filesystemAnalysis', …)` at `:53-65` exports exactly six names. Task 8 makes the handler import `readPlanPreviewCandidates` as well, which that mock must gain or the suite dies with `No "readPlanPreviewCandidates" export is defined on the mock`. Task 8 Step 5 updates it in the same commit.
 
 ---
 
@@ -119,27 +115,27 @@ W05 is not independent (spec §3: "release wave"). It consumes, by exact name:
 |---|---|---|
 | `apps/api/src/services/systemCleanup.ts` | W04 service seam; gains `aiOrigin` + `requestedBy` params and `awaitSystemCleanupResult` | 1 |
 | `apps/api/src/services/systemCleanup.aiOrigin.test.ts` (Create) | the origin is forwarded to the command queue | 1 |
-| `apps/api/src/services/aiToolsFilesystem.ts` | `system_cleanup` registration + thin handler; `disk_cleanup`/`analyze_disk_usage` changes | 2, 8 |
+| `apps/api/src/services/aiToolsFilesystem.ts` | `system_cleanup` registration + thin handler (ADD ONLY — `disk_cleanup` is W03's, amendment B8) | 2 |
 | `apps/api/src/services/aiToolsFilesystem.systemCleanup.test.ts` (Create) | list/run happy paths, 409, validation, origin | 2 |
-| `apps/api/src/services/aiToolSchemas.ts` | `system_cleanup` Zod entry; `disk_cleanup` gains `path` + `cleanupRunId` | 3, 8 |
+| `apps/api/src/services/aiToolSchemas.ts` | `system_cleanup` Zod entry | 3 |
 | `apps/api/src/services/aiGuardrails.ts` | `TIER3_ACTIONS`, `TIER3_SUPERVISED_ACTIONS`, `TOOL_PERMISSIONS`, `TOOL_RATE_LIMITS` | 4 |
-| `apps/api/src/services/aiAgentSdkTools.ts` | `TOOL_TIERS` entry + `tool('system_cleanup', …)`; `disk_cleanup` shape | 5, 8 |
+| `apps/api/src/services/aiGuardrails.systemCleanup.test.ts` (Create) | tier, scope, RBAC | 4 |
+| `apps/api/src/services/aiAgentSdkTools.ts` | `TOOL_TIERS` entry + `tool('system_cleanup', …)` | 5 |
 | `apps/api/src/services/toolTimeouts.ts`, `aiToolOutput.ts`, `aiAgentSystemPrompt.ts` | 2 h timeout, catalog/run compaction, "Files & Disk" prompt line | 6 |
 | `apps/api/src/services/aiToolOutput.systemCleanup.test.ts` (Create) | compaction branch | 6 |
 | `apps/api/src/services/aiAgents/agentToolCatalog.ts` | `system_cleanup: 'files_disk'` | 7 |
 | `apps/api/src/services/aiAgents/actManifest.test.ts`, `impactFixTools.contract.test.ts`, `helperToolFilter.test.ts` | negative pins (no act op, not a fix tool, denied to the Helper) | 7 |
-| `apps/api/src/services/aiToolsFilesystem.diskCleanupRunPin.test.ts` (Create) | required `cleanupRunId`, path normalisation, rejected paths | 8 |
-| `apps/api/src/services/aiAgents/actManifest.ts`, `actRevalidation.ts` | `ActTarget.cleanupRunId`; pin by id | 9 |
-| `apps/api/src/services/aiAgents/actRevalidation.cleanupRunPin.test.ts` (Create) | the pin reads the named run, not the newest | 9 |
-| `apps/api/src/services/builtInPlaybooks.ts`, `aiAgents/playbookActExecutor.ts` | `cleanupRunId` passthrough + `system_cleanup list` reporting step | 10 |
-| `apps/web/src/components/ai-risk/tierConfig.ts`, `ApprovalHistoryFeed.tsx`, `locales/*/settings.json` | web mirrors + 3 keys × 8 locales | 11 |
-| `packages/shared/src/utils/aiToolLabels.ts`, `apps/mobile/src/screens/chat/components/toolIndicatorLogic.ts` | label derivation fix + mirror | 12 |
-| `apps/api/src/services/aiToolsFilesystem.mcpSurface.contract.test.ts` (Create) | §9.2 as a contract | 13 |
-| `apps/docs/src/content/docs/features/ai.mdx`, `mcp-server.mdx`, `playbooks.mdx` | tier/rate tables, hard-deny, playbook (`agents/commands.mdx` is W04's — alignment A3) | 14 |
-| `apps/docs/src/content/docs/features/filesystem-analysis.mdx` | full rewrite | 15 |
-| `apps/api/src/data/docsIndex.json` | regenerated | 15 |
-| `docs/release-notes/next-release-draft.md` | release entry incl. the W02 rolling-deploy note | 16 |
-| (no file — GitHub) W05 sub-issue | lab results | 17 |
+| `apps/web/src/components/ai-risk/tierConfig.ts`, `ApprovalHistoryFeed.tsx`, `locales/*/settings.json` | web mirrors + 3 keys × 8 locales | 8 |
+| `apps/web/src/components/ai-risk/tierConfig.systemCleanup.test.ts` (Create) | presence in the explainer + real translations | 8 |
+| `packages/shared/src/utils/aiToolLabels.ts`, `apps/mobile/src/screens/chat/components/toolIndicatorLogic.ts` | label derivation fix + mirror | 9 |
+| `apps/api/src/services/aiToolsFilesystem.mcpSurface.contract.test.ts` (Create) | §9.2 as a contract, for all three disk tools | 10 |
+| `apps/docs/src/content/docs/features/ai.mdx`, `mcp-server.mdx`, `playbooks.mdx` | tier/rate tables, hard-deny, playbook (`agents/commands.mdx` is W04's — alignment A3) | 11 |
+| `apps/docs/src/content/docs/features/filesystem-analysis.mdx` | full rewrite | 12 |
+| `apps/api/src/data/docsIndex.json` | regenerated | 12 |
+| `docs/release-notes/next-release-draft.md` | release entry incl. the W02 rolling-deploy note | 13 |
+| (no file — GitHub) W05 sub-issue | lab results | 14 |
+
+**Not in W05 (moved to W03 by the Codex quorum — amendment B8):** `aiToolsFilesystem.diskCleanupRunPin.test.ts`, the `disk_cleanup` edits to `aiToolsFilesystem.ts` / `aiToolSchemas.ts` / `aiAgentSdkTools.ts`, `aiAgents/actManifest.ts`, `aiAgents/actRevalidation.ts`, `aiAgents/actVerify.ts`, `builtInPlaybooks.ts`, `aiAgents/playbookActExecutor.ts`.
 
 ---
 
@@ -186,7 +182,7 @@ W05 is not independent (spec §3: "release wave"). It consumes, by exact name:
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * #5022 W01 contract, applied to the W04 system-cleanup seam (W05 amendment B14).
+ * #5022 W01 contract, applied to the W04 system-cleanup seam (W05 amendment B11).
  *
  * `services/aiDispatch.contract.test.ts` scans only
  * `services/aiTools*.ts` and `services/aiAgents/**`, so THIS module can reach
@@ -824,7 +820,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `SYSTEM_CLEANUP_ACTION_IDS` (`@breeze/shared/validators`).
-- Produces: `toolInputSchemas.system_cleanup`, a plain `z.ZodObject` (amendment B10).
+- Produces: `toolInputSchemas.system_cleanup`, a plain `z.ZodObject` (amendment B9).
 
 - [ ] **Step 1: Write the failing test** — append to `apps/api/src/services/aiToolsRegistryParity.test.ts`, inside the existing `describe('aiTools registry parity', …)` block, after the final `it(...)`:
 
@@ -1458,7 +1454,7 @@ cd apps/api && npx vitest run \
   src/services/helperToolFilter.test.ts
 ```
 
-Expected: all green, **with no snapshot update**. If `agentToolCatalog.contract.test.ts` reports an obsolete or changed snapshot for "pins the unreachable set", something is wrong: `system_cleanup` is registered AND in `TOOL_TIERS` AND not human-only/blocked/secret-bearing, so it is *reachable* and must never enter `listUnreachableRegisteredTools()` (amendment B11). Do not run with `-u`; find out why it is unreachable instead.
+Expected: all green, **with no snapshot update**. If `agentToolCatalog.contract.test.ts` reports an obsolete or changed snapshot for "pins the unreachable set", something is wrong: `system_cleanup` is registered AND in `TOOL_TIERS` AND not human-only/blocked/secret-bearing, so it is *reachable* and must never enter `listUnreachableRegisteredTools()` (amendment B10). Do not run with `-u`; find out why it is unreachable instead.
 
 - [ ] **Step 5: Commit**
 
@@ -1480,1075 +1476,7 @@ EOF
 ---
 
 
-### Task 8: `disk_cleanup` and `analyze_disk_usage` — path, pinned run, caps, audit
-
-**Files:**
-- Modify: `apps/api/src/services/aiToolsFilesystem.ts` — `analyze_disk_usage` handler (`:151-220`), `disk_cleanup` definition (`:230-243`) and handler (`:245-374`)
-- Modify: `apps/api/src/services/aiToolSchemas.ts` — the `disk_cleanup` entry (`:998-1007`)
-- Modify: `apps/api/src/services/aiAgentSdkTools.ts` — the `disk_cleanup` SDK shape (`:1761-1772`)
-- Modify: `apps/api/src/services/aiToolsFilesystem.diskCleanupRequestedBy.test.ts` (its `./filesystemAnalysis` mock factory, `:53-65` — amendment B19)
-- Create: `apps/api/src/services/aiToolsFilesystem.diskCleanupRunPin.test.ts` (Test)
-
-**Interfaces:**
-- Consumes: `runCleanupExecution`, `CLEANUP_EXECUTE_BUDGET_MS` (`./filesystemCleanupExecution`, W01 — the AI lane is already wired to them by W01 Task 11b and stays wired); `toCleanupOs`, `normalizeScanPath(osType, path)` (`@breeze/shared`, W01/W02); `getLatestFilesystemCleanupSnapshot(deviceId, scanPath)` (W02); `readPlanPreviewCandidates(plan)` (`./filesystemAnalysis:384`); `deviceFilesystemCleanupRuns` (`../db/schema`); `createAuditLogAsync` (`./auditService`).
-- Produces: `disk_cleanup.input_schema.properties` gains `path` and `cleanupRunId`; `execute` refuses without a pinned, previewed run belonging to this device and org, and takes its candidates from that run's stored plan instead of a fresh snapshot read. The response keeps W01's field set (`counts`, `rejectedPaths`, `partial`, `budgetMs`, `actions`) and adds `scanPath`; `executedActions` keeps W01's `{ partial, budgetMs, actions }` envelope.
-
-- [ ] **Step 1: Write the failing test** — create `apps/api/src/services/aiToolsFilesystem.diskCleanupRunPin.test.ts`:
-
-```ts
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-/**
- * Disk Cleanup v2 W05, spec §9.1 and §10 item 1 ("nothing is deleted that was
- * not previewed").
- *
- * Before this wave the AI lane re-derived its candidate set from whatever
- * snapshot happened to be newest at EXECUTE time, which is exactly the race the
- * route's pinning exists to prevent: a scan of D:\ landing between preview and
- * execute silently re-pointed the deletion set. `cleanupRunId` is now required
- * and the candidates come from that run's stored plan, not from a fresh read.
- */
-
-const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
-const ORG_ID = '11111111-1111-1111-1111-111111111111';
-const RUN_ID = '44444444-4444-4444-4444-444444444444';
-
-const dbMockState = vi.hoisted(() => ({
-  deviceRows: [] as unknown[],
-  userRows: [] as unknown[],
-  cleanupRunRows: [] as unknown[],
-  insertedRuns: [] as Record<string, unknown>[],
-}));
-
-vi.mock('../db', () => ({
-  db: {
-    select: vi.fn(() => ({
-      from: vi.fn((table: unknown) => {
-        const chain: Record<string, unknown> = {};
-        const tableName = String((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')]);
-        chain.where = vi.fn(() => chain);
-        chain.limit = vi.fn(() => Promise.resolve(
-          tableName === 'users' ? dbMockState.userRows
-            : tableName === 'device_filesystem_cleanup_runs' ? dbMockState.cleanupRunRows
-              : dbMockState.deviceRows,
-        ));
-        return chain;
-      }),
-    })),
-    insert: vi.fn(() => ({
-      values: vi.fn((row: Record<string, unknown>) => ({
-        returning: vi.fn(async () => {
-          const id = `run-${dbMockState.insertedRuns.length + 1}`;
-          dbMockState.insertedRuns.push({ ...row, id });
-          return [{ id, ...row }];
-        }),
-      })),
-    })),
-  },
-}));
-
-const dispatched = vi.hoisted(() => ({ calls: [] as Array<{ type: string; payload: Record<string, unknown> }> }));
-
-vi.mock('./commandQueue', () => ({
-  executeCommand: vi.fn(async (_deviceId: string, type: string, payload: Record<string, unknown>) => {
-    dispatched.calls.push({ type, payload });
-    return { status: 'completed', stdout: '{}' };
-  }),
-  CommandTypes: new Proxy({}, { get: (_t, prop) => String(prop) }),
-}));
-
-const fsState = vi.hoisted(() => ({
-  snapshotArgs: [] as unknown[][],
-  parsed: { summary: { filesScanned: 1 } } as Record<string, unknown>,
-  saved: [] as unknown[][],
-}));
-
-vi.mock('./filesystemAnalysis', () => ({
-  buildCleanupPreview: vi.fn(() => ({
-    candidates: [{ path: '/tmp/a.log', category: 'temp_files', sizeBytes: 10, safe: true }],
-    estimatedBytes: 10,
-    candidateCount: 1,
-    categories: [{ category: 'temp_files', count: 1, estimatedBytes: 10 }],
-    snapshotId: 'snap-1',
-  })),
-  getLatestFilesystemSnapshot: vi.fn(async (..._args: unknown[]) => null),
-  getLatestFilesystemCleanupSnapshot: vi.fn(async (...args: unknown[]) => {
-    fsState.snapshotArgs.push(args);
-    return { id: 'snap-1', cleanupCandidates: [] };
-  }),
-  parseFilesystemAnalysisStdout: vi.fn(() => fsState.parsed),
-  readPlanPreviewCandidates: vi.fn(() => [
-    { path: '/tmp/a.log', category: 'temp_files', sizeBytes: 10, safe: true },
-  ]),
-  saveFilesystemSnapshot: vi.fn(async (...args: unknown[]) => {
-    fsState.saved.push(args);
-    return { id: 'snap-new', capturedAt: new Date(), summary: {}, largestFiles: [], largestDirs: [] };
-  }),
-  safeCleanupCategories: ['temp_files'],
-}));
-
-const normalizeScanPath = vi.hoisted(() => vi.fn((_os: string, p: string) => p.toUpperCase()));
-vi.mock('@breeze/shared', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  normalizeScanPath,
-}));
-
-import type { AuthContext } from '../middleware/auth';
-import type { AiTool } from './aiTools';
-import { registerFilesystemTools } from './aiToolsFilesystem';
-
-function getTool(name: string): AiTool {
-  const aiTools = new Map<string, AiTool>();
-  registerFilesystemTools(aiTools);
-  return aiTools.get(name)!;
-}
-
-function makeAuth(): AuthContext {
-  return {
-    user: { id: 'user-1', email: 'tech@example.com', name: 'Tech' },
-    token: {} as unknown,
-    partnerId: null,
-    orgId: ORG_ID,
-    scope: 'organization',
-    accessibleOrgIds: [ORG_ID],
-    canAccessOrg: (orgId: string) => orgId === ORG_ID,
-    orgCondition: vi.fn(() => undefined),
-    aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-1' },
-  } as unknown as AuthContext;
-}
-
-describe('disk_cleanup / analyze_disk_usage — path and pinned run', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    dbMockState.userRows = [{ id: 'user-1' }];
-    dbMockState.deviceRows = [
-      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'lab-1', status: 'online', osType: 'windows' },
-    ];
-    dbMockState.cleanupRunRows = [
-      { id: RUN_ID, deviceId: DEVICE_ID, orgId: ORG_ID, status: 'previewed', plan: { snapshotId: 'snap-1', scanPath: 'D:\\' } },
-    ];
-    dbMockState.insertedRuns = [];
-    dispatched.calls = [];
-    fsState.snapshotArgs = [];
-    fsState.saved = [];
-    fsState.parsed = { summary: { filesScanned: 1 } };
-  });
-
-  it('disk_cleanup advertises path and cleanupRunId', () => {
-    const props = getTool('disk_cleanup').definition.input_schema.properties as Record<string, unknown>;
-    expect(Object.keys(props).sort()).toEqual(
-      ['action', 'categories', 'cleanupRunId', 'deviceId', 'maxCandidates', 'path', 'paths'],
-    );
-  });
-
-  it('preview normalises the path and reads the snapshot FOR THAT PATH', async () => {
-    const raw = await getTool('disk_cleanup').handler(
-      { deviceId: DEVICE_ID, action: 'preview', path: 'd:\\' },
-      makeAuth(),
-    );
-    const result = JSON.parse(raw);
-
-    expect(normalizeScanPath).toHaveBeenCalledWith('windows', 'd:\\');
-    expect(fsState.snapshotArgs[0]).toEqual([DEVICE_ID, 'D:\\']);
-    expect(result.scanPath).toBe('D:\\');
-    expect(result.cleanupRunId).toBe('run-1');
-    // The pinned plan carries the path, so a later execute can prove which
-    // volume it was previewed against.
-    expect((dbMockState.insertedRuns[0]!.plan as Record<string, unknown>).scanPath).toBe('D:\\');
-  });
-
-  it('execute refuses without a cleanupRunId', async () => {
-    const raw = await getTool('disk_cleanup').handler(
-      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.log'] },
-      makeAuth(),
-    );
-    expect(JSON.parse(raw).error).toBe('cleanupRunId is required for the execute action');
-    expect(dispatched.calls).toHaveLength(0);
-  });
-
-  it('execute refuses a cleanupRunId that is not a previewed run of this device', async () => {
-    dbMockState.cleanupRunRows = [];
-    const raw = await getTool('disk_cleanup').handler(
-      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.log'] },
-      makeAuth(),
-    );
-    expect(JSON.parse(raw).error).toBe('No previewed cleanup run with that id exists for this device');
-    expect(dispatched.calls).toHaveLength(0);
-  });
-
-  it('execute deletes only paths inside the pinned plan and reports the rest as rejected', async () => {
-    const raw = await getTool('disk_cleanup').handler(
-      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.log', '/etc/shadow'] },
-      makeAuth(),
-    );
-    const result = JSON.parse(raw);
-
-    expect(result.rejectedPaths).toEqual(['/etc/shadow']);
-    expect(dispatched.calls.map((c) => c.payload.path)).toEqual(['/tmp/a.log']);
-    // Spec §3 defect 1: permanent, guarded, never a trash move.
-    expect(dispatched.calls[0]!.payload).toMatchObject({ recursive: true, permanent: true, cleanupGuard: true });
-  });
-
-  it('execute caps the request at 200 paths like the route', async () => {
-    const paths = Array.from({ length: 201 }, (_, i) => `/tmp/f${i}`);
-    const raw = await getTool('disk_cleanup').handler(
-      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths },
-      makeAuth(),
-    );
-    expect(JSON.parse(raw).error).toBe('At most 200 paths may be selected for one cleanup run');
-    expect(dispatched.calls).toHaveLength(0);
-  });
-
-  it('analyze_disk_usage normalises its scan path before dispatch', async () => {
-    await getTool('analyze_disk_usage').handler(
-      { deviceId: DEVICE_ID, refresh: true, path: 'd:\\' },
-      makeAuth(),
-    );
-    expect(normalizeScanPath).toHaveBeenCalledWith('windows', 'd:\\');
-    expect(dispatched.calls[0]!.payload.path).toBe('D:\\');
-  });
-
-  // REGRESSION PIN, not a new fix — spec §2 defect 5 belongs to W01
-  // (amendment B17). If this fails, W01 did not close it: add the same guard
-  // routes/agents/helpers.ts:1608-1615 uses (refuse to save a payload with no
-  // summary object) and say so in the PR body.
-  it('never stores a blank snapshot when the agent stdout does not parse', async () => {
-    fsState.parsed = {};
-    const raw = await getTool('analyze_disk_usage').handler(
-      { deviceId: DEVICE_ID, refresh: true, path: 'c:\\' },
-      makeAuth(),
-    );
-    expect(JSON.parse(raw).error).toBeTruthy();
-    expect(fsState.saved).toHaveLength(0);
-  });
-});
-```
-
-- [ ] **Step 2: Run it and watch it fail**
-
-```bash
-cd apps/api && npx vitest run src/services/aiToolsFilesystem.diskCleanupRunPin.test.ts
-```
-
-Expected failure on the first case: the advertised key list is `['action','categories','deviceId','maxCandidates','paths']` — no `path`, no `cleanupRunId`.
-
-- [ ] **Step 3: Implement the `disk_cleanup` definition** — in `apps/api/src/services/aiToolsFilesystem.ts`, replace the `input_schema` block of the `disk_cleanup` registration:
-
-```ts
-      input_schema: {
-        type: 'object' as const,
-        properties: {
-          deviceId: { type: 'string', description: 'The device UUID' },
-          action: { type: 'string', enum: ['preview', 'execute'], description: 'preview (read-only) or execute (delete selected paths)' },
-          path: { type: 'string', description: 'Volume or directory the candidates were scanned from (default: the OS root). Preview and execute must name the same path.' },
-          categories: { type: 'array', items: { type: 'string' }, description: 'Optional cleanup categories filter for preview' },
-          cleanupRunId: { type: 'string', description: 'The previewed run this execute is pinned to (required for execute; returned by preview)' },
-          paths: { type: 'array', items: { type: 'string' }, description: 'Selected paths to delete (required for execute; max 200, all must appear in the pinned run)' },
-          maxCandidates: { type: 'number', description: 'Max preview candidates returned in chat (1-200, default 100)' }
-        },
-        required: ['deviceId', 'action']
-      }
-```
-
-- [ ] **Step 4: Implement the `disk_cleanup` handler** — replace the body from the `const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);` line through the end of the handler:
-
-```ts
-      const defaultPath = access.device.osType === 'windows' ? 'C:\\' : '/';
-      const scanPath = normalizeScanPath(
-        access.device.osType,
-        typeof input.path === 'string' && input.path.length > 0 ? input.path : defaultPath,
-      );
-
-      if (action === 'preview') {
-        const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId, scanPath);
-        if (!snapshot) {
-          return JSON.stringify({
-            message: `No filesystem analysis snapshot available for ${scanPath}. Run analyze_disk_usage with refresh=true and that path first.`,
-          });
-        }
-
-        const requestedCategories = Array.isArray(input.categories)
-          ? input.categories.filter((v): v is string => typeof v === 'string')
-          : undefined;
-        const preview = buildCleanupPreview(snapshot, requestedCategories);
-        const maxCandidates = Math.min(Math.max(1, Number(input.maxCandidates) || 100), 200);
-        const returnedCandidates = preview.candidates.slice(0, maxCandidates);
-
-        const [cleanupRun] = await db
-          .insert(deviceFilesystemCleanupRuns)
-          .values({
-            deviceId,
-            orgId: access.device.orgId,
-            requestedBy: safeRequestedBy,
-            scanPath,
-            plan: {
-              snapshotId: snapshot.id,
-              scanPath,
-              categories: requestedCategories ?? safeCleanupCategories,
-              preview,
-            },
-            status: 'previewed',
-          })
-          .returning();
-
-        return JSON.stringify({
-          cleanupRunId: cleanupRun?.id ?? null,
-          snapshotId: snapshot.id,
-          scanPath,
-          estimatedBytes: preview.estimatedBytes,
-          candidateCount: preview.candidateCount,
-          returnedCandidateCount: returnedCandidates.length,
-          truncatedCandidateCount: Math.max(0, preview.candidates.length - returnedCandidates.length),
-          maxCandidates,
-          categories: preview.categories,
-          candidates: returnedCandidates,
-        });
-      }
-
-      // ---- execute -----------------------------------------------------
-      //
-      // Spec §10 item 1. The deletion set comes from the PINNED run's stored
-      // plan, never from a fresh snapshot read: a scan of another volume
-      // landing between preview and execute used to silently re-point it.
-      const cleanupRunId = typeof input.cleanupRunId === 'string' ? input.cleanupRunId : '';
-      if (!cleanupRunId) {
-        return JSON.stringify({ error: 'cleanupRunId is required for the execute action' });
-      }
-
-      const requestedPaths = Array.isArray(input.paths)
-        ? Array.from(new Set(input.paths.filter((v): v is string => typeof v === 'string')))
-        : [];
-      if (requestedPaths.length === 0) {
-        return JSON.stringify({ error: 'paths are required for execute action' });
-      }
-      if (requestedPaths.length > 200) {
-        return JSON.stringify({ error: 'At most 200 paths may be selected for one cleanup run' });
-      }
-
-      const [pinnedRun] = await db
-        .select({
-          id: deviceFilesystemCleanupRuns.id,
-          plan: deviceFilesystemCleanupRuns.plan,
-          scanPath: deviceFilesystemCleanupRuns.scanPath,
-        })
-        .from(deviceFilesystemCleanupRuns)
-        .where(and(
-          eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
-          eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
-          eq(deviceFilesystemCleanupRuns.orgId, access.device.orgId),
-          eq(deviceFilesystemCleanupRuns.status, 'previewed'),
-        ))
-        .limit(1);
-      if (!pinnedRun) {
-        return JSON.stringify({ error: 'No previewed cleanup run with that id exists for this device' });
-      }
-
-      // W01 Task 11b already routed this lane through the shared execution
-      // service; W05 only swaps the candidate SOURCE from "latest preview" to
-      // "the pinned run's stored plan". Re-implementing the loop here would
-      // re-open defect 1 on the AI lane: no rule re-filter, no rule-derived
-      // `contentsOnly`, no five-token status vocabulary, no budget.
-      const outcome = await runCleanupExecution({
-        os: toCleanupOs(access.device.osType),
-        requestedPaths,
-        candidates: readPlanPreviewCandidates(pinnedRun.plan),
-        dispatch: (_path, payload) => aiExecuteCommand(
-          auth,
-          'disk_cleanup',
-          deviceId,
-          'file_delete',
-          payload,
-          { userId: auth.user.id, timeoutMs: 30_000 },
-        ),
-        budgetMs: CLEANUP_EXECUTE_BUDGET_MS,
-      });
-
-      const counts = {
-        completed: outcome.actions.filter((action) => action.status === 'completed').length,
-        failed: outcome.actions.filter((action) => action.status === 'failed').length,
-        skipped_locked: outcome.actions.filter((action) => action.status === 'skipped_locked').length,
-        rejected: outcome.actions.filter((action) => action.status === 'rejected').length,
-        skipped_budget: outcome.actions.filter((action) => action.status === 'skipped_budget').length,
-      };
-      const dispatchedPaths = outcome.actions
-        .filter((action) => action.status !== 'rejected')
-        .map((action) => action.path);
-
-      if (dispatchedPaths.length === 0) {
-        return JSON.stringify({
-          error: 'No selected path is part of the pinned cleanup run',
-          rejectedPaths: outcome.rejectedPaths,
-          actions: outcome.actions,
-        });
-      }
-
-      const runStatus = counts.completed > 0 ? 'executed' : 'failed';
-
-      await db
-        .update(deviceFilesystemCleanupRuns)
-        .set({
-          approvedAt: new Date(),
-          // W01 amendment 8: the envelope, not a bare array.
-          executedActions: {
-            partial: outcome.partial,
-            budgetMs: outcome.budgetMs,
-            actions: outcome.actions,
-          },
-          bytesReclaimed: outcome.bytesReclaimed,
-          status: runStatus,
-          error: runStatus === 'failed'
-            ? 'all cleanup actions failed'
-            : counts.failed > 0
-              ? `${counts.failed} cleanup action(s) failed`
-              : null,
-          updatedAt: new Date(),
-        })
-        .where(eq(deviceFilesystemCleanupRuns.id, pinnedRun.id));
-
-      // Spec §10 item 9: the AI lane audits its own run, like the route does.
-      void createAuditLogAsync({
-        orgId: access.device.orgId,
-        actorType: safeRequestedBy ? 'user' : 'ai_agent',
-        actorId: auth.user.id,
-        actorEmail: auth.user.email,
-        action: 'device.filesystem.cleanup.execute',
-        resourceType: 'device',
-        resourceId: deviceId,
-        details: {
-          cleanupRunId: pinnedRun.id,
-          scanPath: pinnedRun.scanPath,
-          surface: 'ai_tool',
-          selectedCount: dispatchedPaths.length,
-          rejectedPaths: outcome.rejectedPaths,
-          partial: outcome.partial,
-          bytesReclaimed: outcome.bytesReclaimed,
-          statuses: outcome.actions.map((a) => ({ path: a.path, status: a.status })),
-        },
-        result: runStatus === 'executed' ? 'success' : 'failure',
-      }).catch((error: unknown) => {
-        console.error('[disk_cleanup] audit write failed (non-fatal)', { deviceId, error });
-      });
-
-      return JSON.stringify({
-        cleanupRunId: pinnedRun.id,
-        scanPath: pinnedRun.scanPath,
-        status: runStatus,
-        bytesReclaimed: outcome.bytesReclaimed,
-        selectedCount: dispatchedPaths.length,
-        failedCount: counts.failed,
-        counts,
-        rejectedPaths: outcome.rejectedPaths,
-        partial: outcome.partial,
-        budgetMs: outcome.budgetMs,
-        actions: outcome.actions,
-      });
-```
-
-Extend the file's imports accordingly: `and`, `eq` are already imported from `drizzle-orm` (`:15`); add `readPlanPreviewCandidates` to the `./filesystemAnalysis` import (`:19-26`), and `normalizeScanPath` + `toCleanupOs` from `@breeze/shared`. `runCleanupExecution` and `CLEANUP_EXECUTE_BUDGET_MS` are already imported from `./filesystemCleanupExecution` by W01 Task 11b — keep that import, do not reintroduce a local loop.
-
-- [ ] **Step 5: Implement the `analyze_disk_usage` normalisation** — in the same file, replace `:158-162`:
-
-```ts
-      const defaultPath = access.device.osType === 'windows' ? 'C:\\' : '/';
-      const scanPath = normalizeScanPath(
-        access.device.osType,
-        typeof input.path === 'string' && input.path.length > 0 ? input.path : defaultPath,
-      );
-      // §5.1: "root-scoped" is now "the normalised path IS a volume scan
-      // path", not a `=== 'C:\\'` string compare that a lower-case `c:\` fails.
-      const isRootScopedScan = scanPath === normalizeScanPath(access.device.osType, defaultPath);
-```
-
-and change the snapshot read on the following line to `getLatestFilesystemSnapshot(deviceId, scanPath)`, and the `saveFilesystemSnapshot` call to pass `scanPath` (both W02 signatures).
-
-- [ ] **Step 6: Update the Zod and SDK declarations**
-
-`apps/api/src/services/aiToolSchemas.ts`, the `disk_cleanup` entry — add the two fields and keep the existing `.refine`:
-
-```ts
-  disk_cleanup: z.object({
-    deviceId: uuid,
-    action: z.enum(['preview', 'execute']),
-    path: safePath.optional(),
-    categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
-    cleanupRunId: uuid.optional(),
-    paths: z.array(cleanupPath).min(1).max(200).optional(),
-    maxCandidates: z.number().int().min(1).max(200).optional(),
-  }).refine(
-    (data) => data.action === 'preview'
-      || (Array.isArray(data.paths) && data.paths.length > 0 && typeof data.cleanupRunId === 'string'),
-    { message: 'cleanupRunId and paths are required for execute action' }
-  ),
-```
-
-`apps/api/src/services/aiAgentSdkTools.ts`, the `disk_cleanup` shape:
-
-```ts
-      {
-        deviceId: uuid,
-        action: z.enum(['preview', 'execute']),
-        path: z.string().max(4096).optional(),
-        categories: z.array(z.string()).max(10).optional(),
-        cleanupRunId: uuid.optional(),
-        paths: z.array(z.string().max(4096)).min(1).max(200).optional(),
-        maxCandidates: z.number().int().min(1).max(200).optional(),
-      },
-```
-
-- [ ] **Step 7: Repair the neighbouring mock** (amendment B19) — in `apps/api/src/services/aiToolsFilesystem.diskCleanupRequestedBy.test.ts`, add to the `vi.mock('./filesystemAnalysis', …)` factory:
-
-```ts
-  readPlanPreviewCandidates: vi.fn(() => [
-    { path: '/tmp/junk.log', category: 'temp', sizeBytes: 1024, safe: true },
-  ]),
-```
-
-and update its two `execute` cases to pass `cleanupRunId: 'run-1'` plus a `device_filesystem_cleanup_runs` row in `dbMockState`, mirroring the new pin lookup. Its assertion changes from "an insert happened" to "the pinned run was updated" — keep the `requestedBy: null` assertion on the `preview` case, which is what that suite exists to pin.
-
-- [ ] **Step 8: Run it and watch it pass**
-
-```bash
-cd apps/api && npx vitest run \
-  src/services/aiToolsFilesystem.diskCleanupRunPin.test.ts \
-  src/services/aiToolsFilesystem.diskCleanupRequestedBy.test.ts \
-  src/services/aiToolsFilesystem.fileWriteCap.test.ts \
-  src/services/aiToolsFilesystem.systemCleanup.test.ts \
-  src/services/aiToolsRegistryParity.test.ts
-```
-
-Expected: 5 files, all green. All four `aiToolsFilesystem.*` siblings are listed explicitly because vitest's path filter is a plain substring and `src/services/aiToolsFilesystem` would also sweep in unrelated matches while a trailing slash would skip the dotted siblings entirely.
-
-- [ ] **Step 9: Typecheck and commit**
-
-```bash
-pnpm exec tsc --noEmit --project apps/api/tsconfig.json
-git add apps/api/src/services/aiToolsFilesystem.ts apps/api/src/services/aiToolSchemas.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiToolsFilesystem.diskCleanupRunPin.test.ts apps/api/src/services/aiToolsFilesystem.diskCleanupRequestedBy.test.ts
-git commit -m "$(cat <<'EOF'
-feat(ai): pin disk_cleanup execute to a cleanupRunId and make it path-aware
-
-The AI lane used to re-derive its deletion set from whatever snapshot was
-newest at execute time — the exact race the route's pinning prevents. Execute
-now requires the previewed run's id, deletes only paths inside that run's
-stored plan, reports the rest as rejectedPaths, and dispatches
-permanent + cleanupGuard so the bytes are actually freed.
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-### Task 9: Act mode carries the pinned run
-
-**Files:**
-- Modify: `apps/api/src/services/aiAgents/actManifest.ts` — the `ActTarget` `disk_cleanup` variant (`:23-33`) and `diskCleanupExecute.normalizeTarget` (`:129-150`)
-- Modify: `apps/api/src/services/aiAgents/actRevalidation.ts` — `pinDiskCleanup` (`:137-173`)
-- Create: `apps/api/src/services/aiAgents/actRevalidation.cleanupRunPin.test.ts` (Test)
-- Test: `apps/api/src/services/aiAgents/actManifest.test.ts`, `actVerify.test.ts` (existing)
-
-**Interfaces:**
-- Consumes: `deviceFilesystemCleanupRuns`, `readPlanPreviewCandidates`, `ACT_DISK_CLEANUP_MAX_BYTES_V1`.
-- Produces: `ActTarget` variant `{ kind: 'disk_cleanup'; cleanupRunId: string; paths: string[] }`; `pinDiskCleanup` reads the run **by id**.
-
-- [ ] **Step 1: Write the failing test** — create `apps/api/src/services/aiAgents/actRevalidation.cleanupRunPin.test.ts`:
-
-```ts
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ACT_MANIFEST } from './actManifest';
-
-/**
- * Disk Cleanup v2 W05, spec §9.3 item 8 + §10 item 1.
- *
- * `pinDiskCleanup` used to re-read "the newest `previewed` run for this device
- * and org" — which, once disk_cleanup:execute requires a cleanupRunId, is a
- * DIFFERENT run from the one the model was authorised against whenever a
- * second preview lands in between (a concurrent tech, a second volume, the
- * playbook's own preview step retrying). The pin now reads the named run.
- */
-
-const RUN_ID = '44444444-4444-4444-4444-444444444444';
-const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
-const ORG_ID = '11111111-1111-1111-1111-111111111111';
-
-const queryState = vi.hoisted(() => ({
-  rows: [] as unknown[],
-  wheres: [] as unknown[],
-}));
-
-vi.mock('../../db', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return {
-    ...actual,
-    db: {
-      select: vi.fn(() => {
-        const chain: Record<string, unknown> = {};
-        chain.from = vi.fn(() => chain);
-        chain.where = vi.fn((condition: unknown) => { queryState.wheres.push(condition); return chain; });
-        chain.orderBy = vi.fn(() => chain);
-        chain.limit = vi.fn(async () => queryState.rows);
-        return chain;
-      }),
-    },
-    getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' })),
-    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  };
-});
-
-import { revalidateActExecution } from './actRevalidation';
-
-const RUN = {
-  id: 'agent-run-1',
-  orgId: ORG_ID,
-  agentId: 'agent-1',
-  agentKind: 'triage' as const,
-  deviceId: DEVICE_ID,
-  deviceSiteId: null,
-};
-
-describe('disk_cleanup act revalidation pins the named run', () => {
-  const op = ACT_MANIFEST.find((o) => o.key === 'disk_cleanup.execute')!;
-
-  beforeEach(() => {
-    queryState.rows = [];
-    queryState.wheres = [];
-  });
-
-  it('normalizeTarget carries cleanupRunId onto the target', () => {
-    const result = op.normalizeTarget(
-      { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.log'] },
-      DEVICE_ID,
-    );
-    expect(result).toEqual({
-      ok: true,
-      target: { kind: 'disk_cleanup', cleanupRunId: RUN_ID, paths: ['/tmp/a.log'] },
-    });
-  });
-
-  it('normalizeTarget refuses a call with no cleanupRunId — malformed, not a device mismatch', () => {
-    const result = op.normalizeTarget(
-      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.log'] },
-      DEVICE_ID,
-    );
-    expect(result).toMatchObject({ ok: false, reason: 'cleanupRunId is required' });
-    // A missing identity field downgrades to a proposal; only a DEVICE
-    // mismatch is a hard deny (actManifest.ts's deviceMismatch discriminator).
-    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBeUndefined();
-  });
-
-  it('denies when the named run does not exist for this device', async () => {
-    queryState.rows = [];
-    const result = await revalidateActExecution({
-      run: RUN,
-      op,
-      toolName: 'disk_cleanup',
-      input: { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.log'] },
-      reserved: { count: 0 },
-    });
-    expect(result).toMatchObject({ ok: false, deny: 'No disk-cleanup preview plan exists for this device' });
-  });
-
-  it('denies a path that is not inside the NAMED run, even when a newer run contains it', async () => {
-    queryState.rows = [{ plan: { preview: { estimatedBytes: 10, candidates: [{ path: '/tmp/a.log', category: 'temp_files', sizeBytes: 10, safe: true }] } } }];
-    const result = await revalidateActExecution({
-      run: RUN,
-      op,
-      toolName: 'disk_cleanup',
-      input: { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/b.log'] },
-      reserved: { count: 0 },
-    });
-    expect(result).toMatchObject({ ok: false });
-    expect((result as { deny?: string }).deny).toContain('/tmp/b.log');
-  });
-
-  it('pins successfully when every path is inside the named run and the byte bound holds', async () => {
-    queryState.rows = [{ plan: { preview: { estimatedBytes: 10, candidates: [{ path: '/tmp/a.log', category: 'temp_files', sizeBytes: 10, safe: true }] } } }];
-    const result = await revalidateActExecution({
-      run: RUN,
-      op,
-      toolName: 'disk_cleanup',
-      input: { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: RUN_ID, paths: ['/tmp/a.log'] },
-      reserved: { count: 0 },
-    });
-    expect(result).toMatchObject({ ok: true });
-    expect((result as { pin: { target: { cleanupRunId: string } } }).pin.target.cleanupRunId).toBe(RUN_ID);
-  });
-});
-```
-
-- [ ] **Step 2: Run it and watch it fail**
-
-```bash
-cd apps/api && npx vitest run src/services/aiAgents/actRevalidation.cleanupRunPin.test.ts
-```
-
-Expected failure on the first case: the target comes back as `{ kind: 'disk_cleanup', paths: ['/tmp/a.log'] }` with no `cleanupRunId`.
-
-- [ ] **Step 3: Implement the target** — in `apps/api/src/services/aiAgents/actManifest.ts`, replace the `disk_cleanup` variant of `ActTarget`:
-
-```ts
-  /**
-   * `cleanupRunId` + `paths`. The run id is now part of the model's own input
-   * (disk_cleanup:execute requires it, W05 §9.1), so this pure resolver CAN
-   * carry it — and carrying it is what lets actRevalidation.ts re-read THE
-   * PINNED plan instead of "whatever previewed run is newest", which is a
-   * different plan the moment a second preview lands in between.
-   */
-  | { kind: 'disk_cleanup'; cleanupRunId: string; paths: string[] }
-```
-
-and `diskCleanupExecute.normalizeTarget`:
-
-```ts
-  normalizeTarget: (input, runDeviceId) => {
-    if (!deviceMatches(input, 'deviceId', runDeviceId)) {
-      return deviceMismatch('deviceId does not match the run device');
-    }
-    const cleanupRunId = readString(input, 'cleanupRunId');
-    if (!cleanupRunId) return { ok: false, reason: 'cleanupRunId is required' };
-    const rawPaths = input.paths;
-    if (!Array.isArray(rawPaths) || rawPaths.length === 0) {
-      return { ok: false, reason: 'paths is required and must be non-empty' };
-    }
-    const paths = rawPaths.filter((p): p is string => typeof p === 'string' && p.length > 0);
-    if (paths.length !== rawPaths.length) {
-      return { ok: false, reason: 'paths must be an array of non-empty strings' };
-    }
-    return { ok: true, target: { kind: 'disk_cleanup', cleanupRunId, paths } };
-  },
-```
-
-- [ ] **Step 4: Implement the pin** — in `apps/api/src/services/aiAgents/actRevalidation.ts`, replace the query inside `pinDiskCleanup`:
-
-```ts
-    const [latest] = await db
-      .select({ plan: deviceFilesystemCleanupRuns.plan })
-      .from(deviceFilesystemCleanupRuns)
-      .where(and(
-        // BY ID, not "newest previewed" — see the ActTarget docstring. The
-        // device and org predicates stay: the id alone must never be able to
-        // reach another tenant's plan.
-        eq(deviceFilesystemCleanupRuns.id, target.cleanupRunId),
-        eq(deviceFilesystemCleanupRuns.deviceId, run.deviceId),
-        eq(deviceFilesystemCleanupRuns.orgId, run.orgId),
-        eq(deviceFilesystemCleanupRuns.status, 'previewed'),
-      ))
-      .limit(1);
-```
-
-The `desc(...)` ordering and its `desc` import become dead if nothing else in the file uses them — check with `grep -n "desc(" apps/api/src/services/aiAgents/actRevalidation.ts` and drop the import only if the count reaches zero.
-
-- [ ] **Step 5: Run it and watch it pass**
-
-```bash
-cd apps/api && npx vitest run \
-  src/services/aiAgents/actRevalidation.cleanupRunPin.test.ts \
-  src/services/aiAgents/actRevalidation.test.ts \
-  src/services/aiAgents/actManifest.test.ts \
-  src/services/aiAgents/actVerify.test.ts \
-  src/services/aiAgents/agentToolCatalog.contract.test.ts
-```
-
-Expected: all green. `actManifest.test.ts`'s existing `disk_cleanup.execute` cases (`:166`, `:173`) need `cleanupRunId` added to their inputs — that is a test-input change, not a contract relaxation, and the "refuses a call with no cleanupRunId" case above is what keeps the new requirement honest. `actVerify.test.ts` is listed because `actTargetSummary` switches exhaustively over `ActTarget`; the `disk_cleanup` arm still reports `${target.paths.length} path(s)` and needs no edit, but a non-exhaustive switch would surface here.
-
-- [ ] **Step 6: Typecheck and commit**
-
-```bash
-pnpm exec tsc --noEmit --project apps/api/tsconfig.json
-git add apps/api/src/services/aiAgents/actManifest.ts apps/api/src/services/aiAgents/actRevalidation.ts apps/api/src/services/aiAgents/actRevalidation.cleanupRunPin.test.ts apps/api/src/services/aiAgents/actManifest.test.ts
-git commit -m "$(cat <<'EOF'
-fix(ai): act-mode disk cleanup re-reads the PINNED run, not the newest one
-
-Now that disk_cleanup:execute requires a cleanupRunId, normalizeTarget carries
-it and pinDiskCleanup reads that exact row (still device- and org-predicated).
-"Newest previewed run" was a different plan the moment a second preview landed
-between the model's decision and dispatch.
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-### Task 10: The built-in playbook passes `cleanupRunId` and reports the native catalog
-
-**Files:**
-- Modify: `apps/api/src/services/builtInPlaybooks.ts` — the `Disk Cleanup` steps (`:24-77`)
-- Modify: `apps/api/src/services/aiAgents/playbookActExecutor.ts` — `runPlaybookSteps` (`:598-750`)
-- Create: `apps/api/src/services/aiAgents/playbookActExecutor.cleanupRunChain.test.ts` (Test)
-- Create: `apps/api/src/services/builtInPlaybooks.diskCleanup.test.ts` (Test)
-
-**Interfaces:**
-- Consumes: `resolveVariable` (file-local, `playbookActExecutor.ts:317`).
-- Produces: a `chainStepOutputs` pass inside `runPlaybookSteps`; a `cleanupRunId: '{{cleanupRunId}}'` field on the built-in's execute step; a final `diagnose` step calling `system_cleanup` with `action: 'list'`.
-
-- [ ] **Step 1: Write the failing tests.** Create `apps/api/src/services/builtInPlaybooks.diskCleanup.test.ts`:
-
-```ts
-import { describe, expect, it } from 'vitest';
-import { BUILT_IN_PLAYBOOKS } from './builtInPlaybooks';
-
-/**
- * Disk Cleanup v2 W05, spec §9.3 item 11.
- *
- * The shipped Disk Cleanup built-in is the one playbook act mode most needs,
- * and its `execute` step is now unsatisfiable without the id its own `preview`
- * step produces. Pinning the step shape here means a future edit to the
- * playbook cannot quietly make it unrunnable again (#3826 shipped exactly that
- * failure with the comma-joined `{{cleanupPaths}}`).
- */
-describe('built-in Disk Cleanup playbook', () => {
-  const playbook = BUILT_IN_PLAYBOOKS.find((p) => p.name === 'Disk Cleanup')!;
-
-  it('threads the previewed run id into the execute step', () => {
-    const execute = playbook.steps.find((s) => s.type === 'act' && s.toolInput?.action === 'execute')!;
-    expect(execute.tool).toBe('disk_cleanup');
-    expect(execute.toolInput).toMatchObject({
-      deviceId: '{{deviceId}}',
-      action: 'execute',
-      cleanupRunId: '{{cleanupRunId}}',
-      paths: '{{cleanupPaths}}',
-    });
-  });
-
-  it('ends with a reporting-only native-cleaner catalog step', () => {
-    const last = playbook.steps[playbook.steps.length - 1]!;
-    expect(last.tool).toBe('system_cleanup');
-    expect(last.toolInput).toEqual({ deviceId: '{{deviceId}}', action: 'list' });
-    // `diagnose`, not `act`: the executor dispatches diagnose steps directly,
-    // so a read-only reporting step needs no manifest entry and no widening of
-    // the isKnownSafeNonMutatingActStep safety allowlist (amendment B12).
-    expect(last.type).toBe('diagnose');
-  });
-
-  it('never auto-runs a native cleaner', () => {
-    const runs = playbook.steps.filter((s) => s.tool === 'system_cleanup' && s.toolInput?.action === 'run');
-    expect(runs).toEqual([]);
-  });
-});
-```
-
-and `apps/api/src/services/aiAgents/playbookActExecutor.cleanupRunChain.test.ts`:
-
-```ts
-import { describe, expect, it, vi } from 'vitest';
-import { runPlaybookSteps } from './playbookActExecutor';
-import type { PlaybookStep } from '../../db/schema/playbooks';
-
-/**
- * Disk Cleanup v2 W05, amendment B13.
- *
- * `resolvePlaybookSteps` substitutes every {{token}} ONCE, before the loop, so
- * a value produced by step N cannot reach step N+1 — and the Disk Cleanup
- * built-in's execute step now needs the cleanupRunId its own preview step
- * returns. This is the narrow chaining pass that closes that gap. It carries
- * exactly one key, from exactly one recognised step shape.
- */
-
-const FAR_FUTURE_DEADLINE = Date.now() + 3_600_000;
-const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
-
-function ctx(executeToolFn: ReturnType<typeof vi.fn>, revalidate: ReturnType<typeof vi.fn>) {
-  return {
-    run: { id: 'r1', orgId: 'o1', agentId: 'a1', agentKind: 'triage' as const, deviceId: DEVICE_ID, deviceSiteId: null },
-    agentAuth: { user: { id: 'u1' } } as never,
-    reserved: { count: 0 },
-    deadlineMs: FAR_FUTURE_DEADLINE,
-    deps: { executeToolFn, revalidate, sleepFn: vi.fn(async () => {}) } as never,
-  };
-}
-
-describe('playbook step-output chaining for cleanupRunId', () => {
-  it('feeds the preview step’s cleanupRunId into the later execute step', async () => {
-    const executeToolFn = vi.fn(async (tool: string, input: Record<string, unknown>) => {
-      if (tool === 'disk_cleanup' && input.action === 'preview') {
-        return JSON.stringify({ cleanupRunId: 'run-77', candidates: [] });
-      }
-      return JSON.stringify({ status: 'executed' });
-    });
-    const revalidate = vi.fn(async () => ({ ok: true, pin: {} }));
-
-    const steps: PlaybookStep[] = [
-      { type: 'act', name: 'Preview', tool: 'disk_cleanup', toolInput: { deviceId: DEVICE_ID, action: 'preview' } },
-      {
-        type: 'act', name: 'Execute', tool: 'disk_cleanup',
-        toolInput: { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: '{{cleanupRunId}}', paths: ['/tmp/a.log'] },
-      },
-    ];
-
-    const outcome = await runPlaybookSteps(steps, ctx(executeToolFn, revalidate) as never);
-
-    expect(outcome.status).toBe('completed');
-    // The REVALIDATION sees the resolved id — not the literal token — which is
-    // what makes pinDiskCleanup read the right row.
-    expect(revalidate.mock.calls[0]![0].input).toMatchObject({ cleanupRunId: 'run-77' });
-    expect(executeToolFn.mock.calls[1]![1]).toMatchObject({ cleanupRunId: 'run-77' });
-  });
-
-  it('leaves an unresolvable token alone so the step fails closed', async () => {
-    const executeToolFn = vi.fn(async () => JSON.stringify({ status: 'executed' }));
-    const revalidate = vi.fn(async () => ({ ok: false, downgrade: 'propose', reason: 'cleanupRunId is required' }));
-
-    const steps: PlaybookStep[] = [
-      {
-        type: 'act', name: 'Execute', tool: 'disk_cleanup',
-        toolInput: { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: '{{cleanupRunId}}', paths: ['/tmp/a.log'] },
-      },
-    ];
-
-    const outcome = await runPlaybookSteps(steps, ctx(executeToolFn, revalidate) as never);
-
-    expect(outcome.status).toBe('failed');
-    expect(revalidate.mock.calls[0]![0].input.cleanupRunId).toBe('{{cleanupRunId}}');
-    expect(executeToolFn).not.toHaveBeenCalled();
-  });
-
-  it('chains nothing from any other tool’s output', async () => {
-    const executeToolFn = vi.fn(async () => JSON.stringify({ cleanupRunId: 'smuggled' }));
-    const revalidate = vi.fn(async () => ({ ok: true, pin: {} }));
-
-    const steps: PlaybookStep[] = [
-      { type: 'diagnose', name: 'Baseline', tool: 'analyze_disk_usage', toolInput: { deviceId: DEVICE_ID, refresh: true } },
-      {
-        type: 'act', name: 'Execute', tool: 'disk_cleanup',
-        toolInput: { deviceId: DEVICE_ID, action: 'execute', cleanupRunId: '{{cleanupRunId}}', paths: ['/tmp/a.log'] },
-      },
-    ];
-
-    await runPlaybookSteps(steps, ctx(executeToolFn, revalidate) as never);
-
-    // Only a disk_cleanup PREVIEW step may publish a cleanupRunId. Anything
-    // else is an output the model can shape, and a chained value is an input to
-    // a destructive revalidation.
-    expect(revalidate.mock.calls[0]![0].input.cleanupRunId).toBe('{{cleanupRunId}}');
-  });
-});
-```
-
-- [ ] **Step 2: Run them and watch them fail**
-
-```bash
-cd apps/api && npx vitest run \
-  src/services/builtInPlaybooks.diskCleanup.test.ts \
-  src/services/aiAgents/playbookActExecutor.cleanupRunChain.test.ts
-```
-
-Expected failures: `BUILT_IN_PLAYBOOKS` is not exported (`Cannot find name`/`does not provide an export named 'BUILT_IN_PLAYBOOKS'`), and the chaining cases see the literal `'{{cleanupRunId}}'` reach `revalidate` in the first case.
-
-- [ ] **Step 3: Export the definitions and edit the playbook** — in `apps/api/src/services/builtInPlaybooks.ts`, change `const BUILT_IN_PLAYBOOKS: BuiltInPlaybook[] = [` to `export const BUILT_IN_PLAYBOOKS: BuiltInPlaybook[] = [`, add `cleanupRunId` to the execute step, and append the reporting step after the `verify` step:
-
-```ts
-      {
-        type: 'act',
-        name: 'Execute cleanup',
-        description: 'Delete selected cleanup candidates from the preview above.',
-        tool: 'disk_cleanup',
-        toolInput: {
-          deviceId: '{{deviceId}}',
-          action: 'execute',
-          // Produced by the preview step above and chained in by
-          // playbookActExecutor.ts. Execute is unsatisfiable without it, which
-          // is the point: nothing is deleted that this run did not preview.
-          cleanupRunId: '{{cleanupRunId}}',
-          paths: '{{cleanupPaths}}',
-        },
-      },
-```
-
-```ts
-      {
-        type: 'diagnose',
-        name: 'Report available OS-native cleaners',
-        description: 'List the platform maintenance actions that could reclaim more space. Reporting only — nothing is run.',
-        tool: 'system_cleanup',
-        toolInput: {
-          deviceId: '{{deviceId}}',
-          action: 'list',
-        },
-      },
-```
-
-- [ ] **Step 4: Implement the chaining pass** — in `apps/api/src/services/aiAgents/playbookActExecutor.ts`, add above `runPlaybookSteps`:
-
-```ts
-/**
- * The ONE value a step may publish to later steps (W05, amendment B13).
- *
- * `resolvePlaybookSteps` substitutes tokens once, before the loop, so the Disk
- * Cleanup built-in's `execute` step cannot otherwise see the `cleanupRunId` its
- * own `preview` step returned. Deliberately not a general chaining facility: a
- * chained value becomes an INPUT to a destructive revalidation, so exactly one
- * key is carried, and only from a `disk_cleanup` call with `action: 'preview'`
- * — the one step shape whose output the model does not choose.
- */
-function chainedCleanupRunId(
-  tool: string,
-  input: Record<string, unknown>,
-  output: string | undefined,
-): string | null {
-  if (tool !== 'disk_cleanup' || input.action !== 'preview') return null;
-  const parsed = parseJsonObject(output);
-  const id = parsed?.cleanupRunId;
-  return typeof id === 'string' && id.length > 0 ? id : null;
-}
-```
-
-and inside `runPlaybookSteps`, declare the bag before the loop and apply it per step:
-
-```ts
-  const chained: Record<string, unknown> = {};
-```
-
-Immediately after `const step = steps[i]!;`, replace the step with a chained-resolved copy:
-
-```ts
-    const step = Object.keys(chained).length > 0 && steps[i]!.toolInput
-      ? { ...steps[i]!, toolInput: resolveVariable(steps[i]!.toolInput, chained) as Record<string, unknown> }
-      : steps[i]!;
-```
-
-and after each of the two `disk_cleanup`-reachable dispatches record the id — in the `act`/`isKnownSafeNonMutatingActStep` branch, right after `results.push(stepResult(i, step, 'completed', output, startedAt));`:
-
-```ts
-          const runId = chainedCleanupRunId(step.tool ?? '', stepInput, output);
-          if (runId) chained.cleanupRunId = runId;
-```
-
-- [ ] **Step 5: Run them and watch them pass**
-
-```bash
-cd apps/api && npx vitest run \
-  src/services/builtInPlaybooks.diskCleanup.test.ts \
-  src/services/aiAgents/playbookActExecutor.cleanupRunChain.test.ts \
-  src/services/aiAgents/playbookActExecutor.test.ts \
-  src/services/builtInPlaybooks.test.ts
-```
-
-Expected: all green. `playbookActExecutor.test.ts` is listed because its "a bare `{{cleanupPaths}}` token resolves to the real array" case (`:663`) runs through the same loop the chaining pass now wraps — the pass must not re-resolve or stringify a value `resolvePlaybookSteps` already substituted, which is why `chained` starts empty and only ever gains `cleanupRunId`.
-
-- [ ] **Step 6: Typecheck and commit**
-
-```bash
-pnpm exec tsc --noEmit --project apps/api/tsconfig.json
-git add apps/api/src/services/builtInPlaybooks.ts apps/api/src/services/builtInPlaybooks.diskCleanup.test.ts apps/api/src/services/aiAgents/playbookActExecutor.ts apps/api/src/services/aiAgents/playbookActExecutor.cleanupRunChain.test.ts
-git commit -m "$(cat <<'EOF'
-feat(ai): built-in Disk Cleanup playbook threads cleanupRunId; reports cleaners
-
-Playbook variables resolve once before the loop, so the execute step could not
-see the id its own preview step returns. A one-key chaining pass carries it,
-from the one step shape whose output the model does not choose. The playbook
-also ends with a reporting-only system_cleanup list step (diagnose, never run).
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-EOF
-)"
-```
-
----
-
-### Task 11: Web mirrors — tier explainer, rate-limit table, RBAC map, approval label, 8 locales
+### Task 8: Web mirrors — tier explainer, rate-limit table, RBAC map, approval label, 8 locales
 
 **Files:**
 - Modify: `apps/web/src/components/ai-risk/tierConfig.ts` — Tier 1 tools (after `:91`), Tier 3 tools (after `:242`), `RATE_LIMIT_CONFIGS` (after `:319`), `RBAC_MAPPINGS` (after `:403`)
@@ -2735,7 +1663,7 @@ EOF
 
 ---
 
-### Task 12: Chat transcript labels — shared util and the mobile mirror
+### Task 9: Chat transcript labels — shared util and the mobile mirror
 
 **Files:**
 - Modify: `packages/shared/src/utils/aiToolLabels.ts:138-142`
@@ -2827,7 +1755,7 @@ EOF
 
 ---
 
-### Task 13: The MCP surface, as a contract
+### Task 10: The MCP surface, as a contract
 
 **Files:**
 - Create: `apps/api/src/services/aiToolsFilesystem.mcpSurface.contract.test.ts` (Test)
@@ -2954,7 +1882,7 @@ EOF
 
 ---
 
-### Task 14: Docs — `ai.mdx`, `mcp-server.mdx`, `agents/commands.mdx`, `playbooks.mdx`
+### Task 11: Docs — `ai.mdx`, `mcp-server.mdx`, `playbooks.mdx`
 
 **Files:**
 - Modify: `apps/docs/src/content/docs/features/ai.mdx` — the Tier 1 row (`:35`), the Tier 3 row (`:37`), the action-level Aside (`:41`), the rate-limit table (after `:127`)
@@ -3016,7 +1944,7 @@ and add immediately after that table:
 </Aside>
 ```
 
-Replace items 3 and 4 of the scope list (`:368-369`) with (amendment B18):
+Replace items 3 and 4 of the scope list (`:368-369`) with (amendment B14):
 
 ```
 3. **Tier 3+** tools are included only when *some* action of them is below Tier 3 and the key has `ai:execute`; a wholly Tier 3 tool is never listed.
@@ -3086,7 +2014,7 @@ EOF
 
 ---
 
-### Task 15: `features/filesystem-analysis.mdx` — the finished-feature rewrite, and the docs index
+### Task 12: `features/filesystem-analysis.mdx` — the finished-feature rewrite, and the docs index
 
 **Files:**
 - Modify: `apps/docs/src/content/docs/features/filesystem-analysis.mdx` (whole file, 564 lines today)
@@ -3113,10 +2041,14 @@ EOF
 | `### Execute` | `POST /filesystem/cleanup-execute { cleanupRunId, paths }` — `cleanupRunId` is **required**; paths outside the pinned plan come back in `rejectedPaths` and are never dispatched; per-path `status` is `completed | failed | skipped_locked | rejected | skipped_budget`; the 4-minute overall budget; deletion is **permanent** (no trash move — that is what makes the bytes actually free), symlinks and reparse points are refused, locked files are `skipped_locked` and never forced, and recycle-bin/trash candidates delete their *contents*, keeping the directory and `desktop.ini`. |
 | `### Run history` | `GET /filesystem/cleanup-runs` (paginated, both kinds) and `GET /filesystem/cleanup-runs/:runId`; retention — `previewed` runs are deleted after 7 days and `plan.candidates` is trimmed from finished runs after 90 days, while the summary and executed actions stay. |
 | `## OS-Native Cleaners` | New top-level section: why they exist (they reclaim space the file scanner structurally cannot see), the two-step list → run flow, the `409 agent_update_required` response and its minimum agent version, that estimates are labelled "up to", that `freedBytes` is measured from the free-space delta, and that `Update Cleanup` releases its space only after a reboot. |
-| `### Catalog` | The §7.2 table: `win_cleanmgr`, `win_dism_component_cleanup`, `mac_tm_local_snapshots`, `mac_brew_cleanup`, `linux_pkg_cache_clean`, `linux_pkg_autoremove`, `linux_journal_vacuum` — what each runs, its timeout and its risk flags. |
+| `### Catalog` | The §7.2 table: `win_cleanmgr`, `win_dism_component_cleanup`, `mac_tm_local_snapshots`, `mac_brew_cleanup`, `linux_pkg_cache_clean`, `linux_pkg_autoremove`, `linux_journal_vacuum` — what each runs and its timeout. |
+| `### Risk flags` | **Enumerate every flag and what it means for the customer**, not just the flag name: `long_running`, `may_require_reboot`, `may_require_reboot_free_state`, `removes_packages`, `removes_driver_rollback`, **`removes_os_rollback`** (Previous Installations deletes `Windows.old`, which IS the path back to the prior Windows build — irreversible) and **`removes_recovery_points`** (a cleaner that discards restore points or local snapshots leaves no in-place rollback). State which confirmation each one forces in the UI: `removes_packages`, `removes_os_rollback` and `removes_recovery_points` require the destructive dialog's second checkbox. |
 | `### What is deliberately excluded` | `/ResetBase`, `DownloadsFolder`, `Windows ESD installation files`, `Language Pack`, every per-user cleanmgr handler, Docker prune, Storage Sense and `snap` revision pruning — excluded **in code, not configuration**. |
 | `## AI Integration` | Three tools. `analyze_disk_usage` (Tier 1) gains `path`. `disk_cleanup` (Tier 1 preview / Tier 3 execute) gains `path` and a **required** `cleanupRunId` on execute. `system_cleanup` (Tier 1 list / Tier 3 run) is new, rate-limited 2 per hour, and requires `actionIds` from the shared allowlist. State the MCP contract in one line and link to `/features/mcp-server/`: Tier 3 actions are refused over MCP, so an MCP client diagnoses and a technician executes. |
 | `## Database Schema` | Update all three tables: snapshots gain `scan_path` (NOT NULL) and an index on `(device_id, scan_path, captured_at DESC)`; scan state's primary key is `(device_id, scan_path)`; cleanup runs gain `scan_path` (nullable — system runs are not path-scoped), `kind` (`files` \| `system`), `command_id`, and the `running` status. |
+| `### Preview expiry and the pinned run` | **State explicitly:** a preview **expires after 24 hours** — an `execute` against an older run is refused and the tech previews again; and an `execute` deletes the **current contents** of a recycle bin or trash directory at the moment it runs, not the contents the preview enumerated, because a bin is live and a preview is a point-in-time read. Both are properties a tech has to know before approving. |
+| `### Agent version requirements` | **State explicitly:** permanent cleanup (the `permanent` + `cleanupGuard` payload that makes the bytes actually free) requires an agent at **`MIN_AGENT_VERSION_CLEANUP_GUARD`** or newer; below that, an older agent silently moves files to its own trash directory instead and the result panel shows the agent version next to the outcome. The OS-native cleaners require `MIN_AGENT_VERSION_SYSTEM_CLEANUP` and return `409 agent_update_required` below it. Give both literals, read from the code. |
+| `### How to read an estimate` | **State explicitly:** every reclaim figure — the file engine's candidate totals and every native-cleaner estimate — is **heuristic and an upper bound, labelled "up to"**. Name the three reasons: DISM's component-store figures exceed what `StartComponentCleanup` releases (30-day grace, last backup retained), `journalctl --vacuum-size` only removes archived journals, and Time Machine thinning is opportunistic. Contrast with `freedBytes`, which is *measured* from the free-space delta. |
 | `## Troubleshooting` | Keep the existing entries, and add: "Cleanup reported success but no space was freed" (pre-fix agents moved files to `~/.breeze-trash`; check the agent version shown next to the result), "Execute returns *No previewed cleanup run with that id*" (the run was consumed, expired or belongs to another device — preview again), and "A native cleaner reports `unavailable`" (the binary is absent, e.g. `cleanmgr.exe` on Server Core, or the unit's sandbox denies writes to the cache path). |
 
 Remove the stale `### "No valid cleanup paths selected from latest previewable candidates" (400)` entry — that error string no longer exists after W03/W05 — and replace it with the pinned-run entry above.
@@ -3173,7 +2105,7 @@ EOF
 
 ---
 
-### Task 16: Release notes
+### Task 13: Release notes
 
 **Files:**
 - Modify: `docs/release-notes/next-release-draft.md` — the "Self-Hosting / Upgrade Notes" section
@@ -3216,7 +2148,7 @@ EOF
 
 ---
 
-### Task 17: Lab proof on two real rigs — the acceptance gate for W04
+### Task 14: Lab proof on two real rigs — the acceptance gate for W04
 
 **Files:** none. This task produces a comment on the **W05 sub-issue** (`#<subissue#>`), which is where the spec (§11) says the results are recorded.
 
@@ -3236,7 +2168,7 @@ Bring the lab stack up on this branch and note the two device ids:
 cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-green-meadow-232b && pnpm wt-stack up
 ```
 
-Then push the branch's agent to each rig (amendment B15: the `dev-<epoch>` version is unparseable, so `compareAgentVersions` returns `0` and the `MIN_AGENT_VERSION_SYSTEM_CLEANUP` gate lets it through — this is what makes a dev build testable):
+Then push the branch's agent to each rig (amendment B12: the `dev-<epoch>` version is unparseable, so `compareAgentVersions` returns `0` and the `MIN_AGENT_VERSION_SYSTEM_CLEANUP` gate lets it through — this is what makes a dev build testable):
 
 ```bash
 cd agent && make dev-push DEVICE=<WIN-IMDR2GAIDMV device uuid> AUTH_TOKEN=$BREEZE_API_KEY
@@ -3332,6 +2264,72 @@ psql "$DATABASE_URL" -c "select action, actor_type, details->>'surface', details
 
 Expected: a `device.filesystem.system_cleanup.run` row with `surface = ai_tool`.
 
+- [ ] **Step 6a: R7 — a non-allowlisted cleanmgr handler is zeroed, not executed.** The closed-catalog rule (spec §10 item 7) says `win_cleanmgr` sets `StateFlags5555 = 2` for the selected handlers **and `0` for every other allowlisted handler**. What no test covers is a handler that is not in the allowlist at all but already carries a stale `StateFlags5555 = 2` on the box — `cleanmgr /sagerun:5555` runs *every* handler whose flag is set, so a stale value is a way for an excluded handler to execute anyway.
+
+Pre-set one of the deliberately-excluded handlers before the run:
+
+```powershell
+ssh administrator@100.101.28.70 'New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\DownloadsFolder" -Name StateFlags5555 -Value 2 -PropertyType DWord -Force; New-Item -ItemType File -Path "$env:USERPROFILE\Downloads\canary-do-not-delete.bin" -Force; fsutil file createnew "$env:USERPROFILE\Downloads\canary-do-not-delete.bin" 10485760'
+```
+
+Run `win_cleanmgr` with `Update Cleanup` selected (as in R3), then read the flag and the canary back:
+
+```powershell
+ssh administrator@100.101.28.70 '(Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\DownloadsFolder").StateFlags5555; Test-Path "$env:USERPROFILE\Downloads\canary-do-not-delete.bin"'
+```
+
+**Acceptance R7:** `StateFlags5555` reads `0` and the canary file still exists. A `2` (or a deleted canary) means the runner writes flags only for the handlers it selected and leaves every other key as it found it — which lets an excluded handler run on any box with stale flags, and is a **FAIL** that blocks the agent release. Clean up the key afterwards with `Remove-ItemProperty … -Name StateFlags5555`.
+
+- [ ] **Step 6b: R8 — a concurrent second run is refused, not interleaved.** `cleanmgr` and DISM must not overlap (spec §7.3), and the actions of a single run are sequential — but nothing stops a second `system_cleanup_run` being queued while the first is still executing unless the route refuses it.
+
+While the R3 run is still in its "running" state, fire a second one from a shell:
+
+```bash
+curl -sS -o /tmp/second-run.json -w '%{http_code}\n' \
+  -X POST "$BREEZE_URL/api/v1/devices/<win-device-id>/filesystem/system-cleanup/run" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"actionIds":["win_dism_component_cleanup"]}'
+cat /tmp/second-run.json
+```
+
+**Acceptance R8:** HTTP **409** with body `{"error":"run_in_progress"}` (or the same shape the W04 route defines — record the literal), the first run is unaffected, and `select id, status from device_filesystem_cleanup_runs where device_id = … order by requested_at desc limit 2;` shows exactly ONE row in `running`. A `202` here means two native cleaners can be in flight on one device, which is the overlap the sequential design exists to prevent. Repeat the same call from the AI chat (`system_cleanup` with `action: 'run'`) and confirm the tool surfaces the same refusal rather than queueing.
+
+- [ ] **Step 6c: R9 — the apt autoremove estimate matches the space actually freed.** R4 compares the estimate against `apt-get -s autoremove`'s own summary, which only proves the parser reads the simulation correctly. This check closes the loop against the disk.
+
+```bash
+ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
+  'sudo apt-get -y install linux-headers-generic build-essential >/dev/null 2>&1; \
+   LC_ALL=C dpkg-query -W -f="\${Package}\t\${Installed-Size}\n" $(LC_ALL=C apt-get -s autoremove 2>/dev/null | awk "/^Remv /{print \$2}") | awk "{s+=\$2} END {print s*1024}"; \
+   df -B1 --output=avail / | tail -1'
+```
+
+The first number is the estimate computed from `dpkg-query`'s `Installed-Size` over exactly the packages `apt-get -s autoremove` would remove; the second is free space before. Read the catalog's `linux_pkg_autoremove` estimate, run that one action from the UI, then:
+
+```bash
+ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 'df -B1 --output=avail / | tail -1'
+```
+
+**Acceptance R9:** the catalog estimate, the `dpkg-query` figure and the measured free-space delta agree **within 10%**. A larger gap means the estimator is parsing a different package set from the one apt removes (dnf5's changed summary format is the known case — spec §7.2 — but this rig is apt), and the "up to" label is hiding a real parser bug rather than the expected over-estimate. Record all three numbers.
+
+- [ ] **Step 6d: R10 — an ancestor symlink does not carry a delete outside the tree.** Spec §10 item 4 and §6.3: `contentsOnly` and `cleanupGuard` must `Lstat` at every level, and Go's `RemoveAll` must never traverse a link. The Go suite plants a symlink two levels deep; this is the same property against a real filesystem, with the link in the **ancestor** position that a rule match walks through.
+
+```bash
+ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
+  'mkdir -p ~/scratch-target && dd if=/dev/zero of=~/scratch-target/precious.bin bs=1M count=64 2>/dev/null && \
+   mkdir -p ~/.cache && rm -rf ~/.cache/sub && ln -s ~/scratch-target ~/.cache/sub && \
+   mkdir -p ~/.cache/real && dd if=/dev/zero of=~/.cache/real/junk.bin bs=1M count=64 2>/dev/null && \
+   ls -la ~/.cache/ && ls -la ~/scratch-target/'
+```
+
+Scan `/`, then in the Cleanup panel select the `browser_cache` candidates under `~/.cache` (which is a `browser_cache` root on Linux, spec §6.1) and Execute. Afterwards:
+
+```bash
+ssh -o StrictHostKeyChecking=no -J breeze-svc@kit-1 breeze@192.168.10.240 \
+  'ls -la ~/scratch-target/ ; test -f ~/scratch-target/precious.bin && echo TARGET_SURVIVED || echo TARGET_DESTROYED; ls -la ~/.cache/'
+```
+
+**Acceptance R10:** `TARGET_SURVIVED`, `~/scratch-target/precious.bin` is still 64 MiB, and the run's per-path statuses show the symlinked child reported as `rejected` (or skipped and reported) rather than silently followed — while `~/.cache/real/junk.bin` was genuinely removed, so the test is not vacuous. A destroyed target is a **FAIL** that blocks the agent release outright: it means cleanup can delete outside the tree it was previewed against. Clean up with `rm -rf ~/scratch-target ~/.cache/sub ~/.cache/real`.
+
 - [ ] **Step 7: R6 — the old-agent gate.** Push a pre-W04 agent to one rig (`make dev-push` from a commit before W04, or stop the agent and start the previously installed binary), then click **Check available actions**.
 
 **Acceptance R6:** the panel renders the *agent update required* banner naming `MIN_AGENT_VERSION_SYSTEM_CLEANUP`, the **Run** button is disabled, and the API answered `409 { error: 'agent_update_required' }`. Restore the W04 build afterwards.
@@ -3348,9 +2346,13 @@ Expected: a `device.filesystem.system_cleanup.run` row with `surface = ai_tool`.
 | R4 Linux cleaners + estimate fidelity | lab-ubuntu-src | PASS/FAIL | <du/apt-get -s/journalctl vs catalog> |
 | R5 AI lane list + approved run | lab-ubuntu-src | PASS/FAIL | <audit row> |
 | R6 old-agent 409 banner | either | PASS/FAIL | <screenshot / response body> |
+| R7 non-allowlisted cleanmgr handler zeroed, canary intact | WIN-IMDR2GAIDMV | PASS/FAIL | <StateFlags5555 value, Test-Path result> |
+| R8 concurrent run refused 409 run_in_progress | WIN-IMDR2GAIDMV | PASS/FAIL | <status code, body, run-row statuses> |
+| R9 autoremove estimate vs dpkg-query vs measured delta (±10%) | lab-ubuntu-src | PASS/FAIL | <all three numbers> |
+| R10 ancestor-symlink target survives | lab-ubuntu-src | PASS/FAIL | <TARGET_SURVIVED, per-path statuses> |
 ```
 
-State the agent build (`dev-<epoch>` and its commit sha), the stack's commit sha, and both rigs' OS builds. **Any FAIL on R3(a) or R3(b) blocks the agent release** — that is the whole reason this task exists.
+State the agent build (`dev-<epoch>` and its commit sha), the stack's commit sha, and both rigs' OS builds. **Any FAIL on R3(a), R3(b), R7 or R10 blocks the agent release** — that is the whole reason this task exists.
 
 - [ ] **Step 9: Tear the lab stack down.** Nothing reaps it for you.
 
@@ -3363,7 +2365,7 @@ Expected: no Breeze project left running that this session started. Say in the P
 
 ---
 
-### Task 18: Wave verification and the agent-release gate
+### Task 15: Wave verification and the agent-release gate
 
 **Files:** none (verification only).
 
@@ -3373,8 +2375,6 @@ Expected: no Breeze project left running that this session started. Say in the P
 cd apps/api && npx vitest run \
   src/services/systemCleanup.aiOrigin.test.ts \
   src/services/aiToolsFilesystem.systemCleanup.test.ts \
-  src/services/aiToolsFilesystem.diskCleanupRunPin.test.ts \
-  src/services/aiToolsFilesystem.diskCleanupRequestedBy.test.ts \
   src/services/aiToolsFilesystem.fileWriteCap.test.ts \
   src/services/aiToolsFilesystem.mcpSurface.contract.test.ts \
   src/services/aiToolsRegistryParity.test.ts \
@@ -3394,21 +2394,18 @@ cd apps/api && npx vitest run \
   src/services/aiToolOutput.test.ts \
   src/services/mcpGuidancePromptTools.test.ts \
   src/services/helperToolFilter.test.ts \
-  src/services/builtInPlaybooks.diskCleanup.test.ts \
   src/services/builtInPlaybooks.test.ts \
   src/services/aiAgents/agentToolCatalog.contract.test.ts \
   src/services/aiAgents/actManifest.test.ts \
   src/services/aiAgents/actRevalidation.test.ts \
-  src/services/aiAgents/actRevalidation.cleanupRunPin.test.ts \
   src/services/aiAgents/actVerify.test.ts \
   src/services/aiAgents/impactFixTools.contract.test.ts \
   src/services/aiAgents/playbookActExecutor.test.ts \
-  src/services/aiAgents/playbookActExecutor.cleanupRunChain.test.ts \
   src/services/aiDispatch.contract.test.ts \
   src/routes/mcpServer.approvalGate.test.ts
 ```
 
-Expected: 35 files, all green. Check the reported file count — every path here is a full filename, because vitest's filter is a plain substring and a directory prefix would silently skip dotted siblings.
+Expected: 30 files, all green. Check the reported file count — every path here is a full filename, because vitest's filter is a plain substring and a directory prefix would silently skip dotted siblings.
 
 ```bash
 cd apps/web && npx vitest run \
@@ -3467,8 +2464,8 @@ cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-green-meadow-232b && pn
 
 Expected: all green. These are the suites that only fail under **Integration Tests**, never in the unit job, so a green local unit run says nothing about them (CLAUDE.md). If `tenant-export-policy` fails on `scan_path`, `kind` or `command_id`, W02's `CORE_TENANT_EXPORT_POLICY` entry is missing — fix it on this branch and say so in the PR body rather than merging a red export contract.
 
-- [ ] **Step 6: Open the PR.** Body must contain `Closes #<subissue#>`, the lab-results table from Task 17 (or a link to that sub-issue comment), and the two follow-ups this wave deliberately did not do:
-  - `mcp-server.mdx`'s step-up-approval and production-allowlist sections still describe the pre-2026-08-02 Tier 3 model (amendment B18).
+- [ ] **Step 6: Open the PR.** Body must contain `Closes #<subissue#>`, the lab-results table from Task 14 (or a link to that sub-issue comment), and the two follow-ups this wave deliberately did not do:
+  - `mcp-server.mdx`'s step-up-approval and production-allowlist sections still describe the pre-2026-08-02 Tier 3 model (amendment B14).
   - `RBAC_MAPPINGS.file_operations.list` in `apps/web/src/components/ai-risk/tierConfig.ts` says `devices.read` while `TOOL_PERMISSIONS` says `devices.execute` — pre-existing drift, untested, not touched here.
 
 Because this is a **settings-adjacent** wave only in the sense that it changes the AI tier explainer, no `pages/settings/**` PR-template section applies; state that explicitly so a reviewer does not go looking.
@@ -3479,10 +2476,10 @@ Because this is a **settings-adjacent** wave only in the sense that it changes t
 
 Concretely, this wave is done when all of the following hold:
 
-1. Tasks 1–16 are merged and `CI Success` is green on the merge-queue run (not merely on the PR head).
-2. Task 17's results comment exists on `#<subissue#>` with **PASS on R3(a) and R3(b)** — the two checks no test can make. A FAIL on either means the agent-side `cleanmgr` runner is not safe in session 0 and the native cleaners must be disabled or fixed before the tag.
-3. `docs/release-notes/next-release-draft.md` carries the Task 16 entry with a real `MIN_AGENT_VERSION_SYSTEM_CLEANUP`, so `/release` Step 1 folds it into the GitHub Release body.
-4. The lab stack from Task 17 is torn down.
+1. Tasks 1–13 are merged and `CI Success` is green on the merge-queue run (not merely on the PR head).
+2. Task 14's results comment exists on `#<subissue#>` with **PASS on R3(a), R3(b), R7 and R10** — the four checks no test can make. A FAIL on R3 means the agent-side `cleanmgr` runner is not safe in session 0; a FAIL on R7 means an excluded handler can execute from stale registry flags; a FAIL on R10 means cleanup can delete outside the tree it was previewed against. Any of the three means the agent changes must be fixed or the native cleaners disabled before the tag.
+3. `docs/release-notes/next-release-draft.md` carries the Task 13 entry with a real `MIN_AGENT_VERSION_SYSTEM_CLEANUP`, so `/release` Step 1 folds it into the GitHub Release body.
+4. The lab stack from Task 14 is torn down.
 
 At that point the release runs normally: `/release` cuts the tag, the agent family builds from it, the fleet is promoted, and `MIN_AGENT_VERSION_SYSTEM_CLEANUP` becomes satisfiable in production. Devices below it keep working exactly as before and surface the *agent update required* banner instead of a broken panel — which is why the rest of the feature could ship independently and this wave could not.
 
@@ -3490,26 +2487,23 @@ At that point the release runs normally: `/release` cuts the tag, the agent fami
 
 ## Self-review
 
-**Spec coverage.**
+**Spec coverage.** §9.1's `disk_cleanup`/`analyze_disk_usage` rows and §9.3 items 8b/11's act-and-playbook halves are **not** W05 requirements any more — the Codex quorum moved them to W03 (amendment B8). They appear below as *consumed*, with the W05 task that asserts or documents them.
 
 | Requirement | Spec | Task |
 |---|---|---|
-| W05 ships no schema, no migration, no agent code | §3 row W05 | Global Constraints, 18 (Step 4) |
-| `analyze_disk_usage` gains a normalised `path`; the snapshot is the latest FOR THAT PATH | §9.1 | 8 |
-| `disk_cleanup` gains `path`; `preview` returns `cleanupRunId`; `execute` requires it | §9.1 | 8 |
-| `disk_cleanup execute` caps `paths` at 200 like the route | §9.1 | 8 |
-| Empty-snapshot guard preserved on the AI lane | §9.1, §2 defect 5 | 8 (regression pin, amendment B17) |
-| Run-level audit written like the route's | §9.1, §10 item 9 | 2 (system), 8 (files) |
+| W05 ships no schema, no migration, no agent code | §3 row W05 | Global Constraints, 15 (Step 4) |
 | New `system_cleanup { deviceId, action, actionIds?, params? }`; list Tier 1, run Tier 3 | §9.1 | 2, 3, 4 |
 | `run` rate limit 2 / 3600 s | §9.1 | 4 |
 | `actionIds ⊆ SYSTEM_CLEANUP_ACTION_IDS` | §9.1, §5.3 | 3 (Zod enum), 2 (handler) |
 | Handler queues the SAME commands as the routes — one code path | §9.1 | 1, 2 |
 | Polls to completion within `toolTimeouts` (2 h) | §9.1 | 1 (`awaitSystemCleanupResult`), 6 |
+| Run-level audit written like the route's | §9.1, §10 item 9 | 2 |
 | Denied to the Helper | §9.1, §9.3 item 10 | 7 |
-| Tier 3 is a hard deny over MCP, verified against `routes/mcpServer.ts` | §9.2 | 13, amendment B5 |
-| Both tools stay listed as mixed multiplexers; the appended note quoted exactly | §9.2 | 13, 14, amendment B6 |
-| Org resolution via `deviceArgs` | §9.2 | 2, 13, amendment B1 |
-| Rate limits are the same per-tool windows as in-app; no MCP-specific limit | §9.2 | 4, 14 |
+| `analyze_disk_usage` / `disk_cleanup` gain `path`; `execute` requires `cleanupRunId` | §9.1 | **consumed** (W02/W03, amendment B8) — asserted in 10, documented in 11/12 |
+| Tier 3 is a hard deny over MCP, verified against `routes/mcpServer.ts` | §9.2 | 10, amendment B5 |
+| Both tools stay listed as mixed multiplexers; the appended note quoted exactly | §9.2 | 10, 11, amendment B6 |
+| Org resolution via `deviceArgs` | §9.2 | 2, 10, amendment B1 |
+| Rate limits are the same per-tool windows as in-app; no MCP-specific limit | §9.2 | 4, 11 |
 | No MCP prompt change; `MCP_TOOL_COUNT_APPROX` within tolerance | §9.2 | 2 (Step 6), amendment B7 |
 | §9.3 item 1 — definition + handler, module registered | §9.3 | 2 |
 | §9.3 item 2 — device-arg / helper-scoping maps | §9.3 | 2 (declare), 7 (Helper exclusion) |
@@ -3518,18 +2512,21 @@ At that point the release runs normally: `/release` cuts the tag, the agent fami
 | §9.3 item 5 — `TOOL_TIERS` + `tool(...)` declaration | §9.3 | 5 |
 | §9.3 item 6 — `toolTimeouts`, `aiToolOutput`, `aiAgentSystemPrompt` | §9.3 | 6 |
 | §9.3 item 7 — capability `files_disk`, no preset | §9.3 | 7 |
-| §9.3 item 8 — no `ActOperation`; `disk_cleanup`'s act path updated for `cleanupRunId` | §9.3 | 7, 9, amendment B11 |
+| §9.3 item 8 — no `ActOperation` for `system_cleanup` | §9.3 | 7, amendment B10 |
+| §9.3 item 8 — `disk_cleanup`'s act path updated for `cleanupRunId` | §9.3 | **consumed** (W03, amendment B8) |
 | §9.3 item 9 — not an impact-fix tool, recorded as a decision | §9.3 | 7 |
 | §9.3 item 10 — omitted from every Helper whitelist | §9.3 | 7 |
-| §9.3 item 11 — built-in playbook passes `cleanupRunId`, gains a `system_cleanup list` step | §9.3 | 10, amendments B12/B13 |
-| §9.3 item 12 — `tierConfig.ts`, `RATE_LIMIT_CONFIGS`, permission map, `ApprovalHistoryFeed`, 3 keys × 8 locales | §9.3 | 11 |
-| §9.3 item 13 — `ai.mdx` tier and rate tables, `mcp-server.mdx` tables + hard-deny sentence, `docsIndex.json` | §9.3 | 14, 15 |
-| §9.3 item 14 — mobile: one added `aiToolLabels` case | §9.3 | 12, amendment B16 |
-| §11 Lab — Windows rig and KIT rig, results on the W05 sub-issue | §11 | 17 |
-| §11 Docs — `filesystem-analysis.mdx` rewrite, `playbooks.mdx`, `docsIndex.json` (`agents/commands.mdx` = W04 Task 16) | §11 | 14, 15 |
-| §11 — release notes entry incl. the W02 rolling-deploy note | §11, §4 | 16 |
-| Agent release unblocked, not performed | §3 row W05 | 18 (Step 7) |
+| §9.3 item 11 — built-in playbook passes `cleanupRunId`, gains a `system_cleanup list` step | §9.3 | **consumed** (W03, amendment B8); documented in 11 (`playbooks.mdx`) |
+| §9.3 item 12 — `tierConfig.ts`, `RATE_LIMIT_CONFIGS`, permission map, `ApprovalHistoryFeed`, 3 keys × 8 locales | §9.3 | 8 |
+| §9.3 item 13 — `ai.mdx` tier and rate tables, `mcp-server.mdx` tables + hard-deny sentence, `docsIndex.json` | §9.3 | 11, 12 |
+| §9.3 item 14 — mobile: one added `aiToolLabels` case | §9.3 | 9, amendment B13 |
+| §11 Lab — Windows rig and KIT rig, results on the W05 sub-issue | §11 | 14 |
+| §13 quorum — non-allowlisted cleanmgr handler zeroed (R7); concurrent run 409 (R8); autoremove estimate vs `dpkg-query` vs measured, ±10% (R9); ancestor-symlink target survives (R10) | §13 | 14 |
+| §11 Docs — `filesystem-analysis.mdx` rewrite, `playbooks.mdx`, `docsIndex.json` (`agents/commands.mdx` is W04's, alignment A3) | §11 | 11, 12 |
+| §13 quorum — docs state preview expiry (24 h), "current contents at execution", `MIN_AGENT_VERSION_CLEANUP_GUARD`, heuristic/"up to" estimates, and the risk flags incl. `removes_os_rollback` / `removes_recovery_points` | §13 | 12 |
+| §11 — release notes entry incl. the W02 rolling-deploy note | §11, §4 | 13 |
+| Agent release unblocked, not performed | §3 row W05 | 15 (Step 7) |
 
-**Placeholder scan.** The only placeholders in the document are `<parent#>` and `<subissue#>` in the branch name, the `Closes #<subissue#>` line and the Task 17 issue reference — assigned at feature registration, as the plan contract permits. Task 16 Step 2 and Task 17 Step 1 name values the implementer must look up (`MIN_AGENT_VERSION_SYSTEM_CLEANUP`, the two device uuids) and give the exact command that produces each; neither is a TBD. Every code step carries a complete code block; no step says "similar to Task N" or "handle edge cases". Task 15's rewrite is specified as a heading-by-heading content contract rather than 400 lines of prose, because the docs-index test and the `astro check` build are what verify it and the page's substance is what the table pins.
+**Placeholder scan.** The only placeholders are `<parent#>` and `<subissue#>` in the branch name, `Closes #<subissue#>`, and the `<win-device-id>` / `<lab-ubuntu-src device uuid>` / `$BREEZE_URL` / `$TOKEN` values in the lab task — each with the exact command that produces it. Task 13 Step 2 names the grep that resolves `MIN_AGENT_VERSION_SYSTEM_CLEANUP`, and Task 12's docs table names the two version literals the page must carry. Every code step has a complete code block; no step says "similar to Task N" or "handle edge cases". Task 12's rewrite is specified as a heading-by-heading content contract rather than prose, because the docs-index test and `astro check` are what verify it.
 
-**Type-consistency check.** `AiTool.deviceArgs` is `readonly string[]`, so every declaration in this plan is `['deviceId']` (amendment B1). `ActTarget`'s `disk_cleanup` variant gains a required `cleanupRunId: string` and `actTargetSummary`'s exhaustive switch still compiles because that arm reads only `target.paths`. `toolInputSchemas.system_cleanup` stays a `z.ZodObject` (not `ZodEffects`) so `toolActionEnum`'s `.shape` read keeps working, while `disk_cleanup` stays a `ZodEffects` as it is today. `SYSTEM_CLEANUP_ACTION_IDS` is passed to `z.enum` directly at both sites: the W04 plan declares it `export const SYSTEM_CLEANUP_ACTION_IDS = [ … ] as const` with type `readonly [...27 ids]`, which is the non-empty tuple `z.enum` requires (amendment A2). If it arrives typed as a plain `readonly string[]`, add `as unknown as [string, ...string[]]` at both sites rather than widening the shared type. `createAuditLogAsync`'s `actorType` accepts `'user' | 'api_key' | 'agent' | 'system' | 'ai_agent'`, which is why both audit call sites branch on whether the principal resolved against `users`. `getToolTier` returns `number | undefined`, so Task 13's `Math.max` calls use `!` on tools the same suite has already proved are registered.
+**Type-consistency check.** `AiTool.deviceArgs` is `readonly string[]`, so every declaration here is `['deviceId']` (amendment B1). `toolInputSchemas.system_cleanup` stays a `z.ZodObject` (not `ZodEffects`) so `toolActionEnum`'s `.shape` read keeps working, while `disk_cleanup` stays a `ZodEffects` as it is today and as W03 leaves it. `SYSTEM_CLEANUP_ACTION_IDS` is passed to `z.enum` directly at both sites: W04 declares it `export const SYSTEM_CLEANUP_ACTION_IDS = [ … ] as const` with type `readonly [...27 ids]`, the non-empty tuple `z.enum` requires (amendment A2); if it arrives as a plain `readonly string[]`, add `as unknown as [string, ...string[]]` at both sites rather than widening the shared type. The queue/start discriminated union is named `SystemCleanupStartResult` because W04 already exports `SystemCleanupRunResult` for its Zod-parsed agent payload (amendment A1). `createAuditLogAsync`'s `actorType` accepts `'user' | 'api_key' | 'agent' | 'system' | 'ai_agent'`, which is why Task 2's audit call branches on whether the principal resolved against `users`. `getToolTier` returns `number | undefined`, so Task 10's `Math.max` calls use `!` on tools the same suite has already proved are registered. W05 adds no `ActTarget` variant and no `PlaybookStep` change, so nothing in `aiAgents/**` needs to compile differently because of this wave.

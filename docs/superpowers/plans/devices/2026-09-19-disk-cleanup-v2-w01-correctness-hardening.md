@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
+tracking_issue: LanternOps/breeze#6326
 ---
 # Disk Cleanup v2 W01: Correctness and Hardening — Implementation Plan
 
@@ -7,11 +7,11 @@ tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
 
 **Goal:** Make Disk Cleanup actually free disk space and stop it proposing files it must never delete — a rooted rule table shared byte-for-byte between the Go agent and TypeScript replaces the floating-substring classifier, `file_delete` gains `permanent` / `cleanupGuard` / `contentsOnly` with symlink and lock safety, the API dispatches those flags with a bounded wall clock and an honest per-path status vocabulary, and the web tab stops leaking its poll loop and swallowing failures. No schema change, no new command type.
 
-**Architecture:** One data file, two matchers. `packages/shared/src/utils/cleanupRules.json` is the source of truth for what may be cleaned; `agent/internal/remote/tools/cleanup_rules.json` is a byte-identical `go:embed`ded copy, and a test on each side fails on drift. A tiny component-glob matcher is implemented twice (Go + TS) against one shared fixture table, so the agent's scanner classifies with exactly the rules the API re-filters with at execute time and the agent re-checks under `cleanupGuard` before unlinking anything. The API's execute loop moves out of the route into `services/filesystemCleanupExecution.ts`, where it is testable with an injected dispatcher and bounded by `CLEANUP_EXECUTE_BUDGET_MS`.
+**Architecture:** One data file, two matchers. `packages/shared/src/utils/cleanupRules.json` is the source of truth for what may be cleaned; `agent/internal/remote/tools/cleanup_rules.json` is a byte-identical `go:embed`ded copy, and a test on each side fails on drift. A tiny component-glob matcher is implemented twice (Go + TS) against one shared fixture table, so the agent's scanner classifies with exactly the rules the API re-filters with at execute time and the agent re-checks under `cleanupGuard` before unlinking anything. Deletion itself is **handle-based**: the agent opens the matched rule's anchor directory with `os.OpenRoot` and works relative to that handle, so no component of the traversal can be swapped for a symlink or junction between preview and execute. The API's execute loop moves out of the route into `services/filesystemCleanupExecution.ts`, where it is testable with an injected dispatcher, gated on a minimum agent version, and bounded by `CLEANUP_EXECUTE_BUDGET_MS`.
 
 **Tech Stack:** Go 1.26 (`agent/`, stdlib `embed`/`encoding/json`, `go test -race`); TypeScript (Hono API, Vitest); React 19 + Astro islands (`apps/web`, Vitest + jsdom); `@breeze/shared` (TS, Vitest, `resolveJsonModule`).
 
-**Spec:** `docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md` — §2 defects 1, 2, 3, 5, 7, 9 and the execute-side half of 10; §3 row W01 and its mixed-version paragraph; §5.2 (execute payload flags, `rejectedPaths`, per-path status vocabulary, `CLEANUP_EXECUTE_BUDGET_MS`, unified response shape); §6.1 (rooted rule table as shared JSON + Go and TS matchers + shared fixtures + parity tests); §6.2 (`getTrashPaths(scanRoot)`, trash per volume); §6.3 (`file_delete` additions); §6.4 (accumulator fixes and the listed unit tests); §8 W01 items only; §9 the AI-lane empty-snapshot guard and the AI lane's execute path (defect 1's second call site) only — the tool's input schema stays W05; §10; §11 the Go/API/Web bullets belonging to W01.
+**Spec:** `docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md` — §2 defects 1, 2, 3, 5, 7, 9 and the execute-side half of 10; §3 row W01 and its mixed-version paragraph; §5.2 (execute payload flags, `rejectedPaths`, per-path status vocabulary, `CLEANUP_EXECUTE_BUDGET_MS`, unified response shape); §6.1 (rooted rule table as shared JSON + Go and TS matchers + shared fixtures + parity tests); §6.2 (`getTrashPaths(scanRoot)`, trash per volume); §6.3 (`file_delete` additions); §6.4 (accumulator fixes and the listed unit tests); §8 W01 items only; §9 the AI-lane empty-snapshot guard and the AI lane's execute path (defect 1's second call site) only — the tool's input schema stays W05; §10; §11 the Go/API/Web bullets belonging to W01; **§13 rows 1, 2 (W01 half), 3, 6, 9, 10, 11 and 13 (W01 half)** — the Codex `gpt-6-astra` xhigh quorum findings, which supersede the looser text in §3/§5.2/§6.1/§6.3 above them.
 
 **Branch:** `feature/<parent#>-disk-cleanup-v2/wave-<subissue#>`
 
@@ -20,7 +20,7 @@ tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
 ## Global Constraints
 
 - **No schema change, no migration, no new command type.** Spec §3 row W01: "Schema: none". Nothing in this wave touches `apps/api/migrations/`, `apps/api/src/db/schema/`, `services/tenantCascade.ts`, `services/tenantExportPolicyRegistry.ts`, `routes/devices/core.ts` or `rls-coverage.integration.test.ts`. If a task appears to need a column, stop — it belongs to W02.
-- **Old agents must keep working.** Spec §3: "old agents ignore unknown `file_delete` keys (`GetPayloadBool` defaults)". Verified: `heartbeat/handlers.go:379-381` hands `cmd.Payload` straight to `tools.DeleteFile`, and `GetPayloadBool` (`tools/types.go:771-778`) returns its default for an absent key. Every new payload key is additive and every new result field is optional on the read side.
+- **Old agents never receive a permanent cleanup delete.** Spec §13 row 3 withdraws §3's "cosmetic degradation" paragraph: an agent without `cleanupGuard` that is handed `permanent: true` performs an *unguarded* recursive permanent delete, which is strictly worse than today's trash-move. `cleanup-execute` (both lanes) therefore gates on `MIN_AGENT_VERSION_CLEANUP_GUARD` and answers `409 agent_update_required` to anything older. Payload keys are still additive (`heartbeat/handlers.go:379-381` hands `cmd.Payload` straight to `tools.DeleteFile`; `GetPayloadBool`, `tools/types.go:771-778`, defaults an absent key) — but no old agent is ever dispatched to.
 - **`go test -race`.** Agent tests run `cd agent && go test -race ./internal/remote/tools/...`. New Go code must be `gofmt`-clean and errcheck-clean: `agent/.golangci.yml` enables the standard set (errcheck, govet, ineffassign, staticcheck, unused) with `--new-from-rev`, so every discarded error needs an explicit `_ =`.
 - **Test files live alongside source.** `routes/devices/filesystem.ts` → `routes/devices/filesystem.test.ts`; `tools/filesystem_cleanup_rules.go` → `tools/filesystem_cleanup_rules_test.go`; `utils/cleanupRules.ts` → `utils/cleanupRules.test.ts`.
 - **Test command form.** API `cd apps/api && npx vitest run <path>`; web `cd apps/web && npx vitest run <path>`; shared `cd packages/shared && npx vitest run <path>`; Go `cd agent && go test -race ./internal/<pkg>/...`. **Never** `pnpm --filter <pkg> test -- --run <path>` — pnpm forwards the literal `--`, vitest stops flag parsing there, and the whole suite runs in watch mode (CLAUDE.md "Two traps"). Vitest path filters are plain substrings, not globs: list sibling files explicitly.
@@ -59,6 +59,8 @@ tracking_issue: LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS
 | `apps/api/src/services/aiToolsFilesystem.ts` | Empty-snapshot guard (Task 11) |
 | `apps/api/src/services/aiToolsFilesystem.emptySnapshot.test.ts` | Its regression test (Task 11) |
 | `apps/api/src/services/aiToolsFilesystem.executePermanent.test.ts` | AI-lane execute payload + shared screening (Task 11b) |
+| `apps/api/src/services/commandResultHandlers.ts` (+ `.filesystem.test.ts`) | WebSocket-leg persistence for `filesystem_analysis` (Task 10b) |
+| `agent/internal/remote/tools/fileops_link_windows_test.go` | Windows junction confinement + lock errnos (Tasks 6-7) |
 | `apps/web/src/components/devices/DeviceFilesystemTab.tsx` (+ `.test.tsx`) | `runAction`, AbortController poll, `t` deps, ARIA roles, stable keys (Task 12) |
 | `apps/web/src/lib/runActionAllowlist.ts`, `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` | Backlog → target-set move + count bump (Task 12) |
 | `apps/web/src/locales/*/devices.json` (8 files) | `be1DiskCleanupIntelligence` and `text` removed, `title` added (Task 13) |
@@ -101,6 +103,26 @@ Every spec claim this wave depends on was re-verified against the worktree on 20
 15. **`summary.duplicateTrackingTruncated` needs an API-side passthrough.** §6.4 adds the flag to the agent's summary, but `mergeFilesystemAnalysisPayload` (`services/filesystemAnalysis.ts:280-287`) rebuilds `summary` from exactly five named fields, so a merged (checkpoint-resumed) baseline would silently drop it. One OR-ed line is added there in Task 9.
 
 16. **Spec line numbers: two corrections, the rest verified.** `fileops.go:645` (the `os.Stat` that follows links) is actually **`fileops.go:641`**; `filesystem_analysis.go:426` (`Safe: true` hardcoded) is actually **`:425`**, and the spec does not mention the **second** hardcoded `Safe: true` on the trash branch at **`:591`**, which this wave also makes computed. Verified exactly as stated: `filesystem_analysis.go:1164` (the hardcoded `C:\$Recycle.Bin`), `:1000-1025` (`classifyCleanupCategory`), `:1076-1094` / `:1121-1132` (the two accumulators), `fileops.go:605-606` (`recursive`/`permanent`), `fileops_delete_boundary.go:96-103` (the depth ≤ 1 refusal), `routes/devices/filesystem.ts:399-418` (the execute loop), `services/aiToolsFilesystem.ts:185-186` (the unguarded save), `routes/agents/helpers.ts:1607-1615` (the guarded save), `FileManager.tsx:1009-1012` (execute without `cleanupRunId`), `DeviceFilesystemTab.tsx:352-404` (poll), `:416` / `:470` (bare `fetchWithAuth` mutations), `:550` (`be1DiskCleanupIntelligence`), `:606-625` (the two banners with no ARIA role).
+
+---
+
+The eight amendments below apply **spec §13** — the Codex `gpt-6-astra` xhigh quorum, whose rows explicitly supersede the §3/§5.2/§6.1/§6.3 text this plan was first written against. Each was re-verified against the worktree on 2026-09-19.
+
+17. **`cleanupGuard` deletes through a directory HANDLE, not a pathname (§13 row 1).** Lstat-then-Remove on a literal path does not confine anything: preview `~/.cache/sub/x`, replace `sub` with a symlink to `/etc` between preview and execute, and the leaf `Lstat` sees a perfectly ordinary file at `/etc/x`. Verified available: `agent/go.mod:3` is `go 1.26.6` and the toolchain here is `go1.27.0`, so `os.OpenRoot` (Go ≥ 1.24) and `(*os.Root).Lstat/Remove/RemoveAll/OpenRoot/Open` all exist (`go doc os.Root`). The agent opens the matched rule's **anchor** — the wildcard-free literal prefix of the matched pattern, mapped onto the concrete path (`/home/*/.cache/**` → `/home`; `<vol>/users/*/appdata/local/temp/**` → `C:\Users`) — and performs every subsequent operation relative to that `*os.Root`. `os.Root` refuses an absolute symlink and any relative symlink that escapes the root, at every component, in the runtime rather than in our code. A pattern with no literal prefix is refused outright (none exist today). The anchor's `filepath.EvalSymlinks` real path must also sit under the real path of the dispatched `volumeRoot`.
+
+18. **Identity, type, age and freshness are re-checked at execute (§13 row 2, W01 half).** Pinning a path pins a *string*. W01 adds four live checks: the API sets `recursive` from the matched rule's granularity (`file` → `false`, `contents` → `true`), so a file-granularity candidate can never trigger a subtree delete if it has become a directory; the agent requires `Mode().IsRegular()` under `recursive: false` and `rejects` otherwise; the agent re-runs the rule table's min-age gate against the file's CURRENT mtime; and the API dispatches `previewedAt`, with the agent rejecting any target whose current mtime is newer than it (the file changed after the operator looked at it). `previewedAt` is the pinned run's `requestedAt`, or the snapshot's `capturedAt` on the unpinned fallback — which is why `getLatestFilesystemCleanupSnapshot` gains `capturedAt` and the pinned-run select gains `requestedAt`. **Deferred to W03 with the tab:** `CLEANUP_PREVIEW_TTL_HOURS = 24` (the 409 on a stale preview) and the confirm dialog's "current contents at execution" copy — both are surfaces W03 owns, and `previewedAt` is the mechanism they will use.
+
+19. **`MIN_AGENT_VERSION_CLEANUP_GUARD` gates permanent mode; the mixed-version narrative is withdrawn (§13 row 3).** §3's paragraph reasoned about an old agent receiving `permanent: true` and called the result "cosmetic". It is not: an agent without `cleanupGuard` performs an unguarded recursive permanent delete of whatever path it is handed. Both lanes now refuse. The constant is `'0.115.0'` — the next release after v0.114.0 (shipped 2026-09-17/18) and therefore the release W01's agent changes land in. **If the wave ships in a different release, bump this constant and its test in the same PR**; the test exists to make that a deliberate edit. Fail-closed detail that matters: `compareAgentVersions` (`services/agentEditionCompat.ts:48-66`) returns **0** for an unparseable input, so a naive `compare(...) < 0` fails OPEN. The gate therefore parses with `parseComparableVersion` first, treats `null` as unsupported, and compares **core only** (`core.join('.')`), so `0.115.0-rc1` counts as supported.
+
+20. **`file_delete` is already live-only — verified, and now pinned (§13 row 6).** The finding assumed `STANDARD_REVIEWED`'s 168-hour window. Verified otherwise: `CommandTypes.FILE_DELETE` is in the `LIVE` list (`services/commandOfflinePolicy.ts:94`), `LIVE` maps to the `live` TTL class (`:263`), and `defaultOfflinePolicy` turns `live` into `{ kind: 'reject' }` (`:286`) — an offline device gets `device_offline` immediately and **no row is queued at all**. No new TTL class is needed. W01 adds a contract test pinning that classification, because a future reclassification would silently make a permanent delete deliverable for a week. On cancellation: a `skipped_budget` path is never dispatched, so there is no command to cancel; a dispatched command that times out is already terminal on the `live` path (`executeCommand` waits synchronously with `timeoutMs: 30_000`). The action row carries `commandId` so a later wave can reconcile a late result.
+
+21. **`filesystem_analysis` results delivered over WebSocket are never persisted — confirmed, and fixed here (§13 row 9).** Verified: `handleFilesystemAnalysisCommandResult` is called from exactly one place, `routes/agents/commands.ts:525` (the HTTP result route). The WebSocket leg dispatches only the `commandResultHandlers` registry (`routes/agentWs.ts:2310`), and `filesystem_analysis` is absent from it (`services/commandResultHandlers.ts:897-921`). So every scan whose result arrives over the socket — which is the normal path, since the scan is dispatched with `preferHeartbeat: false` — writes no snapshot. **Critical implementation detail:** the HTTP leg gates its registry dispatch on a SEPARATE allowlist, `REGISTRY_DISPATCHED_COMMAND_TYPES` (`routes/agents/commands.ts:89-103`). Registering the handler must NOT add `filesystem_analysis` there, or the HTTP leg would both dispatch the registry and run its direct call at `:525` and save every snapshot twice.
+
+22. **Normalisation is per OS (§13 row 10).** Amendment 2's single normaliser lower-cased and converted `\`→`/` on every platform, which changes path identity on POSIX: `/TMP/x` would match `/tmp/**` (a different directory on Linux), and a file literally named `.cache\v` in `$HOME` would normalise to `.cache/v` and be treated as a descendant of `.cache`. The rule is now: **windows** folds case and converts separators; **darwin** folds case only and keeps backslashes as ordinary filename characters (default APFS is case-insensitive); **linux** does neither — exact match. Slash collapsing and trailing-separator stripping stay on all three. The shared fixture file carries a case for each.
+
+23. **POSIX trash candidates are scoped to the scanned root (§13 row 11).** `trashPathsForRoot` enumerated `/Users/*/.Trash` and `/home/*/.local/share/Trash` regardless of what was scanned, so a `/data` scan proposed deleting the OS volume's trash. POSIX candidates are now emitted only when the trash directory's `filepath.EvalSymlinks` real path is the scanned root or under it. Windows was already per-volume (amendment/Task 4).
+
+24. **`partial` joins the per-path status vocabulary, and `bytesFreed` is LOGICAL bytes (§13 row 13 W01 half, and the §13 closing note).** A `contentsOnly` delete that emptied most of a bin but failed on three children reported `completed` with positive bytes — indistinguishable from a clean run. Any failed child now yields `status: 'partial'`, `failedChildren` stays in the response, and `completed` means every child went. Separately: existing `file_delete` results carry no byte count at all (verified — `fileops.go:660-664` returns `{path, deleted, permanent}`), so `bytesFreed` is the agent's own `Lstat` sum and is labelled **logical bytes** in the Go comment, the TS type and the action row. The measured figure (a volume free-space delta) arrives with the native cleaners in W04.
 
 ---
 
@@ -311,6 +333,10 @@ Every spec claim this wave depends on was re-verified against the worktree on 20
     { "os": "linux", "path": "/tmp/.X11-unix/X0", "ageHours": 48, "category": null, "granularity": null, "note": "exclude: deleting this kills every X session" },
     { "os": "linux", "path": "/tmp/systemd-private-abc123-nginx/tmp/x", "ageHours": 48, "category": null, "granularity": null, "note": "exclude with a within-component wildcard" },
     { "os": "linux", "path": "/opt/app/tmp/build.log", "ageHours": 48, "category": null, "granularity": null, "note": "spec negative: /opt/<app>/tmp must not be in scope" },
+    { "os": "linux", "path": "/TMP/build.tmp", "ageHours": 48, "category": null, "granularity": null, "note": "§13 row 10: linux is case-SENSITIVE; /TMP is a different directory" },
+    { "os": "linux", "path": "/home/bob/.cache\\v", "ageHours": 48, "category": null, "granularity": null, "note": "§13 row 10: a backslash is an ordinary filename character on POSIX, not a separator" },
+    { "os": "darwin", "path": "/Users/alice/.cache\\v", "ageHours": 1, "category": null, "granularity": null, "note": "§13 row 10: darwin folds case but keeps backslashes" },
+    { "os": "windows", "path": "C:\\USERS\\X\\APPDATA\\LOCAL\\TEMP\\BUILD.TMP", "ageHours": 48, "category": "temp_files", "granularity": "file", "note": "§13 row 10: windows folds case AND separators" },
 
     { "os": "windows", "path": "C:\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache\\f_000001", "ageHours": 1, "category": "browser_cache", "granularity": "file", "note": "spec positive" },
     { "os": "windows", "path": "C:\\Users\\alice\\AppData\\Local\\Microsoft\\Edge\\User Data\\Profile 1\\Code Cache\\js\\x", "ageHours": 1, "category": "browser_cache", "granularity": "file", "note": "alternation spans two components" },
@@ -440,8 +466,13 @@ describe('cleanup rule table (spec §6.1)', () => {
     expect(normalizeCleanupPath('windows', 'C:\\Windows\\Temp\\A.TMP')).toBe('<vol>/windows/temp/a.tmp');
     expect(normalizeCleanupPath('windows', 'd:/Users//bob/')).toBe('<vol>/users/bob');
     expect(normalizeCleanupPath('windows', 'C:\\')).toBe('<vol>');
-    expect(normalizeCleanupPath('linux', '/TMP//a/')).toBe('/tmp/a');
     expect(normalizeCleanupPath('darwin', '/')).toBe('/');
+    // Per-OS normalisation (spec §13 row 10). Folding on POSIX changes identity.
+    expect(normalizeCleanupPath('linux', '/TMP//a/')).toBe('/TMP/a');
+    expect(normalizeCleanupPath('linux', '/tmp//a/')).toBe('/tmp/a');
+    expect(normalizeCleanupPath('darwin', '/Users/Alice/Library/Caches')).toBe('/users/alice/library/caches');
+    // darwin keeps a backslash as an ordinary filename character.
+    expect(normalizeCleanupPath('darwin', '/Users/alice/.cache\\v')).toBe('/users/alice/.cache\\v');
     expect(splitCleanupComponents('<vol>/windows/temp')).toEqual(['<vol>', 'windows', 'temp']);
     expect(splitCleanupComponents('/tmp/a')).toEqual(['tmp', 'a']);
   });
@@ -526,7 +557,12 @@ Expected failure: `Failed to load .../cleanupRules.test.ts` … `Cannot find mod
  * Chrome `Bookmarks`/`History`/`Cookies` file in scope of a "safe" cleanup.
  *
  * GRAMMAR (pinned by cleanupRules.test.ts and its Go twin):
- *   - Paths and patterns are lower-cased, '/'-separated, and split on '/'.
+ *   - Patterns are lower-cased and '/'-separated. PATH normalisation is PER OS
+ *     (spec §13 row 10): windows folds case AND converts '\\'→'/'; darwin folds
+ *     case only and keeps backslashes as ordinary filename characters (default
+ *     APFS is case-insensitive); linux does NEITHER. Folding on POSIX changes
+ *     path identity — `/TMP/x` is not `/tmp/x` on Linux, and a file literally
+ *     named `.cache\\v` is not inside `.cache`.
  *   - On Windows the drive specifier is replaced by the literal token `<vol>`,
  *     so a rule written once applies to every fixed volume (defect 2).
  *   - A pattern component consumes EXACTLY ONE path component. Inside it, `*`
@@ -645,9 +681,13 @@ export function toCleanupOs(value: unknown): CleanupOs | null {
 }
 
 export function normalizeCleanupPath(os: CleanupOs, path: string): string {
-  let n = path.trim().replace(/\\/g, '/');
+  // Per OS (spec §13 row 10). Separator conversion and case folding are BOTH
+  // Windows-only behaviours; darwin folds case only; linux is exact. Slash
+  // collapsing and trailing-separator stripping are safe everywhere.
+  let n = path.trim();
+  if (os === 'windows') n = n.replace(/\\/g, '/');
   while (n.includes('//')) n = n.replaceAll('//', '/');
-  n = n.toLowerCase();
+  if (os !== 'linux') n = n.toLowerCase();
   if (n.length > 1 && n.endsWith('/')) n = n.slice(0, -1);
   if (os === 'windows' && n.length >= 2 && n[1] === ':' && /^[a-z]$/.test(n[0] ?? '')) {
     n = `<vol>${n.slice(2)}`;
@@ -810,6 +850,9 @@ EOF
   func matchCleanupComponentGlob(pattern, name string) bool
   func matchCleanupComponents(pattern, path []string) bool
   func matchCleanupRuleFor(goos, path string) *cleanupRuleMatch   // nil when nothing matches
+  func cleanupRuleAnchorFor(goos, path string) (string, bool)      // the os.OpenRoot confinement anchor
+  func concreteAnchor(goos, path string, n int) (string, bool)
+  func literalPrefixLen(pattern []string) int
   func matchCleanupRule(path string) *cleanupRuleMatch            // runtime.GOOS
   func isCleanupDeniedRootFor(goos, path string) bool
   func isCleanupDeniedRoot(path string) bool                      // runtime.GOOS
@@ -951,8 +994,12 @@ func TestNormalizeCleanupPathAnchorsWindowsVolume(t *testing.T) {
 		{"windows", `C:\Windows\Temp\A.TMP`, "<vol>/windows/temp/a.tmp"},
 		{"windows", `d:/Users//bob/`, "<vol>/users/bob"},
 		{"windows", `C:\`, "<vol>"},
-		{"linux", "/TMP//a/", "/tmp/a"},
 		{"darwin", "/", "/"},
+		// Per-OS normalisation (spec §13 row 10).
+		{"linux", "/TMP//a/", "/TMP/a"},
+		{"linux", "/tmp//a/", "/tmp/a"},
+		{"darwin", "/Users/Alice/Library/Caches", "/users/alice/library/caches"},
+		{"darwin", `/Users/alice/.cache\v`, `/users/alice/.cache\v`},
 	}
 	for _, c := range cases {
 		if got := normalizeCleanupPathFor(c.goos, c.in); got != c.want {
@@ -1002,6 +1049,28 @@ func TestDeniedRootVetoesAMatchingRule(t *testing.T) {
 	}
 	if category, _, _ := classifyCleanupPathFor("windows", `C:\Windows\System32\config\x`, time.Time{}, time.Now()); category != "" {
 		t.Errorf("System32 classified as %q; denied roots must veto", category)
+	}
+}
+
+func TestCleanupRuleAnchorIsTheLiteralPrefix(t *testing.T) {
+	// The anchor is what os.OpenRoot is called on, so it must be the part of
+	// the path the RULE AUTHOR fixed, never a component an attacker can create.
+	cases := []struct {
+		goos, path, want string
+		ok               bool
+	}{
+		{"linux", "/home/bob/.cache/sub/x", "/home", true},
+		{"linux", "/var/cache/apt/archives/nginx.deb", "/var/cache/apt/archives", true},
+		{"darwin", "/Users/alice/Library/Caches/com.example/x", "/Users", true},
+		{"windows", `C:\Users\alice\AppData\Local\Temp\x`, `C:\Users`, true},
+		{"windows", `D:\$Recycle.Bin\S-1-5-21-1`, `D:\`, true},
+		{"linux", "/home/bob/Documents/taxes.pdf", "", false},
+	}
+	for _, c := range cases {
+		got, ok := cleanupRuleAnchorFor(c.goos, c.path)
+		if ok != c.ok || (c.ok && got != c.want) {
+			t.Errorf("cleanupRuleAnchorFor(%q, %q) = %q,%v; want %q,%v", c.goos, c.path, got, ok, c.want, c.ok)
+		}
 	}
 }
 
@@ -1087,6 +1156,10 @@ type cleanupRuleMatch struct {
 	Category    string
 	Granularity string
 	MinAge      time.Duration
+	// Number of leading WILDCARD-FREE components in the pattern that matched.
+	// This is the confinement anchor (spec §13 row 1): everything from here
+	// down is traversed through an os.Root handle, never by pathname.
+	LiteralPrefix int
 }
 
 type cleanupRuleTable struct {
@@ -1197,15 +1270,26 @@ func splitCleanupComponents(normalized string) []string {
 	return out
 }
 
-// normalizeCleanupPathFor lower-cases, slash-normalizes and (on Windows)
-// replaces the drive specifier with the `<vol>` anchor, so one rule covers
+// normalizeCleanupPathFor normalises a path for matching. Normalisation is PER
+// OS (spec §13 row 10): windows folds case and converts '\\'→'/'; darwin folds
+// case only (default APFS is case-insensitive) and keeps backslashes as
+// ordinary filename characters; linux does neither. Folding on POSIX changes
+// path identity — `/TMP/x` is a DIFFERENT directory from `/tmp/x` on Linux, and
+// a file literally named `.cache\\v` is not inside `.cache`.
+//
+// On Windows the drive specifier becomes the `<vol>` token, so one rule covers
 // every fixed volume — the fix for defect 2's `C:\$Recycle.Bin` hardcode.
 func normalizeCleanupPathFor(goos, path string) string {
-	n := strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+	n := strings.TrimSpace(path)
+	if goos == "windows" {
+		n = strings.ReplaceAll(n, "\\", "/")
+	}
 	for strings.Contains(n, "//") {
 		n = strings.ReplaceAll(n, "//", "/")
 	}
-	n = strings.ToLower(n)
+	if goos != "linux" {
+		n = strings.ToLower(n)
+	}
 	if len(n) > 1 && strings.HasSuffix(n, "/") {
 		n = strings.TrimSuffix(n, "/")
 	}
@@ -1275,14 +1359,14 @@ func matchCleanupRuleFor(goos, path string) *cleanupRuleMatch {
 	}
 	components := splitCleanupComponents(normalizeCleanupPathFor(goos, path))
 	for _, rule := range table.byOS[goos] {
-		matched := false
+		var matchedPattern []string
 		for _, pattern := range rule.patterns {
 			if matchCleanupComponents(pattern, components) {
-				matched = true
+				matchedPattern = pattern
 				break
 			}
 		}
-		if !matched {
+		if matchedPattern == nil {
 			continue
 		}
 		excluded := false
@@ -1296,12 +1380,67 @@ func matchCleanupRuleFor(goos, path string) *cleanupRuleMatch {
 			continue
 		}
 		return &cleanupRuleMatch{
-			Category:    rule.category,
-			Granularity: rule.granularity,
-			MinAge:      rule.minAge,
+			Category:      rule.category,
+			Granularity:   rule.granularity,
+			MinAge:        rule.minAge,
+			LiteralPrefix: literalPrefixLen(matchedPattern),
 		}
 	}
 	return nil
+}
+
+// literalPrefixLen counts the leading pattern components that contain no
+// wildcard. Those components are fixed by the RULE AUTHOR, so the directory
+// they name is a trustworthy place to anchor a confined traversal.
+func literalPrefixLen(pattern []string) int {
+	n := 0
+	for _, component := range pattern {
+		if component == "**" || strings.Contains(component, "*") {
+			break
+		}
+		n++
+	}
+	return n
+}
+
+// cleanupRuleAnchorFor maps a matched rule's literal prefix back onto the
+// CONCRETE path, producing the directory the agent opens with os.OpenRoot
+// before it touches anything (`/home/*/.cache/**` → `/home`;
+// `<vol>/users/*/appdata/local/temp/**` → `C:\Users`).
+//
+// Everything below the anchor is then resolved by the runtime through that
+// handle, so an ancestor swapped for a symlink or a junction between preview
+// and execute is refused rather than followed (spec §13 row 1).
+func cleanupRuleAnchorFor(goos, path string) (string, bool) {
+	match := matchCleanupRuleFor(goos, path)
+	if match == nil || match.LiteralPrefix == 0 {
+		return "", false
+	}
+	return concreteAnchor(goos, path, match.LiteralPrefix)
+}
+
+// concreteAnchor rebuilds the first n normalised components of path as a real,
+// platform-shaped path. On Windows the first component is the `<vol>` token,
+// which maps to the volume specifier rather than to a directory.
+func concreteAnchor(goos, path string, n int) (string, bool) {
+	clean := filepath.Clean(path)
+	isSep := func(r rune) bool { return r == '/' || (goos == "windows" && r == '\\') }
+	if goos == "windows" {
+		volume := filepath.VolumeName(clean)
+		if volume == "" {
+			return "", false
+		}
+		rest := strings.FieldsFunc(clean[len(volume):], isSep)
+		if n-1 > len(rest) {
+			return "", false
+		}
+		return volume + string(filepath.Separator) + filepath.Join(rest[:n-1]...), true
+	}
+	rest := strings.FieldsFunc(clean, isSep)
+	if n > len(rest) {
+		return "", false
+	}
+	return string(filepath.Separator) + filepath.Join(rest[:n]...), true
 }
 
 func matchCleanupRule(path string) *cleanupRuleMatch {
@@ -1648,6 +1787,7 @@ EOF
   func enumerateWindowsRecycleBins(volumeRoot string) ([]string, []FilesystemScanError)
   func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanError)
   func getTrashPaths(scanRoot string) ([]string, []FilesystemScanError)   // signature CHANGED
+  func isRealPathUnderRoot(scanRoot, candidate string) bool               // §13 row 11
   ```
 
 - [ ] **Step 1: Write the failing test** — append to `agent/internal/remote/tools/filesystem_analysis_rules_test.go`:
@@ -1725,6 +1865,18 @@ func TestTrashPathsForRootIsVolumeScopedOnWindows(t *testing.T) {
 	paths, scanErrors := trashPathsForRoot("windows", `C:\Users\alice`, "")
 	if len(paths) != 0 || len(scanErrors) != 0 {
 		t.Fatalf("a scan rooted below the volume root must emit no bin candidates, got %v / %+v", paths, scanErrors)
+	}
+}
+
+func TestTrashPathsForRootPosixSkipsTrashOutsideTheScannedRoot(t *testing.T) {
+	// §13 row 11: a /data scan must not propose deleting the OS volume's trash.
+	home := t.TempDir()
+	elsewhere := t.TempDir()
+	paths, _ := trashPathsForRoot("linux", elsewhere, home)
+	for _, path := range paths {
+		if strings.HasPrefix(path, home) {
+			t.Fatalf("trash under %s must not be offered for a scan rooted at %s (got %v)", home, elsewhere, paths)
+		}
 	}
 }
 
@@ -1814,6 +1966,12 @@ func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanE
 			return
 		}
 		clean := filepath.Clean(p)
+		// POSIX trash enumeration used to ignore the scan root entirely, so a
+		// /data scan proposed deleting the OS volume's trash (spec §13 row 11).
+		// Windows is already volume-scoped by isWindowsVolumeRoot above.
+		if goos != "windows" && !isRealPathUnderRoot(scanRoot, clean) {
+			return
+		}
 		if _, ok := seen[clean]; ok {
 			return
 		}
@@ -1869,6 +2027,29 @@ func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanE
 func getTrashPaths(scanRoot string) ([]string, []FilesystemScanError) {
 	home, _ := os.UserHomeDir()
 	return trashPathsForRoot(runtime.GOOS, scanRoot, home)
+}
+
+// isRealPathUnderRoot reports whether candidate's REAL path (symlinks resolved)
+// is scanRoot's real path or below it. Resolving both sides is the point: a
+// trash directory reached through a symlink out of the scanned tree is not in
+// scope, and a candidate that cannot be resolved at all is refused rather than
+// guessed at (spec §13 row 11).
+func isRealPathUnderRoot(scanRoot, candidate string) bool {
+	realRoot, err := filepath.EvalSymlinks(scanRoot)
+	if err != nil {
+		return false
+	}
+	realCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		// A trash directory that does not exist is not a candidate anyway —
+		// estimateDirectorySize would drop it a moment later.
+		return false
+	}
+	if realCandidate == realRoot {
+		return true
+	}
+	prefix := strings.TrimSuffix(realRoot, string(filepath.Separator)) + string(filepath.Separator)
+	return strings.HasPrefix(realCandidate, prefix)
 }
 ```
 
@@ -2504,11 +2685,13 @@ EOF
   ```go
   func isReparsePoint(info os.FileInfo) bool          // build-tagged; false on POSIX
   func isSharingViolation(err error) bool             // build-tagged; false on POSIX
-  func sumTreeSize(root string) int64
-  func cleanupGuardRejection(goos, cleanPath string, info os.FileInfo) error
-  func enforceCleanupGuard(cleanPath string, info os.FileInfo) error
+  func sumTreeSizeAt(root *os.Root, rel string) int64 // logical bytes, handle-relative
+  type cleanupTarget struct { root *os.Root; rel string; match *cleanupRuleMatch }
+  func openCleanupTarget(goos, cleanPath, volumeRoot string) (*cleanupTarget, error)
+  func (t *cleanupTarget) close()
+  func cleanupGuardRejection(info os.FileInfo, match *cleanupRuleMatch, recursive bool, previewedAt time.Time, now time.Time) error
   ```
-  `file_delete` payload gains `cleanupGuard: bool` (default false). Its success result gains `bytesFreed: int64` and `skippedLocked: []string`.
+  `file_delete` payload gains `cleanupGuard: bool`, `contentsOnly: bool`, `volumeRoot: string` and `previewedAt: string` (RFC3339); all default-absent, so every non-cleanup caller is unchanged. Its success result gains `bytesFreed: int64` (**logical bytes** — the agent's own `Lstat` sum; the pre-W01 result carried no byte count at all, `fileops.go:660-664`) and `skippedLocked: []string`.
 
 - [ ] **Step 1: Write the failing tests** — create `agent/internal/remote/tools/fileops_cleanup_test.go`:
 
@@ -2521,6 +2704,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // cleanupGuard is defence in depth against a FORGED execute body (spec §10.2):
@@ -2594,6 +2778,132 @@ func TestCleanupGuardRejectsSymlink(t *testing.T) {
 
 // Spec §6.3: the result gains bytesFreed so the API can report what was really
 // reclaimed instead of summing stale snapshot sizes.
+// SPEC §13 ROW 1 — the finding this redesign exists for. Preview
+// `<anchor>/.cache/sub/x`, then replace `sub` with a symlink to a directory
+// outside the tree before execute. A leaf-only Lstat sees an ordinary file and
+// deletes the WRONG one. Deleting through an os.Root handle refuses it, because
+// the runtime checks every component of the traversal, not just the leaf.
+func TestCleanupGuardRefusesAnAncestorSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink fixture; the Windows junction case is fileops_link_windows_test.go")
+	}
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "x")
+	if err := os.WriteFile(victim, []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	home := t.TempDir()
+	cacheDir := filepath.Join(home, ".cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// `sub` is a symlink OUT of the tree, planted between preview and execute.
+	if err := os.Symlink(outside, filepath.Join(cacheDir, "sub")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	target, err := openCleanupTarget("linux", filepath.Join(cacheDir, "sub", "x"), home)
+	if err == nil {
+		target.close()
+		t.Fatal("expected the handle-based open to refuse a path whose ancestor escapes the anchor")
+	}
+	if !strings.HasPrefix(err.Error(), CleanupGuardRejectedPrefix) {
+		t.Fatalf("expected the pinned rejection prefix, got %q", err.Error())
+	}
+	if _, statErr := os.Stat(victim); statErr != nil {
+		t.Fatal("the file outside the tree must survive")
+	}
+}
+
+// The anchor's own real path must sit on the dispatched volume, so a junction
+// or symlink AT the anchor cannot relocate the whole operation.
+func TestOpenCleanupTargetRejectsAnchorOffTheVolume(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	home := t.TempDir()
+	elsewhere := t.TempDir()
+	cacheDir := filepath.Join(home, ".cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "blob"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	target, err := openCleanupTarget("linux", filepath.Join(cacheDir, "blob"), elsewhere)
+	if err == nil {
+		target.close()
+		t.Fatal("expected the volume check to refuse an anchor outside the dispatched volumeRoot")
+	}
+	if !strings.Contains(err.Error(), "volume") {
+		t.Fatalf("expected the reason to name the volume check, got %q", err.Error())
+	}
+}
+
+// §13 row 2: identity, type, age and freshness are re-checked at EXECUTE.
+func TestCleanupGuardRejectionLiveChecks(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	tmpDir := t.TempDir()
+	regular := filepath.Join(tmpDir, "regular.bin")
+	if err := os.WriteFile(regular, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	fileInfo, err := os.Lstat(regular)
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	dirInfo, err := os.Lstat(tmpDir)
+	if err != nil {
+		t.Fatalf("lstat dir: %v", err)
+	}
+	tempMatch := &cleanupRuleMatch{Category: "temp_files", Granularity: "file", MinAge: 24 * time.Hour}
+	trashMatch := &cleanupRuleMatch{Category: "trash", Granularity: "contents"}
+
+	// A file-granularity target that has BECOME a directory is refused: those
+	// rules dispatch recursive:false and a subtree delete is not what was
+	// previewed.
+	if err := cleanupGuardRejection(dirInfo, tempMatch, false, time.Time{}, now); err == nil ||
+		!strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("expected a not-a-regular-file rejection, got %v", err)
+	}
+	if err := cleanupGuardRejection(dirInfo, trashMatch, true, time.Time{}, now); err != nil {
+		t.Errorf("a contents rule must accept a directory, got %v", err)
+	}
+
+	// Min-age is re-evaluated against the CURRENT mtime, not the snapshot's.
+	fresh := fakeFileInfo{FileInfo: fileInfo, modTime: now.Add(-1 * time.Hour)}
+	if err := cleanupGuardRejection(fresh, tempMatch, false, time.Time{}, now); err == nil ||
+		!strings.Contains(err.Error(), "newer than the rule's minimum age") {
+		t.Errorf("expected a min-age rejection, got %v", err)
+	}
+	aged := fakeFileInfo{FileInfo: fileInfo, modTime: now.Add(-48 * time.Hour)}
+	if err := cleanupGuardRejection(aged, tempMatch, false, time.Time{}, now); err != nil {
+		t.Errorf("an aged temp file must pass, got %v", err)
+	}
+
+	// A file modified AFTER the operator previewed it is a different file now.
+	previewedAt := now.Add(-2 * time.Hour)
+	touched := fakeFileInfo{FileInfo: fileInfo, modTime: now.Add(-1 * time.Hour)}
+	if err := cleanupGuardRejection(touched, trashMatch, true, previewedAt, now); err == nil ||
+		!strings.Contains(err.Error(), "modified after the preview") {
+		t.Errorf("expected a freshness rejection, got %v", err)
+	}
+	stable := fakeFileInfo{FileInfo: fileInfo, modTime: now.Add(-6 * time.Hour)}
+	if err := cleanupGuardRejection(stable, trashMatch, true, previewedAt, now); err != nil {
+		t.Errorf("an untouched target must pass, got %v", err)
+	}
+}
+
+// fakeFileInfo overrides ModTime so the age and freshness gates are driven
+// deterministically without sleeping or back-dating real files.
+type fakeFileInfo struct {
+	os.FileInfo
+	modTime time.Time
+}
+
+func (f fakeFileInfo) ModTime() time.Time { return f.modTime }
+
 func TestDeleteFilePermanentReportsBytesFreed(t *testing.T) {
 	tmpDir := t.TempDir()
 	file := filepath.Join(tmpDir, "blob.bin")
@@ -2787,9 +3097,43 @@ package tools
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 )
+
+// §13 row 1, Windows half: a JUNCTION is not a symlink and Go does not report
+// it through os.ModeSymlink, so a pathname-based delete would traverse it. The
+// os.Root handle refuses it in the runtime.
+func TestCleanupGuardRefusesAnAncestorJunction(t *testing.T) {
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "x")
+	if err := os.WriteFile(victim, []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	volumeRoot := t.TempDir()
+	tempDir := filepath.Join(volumeRoot, "users", "alice", "appdata", "local", "temp")
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	junction := filepath.Join(tempDir, "sub")
+	// mklink /J creates a directory junction without the SeCreateSymbolicLink
+	// privilege that developer mode grants for symlinks.
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, outside).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J unavailable in this environment: %v (%s)", err, out)
+	}
+
+	target, err := openCleanupTarget("windows", filepath.Join(junction, "x"), volumeRoot)
+	if err == nil {
+		target.close()
+		t.Fatal("expected the handle-based open to refuse a path whose ancestor is a junction out of the anchor")
+	}
+	if _, statErr := os.Stat(victim); statErr != nil {
+		t.Fatal("the file outside the tree must survive")
+	}
+}
 
 func TestIsSharingViolationRecognisesWindowsLockErrnos(t *testing.T) {
 	if !isSharingViolation(syscall.Errno(32)) {
@@ -2810,139 +3154,135 @@ func TestIsSharingViolationRecognisesWindowsLockErrnos(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Implement the guard and the size reporting** — in `agent/internal/remote/tools/fileops.go`, add above `DeleteFile`:
+- [ ] **Step 4: Implement handle-based deletion and the size reporting** — in `agent/internal/remote/tools/fileops.go`, add above `DeleteFile`:
 
 ```go
-// sumTreeSize totals the regular-file bytes under root. filepath.Walk lstats
-// every entry, so a symlink contributes its own (tiny) size and never its
-// target's — the same rule the delete itself follows.
-func sumTreeSize(root string) int64 {
+// sumTreeSizeAt totals the regular-file bytes under `rel`, through the confined
+// root handle. These are LOGICAL bytes (the sum of Lstat sizes): sparse files,
+// compression, dedup and cluster slack all make the real free-space delta
+// differ. The measured figure arrives with the native cleaners in W04.
+//
+// fs.WalkDir over root.FS() uses ReadDir entries, so it never follows a link,
+// and the Root confines every lookup to the anchor.
+func sumTreeSizeAt(root *os.Root, rel string) int64 {
 	var total int64
-	_ = filepath.Walk(root, func(_ string, fi os.FileInfo, walkErr error) error {
-		if walkErr != nil || fi == nil {
+	_ = fs.WalkDir(root.FS(), filepath.ToSlash(rel), func(_ string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d == nil || d.IsDir() {
 			return nil
 		}
-		if !fi.IsDir() && fi.Mode()&os.ModeSymlink == 0 {
-			total += fi.Size()
+		info, err := d.Info()
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
+		total += info.Size()
 		return nil
 	})
 	return total
 }
 
-// cleanupGuardRejection re-checks a cleanup target against the embedded rule
-// table before anything is unlinked (spec §6.3, §10.2). The API already
-// re-filters at execute time; this is the second enforcement, and the one that
-// survives a forged execute body reaching the device.
+// cleanupTarget is a cleanup victim addressed by a DIRECTORY HANDLE plus a
+// relative name, never by a pathname (spec §13 row 1).
+type cleanupTarget struct {
+	root  *os.Root
+	rel   string
+	match *cleanupRuleMatch
+}
+
+func (t *cleanupTarget) close() {
+	if t != nil && t.root != nil {
+		_ = t.root.Close()
+	}
+}
+
+// openCleanupTarget resolves cleanPath into a confined handle.
 //
-// Order matters: link checks come FIRST, so a symlink is refused by identity
+// Lstat-then-Remove on a literal path confines nothing: preview
+// `~/.cache/sub/x`, swap `sub` for a symlink to /etc before execute, and the
+// leaf Lstat sees an ordinary file at /etc/x. So the agent opens the matched
+// rule's ANCHOR — the wildcard-free literal prefix of the pattern, which the
+// rule author fixed and no attacker can choose — and every later operation goes
+// through that *os.Root. The runtime then refuses an absolute symlink, and any
+// relative symlink or reparse point that escapes the anchor, at EVERY component
+// of the traversal.
+//
+// The anchor's own real path must also sit on the dispatched volumeRoot, so a
+// junction at the anchor itself cannot relocate the whole operation.
+func openCleanupTarget(goos, cleanPath, volumeRoot string) (*cleanupTarget, error) {
+	if isCleanupDeniedRootFor(goos, cleanPath) {
+		return nil, fmt.Errorf("%s %s is under a cleanup-denied root", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	match := matchCleanupRuleFor(goos, cleanPath)
+	if match == nil {
+		return nil, fmt.Errorf("%s %s matches no cleanup rule", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	anchor, ok := cleanupRuleAnchorFor(goos, cleanPath)
+	if !ok {
+		return nil, fmt.Errorf("%s %s has no confinement anchor", CleanupGuardRejectedPrefix, cleanPath)
+	}
+	if volumeRoot == "" {
+		// Only a non-cleanup caller can reach this; derive the conservative
+		// default rather than skipping the check.
+		if goos == "windows" {
+			volumeRoot = filepath.VolumeName(filepath.Clean(cleanPath)) + string(filepath.Separator)
+		} else {
+			volumeRoot = string(filepath.Separator)
+		}
+	}
+	if !isRealPathUnderRoot(volumeRoot, anchor) {
+		return nil, fmt.Errorf("%s anchor %s is not on volume %s", CleanupGuardRejectedPrefix, anchor, volumeRoot)
+	}
+
+	rel, err := filepath.Rel(anchor, filepath.Clean(cleanPath))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("%s %s is not inside its anchor %s", CleanupGuardRejectedPrefix, cleanPath, anchor)
+	}
+
+	root, err := os.OpenRoot(anchor)
+	if err != nil {
+		return nil, fmt.Errorf("%s cannot open anchor %s: %v", CleanupGuardRejectedPrefix, anchor, err)
+	}
+	return &cleanupTarget{root: root, rel: rel, match: match}, nil
+}
+
+// cleanupGuardRejection is the live re-check (spec §13 row 2). Pinning a path
+// pins a STRING; between preview and execute the thing at that path can change
+// type, age or contents.
+//
+// Order matters: link checks come first, so a symlink is refused by identity
 // even when its path would otherwise match a rule.
-func cleanupGuardRejection(goos, cleanPath string, info os.FileInfo) error {
-	if info == nil {
-		return fmt.Errorf("%s %s could not be inspected", CleanupGuardRejectedPrefix, cleanPath)
+func cleanupGuardRejection(
+	info os.FileInfo,
+	match *cleanupRuleMatch,
+	recursive bool,
+	previewedAt time.Time,
+	now time.Time,
+) error {
+	if info == nil || match == nil {
+		return fmt.Errorf("%s target could not be inspected", CleanupGuardRejectedPrefix)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s %s is a symlink", CleanupGuardRejectedPrefix, cleanPath)
+		return fmt.Errorf("%s %s is a symlink", CleanupGuardRejectedPrefix, info.Name())
 	}
 	if isReparsePoint(info) {
-		return fmt.Errorf("%s %s is a reparse point", CleanupGuardRejectedPrefix, cleanPath)
+		return fmt.Errorf("%s %s is a reparse point", CleanupGuardRejectedPrefix, info.Name())
 	}
-	if isCleanupDeniedRootFor(goos, cleanPath) {
-		return fmt.Errorf("%s %s is under a cleanup-denied root", CleanupGuardRejectedPrefix, cleanPath)
+	// File-granularity rules dispatch recursive:false. A target that has become
+	// a directory since the preview is refused rather than deleted as a subtree.
+	if !recursive && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %s is not a regular file", CleanupGuardRejectedPrefix, info.Name())
 	}
-	if matchCleanupRuleFor(goos, cleanPath) == nil {
-		return fmt.Errorf("%s %s matches no cleanup rule", CleanupGuardRejectedPrefix, cleanPath)
+	if recursive && !info.IsDir() && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %s is not a regular file or directory", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if match.MinAge > 0 && now.Sub(info.ModTime()) < match.MinAge {
+		return fmt.Errorf("%s %s is newer than the rule's minimum age", CleanupGuardRejectedPrefix, info.Name())
+	}
+	if !previewedAt.IsZero() && info.ModTime().After(previewedAt) {
+		return fmt.Errorf("%s %s was modified after the preview", CleanupGuardRejectedPrefix, info.Name())
 	}
 	return nil
 }
 
-func enforceCleanupGuard(cleanPath string, info os.FileInfo) error {
-	return cleanupGuardRejection(runtime.GOOS, cleanPath, info)
-}
-```
-
-Add `"runtime"` to the `fileops.go` import block if it is not already there.
-
-Then in `DeleteFile`, after `permanent := GetPayloadBool(payload, "permanent", false)` (`:606`):
-
-```go
-	// Cleanup-only flags. Absent on every non-cleanup caller and on every old
-	// agent, where GetPayloadBool returns the default — which is what keeps a
-	// new API compatible with an old agent (spec §3).
-	cleanupGuard := GetPayloadBool(payload, "cleanupGuard", false)
-	contentsOnly := GetPayloadBool(payload, "contentsOnly", false)
-	if contentsOnly && !permanent {
-		return NewErrorResult(fmt.Errorf("contentsOnly requires permanent"), time.Since(start).Milliseconds())
-	}
-```
-
-replace the stat block (`:640-647`):
-
-```go
-	// Check if path exists. The cleanup path uses Lstat so a symlink is seen as
-	// a symlink rather than as whatever it points at (spec §6.3: DeleteFile
-	// used os.Stat, which follows links). Every other caller keeps os.Stat.
-	var info os.FileInfo
-	var err error
-	if cleanupGuard || contentsOnly {
-		info, err = os.Lstat(cleanPath)
-	} else {
-		info, err = os.Stat(cleanPath)
-	}
-	if err != nil {
-		if os.IsNotExist(err) {
-			return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
-		}
-		return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
-	}
-
-	if cleanupGuard {
-		if guardErr := enforceCleanupGuard(cleanPath, info); guardErr != nil {
-			return NewErrorResult(guardErr, time.Since(start).Milliseconds())
-		}
-	}
-```
-
-and replace the permanent branch (`:649-665`):
-
-```go
-	// Permanent delete — bypass trash
-	if permanent {
-		if contentsOnly {
-			return deleteDirectoryContents(cleanPath, info, start)
-		}
-
-		var bytesFreed int64
-		if info.IsDir() && recursive {
-			bytesFreed = sumTreeSize(cleanPath)
-			if err := os.RemoveAll(cleanPath); err != nil {
-				if isSharingViolation(err) {
-					return newLockedDeleteResult(cleanPath, start)
-				}
-				return NewErrorResult(fmt.Errorf("failed to remove directory: %w", err), time.Since(start).Milliseconds())
-			}
-		} else {
-			bytesFreed = info.Size()
-			if err := os.Remove(cleanPath); err != nil {
-				if isSharingViolation(err) {
-					return newLockedDeleteResult(cleanPath, start)
-				}
-				return NewErrorResult(fmt.Errorf("failed to remove file: %w", err), time.Since(start).Milliseconds())
-			}
-		}
-		return NewSuccessResult(map[string]any{
-			"path":          cleanPath,
-			"deleted":       true,
-			"permanent":     true,
-			"bytesFreed":    bytesFreed,
-			"skippedLocked": []string{},
-		}, time.Since(start).Milliseconds())
-	}
-```
-
-and add, next to `sumTreeSize`:
-
-```go
 // newLockedDeleteResult reports a Windows file lock as a SUCCESS carrying
 // `deleted: false` rather than as a failure, because skippedLocked only exists
 // on the success envelope (NewErrorResult carries no body). The API maps
@@ -2959,7 +3299,121 @@ func newLockedDeleteResult(cleanPath string, start time.Time) CommandResult {
 }
 ```
 
-`deleteDirectoryContents` arrives in Task 7; until then, stub it as a one-line `return NewErrorResult(fmt.Errorf("contentsOnly is not implemented"), ...)` so the package compiles, and delete the stub in Task 7's Step 3.
+Add `"io/fs"`, `"runtime"`, `"strings"` and `"time"` to the `fileops.go` import block if any is missing.
+
+Then in `DeleteFile`, after `permanent := GetPayloadBool(payload, "permanent", false)` (`:606`):
+
+```go
+	// Cleanup-only flags. Absent on every non-cleanup caller, and no OLD agent
+	// ever receives them: cleanup-execute refuses any agent below
+	// MIN_AGENT_VERSION_CLEANUP_GUARD with 409 agent_update_required, because
+	// an agent that ignores `cleanupGuard` while honouring `permanent` would
+	// perform an UNGUARDED permanent delete (spec §13 row 3).
+	cleanupGuard := GetPayloadBool(payload, "cleanupGuard", false)
+	contentsOnly := GetPayloadBool(payload, "contentsOnly", false)
+	volumeRoot := GetPayloadString(payload, "volumeRoot", "")
+	previewedAtRaw := GetPayloadString(payload, "previewedAt", "")
+	if contentsOnly && !permanent {
+		return NewErrorResult(fmt.Errorf("contentsOnly requires permanent"), time.Since(start).Milliseconds())
+	}
+	var previewedAt time.Time
+	if previewedAtRaw != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, previewedAtRaw)
+		if parseErr != nil {
+			// Present-but-garbage is a dispatcher bug, not an absent field.
+			return NewErrorResult(
+				fmt.Errorf("%s previewedAt is not RFC3339: %q", CleanupGuardRejectedPrefix, previewedAtRaw),
+				time.Since(start).Milliseconds(),
+			)
+		}
+		previewedAt = parsed
+	}
+```
+
+Replace the stat block (`:640-647`) with the two-mode resolution — pathname for the file browser, handle for cleanup:
+
+```go
+	// The cleanup path never addresses a file by pathname. Every other caller
+	// keeps os.Stat, which is what the file browser has always used.
+	var info os.FileInfo
+	var err error
+	var target *cleanupTarget
+	if cleanupGuard {
+		target, err = openCleanupTarget(runtime.GOOS, cleanPath, volumeRoot)
+		if err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
+		}
+		defer target.close()
+		info, err = target.root.Lstat(target.rel)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+			}
+			// An escape refused by the Root surfaces here, which is the whole
+			// point: the ancestor was swapped after the preview.
+			return NewErrorResult(
+				fmt.Errorf("%s %s could not be opened inside its anchor: %v", CleanupGuardRejectedPrefix, cleanPath, err),
+				time.Since(start).Milliseconds(),
+			)
+		}
+		if guardErr := cleanupGuardRejection(info, target.match, recursive, previewedAt, time.Now()); guardErr != nil {
+			return NewErrorResult(guardErr, time.Since(start).Milliseconds())
+		}
+	} else {
+		info, err = os.Stat(cleanPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return NewErrorResult(fmt.Errorf("path does not exist: %s", cleanPath), time.Since(start).Milliseconds())
+			}
+			return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
+		}
+	}
+```
+
+and replace the permanent branch (`:649-665`):
+
+```go
+	// Permanent delete — bypass trash
+	if permanent {
+		if contentsOnly {
+			if target == nil {
+				return NewErrorResult(fmt.Errorf("contentsOnly requires cleanupGuard"), time.Since(start).Milliseconds())
+			}
+			return deleteDirectoryContents(target, cleanPath, info, start)
+		}
+
+		var bytesFreed int64
+		if target != nil {
+			if info.IsDir() && recursive {
+				bytesFreed = sumTreeSizeAt(target.root, target.rel)
+				err = target.root.RemoveAll(target.rel)
+			} else {
+				bytesFreed = info.Size()
+				err = target.root.Remove(target.rel)
+			}
+		} else if info.IsDir() && recursive {
+			err = os.RemoveAll(cleanPath)
+		} else {
+			bytesFreed = info.Size()
+			err = os.Remove(cleanPath)
+		}
+		if err != nil {
+			if isSharingViolation(err) {
+				return newLockedDeleteResult(cleanPath, start)
+			}
+			return NewErrorResult(fmt.Errorf("failed to remove path: %w", err), time.Since(start).Milliseconds())
+		}
+		return NewSuccessResult(map[string]any{
+			"path":          cleanPath,
+			"deleted":       true,
+			"permanent":     true,
+			"bytesFreed":    bytesFreed,
+			"skippedLocked": []string{},
+		}, time.Since(start).Milliseconds())
+	}
+```
+
+`deleteDirectoryContents` arrives in Task 7; until then, stub it as `func deleteDirectoryContents(_ *cleanupTarget, cleanPath string, _ os.FileInfo, start time.Time) CommandResult { return NewErrorResult(fmt.Errorf("contentsOnly is not implemented"), time.Since(start).Milliseconds()) }` so the package compiles, and delete the stub in Task 7's Step 3.
 
 - [ ] **Step 5: Run them and watch them pass**
 
@@ -3005,9 +3459,9 @@ EOF
 - Consumes: `isReparsePoint`, `isSharingViolation`, `sumTreeSize` (Task 6).
 - Produces:
   ```go
-  func deleteDirectoryContents(dir string, info os.FileInfo, start time.Time) CommandResult
+  func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.FileInfo, start time.Time) CommandResult
   ```
-  Result body: `{ path, deleted, permanent: true, contentsOnly: true, bytesFreed, skippedLocked: []string, skippedLinks: []string, failedChildren: []string }`.
+  Result body: `{ path, deleted, permanent: true, contentsOnly: true, bytesFreed, skippedLocked: []string, skippedLinks: []string, failedChildren: []string }`. `deleted` is true only when **every** child went; any `failedChildren` entry makes the API report `status: 'partial'` (spec §13 row 13).
 
 - [ ] **Step 1: Write the failing tests** — append to `agent/internal/remote/tools/fileops_cleanup_test.go`:
 
@@ -3047,6 +3501,8 @@ func TestDeleteFileContentsOnlyEmptiesBinAndKeepsDesktopIni(t *testing.T) {
 		"permanent":    true,
 		"recursive":    true,
 		"contentsOnly": true,
+		"cleanupGuard": true,
+		"volumeRoot":   tmpDir,
 	}), &payload)
 
 	if !payload.ContentsOnly || !payload.Deleted {
@@ -3107,6 +3563,8 @@ func TestDeleteFileContentsOnlyNeverFollowsLinks(t *testing.T) {
 		"permanent":    true,
 		"recursive":    true,
 		"contentsOnly": true,
+		"cleanupGuard": true,
+		"volumeRoot":   tmpDir,
 	}), &payload)
 
 	if _, err := os.Stat(victim); err != nil {
@@ -3126,13 +3584,57 @@ func TestDeleteFileContentsOnlyNeverFollowsLinks(t *testing.T) {
 	}
 }
 
+// §13 row 13: a contentsOnly run that could not remove every child must NOT
+// read as a clean success. The agent reports failedChildren; the API turns that
+// into `partial` (Task 8).
+func TestDeleteFileContentsOnlyReportsFailedChildren(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("relies on POSIX mode bits that root ignores")
+	}
+	tmpDir := t.TempDir()
+	trash := filepath.Join(tmpDir, "Trash")
+	stuck := filepath.Join(trash, "stuck")
+	if err := os.MkdirAll(stuck, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stuck, "child"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, "junk.bin"), make([]byte, 128), 0o644); err != nil {
+		t.Fatalf("write junk: %v", err)
+	}
+	// A directory with no write permission cannot have its child unlinked.
+	if err := os.Chmod(stuck, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stuck, 0o755) })
+
+	var payload contentsOnlyPayload
+	decodeSuccessPayload(t, DeleteFile(map[string]any{
+		"path": trash, "permanent": true, "recursive": true,
+		"contentsOnly": true, "cleanupGuard": true, "volumeRoot": tmpDir,
+	}), &payload)
+
+	if len(payload.FailedChildren) == 0 {
+		t.Fatalf("expected the unremovable child to be reported, got %+v", payload)
+	}
+	if payload.Deleted {
+		t.Error("deleted must be false when a child could not be removed")
+	}
+	if payload.BytesFreed != 128 {
+		t.Errorf("expected the removable child's bytes to still be counted, got %d", payload.BytesFreed)
+	}
+}
+
 func TestDeleteFileContentsOnlyRefusesANonDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	file := filepath.Join(tmpDir, "regular.bin")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	result := DeleteFile(map[string]any{"path": file, "permanent": true, "contentsOnly": true})
+	result := DeleteFile(map[string]any{
+		"path": file, "permanent": true, "contentsOnly": true, "cleanupGuard": true, "volumeRoot": tmpDir,
+	})
 	if result.Status != "failed" || !strings.Contains(result.Error, "not a directory") {
 		t.Fatalf("expected a not-a-directory refusal, got %q / %q", result.Status, result.Error)
 	}
@@ -3175,31 +3677,51 @@ Expected failure: every case fails with `expected a completed contentsOnly delet
 - [ ] **Step 3: Implement** — replace the `deleteDirectoryContents` stub in `agent/internal/remote/tools/fileops.go`:
 
 ```go
-// deleteDirectoryContents empties dir without removing dir itself.
+// deleteDirectoryContents empties the target directory without removing it,
+// entirely through the confined root handle (spec §13 row 1).
 //
 // This exists because the only reachable Windows recycle bin is one level below
 // the volume root (C:\$Recycle.Bin is depth 1 and isRecursiveDeleteBoundary
 // refuses it), and because deleting a .Trash / Trash directory outright is the
 // wrong operation even where it is allowed: the OS owns those directory nodes.
 //
-// Link handling (spec §6.3, §10.4):
-//   - Immediate children are Lstat'ed. A symlink or reparse-point child is
-//     SKIPPED and reported; it is never removed and never traversed.
-//   - Everything else is removed with os.RemoveAll, which unlinks rather than
-//     follows at any depth — a symlink planted three levels down is unlinked
-//     and its target is untouched.
+// Link handling:
+//   - The directory is re-opened as its OWN Root, so every child lookup is
+//     confined to it and an ancestor swapped mid-operation cannot be traversed.
+//   - Immediate children are Lstat'ed through that Root. A symlink or
+//     reparse-point child is SKIPPED and reported; never removed, never
+//     traversed.
+//   - Everything else goes through Root.RemoveAll, which unlinks rather than
+//     follows at any depth AND stays inside the root.
 //   - desktop.ini is preserved: Explorer needs it to render the bin.
 //
-// A locked child is reported in skippedLocked, never forced.
-func deleteDirectoryContents(dir string, info os.FileInfo, start time.Time) CommandResult {
+// A locked child is reported in skippedLocked, never forced. Any child that
+// fails for another reason lands in failedChildren, which makes the action
+// `partial` on the API side — never `completed` with positive bytes
+// (spec §13 row 13).
+func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.FileInfo, start time.Time) CommandResult {
 	if !info.IsDir() {
 		return NewErrorResult(
-			fmt.Errorf("contentsOnly target is not a directory: %s", dir),
+			fmt.Errorf("%s contentsOnly target is not a directory: %s", CleanupGuardRejectedPrefix, cleanPath),
 			time.Since(start).Milliseconds(),
 		)
 	}
 
-	entries, readErr := os.ReadDir(dir)
+	dirRoot, err := target.root.OpenRoot(target.rel)
+	if err != nil {
+		return NewErrorResult(
+			fmt.Errorf("%s cannot open %s inside its anchor: %v", CleanupGuardRejectedPrefix, cleanPath, err),
+			time.Since(start).Milliseconds(),
+		)
+	}
+	defer func() { _ = dirRoot.Close() }()
+
+	dirFile, err := dirRoot.Open(".")
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to open directory: %w", err), time.Since(start).Milliseconds())
+	}
+	entries, readErr := dirFile.ReadDir(-1)
+	_ = dirFile.Close()
 	if readErr != nil {
 		return NewErrorResult(fmt.Errorf("failed to read directory: %w", readErr), time.Since(start).Milliseconds())
 	}
@@ -3214,8 +3736,8 @@ func deleteDirectoryContents(dir string, info os.FileInfo, start time.Time) Comm
 		if strings.EqualFold(name, "desktop.ini") {
 			continue
 		}
-		childPath := filepath.Join(dir, name)
-		childInfo, lstatErr := os.Lstat(childPath)
+		childPath := filepath.Join(cleanPath, name)
+		childInfo, lstatErr := dirRoot.Lstat(name)
 		if lstatErr != nil {
 			if os.IsNotExist(lstatErr) {
 				continue
@@ -3230,9 +3752,9 @@ func deleteDirectoryContents(dir string, info os.FileInfo, start time.Time) Comm
 
 		size := childInfo.Size()
 		if childInfo.IsDir() {
-			size = sumTreeSize(childPath)
+			size = sumTreeSizeAt(dirRoot, name)
 		}
-		if rmErr := os.RemoveAll(childPath); rmErr != nil {
+		if rmErr := dirRoot.RemoveAll(name); rmErr != nil {
 			if isSharingViolation(rmErr) {
 				skippedLocked = append(skippedLocked, childPath)
 			} else {
@@ -3244,7 +3766,7 @@ func deleteDirectoryContents(dir string, info os.FileInfo, start time.Time) Comm
 	}
 
 	return NewSuccessResult(map[string]any{
-		"path":           dir,
+		"path":           cleanPath,
 		"deleted":        len(failedChildren) == 0 && len(skippedLocked) == 0,
 		"permanent":      true,
 		"contentsOnly":   true,
@@ -3307,24 +3829,33 @@ EOF
 - Consumes: `classifyCleanupPath`, `isCleanupDeniedRoot`, `toCleanupOs`, `CLEANUP_GUARD_REJECTED_PREFIX`, `CleanupOs` from `@breeze/shared`; `FilesystemCleanupCandidate` from `./filesystemAnalysis`.
 - Produces:
   ```ts
-  export type CleanupActionStatus = 'completed' | 'failed' | 'skipped_locked' | 'rejected' | 'skipped_budget';
+  export type CleanupActionStatus =
+    | 'completed' | 'partial' | 'failed' | 'skipped_locked' | 'rejected' | 'skipped_budget';
   export type CleanupRejectionReason = 'not_in_plan' | 'rule_rejected' | 'denied_root' | 'agent_guard';
   export interface CleanupExecutionAction {
     path: string; category: string; sizeBytes: number;
-    status: CleanupActionStatus; bytesFreed: number;
-    skippedLockedCount: number; skippedLinkCount: number;
+    status: CleanupActionStatus;
+    /** LOGICAL bytes — the agent's Lstat sum, not a free-space delta. */
+    bytesFreed: number;
+    skippedLockedCount: number; skippedLinkCount: number; failedChildren: string[];
     reason?: CleanupRejectionReason; error?: string;
   }
+  export const MIN_AGENT_VERSION_CLEANUP_GUARD = '0.115.0';
+  export function agentSupportsCleanupGuard(agentVersion: string | null | undefined): boolean;
+  export function cleanupVolumeRoot(os: CleanupOs, path: string): string;
   export interface FileDeleteDispatchResult { status: 'completed' | 'failed' | 'timeout'; stdout?: string; error?: string }
   export interface ParsedFileDeleteResult { deleted: boolean; bytesFreed: number; skippedLocked: string[]; skippedLinks: string[]; failedChildren: string[] }
   export interface CleanupExecutionOutcome { actions: CleanupExecutionAction[]; rejectedPaths: string[]; bytesReclaimed: number }
-  export function buildFileDeletePayload(path: string, contentsOnly: boolean): Record<string, unknown>;
+  export function buildFileDeletePayload(params: {
+    path: string; granularity: CleanupGranularity; volumeRoot: string; previewedAt: string;
+  }): Record<string, unknown>;
   export function parseFileDeleteResult(stdout: string | undefined): ParsedFileDeleteResult | null;
   export function mapFileDeleteStatus(dispatch: FileDeleteDispatchResult, parsed: ParsedFileDeleteResult | null): CleanupActionStatus;
   export async function runCleanupExecution(params: {
     os: CleanupOs | null;
     requestedPaths: string[];
     candidates: FilesystemCleanupCandidate[];
+    previewedAt: Date;
     dispatch: (path: string, payload: Record<string, unknown>) => Promise<FileDeleteDispatchResult>;
   }): Promise<CleanupExecutionOutcome>;
   ```
@@ -3335,7 +3866,10 @@ EOF
 import { describe, expect, it, vi } from 'vitest';
 import { CLEANUP_GUARD_REJECTED_PREFIX } from '@breeze/shared';
 import {
+  MIN_AGENT_VERSION_CLEANUP_GUARD,
+  agentSupportsCleanupGuard,
   buildFileDeletePayload,
+  cleanupVolumeRoot,
   mapFileDeleteStatus,
   parseFileDeleteResult,
   runCleanupExecution,
@@ -3344,6 +3878,9 @@ import {
 import type { FilesystemCleanupCandidate } from './filesystemAnalysis';
 
 const OLD = new Date(Date.now() - 72 * 3600_000).toISOString();
+// Every execution pins the moment the operator looked at the plan; the agent
+// refuses a target whose mtime is newer than this (spec §13 row 2).
+const PREVIEWED_AT = new Date();
 
 function tempCandidate(path: string, sizeBytes = 4096): FilesystemCleanupCandidate {
   return { path, category: 'temp_files', sizeBytes, safe: true, modifiedAt: OLD };
@@ -3353,19 +3890,74 @@ function ok(stdout: string): FileDeleteDispatchResult {
   return { status: 'completed', stdout };
 }
 
-describe('buildFileDeletePayload (spec §5.2)', () => {
-  it('always asks for a permanent, guarded, recursive delete', () => {
-    expect(buildFileDeletePayload('/tmp/a.tmp', false)).toEqual({
+describe('buildFileDeletePayload (spec §5.2, §13 rows 1-2)', () => {
+  const previewedAt = '2026-09-19T12:00:00.000Z';
+
+  it('asks for a permanent, guarded, NON-recursive delete for a file rule', () => {
+    // §13 row 2: a file-granularity candidate that has become a directory since
+    // the preview must not turn into a subtree delete.
+    expect(buildFileDeletePayload({ path: '/tmp/a.tmp', granularity: 'file', volumeRoot: '/', previewedAt })).toEqual({
       path: '/tmp/a.tmp',
-      recursive: true,
+      recursive: false,
       permanent: true,
       cleanupGuard: true,
       contentsOnly: false,
+      volumeRoot: '/',
+      previewedAt,
     });
   });
 
-  it('sets contentsOnly for a bin/trash root', () => {
-    expect(buildFileDeletePayload('/Users/alice/.Trash', true)).toMatchObject({ contentsOnly: true });
+  it('sets contentsOnly and recursive for a bin/trash root', () => {
+    expect(buildFileDeletePayload({
+      path: '/Users/alice/.Trash', granularity: 'contents', volumeRoot: '/', previewedAt,
+    })).toMatchObject({ contentsOnly: true, recursive: true, volumeRoot: '/' });
+  });
+
+  it('derives the volume root the agent confines the anchor to', () => {
+    expect(cleanupVolumeRoot('windows', 'D:\\$Recycle.Bin\\S-1-5-21-1')).toBe('D:\\');
+    expect(cleanupVolumeRoot('linux', '/tmp/a.tmp')).toBe('/');
+    expect(cleanupVolumeRoot('darwin', '/Users/alice/.Trash')).toBe('/');
+  });
+});
+
+describe('agentSupportsCleanupGuard (spec §13 row 3)', () => {
+  it('pins the minimum version W01 ships in', () => {
+    // Bump this AND the constant together if the wave lands in another release.
+    expect(MIN_AGENT_VERSION_CLEANUP_GUARD).toBe('0.115.0');
+  });
+
+  it('accepts the gate version and anything newer, including a prerelease of it', () => {
+    expect(agentSupportsCleanupGuard('0.115.0')).toBe(true);
+    expect(agentSupportsCleanupGuard('0.115.1')).toBe(true);
+    expect(agentSupportsCleanupGuard('1.0.0')).toBe(true);
+    // Core-only comparison: an RC of the gate release carries the guard.
+    expect(agentSupportsCleanupGuard('0.115.0-rc1')).toBe(true);
+    expect(agentSupportsCleanupGuard('v0.115.0')).toBe(true);
+  });
+
+  it('refuses older agents', () => {
+    expect(agentSupportsCleanupGuard('0.114.0')).toBe(false);
+    expect(agentSupportsCleanupGuard('0.99.9')).toBe(false);
+  });
+
+  it('FAILS CLOSED on an absent or unparseable version', () => {
+    // compareAgentVersions returns 0 for unparseable input, so a naive
+    // `compare(...) < 0` would fail OPEN and hand an unknown agent a permanent
+    // recursive delete. These four are the whole reason for the helper.
+    expect(agentSupportsCleanupGuard(null)).toBe(false);
+    expect(agentSupportsCleanupGuard(undefined)).toBe(false);
+    expect(agentSupportsCleanupGuard('')).toBe(false);
+    expect(agentSupportsCleanupGuard('nightly')).toBe(false);
+  });
+});
+
+describe('file_delete delivery class (spec §13 row 6)', () => {
+  it('is live-only, so a permanent delete can never wait in the offline queue', async () => {
+    const { COMMAND_OFFLINE_POLICY_REGISTRY, defaultOfflinePolicy } = await import('./commandOfflinePolicy');
+    // A queued class would let a run the UI reported failed at 2h execute days
+    // later against a machine whose state has moved on.
+    expect(COMMAND_OFFLINE_POLICY_REGISTRY['file_delete']).toBe('live');
+    expect(defaultOfflinePolicy('file_delete')).toEqual({ kind: 'reject' });
   });
 });
 
@@ -3417,12 +4009,22 @@ describe('mapFileDeleteStatus (spec §5.2 status vocabulary)', () => {
     ).toBe('skipped_locked');
   });
 
-  it('keeps a partially-successful contentsOnly delete as completed', () => {
+  it('keeps a locked-but-productive contentsOnly delete as completed', () => {
     expect(
       mapFileDeleteStatus({ status: 'completed' }, {
         deleted: false, bytesFreed: 2048, skippedLocked: ['/trash/locked'], skippedLinks: [], failedChildren: [],
       }),
     ).toBe('completed');
+  });
+
+  it('maps ANY failed child onto partial, never completed (spec §13 row 13)', () => {
+    // "Emptied most of the bin but three children failed" used to be
+    // indistinguishable from a clean run.
+    expect(
+      mapFileDeleteStatus({ status: 'completed' }, {
+        deleted: false, bytesFreed: 2048, skippedLocked: [], skippedLinks: [], failedChildren: ['/trash/x'],
+      }),
+    ).toBe('partial');
   });
 
   it('maps an all-children-failed contentsOnly delete onto failed', () => {
@@ -3445,6 +4047,7 @@ describe('runCleanupExecution', () => {
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp'],
       candidates: [tempCandidate('/tmp/a.tmp')],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
 
@@ -3464,6 +4067,7 @@ describe('runCleanupExecution', () => {
       os: 'darwin',
       requestedPaths: ['/Users/alice/.Trash'],
       candidates: [{ path: '/Users/alice/.Trash', category: 'trash', sizeBytes: 10, safe: true }],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(dispatch).toHaveBeenCalledWith('/Users/alice/.Trash', expect.objectContaining({ contentsOnly: true }));
@@ -3475,6 +4079,7 @@ describe('runCleanupExecution', () => {
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp', '/home/bob/taxes.pdf'],
       candidates: [tempCandidate('/tmp/a.tmp')],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -3496,6 +4101,7 @@ describe('runCleanupExecution', () => {
       os: 'windows',
       requestedPaths: [stale.path],
       candidates: [stale],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(dispatch).not.toHaveBeenCalled();
@@ -3509,6 +4115,7 @@ describe('runCleanupExecution', () => {
       os: 'linux',
       requestedPaths: ['/etc/passwd'],
       candidates: [{ path: '/etc/passwd', category: 'temp_files', sizeBytes: 1, safe: true, modifiedAt: OLD }],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(dispatch).not.toHaveBeenCalled();
@@ -3524,6 +4131,7 @@ describe('runCleanupExecution', () => {
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp'],
       candidates: [tempCandidate('/tmp/a.tmp')],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(outcome.actions[0]).toMatchObject({ status: 'rejected', reason: 'agent_guard' });
@@ -3537,6 +4145,7 @@ describe('runCleanupExecution', () => {
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp'],
       candidates: [tempCandidate('/tmp/a.tmp', 8192)],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(outcome.actions[0]).toMatchObject({ status: 'completed', bytesFreed: 8192 });
@@ -3549,6 +4158,7 @@ describe('runCleanupExecution', () => {
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp'],
       candidates: [tempCandidate('/tmp/a.tmp', 999_999)],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(outcome.bytesReclaimed).toBe(12);
@@ -3560,6 +4170,7 @@ describe('runCleanupExecution', () => {
       os: 'linux',
       requestedPaths: ['/tmp/b.tmp', '/tmp/a.tmp', '/tmp/b.tmp'],
       candidates: [tempCandidate('/tmp/a.tmp'), tempCandidate('/tmp/b.tmp')],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(dispatch).toHaveBeenCalledTimes(2);
@@ -3572,6 +4183,7 @@ describe('runCleanupExecution', () => {
       os: null,
       requestedPaths: ['/tmp/a.tmp'],
       candidates: [tempCandidate('/tmp/a.tmp')],
+      previewedAt: PREVIEWED_AT,
       dispatch,
     });
     expect(dispatch).not.toHaveBeenCalled();
@@ -3617,16 +4229,59 @@ import {
   CLEANUP_GUARD_REJECTED_PREFIX,
   classifyCleanupPath,
   isCleanupDeniedRoot,
+  type CleanupGranularity,
   type CleanupOs,
 } from '@breeze/shared';
+import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
 import type { FilesystemCleanupCandidate } from './filesystemAnalysis';
 
 export type CleanupActionStatus =
   | 'completed'
+  | 'partial'
   | 'failed'
   | 'skipped_locked'
   | 'rejected'
   | 'skipped_budget';
+
+/**
+ * The agent release that introduced `cleanupGuard` (spec §13 row 3).
+ *
+ * An agent WITHOUT the guard that is handed `permanent: true` performs an
+ * unguarded recursive permanent delete of whatever path it is given — strictly
+ * worse than today's trash-move, which is why spec §3's "cosmetic degradation"
+ * paragraph is withdrawn. Both cleanup lanes refuse older agents with
+ * `409 agent_update_required`.
+ *
+ * W01 ships in the release after v0.114.0. If the wave lands in a different
+ * release, bump this AND its test in the same PR.
+ */
+export const MIN_AGENT_VERSION_CLEANUP_GUARD = '0.115.0';
+
+/**
+ * Fail-CLOSED version gate. `compareAgentVersions` returns 0 for an unparseable
+ * input (agentEditionCompat.ts:48-51), so a naive `compare(...) < 0` would fail
+ * OPEN on an empty or malformed `devices.agent_version` and hand an unknown
+ * build a permanent recursive delete. Parse first; compare CORE only, so an RC
+ * of the gate release (`0.115.0-rc1`) counts as carrying the guard.
+ */
+export function agentSupportsCleanupGuard(agentVersion: string | null | undefined): boolean {
+  if (!agentVersion) return false;
+  const parsed = parseComparableVersion(agentVersion);
+  if (!parsed) return false;
+  return compareAgentVersions(parsed.core.join('.'), MIN_AGENT_VERSION_CLEANUP_GUARD) >= 0;
+}
+
+/**
+ * The volume the agent must confine the rule anchor to. On Windows that is the
+ * candidate's own drive root, which stops a junction at the anchor relocating
+ * the whole operation onto another volume; on POSIX W01 uses `/` and W02
+ * narrows it to the scanned volume once `scan_path` exists.
+ */
+export function cleanupVolumeRoot(os: CleanupOs, path: string): string {
+  if (os !== 'windows') return '/';
+  const drive = /^([a-zA-Z]:)/.exec(path.trim());
+  return drive ? `${drive[1]}\\` : '\\';
+}
 
 export type CleanupRejectionReason = 'not_in_plan' | 'rule_rejected' | 'denied_root' | 'agent_guard';
 
@@ -3635,9 +4290,17 @@ export interface CleanupExecutionAction {
   category: string;
   sizeBytes: number;
   status: CleanupActionStatus;
+  /**
+   * LOGICAL bytes: the agent's own sum of `Lstat` sizes. Sparse files,
+   * compression, dedup and cluster slack all make the real free-space delta
+   * differ, and the pre-W01 `file_delete` result carried no byte count at all.
+   * The measured figure arrives with the native cleaners in W04.
+   */
   bytesFreed: number;
   skippedLockedCount: number;
   skippedLinkCount: number;
+  /** Children a `contentsOnly` delete could not remove; capped for the row. */
+  failedChildren: string[];
   reason?: CleanupRejectionReason;
   error?: string;
 }
@@ -3662,13 +4325,24 @@ export interface CleanupExecutionOutcome {
   bytesReclaimed: number;
 }
 
-export function buildFileDeletePayload(path: string, contentsOnly: boolean): Record<string, unknown> {
+export function buildFileDeletePayload(params: {
+  path: string;
+  granularity: CleanupGranularity;
+  volumeRoot: string;
+  previewedAt: string;
+}): Record<string, unknown> {
+  const contentsOnly = params.granularity === 'contents';
   return {
-    path,
-    recursive: true,
+    path: params.path,
+    // §13 row 2: only a contents rule deletes a subtree. A file-granularity
+    // candidate that has become a directory since the preview must be refused,
+    // not recursed into — which is why `recursive` tracks granularity.
+    recursive: contentsOnly,
     permanent: true,
     cleanupGuard: true,
     contentsOnly,
+    volumeRoot: params.volumeRoot,
+    previewedAt: params.previewedAt,
   };
 }
 
@@ -3712,8 +4386,12 @@ export function mapFileDeleteStatus(
     return (dispatch.error ?? '').startsWith(CLEANUP_GUARD_REJECTED_PREFIX) ? 'rejected' : 'failed';
   }
   if (!parsed) return 'completed';
+  if (parsed.failedChildren.length > 0) {
+    // §13 row 13: "emptied most of the bin, three children failed" must never
+    // read as a clean success. Only a run that freed nothing at all is `failed`.
+    return parsed.bytesFreed === 0 && parsed.skippedLocked.length === 0 ? 'failed' : 'partial';
+  }
   if (parsed.bytesFreed === 0 && parsed.skippedLocked.length > 0) return 'skipped_locked';
-  if (parsed.bytesFreed === 0 && parsed.failedChildren.length > 0) return 'failed';
   return 'completed';
 }
 
@@ -3722,20 +4400,26 @@ type Rejection = { reason: CleanupRejectionReason };
 function screen(
   os: CleanupOs | null,
   candidate: FilesystemCleanupCandidate,
-): Rejection | { contentsOnly: boolean } {
+): Rejection | { granularity: CleanupGranularity } {
   // A device whose os_type does not map to a rule grammar cannot be screened,
   // and an unscreenable delete is not a delete we make.
   if (!os) return { reason: 'rule_rejected' };
   if (isCleanupDeniedRoot(os, candidate.path)) return { reason: 'denied_root' };
   const classification = classifyCleanupPath(os, candidate.path, { modifiedAt: candidate.modifiedAt ?? null });
-  if (!classification.category) return { reason: 'rule_rejected' };
-  return { contentsOnly: classification.granularity === 'contents' };
+  if (!classification.category || !classification.granularity) return { reason: 'rule_rejected' };
+  return { granularity: classification.granularity };
 }
 
 export async function runCleanupExecution(params: {
   os: CleanupOs | null;
   requestedPaths: string[];
   candidates: FilesystemCleanupCandidate[];
+  /**
+   * When the operator looked at this plan — the pinned run's `requestedAt`, or
+   * the snapshot's `capturedAt` on the unpinned fallback. The agent refuses a
+   * target whose mtime is newer than it (spec §13 row 2).
+   */
+  previewedAt: Date;
   dispatch: (path: string, payload: Record<string, unknown>) => Promise<FileDeleteDispatchResult>;
 }): Promise<CleanupExecutionOutcome> {
   const byPath = new Map(params.candidates.map((candidate) => [candidate.path, candidate]));
@@ -3756,6 +4440,7 @@ export async function runCleanupExecution(params: {
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
+        failedChildren: [],
       });
       continue;
     }
@@ -3771,11 +4456,18 @@ export async function runCleanupExecution(params: {
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
+        failedChildren: [],
       });
       continue;
     }
 
-    const result = await params.dispatch(path, buildFileDeletePayload(path, screened.contentsOnly));
+    const result = await params.dispatch(path, buildFileDeletePayload({
+      path,
+      granularity: screened.granularity,
+      // `screen` already refused a null os, so this narrowing is total.
+      volumeRoot: cleanupVolumeRoot(params.os as CleanupOs, path),
+      previewedAt: params.previewedAt.toISOString(),
+    }));
     const parsed = parseFileDeleteResult(result.stdout);
     const status = mapFileDeleteStatus(result, parsed);
     const bytesFreed = parsed
@@ -3783,7 +4475,7 @@ export async function runCleanupExecution(params: {
       : status === 'completed'
         ? candidate.sizeBytes
         : 0;
-    if (status === 'completed' || status === 'skipped_locked') {
+    if (status === 'completed' || status === 'partial' || status === 'skipped_locked') {
       bytesReclaimed += bytesFreed;
     }
     actions.push({
@@ -3795,6 +4487,7 @@ export async function runCleanupExecution(params: {
       bytesFreed,
       skippedLockedCount: parsed?.skippedLocked.length ?? 0,
       skippedLinkCount: parsed?.skippedLinks.length ?? 0,
+      failedChildren: (parsed?.failedChildren ?? []).slice(0, 20),
       error: result.error ?? undefined,
     });
   }
@@ -3891,6 +4584,7 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
       os: 'linux',
       requestedPaths: paths,
       candidates: paths.map((p) => tempCandidate(p)),
+      previewedAt: PREVIEWED_AT,
       dispatch,
       budgetMs: 120_000,
       now: () => clock,
@@ -3911,6 +4605,7 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp'],
       candidates: [tempCandidate('/tmp/a.tmp')],
+      previewedAt: PREVIEWED_AT,
       dispatch,
       budgetMs: 120_000,
       now: () => 0,
@@ -3928,6 +4623,7 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp', '/home/bob/taxes.pdf', '/tmp/c.tmp'],
       candidates: [tempCandidate('/tmp/a.tmp'), tempCandidate('/tmp/c.tmp')],
+      previewedAt: PREVIEWED_AT,
       dispatch,
       budgetMs: 30_000,
       now: () => clock,
@@ -4027,6 +4723,7 @@ export async function runCleanupExecution(params: {
   os: CleanupOs | null;
   requestedPaths: string[];
   candidates: FilesystemCleanupCandidate[];
+  previewedAt: Date;
   dispatch: (path: string, payload: Record<string, unknown>) => Promise<FileDeleteDispatchResult>;
   budgetMs?: number;
   /** Injected clock, so the budget is testable without real time. */
@@ -4055,6 +4752,7 @@ export async function runCleanupExecution(params: {
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
+        failedChildren: [],
       });
       continue;
     }
@@ -4070,6 +4768,7 @@ export async function runCleanupExecution(params: {
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
+        failedChildren: [],
       });
       continue;
     }
@@ -4087,11 +4786,18 @@ export async function runCleanupExecution(params: {
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
+        failedChildren: [],
       });
       continue;
     }
 
-    const result = await params.dispatch(path, buildFileDeletePayload(path, screened.contentsOnly));
+    const result = await params.dispatch(path, buildFileDeletePayload({
+      path,
+      granularity: screened.granularity,
+      // `screen` already refused a null os, so this narrowing is total.
+      volumeRoot: cleanupVolumeRoot(params.os as CleanupOs, path),
+      previewedAt: params.previewedAt.toISOString(),
+    }));
     const parsed = parseFileDeleteResult(result.stdout);
     const status = mapFileDeleteStatus(result, parsed);
     const bytesFreed = parsed
@@ -4099,7 +4805,7 @@ export async function runCleanupExecution(params: {
       : status === 'completed'
         ? candidate.sizeBytes
         : 0;
-    if (status === 'completed' || status === 'skipped_locked') {
+    if (status === 'completed' || status === 'partial' || status === 'skipped_locked') {
       bytesReclaimed += bytesFreed;
     }
     actions.push({
@@ -4111,6 +4817,7 @@ export async function runCleanupExecution(params: {
       bytesFreed,
       skippedLockedCount: parsed?.skippedLocked.length ?? 0,
       skippedLinkCount: parsed?.skippedLinks.length ?? 0,
+      failedChildren: (parsed?.failedChildren ?? []).slice(0, 20),
       error: result.error ?? undefined,
     });
   }
@@ -4224,7 +4931,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `runCleanupExecution`, `CLEANUP_EXECUTE_BUDGET_MS` (Tasks 8–9); `toCleanupOs` from `@breeze/shared`.
-- Produces: every response from `filesystemRoutes` is `{ success: true, data }` on 2xx and `{ success: false, error, data? }` on 4xx/5xx. `POST /cleanup-execute`'s `data` gains `rejectedPaths`, `partial`, `budgetMs` and per-action `status` ∈ `completed | failed | skipped_locked | rejected | skipped_budget`.
+- Produces: every response from `filesystemRoutes` is `{ success: true, data }` on 2xx and `{ success: false, error, data? }` on 4xx/5xx. `POST /cleanup-execute`'s `data` gains `rejectedPaths`, `partial`, `budgetMs` and per-action `status` ∈ `completed | partial | failed | skipped_locked | rejected | skipped_budget`, and the route answers `409 { error: 'agent_update_required', minAgentVersion }` for an agent below `MIN_AGENT_VERSION_CLEANUP_GUARD`. `getLatestFilesystemCleanupSnapshot` gains `capturedAt`.
 
 - [ ] **Step 1: Update the existing tests to the new contract, and add the new cases** — in `apps/api/src/routes/devices/filesystem.test.ts`:
 
@@ -4237,7 +4944,7 @@ First, **every** `getDeviceWithOrgAndSiteCheck` mock in an execute test must car
 to
 
 ```ts
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
 ```
 
 Second, every mocked candidate in a `temp_files` execute test needs a `modifiedAt` older than the rule's 24h gate, or the re-filter rejects it (which is the gate working). Add at the top of the file:
@@ -4254,13 +4961,15 @@ Third, replace the payload assertion in `executes cleanup only for selected vali
     expect(executeCommand).toHaveBeenCalledWith(
       deviceId,
       'file_delete',
-      {
+      expect.objectContaining({
         path: '/tmp/a.tmp',
-        recursive: true,
+        // File-granularity rules are never recursive (spec §13 row 2).
+        recursive: false,
         permanent: true,
         cleanupGuard: true,
         contentsOnly: false,
-      },
+        volumeRoot: '/',
+      }),
       expect.objectContaining({ userId: 'user-123' })
     );
 ```
@@ -4269,7 +4978,7 @@ Fourth, append the new cases:
 
 ```ts
   it('wraps every 2xx in { success, data } and every failure in { success: false, error }', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue(null as never);
 
     const missing = await app.request(`/devices/${deviceId}/filesystem`);
@@ -4292,7 +5001,7 @@ Fourth, append the new cases:
   });
 
   it('reports a path outside the pinned plan in rejectedPaths and still executes the rest', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
@@ -4330,8 +5039,79 @@ Fourth, append the new cases:
     expect(statuses).toEqual([['/tmp/a.tmp', 'completed'], ['/home/bob/taxes.pdf', 'rejected']]);
   });
 
+  it('refuses an agent older than the cleanupGuard release with 409 (spec §13 row 3)', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.114.0',
+    } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } }, requestedAt: new Date() }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    // An agent that ignores cleanupGuard while honouring `permanent` performs
+    // an UNGUARDED recursive permanent delete. Never dispatch to one.
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe('agent_update_required');
+    expect(body.data.minAgentVersion).toBe('0.115.0');
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('dispatches previewedAt so the agent can refuse a file touched since the preview', async () => {
+    const requestedAt = new Date('2026-09-19T12:00:00.000Z');
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0',
+    } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } }, requestedAt }]) }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true, modifiedAt: AGED },
+    ] as never);
+    vi.mocked(executeCommand).mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] }),
+    } as never);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'run-14' }]) }),
+    } as never);
+
+    await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['/tmp/a.tmp'], cleanupRunId: '22222222-2222-2222-2222-222222222222' }),
+    });
+
+    expect(executeCommand).toHaveBeenCalledWith(
+      deviceId,
+      'file_delete',
+      expect.objectContaining({
+        permanent: true,
+        cleanupGuard: true,
+        // A temp_files rule is file-granularity, so the delete is NOT recursive.
+        recursive: false,
+        volumeRoot: '/',
+        previewedAt: requestedAt.toISOString(),
+      }),
+      expect.anything(),
+    );
+  });
+
   it('returns 500 with an error when every dispatched action failed', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
@@ -4361,7 +5141,7 @@ Fourth, append the new cases:
   });
 
   it('records the executedActions envelope, not a bare array', async () => {
-    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux' } as never);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1', osType: 'linux', agentVersion: '0.115.0' } as never);
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]) }),
@@ -4406,6 +5186,8 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { toCleanupOs } from '@breeze/shared';
 import {
   CLEANUP_EXECUTE_BUDGET_MS,
+  MIN_AGENT_VERSION_CLEANUP_GUARD,
+  agentSupportsCleanupGuard,
   runCleanupExecution,
 } from '../../services/filesystemCleanupExecution';
 ```
@@ -4449,11 +5231,23 @@ Replace the GET's return with `return okJson(c, { ...same fields... });`, and th
 Then replace the whole execute body from `const byPath = new Map(...)` (`:386`) through the final `return c.json(...)` (`:459-469`) with:
 
 ```ts
+    // §13 row 3. An agent without `cleanupGuard` that receives `permanent: true`
+    // performs an UNGUARDED recursive permanent delete — strictly worse than
+    // today's trash-move, which is why the spec's mixed-version paragraph is
+    // withdrawn. Refuse before anything is dispatched.
+    if (!agentSupportsCleanupGuard((device as { agentVersion?: string | null }).agentVersion)) {
+      return failJson(c, 'agent_update_required', 409, {
+        minAgentVersion: MIN_AGENT_VERSION_CLEANUP_GUARD,
+        agentVersion: (device as { agentVersion?: string | null }).agentVersion ?? null,
+      });
+    }
+
     const requested = Array.from(new Set(paths));
     const outcome = await runCleanupExecution({
       os: toCleanupOs((device as { osType?: unknown }).osType),
       requestedPaths: requested,
       candidates,
+      previewedAt,
       // The payload already carries the path; the first argument is only the
       // key the service iterates on.
       dispatch: (_path, payload) => executeCommand(
@@ -4467,6 +5261,7 @@ Then replace the whole execute body from `const byPath = new Map(...)` (`:386`) 
 
     const counts = {
       completed: outcome.actions.filter((action) => action.status === 'completed').length,
+      partial: outcome.actions.filter((action) => action.status === 'partial').length,
       failed: outcome.actions.filter((action) => action.status === 'failed').length,
       skipped_locked: outcome.actions.filter((action) => action.status === 'skipped_locked').length,
       rejected: outcome.actions.filter((action) => action.status === 'rejected').length,
@@ -4485,7 +5280,7 @@ Then replace the whole execute body from `const byPath = new Map(...)` (`:386`) 
       });
     }
 
-    const runStatus = counts.completed > 0 ? 'executed' : 'failed';
+    const runStatus = counts.completed + counts.partial > 0 ? 'executed' : 'failed';
     const runError = runStatus === 'failed'
       ? 'all cleanup actions failed'
       : counts.failed > 0
@@ -4501,6 +5296,7 @@ Then replace the whole execute body from `const byPath = new Map(...)` (`:386`) 
         approvedAt: new Date(),
         plan: {
           snapshotId: sourceSnapshotId,
+          previewedAt: previewedAt.toISOString(),
           sourceCleanupRunId: cleanupRunId ?? null,
           requestedPaths: requested,
           selectedPaths: dispatchedPaths,
@@ -4529,6 +5325,7 @@ Then replace the whole execute body from `const byPath = new Map(...)` (`:386`) 
         selectedCount: dispatchedPaths.length,
         failedCount: counts.failed,
         rejectedCount: counts.rejected,
+        partialCount: counts.partial,
         skippedLockedCount: counts.skipped_locked,
         skippedBudgetCount: counts.skipped_budget,
         rejectedPaths: outcome.rejectedPaths,
@@ -4555,6 +5352,39 @@ Then replace the whole execute body from `const byPath = new Map(...)` (`:386`) 
       return failJson(c, 'all cleanup actions failed', 500, responseData);
     }
     return okJson(c, responseData);
+```
+
+Resolve `previewedAt` where the candidate set is resolved, and widen the two reads that supply it (§13 row 2). In the pinned branch, add `requestedAt` to the select:
+
+```ts
+      const [run] = await db
+        .select({
+          plan: deviceFilesystemCleanupRuns.plan,
+          requestedAt: deviceFilesystemCleanupRuns.requestedAt,
+        })
+        .from(deviceFilesystemCleanupRuns)
+```
+
+and set `previewedAt = run.requestedAt ?? new Date(0)` there; in the unpinned fallback set `previewedAt = snapshot.capturedAt ?? new Date(0)`. Declare it alongside `sourceSnapshotId`:
+
+```ts
+    let candidates: FilesystemCleanupCandidate[];
+    let sourceSnapshotId: string | null = null;
+    // When the operator looked at this plan. The agent refuses any target whose
+    // mtime is newer (spec §13 row 2). `new Date(0)` can only be reached by a
+    // row with a null timestamp, which the column forbids; it keeps the value
+    // total without silently disabling the check.
+    let previewedAt = new Date(0);
+```
+
+and in `apps/api/src/services/filesystemAnalysis.ts`, add `capturedAt` to the slim cleanup-snapshot select (`:113-125`):
+
+```ts
+    .select({
+      id: deviceFilesystemSnapshots.id,
+      capturedAt: deviceFilesystemSnapshots.capturedAt,
+      cleanupCandidates: deviceFilesystemSnapshots.cleanupCandidates,
+    })
 ```
 
 Delete the now-unused `FilesystemCleanupCandidate` type import only if nothing else in the file uses it (`candidates` is still typed with it, so keep it).
@@ -4593,6 +5423,164 @@ with error: 'all cleanup actions failed' — it previously returned 500 with no
 error field at all, so the UI had nothing to show.
 
 Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §2 defects 1, 4 and 10, §5.2
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 10b: Persist `filesystem_analysis` results delivered over WebSocket (§13 row 9)
+
+An existing bug this wave cannot leave alone: the scan is dispatched with `preferHeartbeat: false`, so its result normally comes back over the socket — and the socket never writes a snapshot. Every fix above is invisible to a device whose results take that leg.
+
+**Verified before writing this task:** `handleFilesystemAnalysisCommandResult` has exactly one caller, `routes/agents/commands.ts:525` (the HTTP result route). The WebSocket leg dispatches only the `commandResultHandlers` registry (`routes/agentWs.ts:2310`), and `filesystem_analysis` is absent from it (`services/commandResultHandlers.ts:897-921`).
+
+**Files:**
+- Modify: `apps/api/src/services/commandResultHandlers.ts` — add one registry entry + its adapter
+- Create: `apps/api/src/services/commandResultHandlers.filesystem.test.ts` (Test)
+
+**Interfaces:**
+- Consumes: `handleFilesystemAnalysisCommandResult` (`routes/agents/helpers.ts:1593`), `devices` schema.
+- Produces: `commandResultHandlers['filesystem_analysis']`.
+
+**Do NOT add `filesystem_analysis` to `REGISTRY_DISPATCHED_COMMAND_TYPES`** (`routes/agents/commands.ts:89-103`). That is a *separate* allowlist gating the HTTP leg's registry dispatch; the HTTP leg already calls the handler directly at `:525`, so adding it there would save every snapshot twice.
+
+- [ ] **Step 1: Write the failing test** — create `apps/api/src/services/commandResultHandlers.filesystem.test.ts`:
+
+```ts
+import { describe, expect, it, vi } from 'vitest';
+
+// §13 row 9. filesystem_analysis is dispatched with preferHeartbeat: false, so
+// its result normally arrives over the WebSocket — and the WS leg dispatches
+// ONLY this registry. Without an entry here the scan completes, the agent's
+// payload is discarded, and the Disk Cleanup tab stays empty with no error.
+
+vi.mock('../routes/agents/helpers', () => ({
+  handleFilesystemAnalysisCommandResult: vi.fn(async () => {}),
+}));
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn(async () => [{ orgId: 'org-123' }]) })),
+      })),
+    })),
+  },
+}));
+
+import { commandResultHandlers } from './commandResultHandlers';
+import { handleFilesystemAnalysisCommandResult } from '../routes/agents/helpers';
+
+describe('filesystem_analysis result handler registration', () => {
+  it('is registered, so the WebSocket leg persists the snapshot', () => {
+    expect(commandResultHandlers['filesystem_analysis']).toBeTypeOf('function');
+  });
+
+  it('forwards the command and the device org to the existing handler', async () => {
+    const command = {
+      id: 'cmd-1',
+      deviceId: 'dev-1',
+      type: 'filesystem_analysis',
+      payload: { path: '/', trigger: 'on_demand', scanMode: 'baseline' },
+    } as never;
+    const result = { status: 'completed', stdout: '{"path":"/"}' } as never;
+
+    await commandResultHandlers['filesystem_analysis']!({
+      agentId: 'agent-1',
+      command,
+      commandId: 'cmd-1',
+      result,
+      resolvedDeviceId: 'dev-1',
+      stdout: '{"path":"/"}',
+    });
+
+    expect(handleFilesystemAnalysisCommandResult).toHaveBeenCalledWith(command, result, 'org-123');
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+cd apps/api && npx vitest run src/services/commandResultHandlers.filesystem.test.ts
+```
+
+Expected failure: `expected undefined to be a function` — there is no `filesystem_analysis` entry.
+
+- [ ] **Step 3: Implement** — in `apps/api/src/services/commandResultHandlers.ts`, add the adapter above the registry and one entry inside it:
+
+```ts
+/**
+ * §13 row 9: filesystem_analysis results delivered over the WebSocket were
+ * never persisted. The scan is dispatched with `preferHeartbeat: false`, so the
+ * socket is the NORMAL leg — the handler existed only on the HTTP route
+ * (routes/agents/commands.ts:525), and a completed scan silently wrote nothing.
+ *
+ * The HTTP leg keeps its direct call: its registry dispatch is gated on the
+ * separate REGISTRY_DISPATCHED_COMMAND_TYPES allowlist, which this type is
+ * deliberately NOT added to, so nothing is saved twice.
+ *
+ * `orgId` is not a handler parameter, so it is read from the device the
+ * transport already authorized — the same shape handleDiscoveryResult uses for
+ * its job lookup.
+ */
+async function handleFilesystemAnalysisResult({
+  command,
+  result,
+  resolvedDeviceId,
+}: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { handleFilesystemAnalysisCommandResult } = await import('../routes/agents/helpers');
+  const [device] = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, resolvedDeviceId))
+    .limit(1);
+  if (!device) {
+    console.warn(`[commandResultHandlers] filesystem_analysis result for unknown device ${resolvedDeviceId}`);
+    return;
+  }
+  await handleFilesystemAnalysisCommandResult(command, result, device.orgId);
+}
+```
+
+```ts
+  install_patches: handleInstallPatchesResult,
+  filesystem_analysis: handleFilesystemAnalysisResult,
+};
+```
+
+Confirm `devices` and `eq` are already imported in that file; add them if not.
+
+- [ ] **Step 4: Run it and watch it pass, then confirm the HTTP leg is unchanged**
+
+```bash
+cd apps/api && npx vitest run src/services/commandResultHandlers.filesystem.test.ts src/services/commandResultHandlers.test.ts
+grep -n "filesystem_analysis" apps/api/src/routes/agents/commands.ts
+```
+
+Expected: both suites green, and the grep shows only the existing `filesystemAnalysisCommandType` branch at `:523-530` — **not** a new entry in `REGISTRY_DISPATCHED_COMMAND_TYPES`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/api/src/services/commandResultHandlers.ts apps/api/src/services/commandResultHandlers.filesystem.test.ts
+git commit -m "$(cat <<'EOF'
+fix(api): persist filesystem_analysis results delivered over WebSocket
+
+Existing bug, found by the Codex quorum (spec §13 row 9). The scan is dispatched
+with preferHeartbeat: false, so its result normally returns over the socket —
+and the socket leg dispatches only the commandResultHandlers registry, which had
+no filesystem_analysis entry. Every such scan completed, discarded the agent's
+payload, and left the Disk Cleanup tab empty with no error anywhere.
+
+The HTTP leg keeps its direct call: its registry dispatch is gated on the
+separate REGISTRY_DISPATCHED_COMMAND_TYPES allowlist, which this type is
+deliberately not added to, so nothing is saved twice.
+
+Spec: docs/superpowers/specs/2026-09-19-disk-cleanup-v2-design.md §13 row 9
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 EOF
@@ -4702,7 +5690,7 @@ describe('analyze_disk_usage empty-snapshot guard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbMockState.userRows = [{ id: 'user-1' }];
-    dbMockState.deviceRows = [{ id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux' }];
+    dbMockState.deviceRows = [{ id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.115.0' }];
   });
 
   it('stores nothing and reports an error when stdout is empty', async () => {
@@ -4874,7 +5862,7 @@ vi.mock('./filesystemAnalysis', () => ({
     candidates: previewState.candidates,
   })),
   getLatestFilesystemSnapshot: vi.fn(async () => null),
-  getLatestFilesystemCleanupSnapshot: vi.fn(async () => ({ id: 'snap-1', cleanupCandidates: [] })),
+  getLatestFilesystemCleanupSnapshot: vi.fn(async () => ({ id: 'snap-1', capturedAt: new Date('2026-09-19T12:00:00Z'), cleanupCandidates: [] })),
   parseFilesystemAnalysisStdout: vi.fn(() => ({})),
   saveFilesystemSnapshot: vi.fn(),
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash'],
@@ -4911,7 +5899,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     vi.clearAllMocks();
     dbMockState.userRows = [{ id: 'user-1' }];
     dbMockState.deviceRows = [{
-      id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux',
+      id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.115.0',
     }];
     dbMockState.insertedRuns = [];
     previewState.candidates = [
@@ -4949,7 +5937,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
 
   it('sets contentsOnly for a trash root, from the same rule table the route uses', async () => {
     dbMockState.deviceRows = [{
-      id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'macos',
+      id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'macos', agentVersion: '0.115.0',
     }];
     previewState.candidates = [
       { path: '/Users/alice/.Trash', category: 'trash', sizeBytes: 100, safe: true },
@@ -4970,7 +5958,7 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
 
   it('rejects a path the rule table no longer claims and never dispatches it', async () => {
     dbMockState.deviceRows = [{
-      id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'windows',
+      id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'windows', agentVersion: '0.115.0',
     }];
     const stale = 'C:\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Bookmarks';
     previewState.candidates = [{ path: stale, category: 'browser_cache', sizeBytes: 2048, safe: true }];
@@ -5012,6 +6000,20 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     expect(run.executedActions.actions).toHaveLength(1);
   });
 
+  it('refuses an agent older than the cleanupGuard release (spec §13 row 3)', async () => {
+    dbMockState.deviceRows = [{
+      id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.114.0',
+    }];
+    const raw = await getDiskCleanupTool().handler(
+      { deviceId: DEVICE_ID, action: 'execute', paths: ['/tmp/a.tmp'] },
+      makeAuth(),
+    );
+    const result = JSON.parse(raw);
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(result.error).toBe('agent_update_required');
+    expect(result.minAgentVersion).toBe('0.115.0');
+  });
+
   it('keeps the W01 input schema unchanged — no path, no cleanupRunId', () => {
     const properties = getDiskCleanupTool().definition.input_schema.properties as Record<string, unknown>;
     // Both arrive in W05 with the rest of §9; W01 unifies the EXECUTION path only.
@@ -5036,6 +6038,8 @@ Expected failure: the first case fails with the received payload `{ path: '/tmp/
 import { toCleanupOs } from '@breeze/shared';
 import {
   CLEANUP_EXECUTE_BUDGET_MS,
+  MIN_AGENT_VERSION_CLEANUP_GUARD,
+  agentSupportsCleanupGuard,
   runCleanupExecution,
 } from './filesystemCleanupExecution';
 ```
@@ -5055,10 +6059,23 @@ and replace the execute branch (`:307-373`) — everything from `const requested
       // moved every "deleted" file to ~/.breeze-trash on the same volume and
       // freed nothing. Both lanes now run the same screening and the same
       // dispatch payload, which is the only way they stay in step.
+      // §13 row 3: the AI lane is gated exactly like the route. An agent
+      // without cleanupGuard would perform an unguarded permanent delete.
+      if (!agentSupportsCleanupGuard(access.device.agentVersion)) {
+        return JSON.stringify({
+          error: 'agent_update_required',
+          minAgentVersion: MIN_AGENT_VERSION_CLEANUP_GUARD,
+          agentVersion: access.device.agentVersion ?? null,
+        });
+      }
+
       const outcome = await runCleanupExecution({
         os: toCleanupOs(access.device.osType),
         requestedPaths,
         candidates: preview.candidates,
+        // The AI lane re-derives its preview from the latest snapshot, so the
+        // snapshot's capture time is when the model "looked" (spec §13 row 2).
+        previewedAt: snapshot.capturedAt ?? new Date(0),
         // The payload already carries the path; the first argument is only the
         // key the service iterates on.
         dispatch: (_path, payload) => aiExecuteCommand(
@@ -5074,6 +6091,7 @@ and replace the execute branch (`:307-373`) — everything from `const requested
 
       const counts = {
         completed: outcome.actions.filter((action) => action.status === 'completed').length,
+        partial: outcome.actions.filter((action) => action.status === 'partial').length,
         failed: outcome.actions.filter((action) => action.status === 'failed').length,
         skipped_locked: outcome.actions.filter((action) => action.status === 'skipped_locked').length,
         rejected: outcome.actions.filter((action) => action.status === 'rejected').length,
@@ -5094,7 +6112,7 @@ and replace the execute branch (`:307-373`) — everything from `const requested
         });
       }
 
-      const runStatus = counts.completed > 0 ? 'executed' : 'failed';
+      const runStatus = counts.completed + counts.partial > 0 ? 'executed' : 'failed';
       const runError = runStatus === 'failed'
         ? 'all cleanup actions failed'
         : counts.failed > 0
@@ -5852,7 +6870,7 @@ EOF
 - Modify: `apps/web/src/locales/*/remote.json` (8 files)
 
 **Interfaces:**
-- Consumes: the W01 execute response (`rejectedPaths`, `partial`, `counts`, per-action `status`).
+- Consumes: the W01 execute response (`rejectedPaths`, `partial`, `counts` incl. the new `partial` count, per-action `status`). A `409 agent_update_required` surfaces through the existing `onError` path here; the dedicated update banner is W03/W04's `SystemCleanupPanel` work (spec §8).
 - Produces: `DiskCleanupResult` gains `rejectedPaths`, `partial` and `counts`; the execute body carries `cleanupRunId`.
 
 - [ ] **Step 1: Write the failing test** — create `apps/web/src/components/remote/FileManager.cleanup.test.tsx`:
@@ -5989,6 +7007,8 @@ type DiskCleanupResult = {
   rejectedPaths?: string[];
   counts?: {
     completed: number;
+    // §13 row 13: a contentsOnly delete that could not remove every child.
+    partial?: number;
     failed: number;
     skipped_locked: number;
     rejected: number;
@@ -6026,13 +7046,15 @@ Replace the result panel (`:1382-1386`):
               const rejectedCount = cleanupResult.rejectedPaths?.length ?? cleanupResult.counts?.rejected ?? 0;
               const skippedLockedCount = cleanupResult.counts?.skipped_locked ?? 0;
               const skippedBudgetCount = cleanupResult.counts?.skipped_budget ?? 0;
+              const partialCount = cleanupResult.counts?.partial ?? 0;
               // A partial failure used to render in the SAME green box as a
               // clean run, so "3 of 40 targets failed" read as success.
               const clean =
                 cleanupResult.failedCount === 0 &&
                 rejectedCount === 0 &&
                 skippedLockedCount === 0 &&
-                skippedBudgetCount === 0;
+                skippedBudgetCount === 0 &&
+                partialCount === 0;
               return (
                 <div
                   data-testid="disk-cleanup-result"
@@ -6168,6 +7190,18 @@ cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-green-meadow-232b && cm
 
 Expected: `RULE TABLE IN SYNC`.
 
+- [ ] **Step 6b: Confirm the §13 safety contracts are actually wired**
+
+```bash
+cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-green-meadow-232b && \
+  grep -q "os.OpenRoot" agent/internal/remote/tools/fileops.go && echo "OK handle-based delete" && \
+  grep -q "filesystem_analysis: handleFilesystemAnalysisResult" apps/api/src/services/commandResultHandlers.ts && echo "OK ws persistence" && \
+  ! grep -q "'filesystem_analysis'," apps/api/src/routes/agents/commands.ts && echo "OK no double-save" && \
+  grep -q "MIN_AGENT_VERSION_CLEANUP_GUARD" apps/api/src/services/filesystemCleanupExecution.ts && echo "OK version gate"
+```
+
+Expected: four `OK` lines. The third is the one that is easy to get wrong — `filesystem_analysis` must NOT appear in `REGISTRY_DISPATCHED_COMMAND_TYPES`.
+
 - [ ] **Step 7: Confirm this wave really added no schema surface**
 
 ```bash
@@ -6195,20 +7229,28 @@ Disk cleanup did not free disk space. `cleanup-execute` dispatched `file_delete`
 - **API.** Execute dispatches `permanent`/`cleanupGuard`/`contentsOnly`, re-filters every candidate through the rule table, reports `rejectedPaths` and a real per-path status (`completed | failed | skipped_locked | rejected | skipped_budget`), and is bounded by `CLEANUP_EXECUTE_BUDGET_MS = 240_000`. Every response is `{ success, data }` / `{ success: false, error, data? }`.
 - **Accumulators.** Duplicate map capped at 50k keys with `summary.duplicateTrackingTruncated`; cleanup candidates kept top-by-size in a min-heap; permission denials counted.
 - **AI lane.** `analyze_disk_usage` no longer stores an empty snapshot on unparseable stdout, and `disk_cleanup action=execute` now runs the *same* `runCleanupExecution` the route does — defect 1 had two call sites and both are closed. The tool's input schema is unchanged.
+- **Codex quorum (spec §13), W01 rows.** Deletion is **handle-based**: the agent opens the matched rule's anchor with `os.OpenRoot` and works relative to it, so an ancestor swapped for a symlink or a Windows junction between preview and execute is refused by the runtime, not followed (row 1). Identity, type, age and freshness are re-checked at execute — file rules dispatch `recursive: false`, the agent requires a regular file, min-age is re-evaluated, and a target modified after `previewedAt` is rejected (row 2). Permanent mode is gated on `MIN_AGENT_VERSION_CLEANUP_GUARD`; older agents get `409 agent_update_required` and are never dispatched to (row 3). `file_delete` is confirmed live-only and pinned by a contract test (row 6). `filesystem_analysis` results delivered over WebSocket are now persisted — they never were (row 9). Path normalisation is per OS (row 10). POSIX trash is scoped to the scanned root (row 11). A `contentsOnly` delete with any failed child is `partial`, never `completed` (row 13).
 - **Web.** The Disk Cleanup tab adopts `runAction` (and leaves `runActionAllowlist.ts`), its poll is abortable, both banners carry ARIA roles, rows use stable keys, and the `BE-1:` ticket label and the `>=` pseudo-key are gone from all 8 locales. File Manager pins `cleanupRunId` and renders partial failure in amber.
+
+## Breaking / operational note
+
+`cleanup-execute` now answers **409 `agent_update_required`** to any device below `MIN_AGENT_VERSION_CLEANUP_GUARD` (`0.115.0`, the release these agent changes ship in). That is deliberate: an agent that ignores `cleanupGuard` while honouring `permanent` performs an *unguarded* recursive permanent delete. Disk cleanup is unavailable on a device until its agent is updated. **If this wave lands in a different release, bump the constant and its test in the same PR.**
 
 ## Known gaps (by design)
 
 - The AI `disk_cleanup` tool's **input schema** is unchanged (no `path`, no `cleanupRunId`, no 200-path cap) and the run-level AI audit is not added; spec §9 assigns that schema work to W05. Its **execution path** is fixed here.
 - Multi-volume scan state, the finished tab, and OS-native cleaners are W02–W04.
+- From spec §13: `CLEANUP_PREVIEW_TTL_HOURS` and the confirm-dialog copy (row 2) and self-managed DB context for the execute route (row 5) are W03; `scan_path`/backfill/`scan_generation` (rows 7, 8, 18) are W02; the native-cleaner rows (4, 12, 14, 15) are W04.
 
 ## Mixed-version behaviour (new API, old agent)
 
-Old agents ignore unknown `file_delete` keys. On Windows an old agent still emits only `C:\$Recycle.Bin`, which the boundary guard refuses — reported `failed` now instead of silently. On macOS/Linux an old agent permanently deletes the `.Trash`/`Trash` directory itself rather than its contents; the OS recreates it. `cleanupGuard` is absent, and the API-side rule re-filter still applies.
+**There is none, by design.** Spec §13 row 3 withdrew the original "cosmetic degradation" story: an agent that ignores `cleanupGuard` while honouring `permanent` performs an *unguarded* recursive permanent delete, which is worse than the trash-move it replaces. Both lanes refuse any agent below `MIN_AGENT_VERSION_CLEANUP_GUARD` with `409 agent_update_required` before anything is dispatched. Scanning, previewing and every other `file_delete` caller are unaffected.
 
 ## Testing
 
 `go test -race ./...`, `apps/api` + `apps/web` + `packages/shared` unit suites, `tsc --noEmit` on api and shared, `astro check` on web. No migration, no cascade-list or export-policy change, so no RLS/integration contract suite applies.
+
+Safety-specific: an ancestor-symlink fixture asserts the target outside the tree survives and the delete is `rejected`; the Windows junction equivalent runs on the Windows agent runner; the version gate has a fail-closed case for an absent/unparseable `agent_version`; a contract test pins `file_delete` to the `live` offline class.
 
 Closes #<subissue#>
 
@@ -6270,8 +7312,17 @@ EOF
 | §11 Go — rule positives/negatives, min-age, per-volume bin fixture, `contentsOnly` symlink, `cleanupGuard` symlink, top-by-size, duplicate cap, checkpoint JSON round-trip, `$Recycle.Bin` boundary | 1–7 |
 | §11 API — `rejectedPaths`, budget cut-off, response shape | 8, 9, 10 |
 | §11 Web — partial failure renders amber, `no-silent-mutations` passes with the tab removed from the allowlist | 12, 14 |
+| **§13 row 1** — delete through `os.OpenRoot` handles, anchor on the scanned volume, ancestor-symlink and Windows-junction tests | 2 (anchor), 6 (handle open + tests), 7 (`contentsOnly` traversal) |
+| **§13 row 2 (W01 half)** — `recursive` from granularity, regular-file requirement, min-age re-check, `previewedAt` freshness | 6 (agent checks), 8 (payload), 10 (route plumbing), 11b (AI lane). TTL + confirm copy → W03 (amendment 18) |
+| **§13 row 3** — `MIN_AGENT_VERSION_CLEANUP_GUARD`, 409 on older agents, mixed-version narrative withdrawn | 8 (gate helper), 10 (route 409), 11b (AI lane), Global Constraints |
+| **§13 row 6** — destructive cleanup is live-only | 8 (contract test pinning `file_delete` → `live`; amendment 20 records that it already is) |
+| **§13 row 9** — `filesystem_analysis` results over WebSocket are persisted | 10b |
+| **§13 row 10** — per-OS normalisation (windows folds both, darwin case only, linux exact) | 1 (TS + fixtures), 2 (Go) |
+| **§13 row 11** — POSIX trash scoped to the scanned root | 4 |
+| **§13 row 13 (W01 half)** — a `contentsOnly` action with any failed child is `partial`, `failedChildren` kept | 7 (agent reports), 8 (status mapping), 10 / 11b (counts + response) |
+| **§13 closing note** — `bytesFreed` is the agent's `Lstat` sum, labelled logical bytes | 6, 8 |
 
-Out of W01 by design, and stated in the plan where a reader would look for them: the AI `disk_cleanup` tool's INPUT SCHEMA — `path`, a required `cleanupRunId`, the 200-path cap and the run-level audit (amendment 14, §9 → W05; its execute PATH is fixed here in Task 11b), `cleanupRunId` becoming required (§5.2 note → W03), the `scanRunning` interpolated-key rebuild and the tab component split (§8 → W03), the disk-percent delta fix (§2 defect 8 → W02), scan-state keying and `scan_path` (§2 defect 6 → W02), and removing the File Manager's cleanup section entirely (§8 → W03).
+Also out of W01, from §13 and stated where a reader would look: `CLEANUP_PREVIEW_TTL_HOURS` and the confirm-dialog "current contents at execution" copy (row 2 → W03, amendment 18); self-managed DB context for `cleanup-execute` (row 5 → W03); every `scan_path`, backfill and `scan_generation` item (rows 7, 8, 18 → W02); run cancellation/late-result reconciliation beyond the W01 half (row 13 → W03); and every native-cleaner row (4, 12, 14, 15 → W04). Out of W01 by design, and stated in the plan where a reader would look for them: the AI `disk_cleanup` tool's INPUT SCHEMA — `path`, a required `cleanupRunId`, the 200-path cap and the run-level audit (amendment 14, §9 → W05; its execute PATH is fixed here in Task 11b), `cleanupRunId` becoming required (§5.2 note → W03), the `scanRunning` interpolated-key rebuild and the tab component split (§8 → W03), the disk-percent delta fix (§2 defect 8 → W02), scan-state keying and `scan_path` (§2 defect 6 → W02), and removing the File Manager's cleanup section entirely (§8 → W03).
 
 ### Placeholder scan
 
@@ -6281,7 +7332,7 @@ grep -nE 'TODO|TBD|FIXME|\.\.\.|similar to Task|handle edge cases|as (above|befo
 
 Run this before executing the plan. Expected hits and why each is legitimate:
 - `<parent#>` / `<subissue#>` in the Branch line, the PR body and the commit steps — the one placeholder class the plan contract allows, assigned at feature registration.
-- `LanternOps/breeze#TBD-REGISTERED-AFTER-PLANS` in the frontmatter — the same, per the contract.
+- `LanternOps/breeze#6326` in the frontmatter — the registered feature (waves #6327–#6331); the `<parent#>`/`<subissue#>` branch placeholders resolve to `feature/6326-disk-cleanup-v2/wave-6327`.
 - Ellipses inside prose sentences and inside quoted spec text.
 
 No task step defers work to a later reader: every implementation step carries the code it installs, and the two places where a task deliberately lands a temporary stub (`deleteDirectoryContents` in Task 6, the `cleanupSet`/`estimateDirectorySize` call shapes in Task 4) say explicitly which later task removes it and why the intermediate state still compiles.
@@ -6290,7 +7341,9 @@ No task step defers work to a later reader: every implementation step carries th
 
 - `CleanupCategory` / `CleanupGranularity` / `CleanupOs` are declared once in `packages/shared/src/utils/cleanupRules.ts` and consumed by `filesystemCleanupExecution.ts` and the route. The Go side mirrors them as plain `string` fields on `cleanupRuleSpec`, matched against the same JSON — no enum duplication to drift.
 - `FilesystemCleanupCandidate` keeps its existing shape on both sides (`tools/types.go:583-590`, `services/filesystemAnalysis.ts:13-20`). W01 adds **no** field to it: `contentsOnly` is derived from the rule match (amendment 6), so an old agent's snapshot still yields the right flag.
-- `CleanupActionStatus` is the single source for the per-path vocabulary; the route's `counts` object is keyed by exactly its five members, and the FileManager's `DiskCleanupResult.counts` mirrors those five keys.
+- `CleanupActionStatus` is the single source for the per-path vocabulary — now **six** members (`completed`, `partial`, `failed`, `skipped_locked`, `rejected`, `skipped_budget`). The route's and the AI lane's `counts` objects are keyed by exactly those six, and the FileManager's `DiskCleanupResult.counts` is typed with all six optional so a W01 API and a pre-W01 cached bundle both render.
+- `CleanupGranularity` now reaches the wire twice over: it sets `contentsOnly` AND `recursive` in `buildFileDeletePayload`, so the two can never disagree.
+- `agentSupportsCleanupGuard` returns `boolean`, never a comparison result, so the fail-closed branch cannot be lost to a sign flip at a call site.
 - `FileDeleteDispatchResult` is structurally a subset of `commandQueue.CommandResult` (`status`, `stdout`, `error`), so the route can pass `executeCommand`'s result straight through without a cast; `CommandResult.status` is `'completed' | 'failed' | 'timeout'` and `FileDeleteDispatchResult.status` is the same union.
 - `CLEANUP_GUARD_REJECTED_PREFIX` (TS) and `CleanupGuardRejectedPrefix` (Go) are pinned to the identical literal by a test on each side (Tasks 1 and 2), because the API's `rejected` mapping is a string-prefix contract across the language boundary.
 - `executedActions` moves from `unknown[]` to `{ partial: boolean; budgetMs: number; actions: unknown[] }`; the column stays `jsonb` and `readExecutedActions` narrows both shapes, so no schema type changes and no reader breaks.
