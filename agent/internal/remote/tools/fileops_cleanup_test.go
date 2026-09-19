@@ -555,3 +555,57 @@ func TestDeleteFileContentsOnlyStillHonoursTheBoundary(t *testing.T) {
 		t.Fatalf("a top-level directory must stay refused under contentsOnly, got %q", result.Status)
 	}
 }
+
+// SPEC §13 ROW 1, second half. os.Root confines the traversal to the ANCHOR,
+// and the anchor is the rule's wildcard-free literal prefix — `/tmp`, `/home`,
+// `C:\Users`. A symlink whose target also lives under that anchor therefore
+// does not escape the Root and is happily followed, so
+// `/home/alice/.cache/sub -> ../../bob/Documents` deletes bob's files from
+// inside alice's own rule match. Confinement to the anchor is NOT confinement
+// to the previewed path: every component is checked by identity.
+func TestCleanupGuardRefusesAnIntraAnchorSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink fixture; the Windows junction case is fileops_link_windows_test.go")
+	}
+	// A sibling directory under the SAME anchor (/tmp), standing in for another
+	// user's home under /home.
+	sibling := cleanupTempDir(t)
+	victim := filepath.Join(sibling, "victim.tmp")
+	if err := os.WriteFile(victim, []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(victim, aged, aged); err != nil {
+		t.Fatalf("age victim: %v", err)
+	}
+
+	home := cleanupTempDir(t)
+	nested := filepath.Join(home, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// RELATIVE, so the Root resolves it instead of refusing it outright, and it
+	// lands two levels below the anchor on a sibling inside the same anchor.
+	relToSibling, err := filepath.Rel(nested, sibling)
+	if err != nil {
+		t.Fatalf("rel: %v", err)
+	}
+	if err := os.Symlink(relToSibling, filepath.Join(nested, "sub")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	result := DeleteFile(map[string]any{
+		"path":         filepath.Join(nested, "sub", "victim.tmp"),
+		"permanent":    true,
+		"cleanupGuard": true,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("expected the guard to refuse a path traversing an intra-anchor symlink, got %q", result.Status)
+	}
+	if !strings.HasPrefix(result.Error, CleanupGuardRejectedPrefix) {
+		t.Fatalf("expected the pinned rejection prefix, got %q", result.Error)
+	}
+	if _, statErr := os.Stat(victim); statErr != nil {
+		t.Fatal("the sibling directory's file must survive")
+	}
+}

@@ -675,13 +675,64 @@ func openCleanupTarget(goos, cleanPath, volumeRoot string) (*cleanupTarget, erro
 
 	root, err := os.OpenRoot(anchor)
 	if err != nil {
-		return nil, fmt.Errorf("%s cannot open anchor %s: %v", CleanupGuardRejectedPrefix, anchor, err)
+		return nil, fmt.Errorf("cannot open cleanup anchor %s: %w", anchor, err)
+	}
+	if err := refuseLinkedAncestors(root, rel); err != nil {
+		_ = root.Close()
+		return nil, err
 	}
 	if _, err := root.Lstat(rel); err != nil {
 		_ = root.Close()
-		return nil, fmt.Errorf("%s %s could not be opened inside its anchor: %v", CleanupGuardRejectedPrefix, cleanPath, err)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("path does not exist: %s", cleanPath)
+		}
+		return nil, fmt.Errorf("failed to stat %s inside its anchor: %w", cleanPath, err)
 	}
 	return &cleanupTarget{root: root, rel: rel, match: match}, nil
+}
+
+// refuseLinkedAncestors Lstats EVERY intermediate component of rel through the
+// Root and refuses a symlink or reparse point at any of them.
+//
+// The Root confines a traversal to the anchor, and the anchor is the rule's
+// wildcard-free literal prefix — `/tmp`, `/home`, `C:\Users`. A symlink whose
+// target also lives under that anchor therefore does not escape the Root and is
+// followed: `ln -s /home/bob/Documents /home/alice/.cache/x` deletes bob's
+// files from inside alice's own rule match. Confinement to the anchor is not
+// confinement to the previewed path, so identity is checked per component.
+//
+// The leaf is left to cleanupGuardRejection, which refuses a symlink there with
+// a reason naming the kind rather than the traversal.
+//
+// A component that cannot be inspected is an I/O failure, not a guard decision,
+// so it carries no CleanupGuardRejectedPrefix (the API maps that prefix onto
+// `rejected`, which would mislabel a permissions problem as a policy refusal).
+func refuseLinkedAncestors(root *os.Root, rel string) error {
+	components := strings.Split(rel, string(filepath.Separator))
+	if len(components) < 2 {
+		return nil
+	}
+	prefix := ""
+	for _, component := range components[:len(components)-1] {
+		if component == "" {
+			continue
+		}
+		prefix = filepath.Join(prefix, component)
+		info, err := root.Lstat(prefix)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("path does not exist: %s", prefix)
+			}
+			return fmt.Errorf("failed to stat %s inside its anchor: %w", prefix, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s %s traverses a symlink at %s", CleanupGuardRejectedPrefix, rel, prefix)
+		}
+		if isReparsePoint(info) {
+			return fmt.Errorf("%s %s traverses a reparse point at %s", CleanupGuardRejectedPrefix, rel, prefix)
+		}
+	}
+	return nil
 }
 
 // cleanupGuardRejection is the live re-check (spec §13 row 2). Pinning a path
