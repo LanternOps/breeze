@@ -1,3 +1,6 @@
+---
+tracking_issue: LanternOps/breeze#6354
+---
 # Caller Verification (anti-vishing) — Plan Index
 
 **Spec:** `docs/superpowers/specs/security-auth/2026-09-18-caller-verification-design.md`

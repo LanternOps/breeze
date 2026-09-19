@@ -1,3 +1,6 @@
+---
+tracking_issue: LanternOps/breeze#6354
+---
 # Caller verification (anti-vishing) — design
 
 Status: draft v5 for review · Owner: Todd · Date: 2026-09-18 · Revised: 2026-09-19
