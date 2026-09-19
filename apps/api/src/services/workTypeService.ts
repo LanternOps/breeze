@@ -45,6 +45,7 @@ export async function createWorkType(
       .insert(workTypes)
       .values({ partnerId, name: input.name, sortOrder: input.sortOrder ?? 0 })
       .returning();
+    if (!row) throw new Error('Failed to create work type');
     return row;
   } catch (err) {
     // Re-throw, never swallow: the request transaction is already aborted.

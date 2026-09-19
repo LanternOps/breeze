@@ -25,6 +25,14 @@ const PARTNER = 'bbbbbbbb-2222-4222-8222-222222222222';
 beforeEach(() => { selectQueue.length = 0; updateSpy.mockClear(); insertSpy.mockClear(); vi.clearAllMocks(); });
 
 describe('createWorkType', () => {
+  it('rejects an insert that returns no work type instead of reporting success', async () => {
+    const { db } = await import('../db');
+    (db.insert as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
+      values: () => ({ returning: () => Promise.resolve([]) }),
+    }));
+    await expect(createWorkType(PARTNER, { name: 'Remote' })).rejects.toThrow('Failed to create work type');
+  });
+
   it('stamps the acting partner id, never one from the input', async () => {
     await createWorkType(PARTNER, { name: 'Remote' });
     expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ partnerId: PARTNER, name: 'Remote' }));
