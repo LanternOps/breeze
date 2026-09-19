@@ -745,6 +745,7 @@ func cleanupGuardRejection(
 	info os.FileInfo,
 	match *cleanupRuleMatch,
 	recursive bool,
+	contentsOnly bool,
 	previewedAt time.Time,
 	now time.Time,
 ) error {
@@ -768,7 +769,10 @@ func cleanupGuardRejection(
 	if match.MinAge > 0 && now.Sub(info.ModTime()) < match.MinAge {
 		return fmt.Errorf("%s %s is newer than the rule's minimum age", CleanupGuardRejectedPrefix, info.Name())
 	}
-	if !previewedAt.IsZero() && info.ModTime().After(previewedAt) {
+	// A contentsOnly CONTAINER is exempt: a bin/trash directory's mtime bumps on
+	// every add, so any trash activity since the scan would reject the whole
+	// cleanup. deleteDirectoryContents applies the check per CHILD instead.
+	if !contentsOnly && !previewedAt.IsZero() && info.ModTime().After(previewedAt) {
 		return fmt.Errorf("%s %s was modified after the preview", CleanupGuardRejectedPrefix, info.Name())
 	}
 	return nil
@@ -816,7 +820,7 @@ func newLockedDeleteResult(cleanPath string, start time.Time) CommandResult {
 // fails for another reason lands in failedChildren, which makes the action
 // `partial` on the API side — never `completed` with positive bytes
 // (spec §13 row 13).
-func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.FileInfo, start time.Time) CommandResult {
+func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.FileInfo, previewedAt time.Time, start time.Time) CommandResult {
 	if !info.IsDir() {
 		return NewErrorResult(
 			fmt.Errorf("%s contentsOnly target is not a directory: %s", CleanupGuardRejectedPrefix, cleanPath),
@@ -846,6 +850,7 @@ func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.Fi
 	var bytesFreed int64
 	skippedLocked := make([]string, 0)
 	skippedLinks := make([]string, 0)
+	skippedRecent := make([]string, 0)
 	failedChildren := make([]string, 0)
 
 	for _, entry := range entries {
@@ -864,6 +869,14 @@ func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.Fi
 		}
 		if childInfo.Mode()&os.ModeSymlink != 0 || isReparsePoint(childInfo) {
 			skippedLinks = append(skippedLinks, childPath)
+			continue
+		}
+		// The container's own mtime is not a usable freshness signal (it bumps
+		// on every add), so the since-preview check lands here: a child that
+		// arrived or changed after the operator looked is not what they
+		// approved, and is reported rather than deleted.
+		if !previewedAt.IsZero() && childInfo.ModTime().After(previewedAt) {
+			skippedRecent = append(skippedRecent, childPath)
 			continue
 		}
 
@@ -890,6 +903,7 @@ func deleteDirectoryContents(target *cleanupTarget, cleanPath string, info os.Fi
 		"bytesFreed":     bytesFreed,
 		"skippedLocked":  skippedLocked,
 		"skippedLinks":   skippedLinks,
+		"skippedRecent":  skippedRecent,
 		"failedChildren": failedChildren,
 	}, time.Since(start).Milliseconds())
 }
@@ -990,7 +1004,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 				time.Since(start).Milliseconds(),
 			)
 		}
-		if guardErr := cleanupGuardRejection(info, target.match, recursive, previewedAt, time.Now()); guardErr != nil {
+		if guardErr := cleanupGuardRejection(info, target.match, recursive, contentsOnly, previewedAt, time.Now()); guardErr != nil {
 			return NewErrorResult(guardErr, time.Since(start).Milliseconds())
 		}
 	} else {
@@ -1009,7 +1023,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 			if target == nil {
 				return NewErrorResult(fmt.Errorf("contentsOnly requires cleanupGuard"), time.Since(start).Milliseconds())
 			}
-			return deleteDirectoryContents(target, cleanPath, info, start)
+			return deleteDirectoryContents(target, cleanPath, info, previewedAt, start)
 		}
 
 		var bytesFreed int64

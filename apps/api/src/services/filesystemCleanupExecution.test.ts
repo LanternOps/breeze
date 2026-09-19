@@ -101,12 +101,20 @@ describe('parseFileDeleteResult', () => {
     expect(
       parseFileDeleteResult(JSON.stringify({
         path: '/tmp/a', deleted: true, bytesFreed: 4096,
-        skippedLocked: ['/tmp/locked'], skippedLinks: [], failedChildren: [],
+        skippedLocked: ['/tmp/locked'], skippedLinks: [], skippedRecent: [], failedChildren: [],
       })),
     ).toEqual({
       deleted: true, bytesFreed: 4096,
-      skippedLocked: ['/tmp/locked'], skippedLinks: [], failedChildren: [],
+      skippedLocked: ['/tmp/locked'], skippedLinks: [], skippedRecent: [], failedChildren: [],
     });
+  });
+
+  it('reads the per-child freshness skips', () => {
+    expect(
+      parseFileDeleteResult(JSON.stringify({
+        bytesFreed: 0, skippedRecent: ['/trash/new'],
+      }))?.skippedRecent,
+    ).toEqual(['/trash/new']);
   });
 
   it('returns null for an OLD agent body, which carries no bytesFreed', () => {
@@ -139,7 +147,7 @@ describe('mapFileDeleteStatus (spec §5.2 status vocabulary)', () => {
   it('maps a locked file onto skipped_locked', () => {
     expect(
       mapFileDeleteStatus({ status: 'completed' }, {
-        deleted: false, bytesFreed: 0, skippedLocked: ['/tmp/x'], skippedLinks: [], failedChildren: [],
+        deleted: false, bytesFreed: 0, skippedLocked: ['/tmp/x'], skippedLinks: [], skippedRecent: [], failedChildren: [],
       }),
     ).toBe('skipped_locked');
   });
@@ -147,7 +155,7 @@ describe('mapFileDeleteStatus (spec §5.2 status vocabulary)', () => {
   it('keeps a locked-but-productive contentsOnly delete as completed', () => {
     expect(
       mapFileDeleteStatus({ status: 'completed' }, {
-        deleted: false, bytesFreed: 2048, skippedLocked: ['/trash/locked'], skippedLinks: [], failedChildren: [],
+        deleted: false, bytesFreed: 2048, skippedLocked: ['/trash/locked'], skippedLinks: [], skippedRecent: [], failedChildren: [],
       }),
     ).toBe('completed');
   });
@@ -157,7 +165,7 @@ describe('mapFileDeleteStatus (spec §5.2 status vocabulary)', () => {
     // indistinguishable from a clean run.
     expect(
       mapFileDeleteStatus({ status: 'completed' }, {
-        deleted: false, bytesFreed: 2048, skippedLocked: [], skippedLinks: [], failedChildren: ['/trash/x'],
+        deleted: false, bytesFreed: 2048, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: ['/trash/x'],
       }),
     ).toBe('partial');
   });
@@ -165,9 +173,20 @@ describe('mapFileDeleteStatus (spec §5.2 status vocabulary)', () => {
   it('maps an all-children-failed contentsOnly delete onto failed', () => {
     expect(
       mapFileDeleteStatus({ status: 'completed' }, {
-        deleted: false, bytesFreed: 0, skippedLocked: [], skippedLinks: [], failedChildren: ['/trash/x'],
+        deleted: false, bytesFreed: 0, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: ['/trash/x'],
       }),
     ).toBe('failed');
+  });
+
+  it('maps a child skipped as changed-since-preview onto partial (spec §13 row 2)', () => {
+    // The contentsOnly container is exempt from the freshness check, so the
+    // agent reports the per-child skips instead. A bin that kept a file the
+    // operator never approved is not a clean success.
+    expect(
+      mapFileDeleteStatus({ status: 'completed' }, {
+        deleted: false, bytesFreed: 2048, skippedLocked: [], skippedLinks: [], skippedRecent: ['/trash/new'], failedChildren: [],
+      }),
+    ).toBe('partial');
   });
 
   it('treats an OLD agent success as completed', () => {
@@ -177,7 +196,7 @@ describe('mapFileDeleteStatus (spec §5.2 status vocabulary)', () => {
 
 describe('runCleanupExecution', () => {
   it('dispatches the guarded permanent payload for a rule-matching candidate', async () => {
-    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], failedChildren: [] })));
+    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 4096, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: [] })));
     const outcome = await runCleanupExecution({
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp'],
@@ -198,7 +217,7 @@ describe('runCleanupExecution', () => {
   });
 
   it('sets contentsOnly from the rule granularity, without a new candidate field', async () => {
-    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 10, skippedLocked: [], skippedLinks: [], failedChildren: [] })));
+    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 10, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: [] })));
     await runCleanupExecution({
       os: 'darwin',
       requestedPaths: ['/Users/alice/.Trash'],
@@ -289,7 +308,7 @@ describe('runCleanupExecution', () => {
   });
 
   it('prefers the agent bytesFreed over the snapshot size when they differ', async () => {
-    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 12, skippedLocked: [], skippedLinks: [], failedChildren: [] })));
+    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 12, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: [] })));
     const outcome = await runCleanupExecution({
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp'],
@@ -301,7 +320,7 @@ describe('runCleanupExecution', () => {
   });
 
   it('deduplicates requested paths and preserves request order', async () => {
-    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], failedChildren: [] })));
+    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: [] })));
     const outcome = await runCleanupExecution({
       os: 'linux',
       requestedPaths: ['/tmp/b.tmp', '/tmp/a.tmp', '/tmp/b.tmp'],
@@ -339,7 +358,7 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
     let clock = 0;
     const dispatch = vi.fn(async () => {
       clock += 60_000;
-      return ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], failedChildren: [] }));
+      return ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: [] }));
     });
     const paths = ['/tmp/a.tmp', '/tmp/b.tmp', '/tmp/c.tmp', '/tmp/d.tmp'];
     const outcome = await runCleanupExecution({
@@ -362,7 +381,7 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
   });
 
   it('is not partial when everything fits in the budget', async () => {
-    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], failedChildren: [] })));
+    const dispatch = vi.fn(async () => ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: [] })));
     const outcome = await runCleanupExecution({
       os: 'linux',
       requestedPaths: ['/tmp/a.tmp'],
@@ -379,7 +398,7 @@ describe('runCleanupExecution wall-clock budget (spec §5.2)', () => {
     let clock = 0;
     const dispatch = vi.fn(async () => {
       clock += 60_000;
-      return ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], failedChildren: [] }));
+      return ok(JSON.stringify({ deleted: true, bytesFreed: 1, skippedLocked: [], skippedLinks: [], skippedRecent: [], failedChildren: [] }));
     });
     const outcome = await runCleanupExecution({
       os: 'linux',

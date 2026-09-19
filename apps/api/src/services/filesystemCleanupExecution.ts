@@ -103,6 +103,8 @@ export interface CleanupExecutionAction {
   bytesFreed: number;
   skippedLockedCount: number;
   skippedLinkCount: number;
+  /** Children held back because they changed after the preview. */
+  skippedRecentCount: number;
   /** Children a `contentsOnly` delete could not remove; capped for the row. */
   failedChildren: string[];
   reason?: CleanupRejectionReason;
@@ -120,6 +122,12 @@ export interface ParsedFileDeleteResult {
   bytesFreed: number;
   skippedLocked: string[];
   skippedLinks: string[];
+  /**
+   * Children the agent left alone because their mtime is newer than the
+   * preview. The contentsOnly CONTAINER is exempt from that check (a bin's
+   * mtime bumps on every add), so this is where the freshness refusals land.
+   */
+  skippedRecent: string[];
   failedChildren: string[];
 }
 
@@ -178,6 +186,7 @@ export function parseFileDeleteResult(stdout: string | undefined): ParsedFileDel
     bytesFreed: Math.max(0, body.bytesFreed),
     skippedLocked: asStringArray(body.skippedLocked),
     skippedLinks: asStringArray(body.skippedLinks),
+    skippedRecent: asStringArray(body.skippedRecent),
     failedChildren: asStringArray(body.failedChildren),
   };
 }
@@ -197,6 +206,9 @@ export function mapFileDeleteStatus(
     // read as a clean success. Only a run that freed nothing at all is `failed`.
     return parsed.bytesFreed === 0 && parsed.skippedLocked.length === 0 ? 'failed' : 'partial';
   }
+  // A child kept back as changed-since-preview means the bin is not empty and
+  // the operator approved something that no longer matches what is on disk.
+  if (parsed.skippedRecent.length > 0) return 'partial';
   if (parsed.bytesFreed === 0 && parsed.skippedLocked.length > 0) return 'skipped_locked';
   return 'completed';
 }
@@ -254,6 +266,7 @@ export async function runCleanupExecution(params: {
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
+        skippedRecentCount: 0,
         failedChildren: [],
       });
       continue;
@@ -270,6 +283,7 @@ export async function runCleanupExecution(params: {
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
+        skippedRecentCount: 0,
         failedChildren: [],
       });
       continue;
@@ -288,6 +302,7 @@ export async function runCleanupExecution(params: {
         bytesFreed: 0,
         skippedLockedCount: 0,
         skippedLinkCount: 0,
+        skippedRecentCount: 0,
         failedChildren: [],
       });
       continue;
@@ -319,6 +334,7 @@ export async function runCleanupExecution(params: {
       bytesFreed,
       skippedLockedCount: parsed?.skippedLocked.length ?? 0,
       skippedLinkCount: parsed?.skippedLinks.length ?? 0,
+      skippedRecentCount: parsed?.skippedRecent.length ?? 0,
       failedChildren: (parsed?.failedChildren ?? []).slice(0, 20),
       error: result.error ?? undefined,
     });

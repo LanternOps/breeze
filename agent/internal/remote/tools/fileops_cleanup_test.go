@@ -26,7 +26,7 @@ func TestCleanupGuardRejection(t *testing.T) {
 
 	match := matchCleanupRuleFor("linux", "/tmp/build.tmp")
 	aged := fakeFileInfo{FileInfo: info, modTime: time.Now().Add(-48 * time.Hour)}
-	if err := cleanupGuardRejection(aged, match, false, time.Time{}, time.Now()); err != nil {
+	if err := cleanupGuardRejection(aged, match, false, false, time.Time{}, time.Now()); err != nil {
 		t.Errorf("a path inside a cleanup rule must pass the guard, got %v", err)
 	}
 	for _, tc := range []struct{ goos, path, reason string }{
@@ -169,34 +169,43 @@ func TestCleanupGuardRejectionLiveChecks(t *testing.T) {
 	// A file-granularity target that has BECOME a directory is refused: those
 	// rules dispatch recursive:false and a subtree delete is not what was
 	// previewed.
-	if err := cleanupGuardRejection(dirInfo, tempMatch, false, time.Time{}, now); err == nil ||
+	if err := cleanupGuardRejection(dirInfo, tempMatch, false, false, time.Time{}, now); err == nil ||
 		!strings.Contains(err.Error(), "not a regular file") {
 		t.Errorf("expected a not-a-regular-file rejection, got %v", err)
 	}
-	if err := cleanupGuardRejection(dirInfo, trashMatch, true, time.Time{}, now); err != nil {
+	if err := cleanupGuardRejection(dirInfo, trashMatch, true, true, time.Time{}, now); err != nil {
 		t.Errorf("a contents rule must accept a directory, got %v", err)
+	}
+	// The container is exempt from the freshness check; its children are not.
+	bumped := fakeFileInfo{FileInfo: dirInfo, modTime: now}
+	if err := cleanupGuardRejection(bumped, trashMatch, true, true, now.Add(-2*time.Hour), now); err != nil {
+		t.Errorf("a contentsOnly container whose mtime bumped since the preview must pass, got %v", err)
+	}
+	if err := cleanupGuardRejection(bumped, trashMatch, true, false, now.Add(-2*time.Hour), now); err == nil ||
+		!strings.Contains(err.Error(), "modified after the preview") {
+		t.Errorf("a NON-contentsOnly target must still be refused when touched since the preview, got %v", err)
 	}
 
 	// Min-age is re-evaluated against the CURRENT mtime, not the snapshot's.
 	fresh := fakeFileInfo{FileInfo: fileInfo, modTime: now.Add(-1 * time.Hour)}
-	if err := cleanupGuardRejection(fresh, tempMatch, false, time.Time{}, now); err == nil ||
+	if err := cleanupGuardRejection(fresh, tempMatch, false, false, time.Time{}, now); err == nil ||
 		!strings.Contains(err.Error(), "newer than the rule's minimum age") {
 		t.Errorf("expected a min-age rejection, got %v", err)
 	}
 	aged := fakeFileInfo{FileInfo: fileInfo, modTime: now.Add(-48 * time.Hour)}
-	if err := cleanupGuardRejection(aged, tempMatch, false, time.Time{}, now); err != nil {
+	if err := cleanupGuardRejection(aged, tempMatch, false, false, time.Time{}, now); err != nil {
 		t.Errorf("an aged temp file must pass, got %v", err)
 	}
 
 	// A file modified AFTER the operator previewed it is a different file now.
 	previewedAt := now.Add(-2 * time.Hour)
 	touched := fakeFileInfo{FileInfo: fileInfo, modTime: now.Add(-1 * time.Hour)}
-	if err := cleanupGuardRejection(touched, trashMatch, true, previewedAt, now); err == nil ||
+	if err := cleanupGuardRejection(touched, trashMatch, true, false, previewedAt, now); err == nil ||
 		!strings.Contains(err.Error(), "modified after the preview") {
 		t.Errorf("expected a freshness rejection, got %v", err)
 	}
 	stable := fakeFileInfo{FileInfo: fileInfo, modTime: now.Add(-6 * time.Hour)}
-	if err := cleanupGuardRejection(stable, trashMatch, true, previewedAt, now); err != nil {
+	if err := cleanupGuardRejection(stable, trashMatch, true, false, previewedAt, now); err != nil {
 		t.Errorf("an untouched target must pass, got %v", err)
 	}
 }
@@ -361,6 +370,7 @@ type contentsOnlyPayload struct {
 	SkippedLocked  []string `json:"skippedLocked"`
 	SkippedLinks   []string `json:"skippedLinks"`
 	FailedChildren []string `json:"failedChildren"`
+	SkippedRecent  []string `json:"skippedRecent"`
 }
 
 // The recycle-bin fixture from spec §11: the SID directory is emptied, the
@@ -662,5 +672,59 @@ func TestSharingViolationIsASuccessOnlyUnderCleanupGuard(t *testing.T) {
 	legacy := DeleteFile(map[string]any{"path": newLockedFile(t), "permanent": true})
 	if legacy.Status != "failed" {
 		t.Fatalf("the File Browser lane must surface a failed unlink as a failure, got %q", legacy.Status)
+	}
+}
+
+// A bin/trash directory's own mtime bumps on EVERY add, so applying the
+// since-preview freshness check to the contentsOnly CONTAINER rejects the whole
+// cleanup the moment anyone deletes a file between preview and execute — which
+// is most of the time. The check belongs per CHILD: a child touched after the
+// preview is skipped and reported, the rest are emptied (spec §13 row 2).
+func TestDeleteFileContentsOnlyChecksFreshnessPerChildNotOnTheContainer(t *testing.T) {
+	tmpDir := contentsOnlyTempDir(t)
+	trash := filepath.Join(tmpDir, "Trash")
+	if err := os.MkdirAll(trash, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	stale := filepath.Join(trash, "stale.bin")
+	if err := os.WriteFile(stale, make([]byte, 256), 0o644); err != nil {
+		t.Fatalf("write stale: %v", err)
+	}
+	fresh := filepath.Join(trash, "arrived-after-preview.bin")
+	if err := os.WriteFile(fresh, make([]byte, 999), 0o644); err != nil {
+		t.Fatalf("write fresh: %v", err)
+	}
+
+	previewedAt := time.Now().Add(-72 * time.Hour)
+	older := previewedAt.Add(-24 * time.Hour)
+	if err := os.Chtimes(stale, older, older); err != nil {
+		t.Fatalf("age stale: %v", err)
+	}
+	// The container itself is NEWER than the preview, exactly as a real bin is
+	// after any activity, while still satisfying the rule's minimum age.
+	touched := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(trash, touched, touched); err != nil {
+		t.Fatalf("touch container: %v", err)
+	}
+
+	var payload contentsOnlyPayload
+	decodeSuccessPayload(t, DeleteFile(map[string]any{
+		"path": trash, "permanent": true, "recursive": true,
+		"contentsOnly": true, "cleanupGuard": true,
+		"volumeRoot":  filepath.VolumeName(tmpDir) + string(filepath.Separator),
+		"previewedAt": previewedAt.UTC().Format(time.RFC3339),
+	}), &payload)
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("a child older than the preview must be emptied")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Error("a child modified after the preview must survive")
+	}
+	if len(payload.SkippedRecent) != 1 || filepath.Base(payload.SkippedRecent[0]) != "arrived-after-preview.bin" {
+		t.Errorf("expected the post-preview child to be reported, got %v", payload.SkippedRecent)
+	}
+	if payload.BytesFreed != 256 {
+		t.Errorf("expected only the stale child's bytes, got %d", payload.BytesFreed)
 	}
 }
