@@ -3786,7 +3786,9 @@
     "passkeyStepUpIncorrectCode": "Code incorrect. Veuillez réessayer.",
     "passkeyStepUpTooManyAttempts": "Trop de tentatives. Veuillez réessayer dans quelques minutes.",
     "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau.",
-    "passkeyRegistrationServerError": "L'inscription de la clé d'accès a échoué. Veuillez réessayer."
+    "passkeyRegistrationServerError": "L'inscription de la clé d'accès a échoué. Veuillez réessayer.",
+    "deletePasskeyVerifyHeading": "Vérifier pour supprimer une clé d'accès",
+    "deletePasskeyVerifyHint": "Saisissez ici un code MFA actuel avant de supprimer l'une des clés d'accès ci-dessus. Ce code n'a aucun effet sur l'ajout d'une nouvelle clé d'accès."
   },
   "roleManager": {
     "roles": "Rôles",

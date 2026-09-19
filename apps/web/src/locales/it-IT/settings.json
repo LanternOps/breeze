@@ -3786,7 +3786,9 @@
     "passkeyStepUpIncorrectCode": "Codice errato. Riprova.",
     "passkeyStepUpTooManyAttempts": "Troppi tentativi. Riprova tra qualche minuto.",
     "passkeyStepUpVerificationExpired": "La verifica è scaduta. Verifica di nuovo.",
-    "passkeyRegistrationServerError": "Registrazione della passkey non riuscita. Riprova."
+    "passkeyRegistrationServerError": "Registrazione della passkey non riuscita. Riprova.",
+    "deletePasskeyVerifyHeading": "Verifica per eliminare una passkey",
+    "deletePasskeyVerifyHint": "Inserisci qui un codice MFA attuale prima di rimuovere una delle passkey sopra. Questo codice non ha alcun effetto sull'aggiunta di una nuova passkey."
   },
   "roleManager": {
     "roles": "Ruoli",

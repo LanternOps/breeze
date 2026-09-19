@@ -1575,6 +1575,50 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           )}
         </div>
 
+        {/* sweep paper cut #13: this field proves the account's existing MFA
+            factor for the DELETE flow only (see handleDeletePasskey) — it has
+            no effect whatsoever on handleAddPasskey / the Add passkey button
+            below, which is gated purely by `passkeyStepUpCode` in the
+            separate SR2-20 step-up block. Rendering it inside the "Add a
+            passkey" card made it look like part of that flow, so a code typed
+            here left Add permanently (and inexplicably) disabled. Giving it
+            its own section, clearly scoped to deleting, removes the
+            ambiguity without touching either ceremony. */}
+        {!isPasswordless && (user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
+          <div className="space-y-2 rounded-md border p-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">{t('profilePage.deletePasskeyVerifyHeading')}</h3>
+              <p className="text-xs text-muted-foreground">
+                {t('profilePage.deletePasskeyVerifyHint')}
+              </p>
+            </div>
+            <label className="text-sm font-medium" htmlFor="passkey-factor-code">
+              {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="passkey-factor-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={passkeyFactorCode}
+                onChange={event => setPasskeyFactorCode(event.target.value)}
+                className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+                disabled={isAddingPasskey || !!mutatingPasskeyId}
+              />
+              {user.mfaMethod === 'sms' && (
+                <button
+                  type="button"
+                  onClick={() => { void handleSendRecoveryStepUpCode(); }}
+                  disabled={isAddingPasskey || !!mutatingPasskeyId}
+                  className="h-10 rounded-md border px-3 text-sm font-medium"
+                >
+                  {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-4 rounded-md border p-4">
           <div className="space-y-1">
             <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
@@ -1658,34 +1702,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                   {t('profilePage.passkeyStepUpNoUsableFactor')}
                 </p>
               )}
-            </div>
-          )}
-          {!isPasswordless && (user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="passkey-factor-code">
-                {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
-              </label>
-              <div className="flex gap-2">
-                <input
-                  id="passkey-factor-code"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  value={passkeyFactorCode}
-                  onChange={event => setPasskeyFactorCode(event.target.value)}
-                  className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
-                  disabled={isAddingPasskey || !!mutatingPasskeyId}
-                />
-                {user.mfaMethod === 'sms' && (
-                  <button
-                    type="button"
-                    onClick={() => { void handleSendRecoveryStepUpCode(); }}
-                    disabled={isAddingPasskey || !!mutatingPasskeyId}
-                    className="h-10 rounded-md border px-3 text-sm font-medium"
-                  >
-                    {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
-                  </button>
-                )}
-              </div>
             </div>
           )}
           {isPasswordless && !hasSsoReauthGrant ? (

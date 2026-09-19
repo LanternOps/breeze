@@ -3791,7 +3791,9 @@
     "passkeyStepUpIncorrectCode": "Código incorreto. Tente novamente.",
     "passkeyStepUpTooManyAttempts": "Muitas tentativas. Tente novamente em alguns minutos.",
     "passkeyStepUpVerificationExpired": "A verificação expirou. Verifique novamente.",
-    "passkeyRegistrationServerError": "Falha ao registrar a chave de acesso. Tente novamente."
+    "passkeyRegistrationServerError": "Falha ao registrar a chave de acesso. Tente novamente.",
+    "deletePasskeyVerifyHeading": "Verificar para excluir uma chave de acesso",
+    "deletePasskeyVerifyHint": "Digite aqui um código MFA atual antes de remover uma das chaves de acesso acima. Este código não afeta a adição de uma nova chave de acesso."
   },
   "roleManager": {
     "roles": "Funções",

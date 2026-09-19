@@ -3791,7 +3791,9 @@
     "passkeyStepUpIncorrectCode": "Falscher Code. Bitte versuchen Sie es erneut.",
     "passkeyStepUpTooManyAttempts": "Zu viele Versuche. Bitte versuchen Sie es in ein paar Minuten erneut.",
     "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut.",
-    "passkeyRegistrationServerError": "Die Registrierung des Passkeys ist fehlgeschlagen. Bitte versuchen Sie es erneut."
+    "passkeyRegistrationServerError": "Die Registrierung des Passkeys ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "deletePasskeyVerifyHeading": "Zum Löschen eines Passkeys bestätigen",
+    "deletePasskeyVerifyHint": "Geben Sie hier einen aktuellen MFA-Code ein, bevor Sie einen der oben genannten Passkeys entfernen. Dieser Code hat keine Auswirkung auf das Hinzufügen eines neuen Passkeys."
   },
   "roleManager": {
     "roles": "Rollen",
