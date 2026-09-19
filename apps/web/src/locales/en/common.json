@@ -95,7 +95,9 @@
     "aiRisk": "AI Risk",
     "deviceBackup": "Device Backup",
     "sectionServiceDesk": "Service Desk",
-    "serviceManagement": "Service Management"
+    "serviceManagement": "Service Management",
+    "ticketing": "Ticketing",
+    "deliverableTemplates": "Deliverable Templates"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -2531,5 +2533,10 @@
     "message": "Your role will require two-factor authentication. Enrol by {{date}}.",
     "cta": "Set up 2FA",
     "dismiss": "Dismiss two-factor authentication reminder"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "Multi-factor authentication is not required for your team. Password-only sessions can run scripts, move devices and change policies.",
+    "cta": "Require MFA",
+    "dismiss": "Dismiss the MFA policy reminder for today"
   }
 }

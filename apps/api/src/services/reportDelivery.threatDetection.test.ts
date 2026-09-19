@@ -76,6 +76,9 @@ async function deliver(over: Partial<Parameters<typeof emailReportRun>[0]> = {})
     summary: summary as unknown as Record<string, unknown>,
     timezone: 'UTC',
     branding,
+    // Spec §8.2: the caller resolves the partner; this suite pins the
+    // RENDERING, so the platform sender is the right default here.
+    partnerId: null,
     ...over,
   });
   return sendEmail.mock.calls[0]?.[0];

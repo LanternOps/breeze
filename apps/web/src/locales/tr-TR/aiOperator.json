@@ -114,7 +114,9 @@
   "operatorTaskFeed": {
     "loading": "Operator görevleri yükleniyor...",
     "loadFailed": "Operator görevleri yüklenemedi.",
-    "empty": "Bu cihaz için Operator görevi yok."
+    "empty": "Bu cihaz için Operator görevi yok.",
+    "emptyHint": "Yapay Zekâ Operatörü, bir uyarıyı ona devrettiğinizde cihazdaki sorunları inceler ve çözer. Bu cihaz için devredilen görevler burada görünür.",
+    "learnMore": "Yapay Zekâ Operatörü hakkında bilgi edinin"
   },
   "delegate": {
     "button": "Operatöre Devret",

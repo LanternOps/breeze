@@ -617,7 +617,12 @@
     "cpu": "CPU,",
     "mbRam": "MB RAM,",
     "gbDisk": "GB-Festplatte",
-    "mode": "Modus"
+    "mode": "Modus",
+    "rebuildHost": "Rebuild-Host",
+    "outputPath": "Ausgabepfad",
+    "rebuildEngine": "Rebuild-Engine (Linux)",
+    "manualAttachNote": "Hängen Sie die VHDX-Datei manuell an eine Hyper-V-VM an; die automatische VM-Erstellung für Linux-Gäste kommt mit der Windows-Engine.",
+    "newIdentityNote": "Das umgebaute Abbild erhält immer eine neue Maschinenidentität und übernimmt nie die Identität des ursprünglichen Geräts."
   },
   "vMRestoreSpecsStep": {
     "vmSpecifications": "VM-Spezifikationen",
@@ -655,7 +660,16 @@
     "bootsTheVmDirectlyFromTheBackupStorage": "Startet die VM direkt vom Backup-Speicher. In Sekundenschnelle fertig. Bei der Hintergrundmigration werden Daten auf den Host kopiert.",
     "back": "Zurück",
     "continue": "Weiter",
-    "starting": "Beginnt..."
+    "starting": "Beginnt...",
+    "rebuildEngineLinux": "Rebuild-Engine (Linux)",
+    "rebuildEngineDescription": "Baut diesen Linux-Ganzmaschinen-Snapshot auf einem Linux-Gerät mit dem Breeze-Helper zu einem Hyper-V-VHDX-Datenträgerabbild um. Das Abbild erhält immer eine neue Maschinenidentität.",
+    "selectRebuildHost": "Linux-Rebuild-Host auswählen",
+    "chooseALinuxDeviceWithQemuUtils": "Wählen Sie ein Linux-Gerät, das online ist, qemu-utils installiert hat und genügend freien Speicher für das Abbild bietet.",
+    "outputPath": "Ausgabepfad",
+    "outputPathHint": "Absoluter Pfad auf dem Rebuild-Host, der auf .vhdx endet.",
+    "outputPathInvalid": "Geben Sie einen absoluten Pfad ein, der auf .vhdx endet.",
+    "startRebuild": "Rebuild starten",
+    "rebuildStarted": "Rebuild gestartet. Die VHDX-Datei erscheint auf dem Rebuild-Host, sobald der Rebuild abgeschlossen ist."
   },
   "vaultConfigDialog": {
     "device": "Gerät",

@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -317,6 +317,7 @@ export interface PortalRunsResult extends PaginatedResult<PortalRunDto> {
 export interface HardwareLifecyclePortalLatestDto {
   run: { id: string; generatedAt: string };
   summary: HardwareLifecycleSummary | null;
+  contact: { name: string | null; email: string } | null;
   // The org's `enable_self_service` flag (#5880) — governs whether a device
   // row's Computer cell may link to /portal/devices, which itself redirects
   // home when self-service is off.
@@ -624,6 +625,9 @@ export interface QuoteHeader extends QuoteSummary {
   billToName?: string | null;
   sellerSnapshot?: SellerSnapshot | null;
   termsAndConditions?: string | null;
+  /** The authored cover page, spread straight from the quote row (jsonb), so
+   *  older rows may lack fields — treat a missing showPreparedBy as true. */
+  coverPage?: Partial<PublicQuoteCoverPage> | null;
 }
 
 export interface QuoteBranding {
@@ -742,6 +746,9 @@ export interface BrandingConfig {
   enableService?: boolean;
   enableDocuments?: boolean;
   enableLifecycle?: boolean;
+  /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
+   *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
+  chromeAccent?: string | null;
 }
 
 export interface ListParams {

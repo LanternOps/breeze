@@ -7,7 +7,7 @@ import { partnerForDevice, readTrust, writeTrust } from './partnerTrust.repo';
 import { getRedis } from './redis';
 import { tryAutoPromote } from './partnerTrustPromotion';
 
-export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll';
+export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll' | 'custom_sending_domain';
 export type TrustDenyCode = 'TRUST_PROBATION' | 'TRUST_RESTRICTED';
 export type GateDecision =
   | { allow: true; shadowDenied?: { code: TrustDenyCode; reason: string } }
@@ -64,6 +64,7 @@ export const GATED_COMMAND_TYPES = [
   'backup_run',
   'backup_test_restore',
   'backup_verify',
+  'bare_metal_rebuild',
   'bmr_recover',
   'capture_pprof',
   'cis_benchmark',

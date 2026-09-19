@@ -46,6 +46,7 @@ import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../service
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { captureException } from '../services/sentry';
+import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
   backupQueueJobDataSchema,
@@ -457,6 +458,40 @@ export interface BackupTarget {
 }
 
 /**
+ * A file-mode backup resolved to zero usable paths (#6001).
+ *
+ * Typed rather than a bare Error so the dispatch catch — and any future caller
+ * — can tell "this configuration can never back anything up" apart from a
+ * transient resolution failure. The message is what a tech reads in the job's
+ * error log, so it names the remedy, not the internal invariant.
+ */
+export class EmptyBackupPathsError extends Error {
+  readonly code = 'BACKUP_NO_PATHS' as const;
+  constructor() {
+    super(
+      'File backup selected but no paths are configured for this device — ' +
+      'add at least one folder to the Backup tab of the configuration policy that governs it, ' +
+      'or attach a backup profile.'
+    );
+    this.name = 'EmptyBackupPathsError';
+  }
+}
+
+/**
+ * Whitespace-only and empty strings are not paths. Trimming here (rather than
+ * at the dozen call sites that can write them) keeps the emptiness test and the
+ * dispatched payload in agreement: a run must never be admitted on the strength
+ * of a path the agent would then discard.
+ */
+function normalizeBackupPaths(paths: unknown): string[] {
+  if (!Array.isArray(paths)) return [];
+  return paths
+    .filter((p): p is string => typeof p === 'string')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+}
+
+/**
  * Resolves backup mode + targets into one or more typed commands.
  *
  * For file/system_image, returns a single backup_run command.
@@ -471,10 +506,40 @@ export async function resolveBackupTargets(
   switch (backupMode) {
     case 'file': {
       const t = targets as { paths?: string[]; excludes?: string[] };
+      // #6001: REFUSE rather than emit `{ paths: [] }`. The only thing an empty
+      // list can ever produce is a command the agent bounces at 0s with
+      // "backup_run payload has no paths"; failing here turns that late, opaque
+      // agent error into a server-side job failure naming the remedy, for all
+      // three entry points (manual, run-all, scheduled sweep) at once.
+      //
+      // This guard is LOAD-BEARING, not a redundant belt: `min(1)` on
+      // `fileTargetsSchema` (packages/shared/src/validators/backupTargets.ts)
+      // is not imported by the API's write path, which persists
+      // `paths: Array.isArray(s.paths) ? s.paths : []` unchecked
+      // (services/configurationPolicy.ts). So an empty selection IS reachable
+      // in the settings row, and only the PROFILE resolver
+      // (`backupSelectionSpecs`) drops an empty-path selection before job
+      // creation. Legacy custom links have had no such check until now.
+      const paths = normalizeBackupPaths(t.paths);
+      if (paths.length === 0) {
+        throw new EmptyBackupPathsError();
+      }
+      // A path list that lost entries to normalization is not the selection the
+      // tech configured. Never silent: it is the only trail a support engineer
+      // has when asked why one folder in a policy stopped being backed up
+      // while the job still reports success.
+      const droppedPaths = (Array.isArray(t.paths) ? t.paths.length : 0) - paths.length;
+      if (droppedPaths > 0) {
+        console.warn(
+          `[BackupWorker] Dropped ${droppedPaths} unusable path entr${droppedPaths === 1 ? 'y' : 'ies'} ` +
+          `(non-string or blank) from the file selection for device ${deviceId} — ` +
+          'backing up the remaining ' + `${paths.length}`
+        );
+      }
       // Preserve the omitted-vs-empty distinction the agent relies on: a
       // missing excludes field means "fall back to locally-configured
       // excludes", an explicit [] means "no exclusions for this run".
-      const payload: Record<string, unknown> = { paths: t.paths ?? [] };
+      const payload: Record<string, unknown> = { paths };
       if (t.excludes !== undefined) {
         payload.excludes = t.excludes;
       }
@@ -885,6 +950,12 @@ async function prepareBackupDispatchTargets(
       .select({
         backupMode: configPolicyBackupSettings.backupMode,
         targets: configPolicyBackupSettings.targets,
+        // #6001: the legacy top-level column. The Backup tab writes the custom
+        // selection's folder list to BOTH `paths` and `targets.paths`, but only
+        // `targets` was ever read at dispatch — so a settings row written by an
+        // older UI/API build, or by an API caller that sends only the
+        // documented top-level `paths` field, dispatched an empty list.
+        legacyPaths: configPolicyBackupSettings.paths,
       })
       .from(configPolicyBackupSettings)
       .where(eq(configPolicyBackupSettings.featureLinkId, job.featureLinkId))
@@ -893,6 +964,15 @@ async function prepareBackupDispatchTargets(
     if (settings) {
       backupMode = settings.backupMode;
       modeTargets = (settings.targets as Record<string, unknown>) ?? {};
+      // Fall back ONLY when `targets` carries no usable file paths, and only
+      // for file mode — `targets` stays authoritative wherever it is populated,
+      // so this can never override a deliberate narrowing of the selection.
+      if (backupMode === 'file' && normalizeBackupPaths(modeTargets.paths).length === 0) {
+        const legacyPaths = normalizeBackupPaths(settings.legacyPaths);
+        if (legacyPaths.length > 0) {
+          modeTargets = { ...modeTargets, paths: legacyPaths };
+        }
+      }
     }
   }
 
@@ -1180,9 +1260,48 @@ async function processDispatchBackup(
     prepared.map((target) => [target.commandJobId, 'not-attempted' as TargetSendState])
   );
   let parentFailureDetail: string | null = null;
+  let deviceOrgChanged = false;
 
   try {
     for (const target of prepared) {
+      // Re-read after payload preparation and between sends: enqueue-time
+      // ownership cannot authorize a backup on a device moved to another org.
+      // Keep the relay acknowledgement wait outside the short DB context.
+      const admitted = await runWithSystemDbAccess(async () => {
+        const [device] = await db.select({ orgId: devices.orgId }).from(devices)
+          .where(eq(devices.id, data.deviceId)).limit(1);
+        if (device?.orgId === data.orgId) return true;
+
+        console.warn('[BackupWorker] Refusing backup dispatch: device_org_changed', {
+          jobId: data.jobId, deviceId: data.deviceId, orgId: data.orgId,
+        });
+        createAuditLogAsync({
+          orgId: data.orgId,
+          actorType: 'system',
+          actorId: '00000000-0000-0000-0000-000000000000',
+          action: 'backup.dispatch.denied',
+          resourceType: 'backup_job',
+          resourceId: data.jobId,
+          result: 'failure',
+          details: { deviceId: data.deviceId, reason: 'device_org_changed' },
+        });
+        return false;
+      });
+      if (!admitted) {
+        deviceOrgChanged = true;
+        for (const pending of prepared) {
+          if (sendState.get(pending.commandJobId) !== 'not-attempted') continue;
+          sendState.set(pending.commandJobId, 'failed');
+          failedTargets.push(`${pending.commandType} (device_org_changed)`);
+          if (pending.commandJobId === data.jobId) {
+            parentFailureDetail = 'device_org_changed';
+          } else {
+            failedChildJobs.push({ commandJobId: pending.commandJobId, detail: 'device_org_changed' });
+          }
+        }
+        break;
+      }
+
       // Set BEFORE the await: if the send throws, delivery is ambiguous and
       // this row must be left in-flight rather than settled as never-sent.
       sendState.set(target.commandJobId, 'attempting');
@@ -1229,9 +1348,11 @@ async function processDispatchBackup(
       if (sentCount === 0) {
         await markJobFailed(
           data.jobId,
-          lastNonOfflineOutcomeStatus
-            ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
-            : 'Failed to send command to agent',
+          deviceOrgChanged
+            ? 'device_org_changed'
+            : lastNonOfflineOutcomeStatus
+              ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
+              : 'Failed to send command to agent',
         );
         return { dispatched: false };
       }
@@ -1473,4 +1594,9 @@ export const __testOnly = {
   // D18 W01 (#5429): exposed so integration tests can race this real
   // function against cleanupExpiredSnapshots without hand-rolling its SQL.
   stampDispatchPinAndIdentity,
+  // #6001: exposed so the backup-parity integration suite can assert on the
+  // ACTUAL backup_run payload a scheduled job produces (and on the job row a
+  // pathless link leaves behind) without standing up a queue + agent socket.
+  // This is the only place the settings row is turned into a command.
+  prepareBackupDispatchTargets,
 };

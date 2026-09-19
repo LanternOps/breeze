@@ -95,7 +95,9 @@
     "aiRisk": "Yapay Zeka Riski",
     "deviceBackup": "Cihaz Yedekleme",
     "sectionServiceDesk": "Servis masası",
-    "serviceManagement": "Servis yönetimi"
+    "serviceManagement": "Servis yönetimi",
+    "ticketing": "Bilet Sistemi",
+    "deliverableTemplates": "Teslimat Şablonları"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -2531,5 +2533,10 @@
     "message": "Rolünüz iki faktörlü kimlik doğrulama gerektirecek. {{date}} tarihine kadar kurulumu tamamlayın.",
     "cta": "2FA kur",
     "dismiss": "İki faktörlü kimlik doğrulama hatırlatıcısını kapat"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "Ekibiniz için çok faktörlü kimlik doğrulama zorunlu değil. Yalnızca parola ile açılan oturumlar betik çalıştırabilir, cihazları taşıyabilir ve ilkeleri değiştirebilir.",
+    "cta": "MFA'yı zorunlu kıl",
+    "dismiss": "MFA ilkesi hatırlatmasını bugünlük kapat"
   }
 }

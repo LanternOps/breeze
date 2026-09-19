@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -33,12 +34,12 @@ var rebuildSystemForTest rebuild.System
 func newRebuildCommand() *cobra.Command {
 	var (
 		snapshot, target, imageSize, providerConfig, identityFlag, markerFile, resultJSON, stateDir string
-		token, server                                                                               string
+		token, server, expectSystemState                                                            string
 		dryRun, force, allowPartial, noInitramfs, skipBoot                                          bool
 	)
 	cmd := &cobra.Command{
 		Use:   "rebuild",
-		Short: "Rebuild a whole machine from a snapshot onto a disk or raw image (bare-metal recovery engine)",
+		Short: "Rebuild a whole machine from a snapshot onto a disk, raw image or VHDX (bare-metal recovery engine)",
 		// A rebuild failure (a real operational error — wrong disk, refused
 		// preflight, download fault) is common on recovery media; dumping the
 		// full cobra flag/usage listing after the error buries the actual
@@ -57,6 +58,10 @@ func newRebuildCommand() *cobra.Command {
 			}
 			if token == "" && snapshot == "" {
 				return fmt.Errorf("--snapshot is required with --provider-config")
+			}
+			expectState, expectStateAuto, err := parseExpectSystemStateFlag(expectSystemState)
+			if err != nil {
+				return err
 			}
 
 			tgt, err := parseTargetFlag(target, imageSize)
@@ -89,53 +94,43 @@ func newRebuildCommand() *cobra.Command {
 			report := func(bmr.ProgressUpdate) {}
 
 			if token != "" {
-				bs, err := bmr.AuthenticateRecoverySession(ctx, server, token)
-				if err != nil {
-					return fmt.Errorf("authenticate: %w", err)
+				identityOverride := ""
+				if cmd.Flags().Changed("identity") {
+					identityOverride = identityFlag
 				}
-				if bs.Recovery == nil {
-					return fmt.Errorf("this token is not bound to a bare-metal recovery; create one in Breeze first")
-				}
-				provider, err := bmr.NewRecoveryProvider(ctx, server, token, bs)
+				tokenOpts, tokenReport, err := buildTokenModeOptions(ctx, server, token, tgt, identityOverride)
 				if err != nil {
 					return err
 				}
-				opts.Provider = provider
-
-				if !cmd.Flags().Changed("identity") {
-					identityFlag = bs.Recovery.Identity
+				opts.Provider, opts.Identity, opts.Marker, opts.SnapshotID = tokenOpts.Provider, tokenOpts.Identity, tokenOpts.Marker, tokenOpts.SnapshotID
+				// #5412: in token mode the server's word stands. An explicit
+				// "true" may strengthen it, "false" never weakens it.
+				opts.ExpectSystemState = tokenOpts.ExpectSystemState
+				if !expectStateAuto && expectState {
+					opts.ExpectSystemState = true
+				} else if !expectStateAuto && !expectState && opts.ExpectSystemState {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "--expect-system-state false ignored: the server marks this snapshot as carrying system state")
 				}
-				opts.Identity = rebuild.IdentityMode(identityFlag)
-				if opts.Identity == rebuild.IdentityOriginal {
-					if bs.Recovery.Nonce == "" {
-						return fmt.Errorf("recovery nonce missing from bootstrap; re-exchange the code")
-					}
-					opts.Marker = &rebuild.Marker{RecoveryID: bs.Recovery.ID, Nonce: bs.Recovery.Nonce}
-				}
-
-				// bs.SnapshotID (the top-level bootstrap field) is not
-				// reliably populated by every server version — bs.Snapshot's
-				// own SnapshotID (the provider-facing id the download
-				// descriptor's path prefix is scoped to) always is, and is
-				// the one fetchLayout/fetchManifest/DownloadSystemState
-				// actually need to match that prefix. Prefer it.
-				snapshotID := bs.SnapshotID
-				if snapshotID == "" && bs.Snapshot != nil {
-					snapshotID = bs.Snapshot.SnapshotID
-				}
-				opts.SnapshotID = snapshotID
-
-				report = func(u bmr.ProgressUpdate) {
-					if err := bmr.PostRecoveryProgress(ctx, server, token, u); err != nil {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "progress %s not recorded: %v\n", u.Status, err)
-					}
-				}
+				report = tokenReport
 			} else {
 				provider, err := providerFromConfigFile(providerConfig)
 				if err != nil {
 					return err
 				}
 				opts.Provider = provider
+				if expectStateAuto {
+					// No bootstrap to ask, so infer "whole-machine capture"
+					// from the snapshot itself: layout.json is only ever
+					// written by the system_image profile, and a
+					// system-state manifest is the state itself.
+					advertises, err := rebuild.SnapshotAdvertisesSystemState(ctx, provider, snapshot)
+					if err != nil {
+						return fmt.Errorf("probe snapshot for system state: %w", err)
+					}
+					opts.ExpectSystemState = advertises
+				} else {
+					opts.ExpectSystemState = expectState
+				}
 				if markerFile != "" {
 					var m rebuild.Marker
 					b, err := os.ReadFile(markerFile)
@@ -153,8 +148,8 @@ func newRebuildCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&snapshot, "snapshot", "", "snapshot id")
-	cmd.Flags().StringVar(&target, "target", "", "disk:/dev/sdX or image:/path/to/file.img")
-	cmd.Flags().StringVar(&imageSize, "image-size", "", "size for a new image file, e.g. 40G")
+	cmd.Flags().StringVar(&target, "target", "", "disk:/dev/sdX, image:/path/to/file.img or vhdx:/path/to/file.vhdx (needs qemu-img)")
+	cmd.Flags().StringVar(&imageSize, "image-size", "", "size for a new image or vhdx file, e.g. 40G")
 	cmd.Flags().StringVar(&providerConfig, "provider-config", "", "JSON file {provider, providerConfig}")
 	cmd.Flags().StringVar(&token, "token", "", "server-issued bare-metal recovery token (exchange a code for one via POST /bmr/recover/exchange)")
 	cmd.Flags().StringVar(&server, "server", "", "Breeze server URL (required with --token)")
@@ -167,19 +162,92 @@ func newRebuildCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&allowPartial, "allow-partial", false, "continue when some files fail to restore")
 	cmd.Flags().BoolVar(&noInitramfs, "no-initramfs", false, "do not regenerate the initramfs")
 	cmd.Flags().BoolVar(&skipBoot, "skip-boot", false, "tests only: skip bootloader installation")
+	cmd.Flags().StringVar(&expectSystemState, "expect-system-state", "auto", "auto|true|false: require the snapshot's system state to exist and be applied (auto: yes for a system_image snapshot — bootstrap backupType, or layout.json/system-state present)")
 	_ = cmd.MarkFlagRequired("target")
 	return cmd
 }
 
+// buildTokenModeOptions is the server-issued-token half of a rebuild,
+// shared by `breeze-backup rebuild --token` and the bare_metal_rebuild
+// device command (exec_bare_metal_rebuild.go): it authenticates the token,
+// requires the bootstrap to be bound to a bare-metal recovery, builds the
+// download provider, takes the identity from the bootstrap (server-enforced;
+// identityOverride, when non-empty, is the CLI's explicit --identity and
+// wins over it), binds the marker for an original-identity recovery, and
+// resolves the snapshot id. The returned report posts a progress update
+// and NEVER fails the rebuild: a lost console update is recoverable, a
+// completed recovery discarded because of one would not be — errors go to
+// stderr (the helper's log) and the run continues.
+func buildTokenModeOptions(ctx context.Context, server, token string, target rebuild.Target, identityOverride string) (rebuild.Options, func(bmr.ProgressUpdate), error) {
+	opts := rebuild.Options{Target: target}
+	bs, err := bmr.AuthenticateRecoverySession(ctx, server, token)
+	if err != nil {
+		return opts, nil, fmt.Errorf("authenticate: %w", err)
+	}
+	if bs.Recovery == nil {
+		return opts, nil, fmt.Errorf("this token is not bound to a bare-metal recovery; create one in Breeze first")
+	}
+	provider, err := bmr.NewRecoveryProvider(ctx, server, token, bs)
+	if err != nil {
+		return opts, nil, err
+	}
+	opts.Provider = provider
+
+	identity := bs.Recovery.Identity
+	if identityOverride != "" {
+		identity = identityOverride
+	}
+	opts.Identity = rebuild.IdentityMode(identity)
+	if opts.Identity == rebuild.IdentityOriginal {
+		if bs.Recovery.Nonce == "" {
+			return opts, nil, fmt.Errorf("recovery nonce missing from bootstrap; re-exchange the code")
+		}
+		opts.Marker = &rebuild.Marker{RecoveryID: bs.Recovery.ID, Nonce: bs.Recovery.Nonce}
+	}
+
+	// bs.SnapshotID (the top-level bootstrap field) is not reliably
+	// populated by every server version — bs.Snapshot's own SnapshotID (the
+	// provider-facing id the download descriptor's path prefix is scoped
+	// to) always is, and is the one fetchLayout/fetchManifest/
+	// DownloadSystemState actually need to match that prefix. Prefer it.
+	snapshotID := bs.SnapshotID
+	if snapshotID == "" && bs.Snapshot != nil {
+		snapshotID = bs.Snapshot.SnapshotID
+	}
+	opts.SnapshotID = snapshotID
+
+	// #5412: the bootstrap knows what kind of snapshot this is; a
+	// system_image backup (or one advertising a state manifest) must apply
+	// its OS state or the engine refuses at preflight.
+	opts.ExpectSystemState = bmr.SnapshotExpectsSystemState(bs.Snapshot)
+
+	report := func(u bmr.ProgressUpdate) {
+		if err := bmr.PostRecoveryProgress(ctx, server, token, u); err != nil {
+			slog.Warn("recovery progress not recorded", "status", u.Status, "error", err.Error())
+			_, _ = fmt.Fprintf(os.Stderr, "progress %s not recorded: %v\n", u.Status, err)
+		}
+	}
+	return opts, report, nil
+}
+
+// parseExpectSystemStateFlag decodes --expect-system-state: auto (derive
+// from the bootstrap / the snapshot), or an explicit true/false.
+func parseExpectSystemStateFlag(v string) (expect, auto bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "auto":
+		return false, true, nil
+	case "true", "yes", "1":
+		return true, false, nil
+	case "false", "no", "0":
+		return false, false, nil
+	}
+	return false, false, fmt.Errorf("--expect-system-state must be auto, true or false, got %q", v)
+}
+
 // runRebuildAndReport runs the engine and, when reportProgress is real
-// (token mode), posts each phase transition as it happens: a preflight-only
-// DryRun call first (so a refusal — e.g. a BIOS/MBR source disk — is
-// reported and returned before ever touching the target), then the real
-// run, translating its outcome to exactly one of validated/refused/failed.
-// `rebooted` and `checked_in` are never posted from here: rebooted is the
-// human's own confirmation after the machine restarts (the console posts
-// it), and checked_in only ever comes from the heartbeat marker match
-// (server-side, see routes/agents/heartbeat.ts).
+// (token mode), posts each phase transition as it happens — see
+// runTokenModeRebuild — and writes the result JSON to stdout (and
+// resultJSONPath when set).
 func runRebuildAndReport(ctx context.Context, cmd *cobra.Command, opts rebuild.Options, tokenMode bool, report func(bmr.ProgressUpdate), resultJSONPath string) error {
 	writeResult := func(res *rebuild.Result) {
 		if res == nil {
@@ -200,10 +268,24 @@ func runRebuildAndReport(ctx context.Context, cmd *cobra.Command, opts rebuild.O
 		writeResult(res)
 		return runErr
 	}
+	res, runErr := runTokenModeRebuild(ctx, opts, report, rebuild.Run)
+	writeResult(res)
+	return runErr
+}
 
+// runTokenModeRebuild is the token-mode run shared by the CLI and the
+// bare_metal_rebuild command handler: a preflight-only DryRun call first
+// (so a refusal — e.g. a BIOS/MBR source disk — is reported and returned
+// before ever touching the target), then the real run, translating its
+// outcome to exactly one of validated/refused/failed. `rebooted` and
+// `checked_in` are never posted from here: rebooted is the human's own
+// confirmation after the machine restarts (the console posts it), and
+// checked_in only ever comes from the heartbeat marker match (server-side,
+// see routes/agents/heartbeat.ts). runFn is rebuild.Run outside tests.
+func runTokenModeRebuild(ctx context.Context, opts rebuild.Options, report func(bmr.ProgressUpdate), runFn func(context.Context, rebuild.Options) (*rebuild.Result, error)) (*rebuild.Result, error) {
 	dry := opts
 	dry.DryRun = true
-	pre, preErr := rebuild.Run(ctx, dry)
+	pre, preErr := runFn(ctx, dry)
 	if preErr != nil {
 		if pre != nil && pre.Status == "refused" {
 			report(bmr.ProgressUpdate{Status: "refused", Reason: pre.Refusal, Result: pre})
@@ -217,8 +299,7 @@ func runRebuildAndReport(ctx context.Context, cmd *cobra.Command, opts rebuild.O
 			}
 			report(bmr.ProgressUpdate{Status: "failed", Reason: reason, Result: pre})
 		}
-		writeResult(pre)
-		return preErr
+		return pre, preErr
 	}
 	report(bmr.ProgressUpdate{
 		Status: "planned",
@@ -227,7 +308,7 @@ func runRebuildAndReport(ctx context.Context, cmd *cobra.Command, opts rebuild.O
 	})
 
 	report(bmr.ProgressUpdate{Status: "restoring"})
-	res, runErr := rebuild.Run(ctx, opts)
+	res, runErr := runFn(ctx, opts)
 	switch {
 	case runErr == nil:
 		report(bmr.ProgressUpdate{Status: "validated", Result: res, Warnings: res.Warnings})
@@ -240,8 +321,7 @@ func runRebuildAndReport(ctx context.Context, cmd *cobra.Command, opts rebuild.O
 		}
 		report(bmr.ProgressUpdate{Status: "failed", Reason: reason, Result: res})
 	}
-	writeResult(res)
-	return runErr
+	return res, runErr
 }
 
 // providerFromConfigFile reads path as JSON {"provider":..., "providerConfig":{...}}
@@ -263,18 +343,18 @@ func providerFromConfigFile(path string) (providers.BackupProvider, error) {
 	return provider, nil
 }
 
-// parseTargetFlag parses --target "disk:<device>" or "image:<file>" plus an
-// optional --image-size for the image form.
+// parseTargetFlag parses --target "disk:<device>", "image:<file>" or
+// "vhdx:<file>" plus an optional --image-size for the two file forms.
 func parseTargetFlag(v, size string) (rebuild.Target, error) {
 	kind, p, ok := strings.Cut(v, ":")
 	if !ok || p == "" {
-		return rebuild.Target{}, fmt.Errorf("--target must be disk:<device> or image:<file>, got %q", v)
+		return rebuild.Target{}, fmt.Errorf("--target must be disk:<device>, image:<file> or vhdx:<file>, got %q", v)
 	}
 	switch kind {
 	case "disk":
 		return rebuild.Target{Kind: rebuild.TargetDisk, Path: p}, nil
-	case "image":
-		t := rebuild.Target{Kind: rebuild.TargetImage, Path: p}
+	case "image", "vhdx":
+		t := rebuild.Target{Kind: rebuild.TargetKind(kind), Path: p}
 		if size != "" {
 			n, err := parseSize(size)
 			if err != nil {
@@ -284,7 +364,7 @@ func parseTargetFlag(v, size string) (rebuild.Target, error) {
 		}
 		return t, nil
 	}
-	return rebuild.Target{}, fmt.Errorf("unsupported target kind %q (disk|image)", kind)
+	return rebuild.Target{}, fmt.Errorf("unsupported target kind %q (disk|image|vhdx)", kind)
 }
 
 // parseSize parses a human size like "40G", "512M", "1T", or a plain byte

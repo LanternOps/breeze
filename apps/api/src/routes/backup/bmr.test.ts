@@ -655,6 +655,7 @@ describe('bmr routes', () => {
     expect(body.bootstrap.snapshot).toMatchObject({
       id: SNAPSHOT_ID,
       snapshotId: 'snap-ext-001',
+      backupType: 'file', // #5412: the helper keys ExpectSystemState on this
       metadata: {
         providerType: 's3',
         storagePrefix: 's3://breeze-backups/org-001/dev-001/2026-03-29',

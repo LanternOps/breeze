@@ -299,6 +299,7 @@ export async function ensureSystemLibraryScripts(): Promise<{
         runAs: scripts.runAs,
         version: scripts.version,
         deletedAt: scripts.deletedAt,
+        origin: scripts.origin,
       })
       .from(scripts)
       .where(and(eq(scripts.name, def.name), eq(scripts.isSystem, true)))
@@ -358,6 +359,11 @@ export async function ensureSystemLibraryScripts(): Promise<{
     // no reason on the next API boot.
     const contentChanged = existing.content !== def.content;
 
+    // #5948: a row inserted before #5671 shipped is permanently stuck at the
+    // schema default ('human') unless the sync corrects it here — nothing
+    // else ever revisits `origin` on an existing system script.
+    const originStale = existing.origin !== 'system';
+
     const unchanged =
       existing.content === def.content &&
       existing.description === def.description &&
@@ -368,8 +374,23 @@ export async function ensureSystemLibraryScripts(): Promise<{
       JSON.stringify(existing.osTypes) === JSON.stringify(def.osTypes) &&
       scriptParameterDefinitionsEqual(existing.parameters ?? [], parameters);
 
-    if (unchanged) {
+    if (unchanged && !originStale) {
       result.unchanged += 1;
+      continue;
+    }
+
+    if (unchanged && originStale) {
+      // The shipped definition itself did not change — only `origin` needs
+      // correcting. Patch it directly rather than going through the full
+      // update + cutScriptVersion path below: cutScriptVersion always bumps
+      // `version`, and bumping it for a definition that is byte-for-byte
+      // unchanged would skip a number and break UNIQUE-backed history for no
+      // real content change.
+      await db
+        .update(scripts)
+        .set({ origin: 'system', updatedAt: new Date() })
+        .where(eq(scripts.id, existing.id));
+      result.updated += 1;
       continue;
     }
 
@@ -385,6 +406,11 @@ export async function ensureSystemLibraryScripts(): Promise<{
         parameters,
         timeoutSeconds: def.timeoutSeconds,
         runAs: def.runAs,
+        // #5948: the update path must correct a stale `origin` on any content
+        // update too — not just when the definition is otherwise unchanged —
+        // since an update here means the row is about to get a fresh
+        // origin='system' version row from cutScriptVersion below anyway.
+        origin: 'system',
         // #5129 — when the library sync replaces `content` from a shipped
         // definition there is no human in the loop, so any acknowledgement the
         // row carried is revoked rather than inherited by the new body. Only a

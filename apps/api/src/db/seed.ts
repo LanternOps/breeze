@@ -9,6 +9,17 @@ import { cutScriptVersion } from '../services/scriptVersions';
 import { eq, and, isNull } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
 
+/**
+ * Settings for the seeded dev/e2e "Default Partner". New partners default to
+ * `security.requireMfa = true` (spec
+ * docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md
+ * D2), but seeded admins sign in without a factor and e2e pins
+ * MFA_FORCE_FOR_PARTNER_ADMIN=false, so the seeded partner opts OUT explicitly.
+ * Pinned by db/seed.test.ts — do not "simplify" this back to the bare helper.
+ */
+export const DEV_SEED_DEFAULT_PARTNER_SETTINGS: Record<string, unknown> =
+  applyNewPartnerDefaultSettings({ security: { requireMfa: false } });
+
 const DEV_BOOTSTRAP_ADMIN_EMAIL = 'admin@breeze.local';
 const DEV_BOOTSTRAP_ADMIN_PASSWORD = 'BreezeAdmin123!';
 const INSECURE_BOOTSTRAP_PASSWORD_PATTERNS = [
@@ -1264,7 +1275,9 @@ export async function seedDefaultAdmin() {
           plan: 'enterprise',
           // #4520: keep the seeded dev partner on the same inbound opt-out
           // default real partners get, so local behaviour matches production.
-          settings: applyNewPartnerDefaultSettings()
+          // Spec 2026-09-18 D2: but NOT the requireMfa default — see the
+          // constant's doc comment.
+          settings: DEV_SEED_DEFAULT_PARTNER_SETTINGS
         })
         .returning();
       await seedSystemTicketStatuses(tx, newPartner!.id);
@@ -1366,6 +1379,11 @@ export async function seedDefaultAdmin() {
       name: admin.name,
       passwordHash,
       status: 'active',
+      // Dev/E2E seed only: pre-verify the bootstrap admin's email so dev/E2E
+      // flows that require a verified recipient (e.g. sending-domain test
+      // sends) aren't blocked on a manual verification step for a seeded
+      // account. Production signup paths are untouched.
+      emailVerifiedAt: new Date(),
       preferences: { bootstrapSetupRequired: true },
     })
     .returning();

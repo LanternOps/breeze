@@ -72,11 +72,12 @@ import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
 import { decodeScriptExecutionId } from "@/lib/deviceScriptsLink";
-import { OverflowTabs } from "../shared/OverflowTabs";
+import { OverflowTabs, type OverflowTab } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
 import DeviceTicketsTab from "../tickets/DeviceTicketsTab";
 import OperatorTaskActivityFeed from "../aiOperator/OperatorTaskActivityFeed";
 import DeviceAnomaliesPanel from "./DeviceAnomaliesPanel";
+import type { DeviceTabCounts } from "./deviceTabCounts";
 import DeviceReliabilityPanel from "./DeviceReliabilityPanel";
 import DeviceMonitoringTab from "./DeviceMonitoringTab";
 import DeviceComplianceTab from "./DeviceComplianceTab";
@@ -401,21 +402,64 @@ export default function DeviceDetails({
   const activeTab: Tab =
     hashTab === "linked-profiles" && !isLinked ? "overview" : hashTab;
 
+  // "Needs attention" counts per signal tab (GET /devices/:id/tab-counts).
+  // Drives the badges and the promotion of by-default-empty tabs (Anomalies,
+  // Tickets, Operator Tasks) into the primary row. Best-effort: a failed
+  // request simply leaves every count undefined and the layout at its default.
+  // Re-fetched on every tab switch so acting inside a tab (resolving alerts,
+  // closing a ticket) is reflected on the next navigation without a reload;
+  // the previous counts are kept meanwhile so the row does not flicker.
+  const [tabCounts, setTabCounts] = useState<DeviceTabCounts | null>(null);
+  useEffect(() => {
+    setTabCounts(null);
+  }, [device.id]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchWithAuth(`/devices/${device.id}/tab-counts`)
+      .then(async (res) => (res.ok ? ((await res.json()) as { data?: DeviceTabCounts }).data ?? null : null))
+      .catch(() => null)
+      .then((data) => {
+        if (!cancelled && data) setTabCounts(data);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [device.id, activeTab]);
+
+  // Curated layout: only `primary` tabs sit in the row; everything else is
+  // grouped inside "More" under these section headers. A `promoteOnCount`
+  // tab joins the row when its count is non-zero, so Anomalies / Tickets /
+  // Operator Tasks stop taking prime real estate while empty but surface the
+  // moment they have something to show.
+  const groups = {
+    monitoring: t("deviceDetails.tabGroups.monitoring"),
+    inventory: t("deviceDetails.tabGroups.inventory"),
+    management: t("deviceDetails.tabGroups.management"),
+    history: t("deviceDetails.tabGroups.history"),
+    extensions: t("deviceDetails.tabGroups.extensions"),
+  };
+  const promoted = (count: number | undefined) => (count ?? 0) > 0;
+
   const tabs: {
     id: Tab;
     label: string;
     icon: React.ReactNode;
     separator?: boolean;
     title?: string;
+    primary?: boolean;
+    group?: string;
+    count?: number;
   }[] = [
     // --- Summary ---
     {
       id: "overview",
+      primary: true,
       label: t("deviceDetails.overview"),
       icon: <Monitor className="h-4 w-4" />,
     },
     {
       id: "details",
+      primary: true,
       label: t("deviceDetails.details"),
       icon: <Info className="h-4 w-4" />,
       title: t("deviceDetails.osNetworkAndSystemDetails"),
@@ -424,6 +468,7 @@ export default function DeviceDetails({
       ? [
           {
             id: "linked-profiles" as Tab,
+            primary: true,
             label: t("deviceDetails.linkedProfiles"),
             icon: <Link2 className="h-4 w-4" />,
             title: t("deviceDetails.multiBootOsProfilesLinkedTo"),
@@ -433,49 +478,68 @@ export default function DeviceDetails({
     // --- Monitoring ---
     {
       id: "performance",
+      primary: true,
+      group: groups.monitoring,
       label: t("deviceDetails.performance"),
       icon: <Activity className="h-4 w-4" />,
-      separator: true,
       title: t("deviceDetails.cpuRamAndDiskUsageOver"),
     },
     {
       id: "alerts",
+      primary: true,
+      group: groups.monitoring,
+      count: tabCounts?.alerts,
       label: t("deviceDetails.alerts"),
       icon: <AlertTriangle className="h-4 w-4" />,
       title: t("deviceDetails.alertHistoryForThisDevice"),
     },
     {
       id: "anomalies",
+      primary: promoted(tabCounts?.anomalies),
+      group: groups.monitoring,
+      count: tabCounts?.anomalies,
       label: t("deviceDetails.anomalies"),
       icon: <TrendingUp className="h-4 w-4" />,
       title: t("deviceDetails.metricAnomalySignalsForThisDevice"),
     },
     {
       id: "tickets",
+      primary: promoted(tabCounts?.tickets),
+      group: groups.monitoring,
+      count: tabCounts?.tickets,
       label: t("deviceDetails.tickets"),
       icon: <Ticket className="h-4 w-4" />,
       title: t("deviceDetails.ticketsLinkedToThisDevice"),
     },
     {
       id: "operator-tasks",
+      primary: promoted(tabCounts?.operatorTasks),
+      group: groups.monitoring,
+      count: tabCounts?.operatorTasks,
       label: t("deviceDetails.operatorTasks"),
       icon: <Bot className="h-4 w-4" />,
       title: t("deviceDetails.operatorTasksForThisDevice"),
     },
     {
       id: "eventlog",
+      primary: true,
+      group: groups.monitoring,
       label: t("deviceDetails.eventLog"),
       icon: <FileText className="h-4 w-4" />,
       title: t("deviceDetails.windowsMacosSystemEventLogs"),
     },
     {
       id: "monitoring",
+      group: groups.monitoring,
+      count: tabCounts?.monitoring,
       label: t("deviceDetails.monitoring"),
       icon: <HeartPulse className="h-4 w-4" />,
       title: t("deviceDetails.serviceProcessWatchResultsFromConfiguration"),
     },
     {
       id: "compliance",
+      group: groups.monitoring,
+      count: tabCounts?.compliance,
       label: t("deviceDetails.compliance"),
       icon: <ShieldCheck className="h-4 w-4" />,
       title: t("deviceDetails.perDeviceConfigurationPolicyComplianceResults"),
@@ -483,29 +547,36 @@ export default function DeviceDetails({
     // --- Inventory ---
     {
       id: "hardware",
+      primary: true,
+      group: groups.inventory,
       label: t("deviceDetails.hardware"),
       icon: <Cpu className="h-4 w-4" />,
-      separator: true,
     },
     {
       id: "software",
+      primary: true,
+      group: groups.inventory,
       label: t("deviceDetails.software"),
       icon: <Package className="h-4 w-4" />,
     },
     {
       id: "patches",
+      primary: true,
+      group: groups.inventory,
       label: t("deviceDetails.patches"),
       icon: <CheckCircle className="h-4 w-4" />,
       title: t("deviceDetails.osUpdateAndPatchStatus"),
     },
     {
       id: "vulnerabilities",
+      group: groups.inventory,
       label: t("deviceDetails.vulnerabilities"),
       icon: <Bug className="h-4 w-4" />,
       title: t("deviceDetails.cvesDetectedOnThisDevice"),
     },
     {
       id: "peripherals",
+      group: groups.inventory,
       label: t("deviceDetails.peripherals"),
       icon: <Usb className="h-4 w-4" />,
       title: t("deviceDetails.usbBluetoothAndConnectedDevices"),
@@ -513,36 +584,42 @@ export default function DeviceDetails({
     // --- Management ---
     {
       id: "scripts",
+      primary: true,
+      group: groups.management,
       label: t("deviceDetails.scripts"),
       icon: <Terminal className="h-4 w-4" />,
-      separator: true,
       title: t("deviceDetails.scriptExecutionHistory"),
     },
     {
       id: "management",
+      group: groups.management,
       label: t("deviceDetails.management"),
       icon: <Server className="h-4 w-4" />,
       title: t("deviceDetails.agentSettingsAndDeviceManagement"),
     },
     {
       id: "effective-config",
+      group: groups.management,
       label: t("deviceDetails.config"),
       icon: <Layers className="h-4 w-4" />,
       title: t("deviceDetails.resolvedConfigurationFromAllAssignedPolicies"),
     },
     {
       id: "onedrive",
+      group: groups.management,
       label: "OneDrive",
       icon: <Cloud className="h-4 w-4" />,
       title: "OneDrive",
     },
     {
       id: "security",
+      group: groups.management,
       label: t("deviceDetails.security"),
       icon: <Shield className="h-4 w-4" />,
     },
     {
       id: "playbooks",
+      group: groups.management,
       label: t("deviceDetails.playbooks"),
       icon: <Activity className="h-4 w-4" />,
       title: t("deviceDetails.automatedRemediationPlaybookRuns"),
@@ -550,43 +627,49 @@ export default function DeviceDetails({
     // --- History & Network ---
     {
       id: "activities",
+      group: groups.history,
       label: t("deviceDetails.activities"),
       icon: <ScrollText className="h-4 w-4" />,
-      separator: true,
       title: t("deviceDetails.auditLogForThisDevice"),
     },
     {
       id: "connections",
+      group: groups.history,
       label: t("deviceDetails.connections"),
       icon: <Network className="h-4 w-4" />,
       title: t("deviceDetails.activeNetworkConnections"),
     },
     {
       id: "ip-history",
+      group: groups.history,
       label: t("deviceDetails.ipHistory"),
       icon: <Network className="h-4 w-4" />,
       title: t("deviceDetails.historicalPublicAndPrivateIpAddresses"),
     },
     {
       id: "change-history",
+      group: groups.history,
       label: t("deviceDetails.changeHistory"),
       icon: <History className="h-4 w-4" />,
       title: t("deviceDetails.changeHistoryTitle"),
     },
     {
       id: "filesystem",
+      group: groups.history,
       label: t("deviceDetails.diskCleanup"),
       icon: <HardDrive className="h-4 w-4" />,
       title: t("deviceDetails.diskUsageAnalysisAndCleanup"),
     },
     {
       id: "boot-performance",
+      group: groups.history,
       label: t("deviceDetails.bootPerf"),
       icon: <Timer className="h-4 w-4" />,
       title: t("deviceDetails.startupTimeAndBootProcessAnalysis"),
     },
     {
       id: "backup",
+      group: groups.history,
       label: t("deviceDetails.backup"),
       icon: <Database className="h-4 w-4" />,
       title: t("deviceDetails.backupStatusJobsSnapshotsAndVerification"),
@@ -599,9 +682,25 @@ export default function DeviceDetails({
       id: `ext:${descriptor.key}` as ExtTab,
       label: descriptor.label ?? descriptor.extensionName,
       icon: <Puzzle className="h-4 w-4" />,
-      separator: index === 0,
+      group: groups.extensions,
     })),
   ];
+
+  // Primary tabs keep their declaration order in the row; separators only
+  // make sense between primaries, so re-derive them from group changes.
+  const overflowTabs: OverflowTab[] = tabs.map((tab, index) => {
+    const prev = tabs[index - 1];
+    return {
+      id: tab.id,
+      label: tab.label,
+      icon: tab.icon,
+      title: tab.title,
+      count: tab.count,
+      group: tab.group,
+      secondary: !tab.primary,
+      separator: tab.primary ? Boolean(tab.group && prev?.group !== tab.group) : undefined,
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -679,7 +778,7 @@ export default function DeviceDetails({
       />
 
       <OverflowTabs
-        tabs={tabs}
+        tabs={overflowTabs}
         activeTab={activeTab}
         onTabChange={(id) => switchTab(id as Tab)}
       />

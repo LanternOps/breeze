@@ -94,6 +94,10 @@ export function buildRestoreResultMetadata(
     'syncProgress',
     'databaseName',
     'restoredAs',
+    // W05a bare_metal_rebuild engine result
+    'phaseReached',
+    'refusal',
+    'target',
   ]) {
     if (restoreData[key] !== undefined) {
       metadata[key] = restoreData[key];

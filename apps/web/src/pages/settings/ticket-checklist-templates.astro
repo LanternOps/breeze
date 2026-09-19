@@ -1,8 +1,4 @@
 ---
-import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import TicketChecklistTemplatesPage from '../../components/settings/TicketChecklistTemplatesPage';
+// Folded into the Ticketing hub's Templates tab alongside canned responses (M3).
+return Astro.redirect('/settings/ticketing#templates', 301);
 ---
-
-<DashboardLayout title="Ticket Checklist Templates">
-  <TicketChecklistTemplatesPage client:load />
-</DashboardLayout>

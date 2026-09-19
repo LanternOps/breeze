@@ -95,7 +95,9 @@
     "aiRisk": "Rischio IA",
     "deviceBackup": "Backup dispositivi",
     "sectionServiceDesk": "Service desk",
-    "serviceManagement": "Gestione servizi"
+    "serviceManagement": "Gestione servizi",
+    "ticketing": "Ticket",
+    "deliverableTemplates": "Modelli di consegna"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -2531,5 +2533,10 @@
     "message": "Il tuo ruolo richiederà l'autenticazione a due fattori. Configurala entro il {{date}}.",
     "cta": "Configura 2FA",
     "dismiss": "Ignora il promemoria per l'autenticazione a due fattori"
+  },
+  "mfaPolicyOffBanner": {
+    "message": "L'autenticazione a più fattori non è obbligatoria per il tuo team. Le sessioni con sola password possono eseguire script, spostare dispositivi e modificare i criteri.",
+    "cta": "Richiedi MFA",
+    "dismiss": "Ignora per oggi il promemoria sui criteri MFA"
   }
 }

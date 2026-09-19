@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const RUN = '00000000-0000-4000-8000-0000000000b1';
 const REPORT = '00000000-0000-4000-8000-0000000000b2';
 const ORG = '00000000-0000-4000-8000-0000000000a1';
+const PARTNER = '00000000-0000-4000-8000-0000000000c1';
 const U1 = '00000000-0000-4000-8000-0000000000e1';
 const U2 = '00000000-0000-4000-8000-0000000000e2';
 
@@ -55,7 +56,11 @@ vi.mock('../db', () => {
               const user = fake.lastAuthorityUser ? fake.users.get(fake.lastAuthorityUser) : undefined;
               return user ? [user] : [];
             }
-            if (name === 'organizations') return [{ orgSettings: null, partnerTimezone: 'UTC', partnerSettings: null, partnerName: null }];
+            // Serves BOTH reads of this table in the pass: resolveOrgTimezone's
+            // org/partner join and W04's org -> partner lookup for the
+            // `general` stream's sender (spec §8.2). Selecting a superset is
+            // harmless — each caller projects the columns it asked for.
+            if (name === 'organizations') return [{ orgSettings: null, partnerTimezone: 'UTC', partnerSettings: null, partnerName: null, partnerId: PARTNER }];
             throw new Error(`unexpected select from ${name}`);
           }).then(resolve, reject),
       };
@@ -183,6 +188,10 @@ describe('narrative email authority gate (#4248 W03)', () => {
       rows: [],
       summary: { narrative: { headline: 'A quiet week.' } },
       timezone: 'UTC',
+      // Spec §8.2: the report's org resolves the partner whose `general`
+      // stream sends it. A regression to null silently switches the lane off
+      // for every narrative email.
+      partnerId: PARTNER,
     });
     expect(row(U1).state).toBe('sent');
     expect(s).toMatchObject({ sent: 1, failed: 0, refused: 0, transient: 0 });

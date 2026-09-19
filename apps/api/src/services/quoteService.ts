@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages, quoteRecipients } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
 import { organizations, partners, sites } from '../db/schema/orgs';
@@ -9,7 +9,8 @@ import { contractTemplates, contractTemplateVersions } from '../db/schema/contra
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { listQuoteOrders } from './quoteOrderService';
-import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
+import { computeLineTotal } from './invoiceMath';
+import { resolveOrgTaxRate, OrgNotVisibleForTaxError } from './taxRateResolver';
 import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
@@ -379,28 +380,29 @@ async function nextLineSortOrder(quoteId: string, dbc: DbExecutor = db): Promise
 // ---------------------------------------------------------------------------
 
 /**
- * Effective tax rate stamped onto a new quote, mirroring invoices'
- * `resolveEffectiveTaxRate` precedence: a tax-exempt customer wins (0), then the
- * org's own rate, then the partner's `default_tax_rate` (the "Invoice defaults →
- * Default tax rate" setting). Read in a SYSTEM context because the partner-axis
- * `partners` row is invisible to org-scoped request contexts — unlike invoices,
- * a quote has no later "issue" step to stamp the partner default, so the rate
- * must be resolved up front to show tax in the editor. Returns null (not an
- * all-zero fraction) when there is no tax, keeping a no-tax quote visually clean.
+ * Thin wrapper: quote creation/reassignment tax resolution goes through the
+ * shared `resolveOrgTaxRate` (`taxRateResolver.ts`) — the ONE resolver per
+ * concept (settings audit rule 5). Kept as a named function (not inlined at
+ * each call site) so the three call sites don't each re-derive the
+ * null-vs-zero contract and the error mapping below.
+ *
+ * The mapping exists because `resolveOrgTaxRate` fails closed: a caller that
+ * reaches this function with an orgId RLS no longer considers visible (e.g. a
+ * race with a concurrent org suspend/archive between `assertOrg` and this
+ * call) gets a proper 404 instead of an unhandled throw — and never the
+ * partner's default rate silently applied to an org that might be tax-exempt.
+ * `ORG_NOT_FOUND` is the same code this file already raises for "target
+ * organization not found" in the reassignment paths.
  */
 async function resolveQuoteTaxRate(orgId: string, partnerId: string): Promise<string | null> {
-  const rate = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [org] = await db.select({ taxExempt: organizations.taxExempt, taxRate: organizations.taxRate })
-      .from(organizations).where(eq(organizations.id, orgId)).limit(1);
-    const [partner] = await db.select({ defaultTaxRate: partners.defaultTaxRate })
-      .from(partners).where(eq(partners.id, partnerId)).limit(1);
-    return resolveEffectiveTaxRate({
-      taxExempt: org?.taxExempt ?? false,
-      orgRate: org?.taxRate ?? null,
-      partnerRate: partner?.defaultTaxRate ?? null,
-    });
-  }));
-  return Number(rate) > 0 ? rate : null;
+  try {
+    return await resolveOrgTaxRate({ orgId, partnerId });
+  } catch (err) {
+    if (err instanceof OrgNotVisibleForTaxError) {
+      throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
 }
 
 export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {

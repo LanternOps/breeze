@@ -111,6 +111,43 @@ describe('MonitoringSection — SNMP configuration', () => {
     expect(lastWriteBody()).toEqual({ isActive: false });
   });
 
+  it('omits templateId from the PATCH body when the template selection is untouched (#6099)', async () => {
+    wire({ snmpDevice: { id: 'snmp-1', snmpVersion: 'v2c', community: '********', templateId: null, pollingInterval: 300, port: 161, isActive: true, lastPolled: null, lastStatus: 'online' } });
+    render(<MonitoringSection {...props} />);
+    await screen.findByTestId('network-settings-snmp-version');
+
+    // Change an unrelated field only — the template select is never touched.
+    fireEvent.change(screen.getByTestId('network-settings-snmp-interval'), { target: { value: '600' } });
+    fireEvent.click(screen.getByTestId('network-settings-monitoring-save'));
+
+    await waitFor(() => expect(writeCalls()).toHaveLength(1));
+    expect(lastWriteBody()).not.toHaveProperty('templateId');
+  });
+
+  it('sends the chosen id when the user explicitly picks a template (#6099)', async () => {
+    wire({ snmpDevice: { id: 'snmp-1', snmpVersion: 'v2c', community: '********', templateId: null, pollingInterval: 300, port: 161, isActive: true, lastPolled: null, lastStatus: 'online' } });
+    render(<MonitoringSection {...props} />);
+    await screen.findByTestId('network-settings-snmp-version');
+
+    fireEvent.change(screen.getByTestId('network-settings-snmp-template'), { target: { value: 't-1' } });
+    fireEvent.click(screen.getByTestId('network-settings-monitoring-save'));
+
+    await waitFor(() => expect(writeCalls()).toHaveLength(1));
+    expect(lastWriteBody()).toHaveProperty('templateId', 't-1');
+  });
+
+  it('sends templateId:null when the user explicitly clears a previously-set template (#6099)', async () => {
+    wire({ snmpDevice: { id: 'snmp-1', snmpVersion: 'v2c', community: '********', templateId: 't-1', pollingInterval: 300, port: 161, isActive: true, lastPolled: null, lastStatus: 'online' } });
+    render(<MonitoringSection {...props} />);
+    expect(await screen.findByTestId('network-settings-snmp-template')).toHaveValue('t-1');
+
+    fireEvent.change(screen.getByTestId('network-settings-snmp-template'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('network-settings-monitoring-save'));
+
+    await waitFor(() => expect(writeCalls()).toHaveLength(1));
+    expect(lastWriteBody()).toHaveProperty('templateId', null);
+  });
+
   it('disables all monitoring behind a confirm', async () => {
     wire({ snmpDevice: { id: 'snmp-1', snmpVersion: 'v2c', templateId: null, pollingInterval: 300, port: 161, isActive: true, lastPolled: null, lastStatus: 'online' } });
     render(<MonitoringSection {...props} />);

@@ -572,7 +572,8 @@
     "lastChecked": "Last Checked",
     "noComplianceResultsReportedAssignA": "No compliance results reported. Assign a Configuration Policy with compliance rules to this device, or wait for the next evaluation.",
     "text": "—",
-    "s": "s"
+    "s": "s",
+    "assignPolicy": "Assign a configuration policy"
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",
@@ -664,7 +665,14 @@
     "networkAsset": "Network asset",
     "networkAssets": "Network assets",
     "operatorTasks": "Operator Tasks",
-    "operatorTasksForThisDevice": "AI Operator tasks for this device"
+    "operatorTasksForThisDevice": "AI Operator tasks for this device",
+    "tabGroups": {
+      "monitoring": "Monitoring",
+      "inventory": "Inventory",
+      "management": "Management",
+      "history": "History & Network",
+      "extensions": "Extensions"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -1350,7 +1358,8 @@
       "status": "Status",
       "type": "Type"
     },
-    "title": "Service & Process Monitoring"
+    "title": "Service & Process Monitoring",
+    "assignPolicy": "Assign a configuration policy"
   },
   "deviceNetworkConnections": {
     "allProtocols": "All Protocols",

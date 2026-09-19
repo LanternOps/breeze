@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // deviceBelongsTo reports whether dev names disk itself or one of its
@@ -103,6 +105,27 @@ func preflight(ctx context.Context, r *run) error {
 		if targetSize <= 0 {
 			return &RefusalError{Reason: "image target needs a size (--image-size) when the file does not exist"}
 		}
+	case TargetVHDX:
+		// The raw staging file is created by attach() at ImageSizeBytes and
+		// the VHDX is written next to it by convert, so the host needs
+		// room for both — checked here, before anything is written.
+		targetSize = r.opts.Target.ImageSizeBytes
+		if fi, err := os.Stat(r.opts.Target.RawPath()); err == nil {
+			targetSize = fi.Size()
+		}
+		if targetSize <= 0 {
+			return &RefusalError{Reason: "vhdx target needs a size (--image-size) when the raw staging file does not exist"}
+		}
+		if _, err := r.sys.LookPath("qemu-img"); err != nil {
+			return &RefusalError{Reason: "qemu-img not installed on this host; install qemu-utils"}
+		}
+		free, err := r.sys.FreeSpace(filepath.Dir(r.opts.Target.Path))
+		if err != nil {
+			return err
+		}
+		if need := targetSize * 3 / 2; free < need {
+			return &RefusalError{Reason: fmt.Sprintf("not enough free space for raw image plus VHDX: need %d, have %d", need, free)}
+		}
 	}
 	sector := src.SectorSize
 	if sector == 0 {
@@ -127,13 +150,25 @@ func preflight(ctx context.Context, r *run) error {
 		return err
 	}
 	r.stateStaging = staging
-	if _, warnings, err := bmr.DownloadSystemState(ctx, r.opts.Provider, r.opts.SnapshotID, false, staging); err != nil {
-		if errors.Is(err, bmr.ErrNoSystemState) {
+	// #5412 gate: when the caller says the snapshot carries system state
+	// (a system_image backup / a bootstrap advertising a state manifest), a
+	// confirmed-absent or artifact-less manifest is a refusal, not the
+	// "files only" warning below — that warning is exactly how a
+	// system_image restore once reported completed/validated while
+	// applying no OS state. Nothing has been written yet at this point.
+	if _, warnings, err := bmr.DownloadSystemState(ctx, r.opts.Provider, r.opts.SnapshotID, r.opts.ExpectSystemState, staging); err != nil {
+		switch {
+		case r.opts.ExpectSystemState && (errors.Is(err, bmr.ErrNoSystemState) || errors.Is(err, providers.ErrObjectNotFound)):
+			return &RefusalError{Reason: "system state expected but system-state/manifest.json is missing from the snapshot"}
+		case r.opts.ExpectSystemState && errors.Is(err, bmr.ErrNoSystemStateArtifacts):
+			return &RefusalError{Reason: "system state expected but system-state/manifest.json lists no artifacts"}
+		case !r.opts.ExpectSystemState && errors.Is(err, bmr.ErrNoSystemState):
 			r.warn("snapshot has no system state; only files will be restored")
-		} else {
+		default:
 			return &RefusalError{Reason: "system state could not be verified: " + err.Error()}
 		}
 	} else {
+		r.result.StateManifestFound = true
 		r.warnings = append(r.warnings, warnings...)
 	}
 	r.progress(PhasePreflight, "verified", 3, 3)

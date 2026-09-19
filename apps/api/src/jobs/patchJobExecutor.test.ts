@@ -97,7 +97,6 @@ vi.mock('../services/dispatchDeviceCommand', () => ({
 
 vi.mock('../services/commandOfflinePolicy', () => ({
   deliveryTtlMs: vi.fn(() => 7 * 24 * 60 * 60 * 1000),
-  isOfflineQueueEnabled: vi.fn(() => false),
 }));
 
 vi.mock('../services/sentry', () => ({
@@ -121,7 +120,6 @@ import {
 import { resolveApprovedPatchesForDevice } from '../services/patchEligibility';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
-import { isOfflineQueueEnabled } from '../services/commandOfflinePolicy';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 
 function createSelectChain(rows: any[] = []) {
@@ -2057,7 +2055,6 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
   });
 
   it('records a queued row per approved patch and moves the device from pending to queued', async () => {
-    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
     primeDeviceExecution({ offlineBehavior: 'queue', scheduleNextOccurrenceAt: null });
     vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
       ok: true,
@@ -2083,7 +2080,6 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
   it('does not poll for a result — the BullMQ task ends immediately', async () => {
     vi.useFakeTimers();
     try {
-      vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
       primeDeviceExecution({ offlineBehavior: 'queue', scheduleNextOccurrenceAt: null });
       vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
         ok: true,
@@ -2104,7 +2100,6 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
   });
 
   it('bounds the delivery deadline by the next scheduled occurrence', async () => {
-    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
     const nextOccurrence = new Date(Date.now() + 60 * 60 * 1000); // 1h out
     primeDeviceExecution({
       offlineBehavior: 'queue',
@@ -2121,7 +2116,6 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
 
     const call = vi.mocked(dispatchDeviceCommand).mock.calls[0]![0];
     expect(call.type).toBe('install_patches');
-    expect(call.previouslyRejected).toBe(true);
     expect((call.payload as any).patchJobId).toBe('job-1');
     expect(call.offlinePolicy?.kind).toBe('queue');
     // min(7d standard TTL, ~1h to the next occurrence) — the occurrence wins.
@@ -2131,7 +2125,6 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
   });
 
   it("passes an explicit reject policy for offlineBehavior 'skip', keeping today's skip", async () => {
-    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
     primeDeviceExecution({ offlineBehavior: 'skip' });
     vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
       ok: false,
@@ -2156,7 +2149,6 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
   });
 
   it('records a distinct reason when the stamped next occurrence is already past', async () => {
-    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
     primeDeviceExecution({
       offlineBehavior: 'queue',
       // Stale stamp — a policy schedule edited under a running job.
@@ -2181,22 +2173,21 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
     expect(insertedRows[0].errorMessage).toBe('device_offline_deadline_stale');
   });
 
-  it('leaves the policy to the seam while the offline-queue flag is off', async () => {
-    vi.mocked(isOfflineQueueEnabled).mockReturnValue(false);
+  it('always supplies the standard queue policy when no next occurrence is stamped', async () => {
     primeDeviceExecution({ offlineBehavior: 'queue', scheduleNextOccurrenceAt: null });
     vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
-      ok: false,
-      code: 'device_offline',
-      error: 'Device is offline, cannot execute command',
+      ok: true,
+      command: { id: 'cmd-queued' },
+      delivery: 'queued_offline',
+      deliverBy: null,
     } as any);
 
     await runPrepared();
 
-    // Undefined, NOT an explicit queue: resolveOfflinePolicy lets an explicit
-    // policy override the DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED gate, so passing
-    // one here would ship the behaviour change ahead of the flag.
-    expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].offlinePolicy).toBeUndefined();
-    expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].previouslyRejected).toBe(true);
+    expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].offlinePolicy).toEqual({
+      kind: 'queue',
+      deliverWithinMs: 7 * 24 * 60 * 60 * 1000,
+    });
   });
 });
 

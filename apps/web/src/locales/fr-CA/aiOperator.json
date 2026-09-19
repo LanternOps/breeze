@@ -114,7 +114,9 @@
   "operatorTaskFeed": {
     "loading": "Chargement des tâches Operator...",
     "loadFailed": "Échec du chargement des tâches Operator.",
-    "empty": "Aucune tâche Operator pour cet appareil."
+    "empty": "Aucune tâche Operator pour cet appareil.",
+    "emptyHint": "L'Opérateur IA examine et résout les problèmes d'un appareil lorsque vous lui déléguez une alerte. Les tâches déléguées pour cet appareil apparaîtront ici.",
+    "learnMore": "En savoir plus sur l'Opérateur IA"
   },
   "delegate": {
     "button": "Déléguer à l'Opérateur",

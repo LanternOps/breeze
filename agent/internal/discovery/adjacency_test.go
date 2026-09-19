@@ -206,7 +206,7 @@ func TestCollectAdjacencyFiltersAndStubs(t *testing.T) {
 	orig := collectAdjacencyFor
 	t.Cleanup(func() { collectAdjacencyFor = orig })
 
-	collectAdjacencyFor = func(ip string, communities []string, timeout time.Duration) DeviceAdjacency {
+	collectAdjacencyFor = func(ip string, creds []SNMPCredential, timeout time.Duration) DeviceAdjacency {
 		if ip == "10.0.0.1" {
 			return DeviceAdjacency{
 				SourceDeviceIP: ip,
