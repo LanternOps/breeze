@@ -242,11 +242,11 @@ describe('disk_cleanup execute dispatches a permanent, guarded delete', () => {
     expect(dbMockState.insertedRuns[0]).toMatchObject({ status: 'failed' });
   });
 
-  it('keeps the W01 input schema unchanged — no path, no cleanupRunId', () => {
+  it('accepts the W02 volume path without requiring cleanupRunId', () => {
     const properties = getDiskCleanupTool().definition.input_schema.properties as Record<string, unknown>;
-    // Both arrive in W05 with the rest of §9; W01 unifies the EXECUTION path only.
-    expect(properties).not.toHaveProperty('path');
+    // W02 adds the volume path; cleanupRunId remains a later-wave change.
+    expect(properties).toHaveProperty('path', expect.objectContaining({ type: 'string' }));
     expect(properties).not.toHaveProperty('cleanupRunId');
-    expect(Object.keys(properties).sort()).toEqual(['action', 'categories', 'deviceId', 'maxCandidates', 'paths']);
+    expect(Object.keys(properties).sort()).toEqual(['action', 'categories', 'deviceId', 'maxCandidates', 'path', 'paths']);
   });
 });

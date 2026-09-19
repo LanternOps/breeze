@@ -998,6 +998,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   disk_cleanup: z.object({
     deviceId: uuid,
     action: z.enum(['preview', 'execute']),
+    // The volume to preview/clean. Normalised server-side; defaults to the
+    // device's OS root. `safePath` (not `cleanupPath`) so the blocked-prefix
+    // list applies — a scan ROOT is never /proc, /sys or /dev.
+    path: safePath.optional(),
     categories: z.array(z.enum(['temp_files', 'browser_cache', 'package_cache', 'trash'])).max(10).optional(),
     paths: z.array(cleanupPath).min(1).max(200).optional(),
     maxCandidates: z.number().int().min(1).max(200).optional(),
