@@ -2,13 +2,16 @@ import { defineConfig } from 'vitest/config';
 import { config } from 'dotenv';
 
 // Load test environment variables
-config({ path: '../../.env.test' });
+config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     include: [
+      'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',
       'src/routes/integrationConnectionScope.integration.test.ts',
       'src/db/auditRetentionDefault.integration.test.ts',

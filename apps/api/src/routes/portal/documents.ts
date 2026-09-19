@@ -4,7 +4,13 @@ import { zValidator } from '../../lib/validation';
 import { documentsForOrg, portalVisibleDocument } from '../../services/portal/documentsReadModel';
 import { streamDocument } from '../../services/orgDocumentService';
 import { DeliverableServiceError, type DeliverableActor } from '../../services/serviceDeliverableService';
-import { contentDispositionFor } from '../tickets/attachments';
+// `contentDispositionFor` lives in services/attachmentFilename.ts. It used to be
+// imported from routes/tickets/attachments.ts, which merely RE-EXPORTS it —
+// that pulled the whole technician ticket route surface into this module's
+// graph and put it in an import cycle, so under Vite's SSR transform the
+// re-exported binding could still be uninitialised when this handler ran
+// (TypeError: contentDispositionFor is not a function). Import the source.
+import { contentDispositionFor } from '../../services/attachmentFilename';
 import { captureException } from '../../services/sentry';
 import { applyPortalCacheHeaders, buildWeakEtag, isEtagFresh } from './helpers';
 import { portalDocumentParamSchema } from './schemas';

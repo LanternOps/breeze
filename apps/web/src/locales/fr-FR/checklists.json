@@ -1,0 +1,73 @@
+{
+  "card": {
+    "title": "Liste de contrôle",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Aucune étape pour l'instant.",
+    "addPlaceholder": "Ajouter une étape",
+    "add": "Ajouter",
+    "internalOnly": "Interne — jamais visible du client",
+    "detailPlaceholder": "Note facultative pour cette étape"
+  },
+  "actions": {
+    "moveUp": "Monter",
+    "moveDown": "Descendre",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "retry": "Réessayer"
+  },
+  "source": {
+    "manual": "Manuelle",
+    "deliverable": "Livrable",
+    "checklist_template": "Modèle"
+  },
+  "editDoneWarning": "Modifier une étape terminée efface qui l'a terminée et quand.",
+  "resolveConfirm": {
+    "title": "Liste de contrôle incomplète",
+    "body_one": "{{count}} étape sur {{total}} n'est pas cochée. Résoudre quand même ?",
+    "body_other": "{{count}} étapes sur {{total}} ne sont pas cochées. Résoudre quand même ?",
+    "confirm": "Résoudre quand même",
+    "cancel": "Retour"
+  },
+  "errors": {
+    "loadFailed": "Impossible de charger la liste de contrôle.",
+    "saveFailed": "Impossible d'enregistrer l'étape de la liste de contrôle.",
+    "reorderFailed": "Impossible de réordonner la liste de contrôle.",
+    "tickRequiresUser": "Cocher une étape nécessite une session utilisateur connectée."
+  },
+  "templates": {
+    "title": "Modèles de liste de contrôle",
+    "subtitle": "Des procédures réutilisables que vos techniciens peuvent appliquer à n'importe quel ticket.",
+    "allOrganizations": "Toutes les orgs",
+    "partnerWideHint": "S'applique à toute organisation que vous gérez, maintenant et à l'avenir.",
+    "thisOrganizationOnly": "Cette organisation uniquement",
+    "scope": "Qui peut utiliser ce modèle",
+    "name": "Nom",
+    "description": "Description",
+    "instructions": "Instructions internes",
+    "instructionsHint": "Interne — jamais visible du client.",
+    "isActive": "Actif",
+    "inactiveHint": "Les modèles inactifs restent liés là où ils sont déjà utilisés, mais n'apparaissent plus dans les sélecteurs.",
+    "steps": "Étapes",
+    "addStep": "Ajouter une étape",
+    "stepLabelPlaceholder": "Libellé de l'étape",
+    "empty": "Aucun modèle pour l'instant.",
+    "create": "Nouveau modèle",
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "apply": "Appliquer le modèle",
+    "applyCta": "Appliquer",
+    "choosePlaceholder": "Choisir un modèle",
+    "applyMode": {
+      "append": "Ajouter ces étapes à la liste de contrôle existante",
+      "replaceUnticked": "Remplacer les étapes non cochées (les étapes terminées sont conservées)"
+    },
+    "errors": {
+      "loadFailed": "Impossible de charger les modèles de liste de contrôle.",
+      "saveFailed": "Impossible d'enregistrer le modèle de liste de contrôle.",
+      "applyFailed": "Impossible d'appliquer le modèle de liste de contrôle."
+    }
+  }
+}

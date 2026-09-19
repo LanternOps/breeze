@@ -347,3 +347,23 @@ describe('addTicketCommentSchema attachmentIds (W08)', () => {
     expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: ['nope'] }).success).toBe(false);
   });
 });
+
+describe('ticket category default time entry minutes', () => {
+  describe.each([
+    ['create', ticketCategoryInputSchema, { name: 'Hardware' }],
+    ['update', ticketCategoryInputSchema.partial(), {}]
+  ] as const)('%s', (_operation, schema, base) => {
+    it.each([1, 30, 1440, null])('preserves %s', (defaultTimeEntryMinutes) => {
+      expect(schema.parse({ ...base, defaultTimeEntryMinutes }))
+        .toHaveProperty('defaultTimeEntryMinutes', defaultTimeEntryMinutes);
+    });
+
+    it('allows omission without injecting a default', () => {
+      expect(schema.parse(base)).not.toHaveProperty('defaultTimeEntryMinutes');
+    });
+
+    it.each([0, -1, 1441, 1.5, '30', true])('rejects %s', (defaultTimeEntryMinutes) => {
+      expect(schema.safeParse({ ...base, defaultTimeEntryMinutes }).success).toBe(false);
+    });
+  });
+});

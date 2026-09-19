@@ -655,6 +655,7 @@ describe('bmr routes', () => {
     expect(body.bootstrap.snapshot).toMatchObject({
       id: SNAPSHOT_ID,
       snapshotId: 'snap-ext-001',
+      backupType: 'file', // #5412: the helper keys ExpectSystemState on this
       metadata: {
         providerType: 's3',
         storagePrefix: 's3://breeze-backups/org-001/dev-001/2026-03-29',
@@ -1369,6 +1370,56 @@ describe('bmr routes', () => {
     const updateChain = updateMock.mock.results.at(-1)!.value;
     expect(updateChain.set).toHaveBeenCalledWith(expect.objectContaining(replacement));
     expect(transactionMock).toHaveBeenCalledTimes(1);
+    expect(enqueueRecoveryMediaBuildMock).toHaveBeenCalledWith('media-artifact-1');
+  });
+
+  it('clears the stale metadata.error when rebuilding a previously-failed media artifact (#5411)', async () => {
+    updateMock.mockReturnValueOnce(chainMock([]));
+    selectMock
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal',
+        status: 'active',
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: 'media-artifact-1',
+        orgId: ORG_ID,
+        tokenId: TOKEN_ID,
+        snapshotId: SNAPSHOT_ID,
+        platform: 'linux',
+        architecture: 'amd64',
+        status: 'failed',
+        metadata: { error: 'ENOSPC: no space left on device' },
+        createdAt: new Date('2026-03-29T00:00:00.000Z'),
+        completedAt: new Date('2026-03-29T00:10:00.000Z'),
+      }]));
+    updateMock.mockReturnValueOnce(chainMock([{
+      id: 'media-artifact-1',
+      orgId: ORG_ID,
+      tokenId: TOKEN_ID,
+      snapshotId: SNAPSHOT_ID,
+      platform: 'linux',
+      architecture: 'amd64',
+      status: 'pending',
+      metadata: {},
+      createdAt: new Date('2026-03-29T00:00:00.000Z'),
+      completedAt: null,
+    }]));
+
+    const res = await app.request('/backup/bmr/media', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ tokenId: TOKEN_ID, platform: 'linux', architecture: 'amd64' }),
+    });
+
+    expect(res.status).toBe(202);
+    const updateChain = updateMock.mock.results.at(-1)!.value;
+    const setCall = updateChain.set.mock.calls.at(-1)![0];
+    expect(setCall.metadata).not.toHaveProperty('error');
     expect(enqueueRecoveryMediaBuildMock).toHaveBeenCalledWith('media-artifact-1');
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
-import { buildRunTrace, type RunTraceRunInput } from './runTrace';
+import { buildRunTrace, mapWorkspaceSteps, type RunTraceRunInput } from './runTrace';
 
 const RUN_ID = '11111111-1111-4111-8111-111111111111';
 const AGENT_ID = '22222222-2222-4222-8222-222222222222';
@@ -729,6 +729,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(detail.sweep).toEqual({
         scheduleId: SCHEDULE_ID,
         occurrenceKey: '2026-08-29T06:00:00Z',
+        actSummary: null,
         kinds: ['service_down'],
         summary: 'One service is down.',
         evidenceTruncated: false,
@@ -746,6 +747,11 @@ describe('buildRunTrace — safe projection (#3828)', () => {
             disposition: 'intent_created',
             reason: null,
             intentId: INTENT_ID,
+            // The empty `intents` array passed to buildRunTrace above has no
+            // row for INTENT_ID, so the live outcome is unknown.
+            outcome: null,
+            cohort: null,
+            stoppedBy: null,
           },
         }],
       });
@@ -996,5 +1002,106 @@ describe('buildRunTrace — safe projection (#3828)', () => {
 
       expect(detail.fleetDesign).toBeNull();
     });
+  });
+});
+
+describe('buildRunTrace — patch plan (AI patch agent W01)', () => {
+  const D = '00000000-0000-4000-8000-0000000000d1';
+  it('projects the patch plan with hostnames and dispositions, and null for every other run', () => {
+    const run = {
+      ...baseRun(),
+      profile: 'patch',
+      deviceId: null,
+      scheduleId: null,
+      outcome: {
+        proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+        patchPlan: {
+          schemaVersion: 1, summary: 'One device behind.', posture: { compliancePct: 90, devicesAtRisk: 1, oldestOutstandingDays: 12 },
+          items: [{ class: 'install', severity: 'high', deviceId: D, patchIds: ['p'], title: 'Install', detail: 'why', evidenceRef: 'e' }],
+          dispositions: [{ index: 0, class: 'install', deviceId: D, disposition: 'recorded' }],
+          evidenceTruncated: false, generatedAt: '2026-09-14T02:00:00.000Z',
+        },
+      },
+    } as unknown as Parameters<typeof buildRunTrace>[0];
+    const detail = buildRunTrace(run, AGENT, null, [], [], new Map([[D, 'WS-01']]));
+    expect(detail.patch).toMatchObject({ summary: 'One device behind.', recordedCount: 1 });
+    expect(detail.patch!.items[0]).toMatchObject({ deviceHostname: 'WS-01', disposition: 'recorded' });
+    expect(detail.findingsToReview).toBe(1);
+    expect(buildRunTrace(baseRun(), AGENT, DEVICE, [], []).patch).toBeNull();
+  });
+});
+
+describe('buildRunTrace — analysis projection (execution plane W04)', () => {
+  const HANDLE = '66666666-6666-4666-8666-666666666666';
+
+  it('projects the analysis outcome and the compute numbers', () => {
+    const detail = buildRunTrace(
+      baseRun({
+        deviceId: null,
+        computeCents: 13,
+        outcome: {
+          analysis: {
+            summary: 'three devices share a failing disk model',
+            findings: [{
+              title: 'SMART pre-fail on 3 devices',
+              severity: 'high',
+              detail: 'reallocated sector count climbing',
+              artifactHandles: [HANDLE],
+            }],
+            artifactHandles: [HANDLE],
+            proposedActions: [{
+              tool: 'manage_alerts', args: { alertId: 'a1' }, rationale: 'superseded',
+            }],
+          },
+          computeUsageEstimated: true,
+        },
+      }),
+      AGENT,
+      null,
+      [],
+      [],
+    );
+    expect(detail.analysis?.artifactHandles).toEqual([HANDLE]);
+    expect(detail.analysis?.findings[0]?.severity).toBe('high');
+    expect(detail.analysis?.proposedActions).toHaveLength(1);
+    expect(detail.computeCents).toBe(13);
+    expect(detail.computeUsageEstimated).toBe(true);
+  });
+
+  it('leaves analysis null and compute zero for a non-analysis run', () => {
+    const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], []);
+    expect(detail.analysis).toBeNull();
+    expect(detail.computeCents).toBe(0);
+    // Absent flag reads false, never undefined — the UI branches on it.
+    expect(detail.computeUsageEstimated).toBe(false);
+  });
+});
+
+describe('mapWorkspaceSteps (execution-plane spec §5.8)', () => {
+  it('projects well-formed steps in ordinal order', () => {
+    const steps = mapWorkspaceSteps([
+      { ordinal: 2, language: 'bash', scriptArtifactHandle: 'b', exitCode: 1, timedOut: false, durationMs: 40, stdoutArtifactHandle: null },
+      { ordinal: 1, language: 'python', scriptArtifactHandle: 'a', exitCode: 0, timedOut: false, durationMs: 1820, stdoutArtifactHandle: 'c' },
+    ]);
+    expect(steps.map((s) => s.ordinal)).toEqual([1, 2]);
+    expect(steps[0]!.language).toBe('python');
+  });
+
+  it('drops a malformed entry rather than rendering a half-step', () => {
+    // `ai_run_workspaces.steps` is jsonb written by the worker. A schema change
+    // or a partial write must degrade to "we cannot show this step", never to a
+    // step whose exit code is `undefined` rendered as success.
+    const steps = mapWorkspaceSteps([
+      { ordinal: 1, language: 'python', exitCode: 0, timedOut: false, durationMs: 10, scriptArtifactHandle: null, stdoutArtifactHandle: null },
+      { ordinal: 'two', language: 'perl' },
+      null,
+      'nonsense',
+    ]);
+    expect(steps).toHaveLength(1);
+  });
+
+  it('returns an empty list for a null or non-array column', () => {
+    expect(mapWorkspaceSteps(null)).toEqual([]);
+    expect(mapWorkspaceSteps({ steps: [] })).toEqual([]);
   });
 });

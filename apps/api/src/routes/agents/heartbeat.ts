@@ -255,6 +255,17 @@ export function normalizeRevocationLeaseProtocolVersion(value: unknown): 0 | 1 {
   return value === 1 ? 1 : 0;
 }
 
+/**
+ * SEC-038 W06: normalize the only desktop start/terminal fence protocol
+ * version implemented here. Same tolerance contract as the lease version —
+ * absent, malformed, or a future version this server does not speak is 0, and
+ * behind REMOTE_DESKTOP_FENCE_REQUIRED every desktop-start dispatch site
+ * refuses with 503 agent_upgrade_required.
+ */
+export function normalizeDesktopFenceProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
 // #5250 — the agent recomputes `checkedAt` (and, on macOS/Linux, the whole
 // DesktopAccessState) fresh on EVERY heartbeat regardless of whether access
 // actually changed (agent/internal/heartbeat/desktop_access_{darwin,linux}.go
@@ -862,6 +873,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // and desktop sessions are refused again until the agent is back.
     revocationLeaseProtocolVersion: normalizeRevocationLeaseProtocolVersion(
       data.securityCapabilities?.revocationLeaseProtocolVersion,
+    ),
+    // SEC-038 W06 desktop fence capability, same non-sticky contract.
+    desktopFenceProtocolVersion: normalizeDesktopFenceProtocolVersion(
+      data.securityCapabilities?.desktopFenceProtocolVersion,
     ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
@@ -1770,7 +1785,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
+  // #3997 — do not ASK for a rotation the mint route will now refuse.
+  // `rotate-token` is off the tenant drain surface (agentAuth's
+  // TENANT_DRAIN_ALLOWED_ACTIONS) and the route itself fails closed on a
+  // drain, so signalling it here would have every agent in an offboarding
+  // tenant attempt a mint it cannot complete on EVERY heartbeat for the whole
+  // window (OFFBOARDING_DRAIN_WINDOW_HOURS, 72h by default), logging a rotation
+  // failure each time. Suppressing the signal changes nothing about safety —
+  // `handleTokenRotation` in agent/internal/heartbeat logs and returns, never
+  // gating the heartbeat or touching on-disk credentials — it only stops a
+  // guaranteed-useless round trip and its error noise.
+  //
+  // Only the TENANT drain is checked: `deviceUninstallDraining` returns from
+  // the minimal drain beat at the top of this handler and never reaches here,
+  // so testing it too would be unreachable code.
   const rotateToken =
+    !agent?.tenantDraining &&
     !authenticatedWithPreviousToken &&
     !pendingRotationLive &&
     (!device.watchdogTokenHash || isAgentTokenRotationDue(device.tokenIssuedAt));

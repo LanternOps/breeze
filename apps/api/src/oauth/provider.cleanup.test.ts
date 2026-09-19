@@ -11,6 +11,7 @@ import {
 import {
   cleanupExpiredOauthLifecycleRows,
   cleanupStaleOauthClients,
+  DCR_STALE_CLIENT_TTL_MS,
   OAUTH_LIFECYCLE_ROW_RETENTION_MS,
 } from './provider';
 
@@ -43,6 +44,33 @@ function collectSqlStrings(value: unknown): string {
   return out;
 }
 
+function collectColumnNames(value: unknown, acc: string[] = [], seen = new WeakSet<object>()): string[] {
+  if (!value || typeof value !== 'object') return acc;
+  if (seen.has(value)) return acc;
+  seen.add(value);
+  const name = (value as { name?: unknown }).name;
+  const table = (value as { table?: unknown }).table;
+  if (typeof name === 'string' && table) acc.push(name);
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    collectColumnNames(v, acc, seen);
+  }
+  return acc;
+}
+
+function collectBoundDates(value: unknown, acc: string[] = [], seen = new WeakSet<object>()): string[] {
+  if (value instanceof Date) {
+    acc.push(value.toISOString());
+    return acc;
+  }
+  if (!value || typeof value !== 'object') return acc;
+  if (seen.has(value)) return acc;
+  seen.add(value);
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    collectBoundDates(v, acc, seen);
+  }
+  return acc;
+}
+
 describe('OAuth cleanup helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -60,6 +88,24 @@ describe('OAuth cleanup helpers', () => {
     expect((predicateSql.match(/SELECT 1/g) ?? [])).toHaveLength(4);
     expect((predicateSql.match(/>=/g) ?? [])).toHaveLength(3);
     expect(predicateSql).toContain('IS NULL');
+  });
+
+  // #5610: the age test must accept a client that WAS used once but not since
+  // the cutoff, not just one that was never used at all.
+  it('ages out stale clients on last_used_at as well as created_at', async () => {
+    const staleDelete = queueDeleteReturning([{ id: 'once-used-client' }]);
+    const now = new Date('2026-05-02T12:00:00.000Z');
+
+    await expect(cleanupStaleOauthClients(now)).resolves.toBe(1);
+
+    const predicate = staleDelete.where.mock.calls[0]![0];
+    const lastUsedRefs = collectColumnNames(predicate).filter((n) => n === 'last_used_at');
+    // one for `IS NULL`, one for the `< cutoff` comparison
+    expect(lastUsedRefs.length).toBeGreaterThanOrEqual(2);
+    const cutoffs = collectBoundDates(predicate);
+    const expectedCutoff = new Date(now.getTime() - DCR_STALE_CLIENT_TTL_MS).toISOString();
+    // created_at and last_used_at are both compared against the same cutoff
+    expect(cutoffs.filter((d) => d === expectedCutoff).length).toBeGreaterThanOrEqual(2);
   });
 
   it('prunes only lifecycle rows past the retention cutoff', async () => {

@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef } from '@breeze/shared';
 
 export interface AiMessage {
   id: string;
@@ -77,6 +77,32 @@ export interface ActivePlan {
  * The subset of state that processStreamEvent needs to read and write.
  * Both aiStore (flat) and workspaceStore (per-tab) implement this shape.
  */
+export interface ChatRunProgressEntry {
+  step: string;
+  label: string;
+  ordinal: number;
+}
+
+/**
+ * A workspace `analysis` run associated with this conversation
+ * (execution-plane spec §5.5), advanced by `run_progress`/`run_result` while a
+ * turn is open, and reconciled by `AiRunCard`'s poll of
+ * `GET /ai/agents/runs/:runId` — which is the source of truth, because the
+ * SSE stream only exists during a turn and the run outlives it. Keyed by run
+ * id, not by tool-use id: a run survives the turn that started it and can be
+ * referred to again later in the conversation. Chat-initiated launch is
+ * currently disabled (#6086 — no tool seeds this from within a turn), but the
+ * shape and the reconciliation contract are retained for when delegated
+ * authorization lands.
+ */
+export interface ChatRunState {
+  runId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: ChatRunProgressEntry[];
+  summary: string | null;
+  artifacts: AiRunResultArtifactRef[];
+}
+
 export interface StreamableState {
   messages: AiMessage[];
   pendingApproval: PendingApproval | null;
@@ -88,6 +114,8 @@ export interface StreamableState {
   error: string | null;
   sessionId: string | null;
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
+  /** Analysis runs launched from this conversation, keyed by run id. */
+  chatRuns: Record<string, ChatRunState>;
 }
 
 type StreamSetter = (fn: (s: StreamableState) => Partial<StreamableState>) => void;
@@ -159,9 +187,7 @@ export function processStreamEvent(
         // executionId, and the awaited tool is by construction the one whose
         // result has not yet arrived.
         const awaited = s.pendingApproval;
-        const toolUse = awaited
-          ? s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId)
-          : undefined;
+        const toolUse = s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId);
         // Parallel calls to the same tool: the awaited one is the LATEST
         // tool_use of that name (approval_required is published from the
         // pre-tool hook, i.e. right after its tool_use_start), so an earlier
@@ -172,7 +198,9 @@ export function processStreamEvent(
         const resolvesPending =
           !!awaited && !!toolUse && toolUse.toolName === awaited.toolName && latestOfName?.toolUseId === toolUse.toolUseId;
         return {
-          messages: [...s.messages, resultMsg],
+          // Specialized result cards (including analysis runs) need the tool
+          // name even when the tool did not require approval.
+          messages: [...s.messages, { ...resultMsg, toolName: toolUse?.toolName }],
           ...(resolvesPending ? { pendingApproval: null } : {}),
         };
       });
@@ -300,9 +328,88 @@ export function processStreamEvent(
       return currentAssistantId;
     }
 
+    case 'run_progress': {
+      set((s) => {
+        const existing = s.chatRuns[event.runId];
+        const entry: ChatRunProgressEntry = { step: event.step, label: event.label, ordinal: event.ordinal };
+        // De-duplicate by ordinal: the bridge is best-effort and BullMQ can
+        // redeliver a job, so the same step can arrive twice. Sorting rather
+        // than appending also survives out-of-order pub/sub delivery.
+        const progress = [...(existing?.progress ?? []).filter((p) => p.ordinal !== entry.ordinal), entry]
+          .sort((a, b) => a.ordinal - b.ordinal);
+        return {
+          chatRuns: {
+            ...s.chatRuns,
+            [event.runId]: {
+              runId: event.runId,
+              // Never downgrade a run that already reported terminal: a late
+              // progress event must not resurrect a finished card.
+              status: existing?.status === 'completed' || existing?.status === 'failed'
+                ? existing.status
+                : 'running',
+              progress,
+              summary: existing?.summary ?? null,
+              artifacts: existing?.artifacts ?? [],
+            },
+          },
+        };
+      });
+      return currentAssistantId;
+    }
+
+    case 'run_result': {
+      set((s) => {
+        const existing = s.chatRuns[event.runId];
+        return {
+          chatRuns: {
+            ...s.chatRuns,
+            [event.runId]: {
+              runId: event.runId,
+              status: event.status,
+              progress: existing?.progress ?? [],
+              summary: event.summary,
+              artifacts: event.artifacts,
+            },
+          },
+        };
+      });
+      return currentAssistantId;
+    }
+
     case 'done':
       set(() => ({ isStreaming: false }));
       return null;
+
+    // Deliberate no-ops, named so the exhaustiveness guard below can be exact.
+    // Each of these is handled by a DIFFERENT surface, not by this technician
+    // chat store: `warning` and `tool_completed`/`tool_request`/
+    // `client_tool_request` belong to the Office/Helper client-session loops,
+    // and `script_proposal_update` is delivered durably as an ai_messages row
+    // that history replay picks up. Listing them as cases rather than letting
+    // them fall through is the point — a fall-through is indistinguishable from
+    // a forgotten event.
+    case 'warning':
+    case 'client_tool_request':
+    case 'tool_request':
+    case 'tool_completed':
+    case 'script_proposal_update':
+      return currentAssistantId;
+
+    default: {
+      /*
+       * Every member of `AiStreamEvent` must be handled above. If a new event
+       * type is added to the shared union and not here, `event` is no longer
+       * `never` at this point and THIS LINE fails to compile — which is the
+       * only signal there is, because the runtime behaviour of forgetting a
+       * case is "nothing happens", indistinguishable from an event that never
+       * arrived. Do not "fix" a red here by widening the annotation.
+       */
+      const _exhaustive: never = event;
+      // Unreachable when the compiler is satisfied; kept so a hand-built event
+      // object from an older client is dropped rather than throwing.
+      void _exhaustive;
+      return currentAssistantId;
+    }
   }
 
   return null;

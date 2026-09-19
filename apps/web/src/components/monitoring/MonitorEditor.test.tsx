@@ -4,10 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MonitorEditor from './MonitorEditor';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: (selector: (s: { currentOrgId: string | null }) => unknown) => selector({ currentOrgId: 'org-1' }),
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+
+const toastMock = vi.mocked(showToast);
 vi.mock('@/hooks/useDefaultOwnerScope', () => ({
   useDefaultOwnerScope: () => ({ isPartnerScope: true, defaultOwnerScope: 'organization' }),
 }));
@@ -60,6 +66,78 @@ describe('MonitorEditor (#5289)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockImplementation(async (input: string) => defaultFetchImpl(input));
+  });
+
+  it.each([
+    { orgId: null, partnerId: 'partner-1', label: 'Partner-wide' },
+    { orgId: 'org-1', partnerId: null, label: 'Organization' },
+  ])('shows the saved monitor owner in the detail header ($label)', async ({ orgId, partnerId, label }) => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/monitor-definitions/m1') return json({ data: { ...MONITOR_M1_FIXTURE, orgId, partnerId } });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+    expect(screen.getByTestId('scope-badge')).toHaveTextContent(label);
+  });
+
+  const escalationPolicies = [
+    { id: 'partner-policy', name: 'Partner policy', orgId: null, partnerId: 'partner-1' },
+    { id: 'org-policy', name: 'Organization policy', orgId: 'org-1', partnerId: null },
+    { id: 'other-org-policy', name: 'Other organization policy', orgId: 'org-2', partnerId: null },
+  ];
+
+  it.each([
+    { orgId: null, partnerId: 'partner-1', expected: ['', 'partner-policy'] },
+    { orgId: 'org-1', partnerId: null, expected: ['', 'partner-policy', 'org-policy'] },
+  ])('offers only owner-compatible escalation policies for a saved monitor ($orgId, $partnerId)', async ({ orgId, partnerId, expected }) => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/monitor-definitions/m1') return json({ data: { ...MONITOR_M1_FIXTURE, orgId, partnerId } });
+      if (input === '/alerts/policies') return json({ data: escalationPolicies });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+    const picker = screen.getByTestId('monitor-editor-escalation-policy') as HTMLSelectElement;
+    expect(Array.from(picker.options, (option) => option.value)).toEqual(expected);
+  });
+
+  it('clears an incompatible escalation policy when a new monitor switches to partner ownership', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/alerts/policies') return json({ data: escalationPolicies });
+      if (input === '/monitor-definitions' && init?.method === 'POST') return json({ data: { id: 'new-1' } });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor />);
+    const picker = screen.getByTestId('monitor-editor-escalation-policy') as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(picker.options, (option) => option.value)).toContain('org-policy'));
+    fireEvent.change(picker, { target: { value: 'org-policy' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-owner-partner'));
+    expect(Array.from(picker.options, (option) => option.value)).toEqual(['', 'partner-policy']);
+    expect(picker).toHaveValue('');
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Shared monitor' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(navMock).toHaveBeenCalled());
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && (init as RequestInit)?.method === 'POST');
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({ ownerScope: 'partner', escalationPolicyId: null });
+  });
+
+  it.each([
+    { error: 'INVALID_MONITOR', details: 'Choose a compatible escalation policy.', expected: 'Choose a compatible escalation policy.' },
+    { error: 'INVALID_MONITOR: Choose a compatible escalation policy.', expected: 'Choose a compatible escalation policy.' },
+    { error: 'Permission denied', expected: 'Permission denied' },
+  ])('shows save errors without a leading monitor machine code ($error)', async ({ expected, ...body }) => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && init?.method === 'PATCH') return json(body, false, 400);
+      if (input === '/monitor-definitions/m1') return json({ data: MONITOR_M1_FIXTURE });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith({ type: 'error', message: expected }));
+    expect(screen.getByTestId('monitor-editor-error')).toHaveTextContent(expected);
+    expect(screen.getByTestId('monitor-editor-error')).not.toHaveTextContent('INVALID_MONITOR:');
   });
 
   it('create mode: switching kind to disk renders its fields with defaults and submits the right condition + ownerScope', async () => {
@@ -219,6 +297,50 @@ describe('MonitorEditor (#5289)', () => {
         expect.objectContaining({ method: 'DELETE' }),
       ),
     );
+    // Regression: a detach that succeeded at the API gave zero feedback in the UI.
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+  });
+
+  it('edit mode: surfaces an error toast when detaching an attachment fails with a server error (regression: silent failure via runAction, sweep G1-4)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && !init) {
+        return json({
+          data: {
+            id: 'm1',
+            name: 'Disk full',
+            kind: 'disk',
+            enabled: true,
+            condition: { operator: 'gt', value: 90, durationMinutes: 5 },
+            severity: 'high',
+            cooldownMinutes: 5,
+            autoResolve: false,
+            responses: [],
+            deliveryMode: 'inherit',
+            deliveryChannelIds: [],
+            recurrenceActions: [],
+            pauseResponsesOnEscalation: true,
+            orgId: 'org-1',
+            partnerId: null,
+            attachments: [
+              { id: 'a1', configPolicyId: 'cp1', policyName: 'Site Policy', enabled: true, overrides: null },
+            ],
+          },
+        });
+      }
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      if (init?.method === 'DELETE' && input === '/monitor-definitions/m1/attachments/a1') {
+        return json({ error: 'Internal error' }, false, 500);
+      }
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+
+    fireEvent.click(screen.getByTestId('monitor-editor-detach-a1'));
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    // The row must stay listed — a failed detach is not a detach.
+    expect(screen.getByText('Site Policy')).toBeInTheDocument();
   });
 
   it('edit mode: surfaces an error banner when detaching an attachment fails (regression: silent no-op)', async () => {
@@ -331,6 +453,8 @@ describe('MonitorEditor (#5289)', () => {
     expect(navMock).not.toHaveBeenCalled();
     // Edit-mode save re-fetches the monitor rather than navigating away.
     expect(fetchMock.mock.calls.filter(([url]) => url === '/monitor-definitions/m1').length).toBeGreaterThanOrEqual(2);
+    // Regression: a save that succeeded at the API gave zero feedback in the UI.
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
   it('edit mode: deletes the monitor via the confirm dialog and navigates to the list', async () => {
@@ -350,6 +474,8 @@ describe('MonitorEditor (#5289)', () => {
       expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m1', expect.objectContaining({ method: 'DELETE' })),
     );
     await waitFor(() => expect(navMock).toHaveBeenCalledWith('/alerts/monitors'));
+    // Regression: a delete that succeeded at the API gave zero feedback before navigating away.
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
   it('reaches the delivery-mode radio choice in the submitted payload, and reveals the channel picker only for "channels"', async () => {
@@ -375,5 +501,95 @@ describe('MonitorEditor (#5289)', () => {
 
     fireEvent.click(screen.getByTestId('monitor-editor-delivery-none'));
     expect(screen.queryByTestId('monitor-editor-channels')).toBeNull();
+  });
+
+  it('create mode: retains the chosen script id for a script-check monitor on submit (#6207)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && input === '/monitor-definitions') return json({ data: { id: 'new-1' } }, true, 201);
+      if (input.startsWith('/scripts')) {
+        return json({ data: [{ id: '11111111-2222-4333-8444-555555555555', name: 'Disk cleanup' }] });
+      }
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('monitor-editor-kind'), { target: { value: 'script' } });
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: 'Disk cleanup' })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByTestId('condition-field-scriptId'), {
+      target: { value: '11111111-2222-4333-8444-555555555555' },
+    });
+    expect(screen.getByTestId('condition-field-scriptId')).toHaveValue('11111111-2222-4333-8444-555555555555');
+
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Script check' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+
+    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/alerts/monitors/new-1'));
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && (init as RequestInit)?.method === 'POST');
+    expect(call).toBeDefined();
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body.condition.scriptId).toBe('11111111-2222-4333-8444-555555555555');
+  });
+
+  it('edit mode: retains the previously-saved script — in the picker AND on save — even when the script list resolves after the monitor (#6207)', async () => {
+    let resolveScripts: (value: Response) => void = () => {};
+    const scriptsPromise = new Promise<Response>((resolve) => {
+      resolveScripts = resolve;
+    });
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && init?.method === 'PATCH') {
+        return json({ data: { id: 'm1' } });
+      }
+      if (input === '/monitor-definitions/m1') {
+        return json({
+          data: {
+            ...MONITOR_M1_FIXTURE,
+            kind: 'script',
+            condition: {
+              scriptId: '11111111-2222-4333-8444-555555555555',
+              intervalMinutes: 60,
+              timeoutSeconds: 300,
+              breachOnNonZeroExit: true,
+            },
+          },
+        });
+      }
+      if (input.startsWith('/scripts')) return scriptsPromise;
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+
+    // The scripts list resolves AFTER the monitor has already loaded and reset()
+    // has run — the select's <option> for the saved script doesn't exist yet at
+    // that point.
+    resolveScripts(json({ data: [{ id: '11111111-2222-4333-8444-555555555555', name: 'Disk cleanup' }] }));
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Disk cleanup' })).toBeInTheDocument());
+
+    // Assert inside its own `waitFor` — the option appearing and the select's
+    // `value` prop re-syncing both happen off the same `setScripts` state
+    // update but are two separate observations of the DOM, so give React a
+    // tick to settle rather than asserting immediately after the first one.
+    await waitFor(() =>
+      expect(screen.getByTestId('condition-field-scriptId')).toHaveValue('11111111-2222-4333-8444-555555555555'),
+    );
+
+    // Saving WITHOUT touching the field must still submit the real scriptId —
+    // this is what actually determines whether the monitor alerts (#6207's
+    // second symptom: monitorScriptWorker silently skips a monitor whose
+    // stored scriptId doesn't resolve to a script row).
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url, i]) => url === '/monitor-definitions/m1' && (i as RequestInit)?.method === 'PATCH'),
+      ).toBe(true),
+    );
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, i]) => url === '/monitor-definitions/m1' && (i as RequestInit)?.method === 'PATCH',
+    );
+    const patchBody = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(patchBody.condition.scriptId).toBe('11111111-2222-4333-8444-555555555555');
   });
 });

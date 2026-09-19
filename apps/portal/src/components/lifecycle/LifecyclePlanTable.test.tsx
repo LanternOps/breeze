@@ -60,6 +60,13 @@ const LAW_SRV = row({
 
 const MACBOOK_AIR = row({ name: 'MacBook-Air.local', manufacturer: 'Apple Inc.', os: 'macOS 26.3.1' });
 
+const MANUAL_ASSET = row({
+  name: 'PRINTER1',
+  kind: 'manual_asset',
+  manufacturer: 'HP',
+  model: 'LaserJet Pro',
+});
+
 describe('LifecyclePlanTable', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -160,5 +167,78 @@ describe('LifecyclePlanTable', () => {
       />,
     );
     expect(screen.getByTestId('lifecycle-timeline-cell')).toBeInTheDocument();
+  });
+
+  it('links a device row\'s Computer cell to /devices#<id>', () => {
+    render(
+      <LifecyclePlanTable
+        sectionId="workstations"
+        title="Workstations and laptops"
+        ruleSentence="rule sentence"
+        rows={[SAM4]}
+      />,
+    );
+    const link = screen.getByTestId('lifecycle-plan-row-link-SAM4');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/devices#SAM4');
+    expect(link).toHaveTextContent('Sam Lee');
+  });
+
+  it('renders a manual asset\'s Computer cell as plain text, never a link', () => {
+    render(
+      <LifecyclePlanTable
+        sectionId="workstations"
+        title="Workstations and laptops"
+        ruleSentence="rule sentence"
+        rows={[MANUAL_ASSET]}
+      />,
+    );
+    expect(screen.queryByTestId('lifecycle-plan-row-link-PRINTER1')).toBeNull();
+    expect(screen.getByTestId('lifecycle-plan-row-PRINTER1')).toHaveTextContent('LaserJet Pro');
+  });
+
+  // #5880: /portal/devices redirects home when the org's self-service flag is
+  // off, so a device row's Computer cell must never link there in that case —
+  // it would silently drop the customer on Proposals with no explanation.
+  it('renders a device row\'s Computer cell as plain text, never a link, when self-service is off', () => {
+    render(
+      <LifecyclePlanTable
+        sectionId="workstations"
+        title="Workstations and laptops"
+        ruleSentence="rule sentence"
+        rows={[SAM4]}
+        enableSelfService={false}
+      />,
+    );
+    expect(screen.queryByTestId('lifecycle-plan-row-link-SAM4')).toBeNull();
+    const row = screen.getByTestId('lifecycle-plan-row-SAM4');
+    expect(row).toHaveTextContent('Sam Lee');
+  });
+
+  it('still links a device row\'s Computer cell when self-service is explicitly on', () => {
+    render(
+      <LifecyclePlanTable
+        sectionId="workstations"
+        title="Workstations and laptops"
+        ruleSentence="rule sentence"
+        rows={[SAM4]}
+        enableSelfService={true}
+      />,
+    );
+    const link = screen.getByTestId('lifecycle-plan-row-link-SAM4');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/devices#SAM4');
+  });
+});
+
+describe('LifecyclePlanTable — phone reflow', () => {
+  it('only forces the wide layout at sm and up, and labels every cell for the phone card', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('src/components/lifecycle/LifecyclePlanTable.tsx', 'utf8');
+    expect(src).toMatch(/sm:min-w-\[52rem\]/);
+    expect(src).not.toMatch(/[\s"]min-w-\[52rem\]/);
+    for (const label of ['Operating system', 'Age', 'Purchased', 'Warranty', 'Status', 'Replacement timeline']) {
+      expect((src.match(new RegExp(`>${label}<`, 'g')) ?? []).length).toBeGreaterThanOrEqual(2);
+    }
   });
 });

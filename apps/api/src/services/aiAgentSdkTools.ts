@@ -14,13 +14,14 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools, type ExecuteToolOptions } from './aiTools';
+import { WORKSPACE_MCP_SHAPES, WORKSPACE_TOOL_DESCRIPTIONS } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
-import { buildToolHandoffResult, type ToolHandoffStatus } from './aiToolHandoff';
+import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
@@ -241,6 +242,18 @@ export const TOOL_TIERS = {
   search_logs: 1,
   get_log_trends: 1,
   detect_log_correlations: 2,
+  // Execution plane (spec §5.7) — reads nothing the caller cannot already read;
+  // it just refuses to throw the result away. Tier 1 like its source tools.
+  export_dataset: 1,
+  // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
+  // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
+  // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
+  // this map is invisible to chat AND to every run profile even when it is
+  // registered in `aiTools`.
+  workspace_stage: 1,
+  workspace_run: 1,
+  workspace_collect: 1,
+  workspace_cancel: 1,
   // Configuration policy tools
   list_configuration_policies: 1,
   get_configuration_policy: 1,
@@ -265,6 +278,12 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // W01 (spec §4.4) — read-only reachability for a discovered network asset,
+  // with the source and age of the evidence. Wired here rather than added to
+  // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
+  // it as "Unknown tool" and the chat tells the user the capability does not
+  // exist.
+  get_network_asset_reachability: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
@@ -378,6 +397,12 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  * handoff payload carries `status` (machine-readable, what the clients switch
  * on) and never an `error` field, so nothing downstream can mistake it for a
  * failure by shape either.
+ *
+ * `isError` is derived from the handoff STATUS, not from "a handoff marker is
+ * present" (#6022). The read-back added there rides this same channel, and
+ * `approved_failed` — an action the worker ran and that did NOT take effect —
+ * is a genuine failure. Treating the marker itself as "not an error" would
+ * paint a guardrail refusal as "Approved · running", which is the bug.
  */
 function preToolUseDenialResult(
   toolName: string,
@@ -388,7 +413,7 @@ function preToolUseDenialResult(
     : { error: check.error };
   return {
     text: compactToolResultForChat(toolName, JSON.stringify(payload)),
-    isError: !check.handoff,
+    isError: check.handoff ? handoffIsError(check.handoff) : true,
   };
 }
 
@@ -1848,12 +1873,15 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_patches',
-      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies.',
+      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies. approve/decline/defer accept patchId or patchName (a title/KB lookup, for when the UUID is unknown), plus an optional ringId to scope to one update ring; decline also accepts allRings to revoke the approval in every ring at once, not just the current/blanket scope.',
       {
         action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
         patchId: uuid.optional(),
+        patchName: z.string().min(1).max(300).optional(),
         patchIds: z.array(uuid).max(50).optional(),
         deviceIds: z.array(uuid).max(50).optional(),
+        ringId: uuid.optional(),
+        allRings: z.boolean().optional(),
         source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
         severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
         status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
@@ -2150,6 +2178,48 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'export_dataset',
+      registryDescription('export_dataset'),
+      {
+        dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+        format: z.enum(['jsonl', 'csv']).optional(),
+        filters: z.record(z.string(), z.unknown()).optional(),
+        deviceIds: z.array(z.string()).optional(),
+        siteId: z.string().optional(),
+        maxRows: z.number().optional(),
+      },
+      makeHandler('export_dataset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_stage',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_stage,
+      WORKSPACE_MCP_SHAPES.workspace_stage,
+      makeHandler('workspace_stage', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_run',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_run,
+      WORKSPACE_MCP_SHAPES.workspace_run,
+      makeHandler('workspace_run', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_collect',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_collect,
+      WORKSPACE_MCP_SHAPES.workspace_collect,
+      makeHandler('workspace_collect', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_cancel',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_cancel,
+      WORKSPACE_MCP_SHAPES.workspace_cancel,
+      makeHandler('workspace_cancel', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'get_log_trends',
       'Analyze event log trends: level distribution, top sources/devices, error timeline, and spike detection.',
       {
@@ -2418,6 +2488,19 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // W01 (spec §4.4) — the only read that answers "is this printer/switch up"
+    // with the SOURCE and AGE of the evidence. Declared here as well as in
+    // TOOL_TIERS: a tier without a tool() declaration is allowlisted but
+    // uncallable (#2605).
+    tool(
+      'get_network_asset_reachability',
+      'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, with the SOURCE of the evidence and how old it is. Always state the source and age when answering — "responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has checked the device recently; report it as unverified, not as down.',
+      {
+        asset_id: uuid,
+      },
+      makeHandler('get_network_asset_reachability', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -2998,6 +3081,9 @@ export function createBreezeMcpServer(
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+
+    // Chat background launches are disabled pending delegated authorization design (#6086).
+
   ];
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are

@@ -48,6 +48,7 @@ import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { tickets } from '../../db/schema/portal';
 import { ticketDrafts } from '../../db/schema/ticketDrafts';
+import { deliverNarrativeEmails } from '../reportNarrativeDelivery';
 import { createNotification } from '../userNotifications';
 import { resolveRecipientUserIds } from './recipients';
 
@@ -114,6 +115,91 @@ interface SweepDigest {
   critical: number;
   kinds: string[];
   summaryFirstLine: string;
+}
+
+/**
+ * AI patch agent W01 (#5747), Task 11 — the patch digest, read off
+ * `outcome.patchPlan` with the same defensive posture as `readSweepDigest`
+ * below: `outcome` is jsonb with no compile-time shape, and a run whose plan
+ * never landed (a refused submission, a failed finalizer) simply lacks the
+ * key and keeps the generic verdict-aware title.
+ *
+ * The counts are the SUBMITTED items, not the recorded ones: a recipient is
+ * being told what the agent proposes, and an item the persistence layer
+ * refused is still visible on the run trace with its refusal reason.
+ */
+interface PatchDigest {
+  items: number;
+  critical: number;
+  summaryFirstLine: string;
+  /** W03 (#5749): submitted `chase` items — retry proposals, whatever their disposition. */
+  chases: number;
+  /** W03: submitted `escalation` items. Nothing retries these; a human looks. */
+  escalations: number;
+  /** W03: quoted failure classes across chase + escalation items, by class. */
+  failureClasses: Record<string, number>;
+  /** W03: installs waiting for offline devices (`null` = not measured). */
+  queuedOffline: number | null;
+}
+
+function readPatchPlanDigest(outcome: Record<string, unknown>): PatchDigest | null {
+  const plan = outcome.patchPlan;
+  if (!plan || typeof plan !== 'object') return null;
+  const entry = plan as Record<string, unknown>;
+  const items = Array.isArray(entry.items) ? entry.items : [];
+
+  let critical = 0;
+  let chases = 0;
+  let escalations = 0;
+  const failureClasses: Record<string, number> = {};
+  for (const raw of items) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    if (item.severity === 'critical') critical += 1;
+    if (item.class === 'chase') chases += 1;
+    else if (item.class === 'escalation') escalations += 1;
+    else continue;
+    // Only the class the persister could check (it refuses a mismatch); the
+    // digest still counts a refused item — the recipient is told what the
+    // agent proposed, the run trace shows what was refused and why.
+    if (typeof item.failureClass === 'string') {
+      failureClasses[item.failureClass] = (failureClasses[item.failureClass] ?? 0) + 1;
+    }
+  }
+
+  const summary = typeof entry.summary === 'string' ? entry.summary : '';
+  return {
+    items: items.length,
+    critical,
+    summaryFirstLine: summary.split('\n')[0]?.trim() ?? '',
+    chases,
+    escalations,
+    failureClasses,
+    queuedOffline: typeof entry.queuedOffline === 'number' ? entry.queuedOffline : null,
+  };
+}
+
+/**
+ * W03 (#5749): the failure/escalation breakdown appended to the patch digest
+ * message. Empty when the plan carries neither a chase nor an escalation and
+ * no queued-offline note, so a W01/W02-shaped plan reads exactly as before.
+ */
+function patchDigestFailureNote(patch: PatchDigest): string {
+  const parts: string[] = [];
+  if (patch.chases > 0 || patch.escalations > 0) {
+    const classes = Object.entries(patch.failureClasses)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([cls, n]) => `${cls} ${n}`)
+      .join(', ');
+    parts.push(
+      `${patch.chases} retry proposal(s), ${patch.escalations} escalation(s)`
+      + (classes ? ` — failures by class: ${classes}` : '') + '.',
+    );
+  }
+  if (patch.queuedOffline !== null && patch.queuedOffline > 0) {
+    parts.push(`${patch.queuedOffline} install(s) waiting for offline devices.`);
+  }
+  return parts.join(' ');
 }
 
 function readSweepDigest(outcome: Record<string, unknown>): SweepDigest | null {
@@ -475,8 +561,17 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
     },
     run.orgId,
   );
+  // Task A7 (wave P2-3) — a narrative run that actually produced an artifact
+  // gets its own copy; everything else (including a narrative run whose
+  // persistence failed) keeps the generic branch. Read HERE, before the
+  // zero-recipient return, because the #4248 W03 email pass below keys off
+  // the artifact's own `report_run_deliveries` rows (created atomically with
+  // it), not off the in-app recipient set.
+  const narrative = run.profile === 'narrative' ? readNarrativeDigest(run.outcome ?? {}) : null;
+
   if (userIds.length === 0) {
     console.warn('[runFinishedNotify] no recipients resolved for finished run', { runId });
+    if (narrative) await deliverNarrativeEmailPass(narrative, run.orgId);
     return;
   }
 
@@ -489,13 +584,12 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
   // a sweep run that never produced findings) keeps the generic verdict-aware
   // title untouched.
   const sweep = run.profile === 'sweep' ? readSweepDigest(run.outcome ?? {}) : null;
-  // Task A7 (wave P2-3) — a narrative run that actually produced an artifact
-  // gets its own copy; everything else (including a narrative run whose
-  // persistence failed) keeps the branch above.
-  const narrative = run.profile === 'narrative' ? readNarrativeDigest(run.outcome ?? {}) : null;
   // Fleet Designer W01 (#5651), Task 9 — same shape, a design run that
   // actually produced an artifact gets its own copy.
   const design = run.profile === 'design' ? readFleetDesignDigest(run.outcome ?? {}) : null;
+  // AI patch agent W01 (#5747), Task 11 — same shape again: only a `patch`
+  // run that actually produced a plan gets the patch copy.
+  const patch = run.profile === 'patch' ? readPatchPlanDigest(run.outcome ?? {}) : null;
   const orgName = (design || narrative) ? await loadOrgName(run.orgId) : '';
   // Task 9 (P2-4 ticket triage, #4191). `ticketLabel` is the ticket NUMBER,
   // never the subject — see `loadTicketLabel`'s docstring for the
@@ -515,16 +609,23 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
       : sweep
         ? `Sweep finished: ${sweep.findings} finding(s)`
           + `${sweep.critical > 0 ? ` (${sweep.critical} critical)` : ''} — ${agent.name}`
-        : (triage && ticketLabel)
-          ? `Ticket #${ticketLabel} triaged — ${agent.name}`
-          : verdictAwareTitle(agent.name, verdict);
+        : patch
+          ? `Patch plan ready: ${patch.items} item(s)`
+            + `${patch.escalations > 0 ? `, ${patch.escalations} escalation(s)` : ''}`
+            + `${patch.critical > 0 ? ` (${patch.critical} critical)` : ''} — ${agent.name}`
+          : (triage && ticketLabel)
+            ? `Ticket #${ticketLabel} triaged — ${agent.name}`
+            : verdictAwareTitle(agent.name, verdict);
   const baseMessage = design
     ? `${agent.name}: ${firstLine || run.status}`
     : narrative
       ? narrative.headline || `${agent.name}: ${firstLine || run.status}`
       : sweep
         ? sweep.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
-        : `${agent.name}: ${firstLine || run.status}`;
+        : patch
+          ? [patch.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`, patchDigestFailureNote(patch)]
+            .filter((part) => part !== '').join(' ')
+          : `${agent.name}: ${firstLine || run.status}`;
   // Autonomy note appended, never substituted — the recipient still gets
   // what the run actually did, plus the fact that it happened unattended.
   const message = triageAutonomous ? `${baseMessage} Executed automatically.` : baseMessage;
@@ -537,9 +638,18 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
   // (runLoop.ts) can only ever land `no_action` (it mints no
   // `executedActions` of its own), so the fallthrough below already keeps it
   // at the default 'normal' priority without a dedicated branch.
+  // A patch plan escalates on the same rule as a sweep: anything critical is
+  // 'high', everything else stays at the default. A patch run's own
+  // `computeRunVerdict` can only land `no_action` (it executes nothing), so
+  // without this branch a plan naming a critical gap would arrive at normal
+  // priority.
   const priority = (design || narrative)
     ? null
-    : sweep ? (sweep.critical > 0 ? 'high' : null) : (verdict === 'needs_attention' ? 'high' : null);
+    : sweep
+      ? (sweep.critical > 0 ? 'high' : null)
+      : patch
+        ? (patch.critical > 0 ? 'high' : null)
+        : (verdict === 'needs_attention' ? 'high' : null);
   const link = design
     ? `/ai-agents/fleet-design#${design.reportRunId}`
     : narrative
@@ -621,5 +731,21 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
         dedupeKey: `agent-run:${run.id}`,
       });
     }
+  });
+
+  // #4248 W03 — the narrative EMAIL pass, AFTER the notification context above
+  // has closed and outside every DB context (`deliverNarrativeEmails` refuses
+  // otherwise). Deliberately not inside the loop: a send inside a transaction
+  // can be rolled back after the mail has left. A throw here propagates to
+  // the durable notify retry lane (runLoop.ts) — the in-app rows above are
+  // deduped by `dedupeKey`, and the email pass claims each delivery row
+  // before sending, so a retry never double-sends.
+  if (narrative) await deliverNarrativeEmailPass(narrative, run.orgId);
+}
+
+async function deliverNarrativeEmailPass(narrative: NarrativeDigest, orgId: string): Promise<void> {
+  const result = await deliverNarrativeEmails(narrative.reportRunId, { orgId });
+  console.info('[runFinishedNotify] narrative email pass finished', {
+    reportRunId: narrative.reportRunId, orgId, ...result,
   });
 }

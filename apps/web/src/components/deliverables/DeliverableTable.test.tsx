@@ -32,6 +32,8 @@ const base: Deliverable = {
   autoEvidenceReportId: null,
   ownerUserId: null,
   ticketCategoryId: null,
+  instructions: null,
+  checklistTemplateId: null,
   portalVisible: true,
   active: true,
   sortOrder: 0,

@@ -36,7 +36,8 @@
  * is provenance, not a guess.
  */
 
-import { and, eq, isNull, ne } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import {
@@ -46,6 +47,7 @@ import {
   organizationExternalLinks,
   organizations,
   partners,
+  sites,
 } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
 import { getConnection } from './accountingConnectionService';
@@ -54,6 +56,19 @@ import { normalizeCurrencyCode } from './accountingCurrency';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
+import { getRedis } from '../redis';
+// Narrow import: `../orgImport`'s barrel pulls in `services/tenantLifecycle.ts`,
+// which dynamically imports `routes/agentWs.ts` — several callers of this
+// module (quoteSendWorker, stripeReconcileSweep, invoiceWorker, contractWorker,
+// accountingSyncWorker, accountingReconcileWorker) are `global`-placement
+// workers whose closure must never reach socket-local dispatch (see
+// workerEntrypointClosure.contract.test.ts).
+import { billingAddressColumns } from '../orgImport/addressColumns';
+// Narrow import: `./quickbooksCustomerImport` transitively pulls in
+// `../orgImport` (for commitOrgImport/previewOrgImport), same reachability
+// concern as billingAddressColumns above.
+import { siteAddressFrom } from './addressMapping';
+import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import type {
   AccountingCustomerPayload,
@@ -79,6 +94,8 @@ export type AccountingMappingErrorCode =
   | 'not_connected'
   | 'reauth_required'
   | 'quickbooks_error'
+  | 'record_failed'
+  | 'sync_in_progress'
   | 'mapping_conflict'
   | 'entity_not_found'
   | 'income_account_required'
@@ -255,6 +272,11 @@ async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: st
 }
 
 type MappingRow = AccountingEntityMappingRow;
+export type MappingResult = MappingRow & Pick<MappingProposal, 'confidence' | 'proposedRemoteName'>;
+
+function mappingResult(row: MappingRow, proposedRemoteName: string | null): MappingResult {
+  return { ...row, confidence: confidenceForMapping(row), proposedRemoteName };
+}
 
 /**
  * `confidence` describes how the PROPOSED remote id was arrived at, so a
@@ -813,7 +835,7 @@ async function upsertMappingRow(params: {
 export async function saveMappingDecision(
   input: SaveMappingDecisionInput,
   runInDbContext: DbContextRunner,
-): Promise<MappingRow> {
+): Promise<MappingResult> {
   const { partnerId, provider, breezeEntityType, breezeEntityId, decision, remoteEntityId } = input;
   assertNoAmbientDbContext('saveMappingDecision');
   const remoteEntityType: 'Customer' | 'Item' = breezeEntityType === 'org' ? 'Customer' : 'Item';
@@ -849,6 +871,7 @@ export async function saveMappingDecision(
   });
 
   let fields: MappingDecisionFields;
+  let proposedRemoteName: string | null = null;
 
   if (decision === 'confirmed') {
     if (!remoteEntityId) {
@@ -884,6 +907,7 @@ export async function saveMappingDecision(
     // RemoteItem carries no currencyCode (only RemoteCustomer does), so this is
     // naturally null for a catalog_item confirm even without the explicit gate
     // — the gate documents the intent rather than relying on that incidentally.
+    proposedRemoteName = found.displayName;
     const remoteCurrencyCode = breezeEntityType === 'org' ? (found as RemoteCustomer).currencyCode ?? null : null;
     fields = { remoteEntityId, remoteSyncToken: found.syncToken ?? null, remoteCurrencyCode, linkStatus: 'confirmed', syncStatus: 'pending', lastError: null };
   } else if (decision === 'create_new') {
@@ -893,8 +917,42 @@ export async function saveMappingDecision(
   }
 
   // Phase 2 — its own short context, so the decision COMMITS on its own.
-  return runInDbContext(() =>
+  const row = await runInDbContext(() =>
     upsertMappingRow({ existing, integrationId: conn.id, partnerId, breezeEntityType, breezeEntityId, remoteEntityType, fields }));
+  return mappingResult(row, proposedRemoteName);
+}
+
+/** Fill only an empty address, rechecking at write time so a concurrent edit wins. */
+async function importMappedAddress(partnerId: string, orgId: string, remote: RemoteRef): Promise<boolean> {
+  const billing = billingAddressColumns(remote.billAddr);
+  const hasBilling = Object.values(billing).some((value) => value?.trim());
+  const address = siteAddressFrom(remote.shipAddr ?? remote.billAddr);
+  if (!hasBilling && !address) return false;
+  const [updated] = await db.update(organizations).set({ ...billing, updatedAt: new Date() }).where(and(
+    eq(organizations.id, orgId), eq(organizations.partnerId, partnerId),
+    isNull(organizations.deletedAt), notQuickSupportOrg(),
+    ...[
+      organizations.billingAddressLine1, organizations.billingAddressLine2, organizations.billingAddressCity,
+      organizations.billingAddressRegion, organizations.billingAddressPostalCode, organizations.billingAddressCountry,
+    ].map((column) => sql`coalesce(trim(${column}), '') = ''`),
+  )).returning({ id: organizations.id });
+  if (!updated) return false;
+
+  let siteImported = false;
+  if (address) {
+    // Sites have no isDefault flag. Use the oldest site (stable id tie-break),
+    // never another site's empty address when the default already has one.
+    const updatedSites = await db.update(sites).set({ address, updatedAt: new Date() }).where(and(
+      eq(sites.orgId, orgId),
+      sql`${sites.orgId} in (select id from ${organizations} where ${organizations.partnerId} = ${partnerId})`,
+      sql`${sites.id} = (select id from ${sites} where org_id = ${orgId} order by created_at, id limit 1)`,
+      sql`not exists (select 1 from jsonb_each_text(case when jsonb_typeof(${sites.address}) = 'object'
+        then ${sites.address} else '{}'::jsonb end) as entry where coalesce(trim(entry.value), '') <> '')`,
+      sql`(${sites.address} is null or jsonb_typeof(${sites.address}) = 'object')`,
+    )).returning({ id: sites.id });
+    siteImported = updatedSites.length > 0;
+  }
+  return hasBilling || siteImported;
 }
 
 /** Only the fields QBO omission (§11) needs: never send a raw org/item row across the seam. */
@@ -907,7 +965,7 @@ function orgBillingAddress(org: OrgRow): RemoteAddress | undefined {
     postalCode: org.billingAddressPostalCode ?? undefined,
     country: org.billingAddressCountry ?? undefined,
   };
-  return Object.values(addr).some((v) => v !== undefined) ? addr : undefined;
+  return Object.values(addr).some((v) => v?.trim()) ? addr : undefined;
 }
 
 /**
@@ -936,12 +994,11 @@ function buildCustomerPayload(org: OrgRow): AccountingCustomerPayload {
  * line, a catalog item syncs once per partner, not once per org, so
  * `AccountingItemPayload` carries exactly one currency+price pair.
  *
- * Deliberately queries `catalog_item_prices` directly rather than reading
- * `catalogItems.unitPrice` — that column is a deprecated read-mirror the
- * schema comment marks "read by nothing" (schema/catalog.ts), and it is not
- * guaranteed to exist in the partner currency (an item created from cost +
- * markup in a different currency can have zero rows in the partner currency).
- * A missing row is therefore a real, user-actionable gap, not a bug — this
+ * Queries `catalog_item_prices` — since #3812 that table is the only place a
+ * sell price exists (the deprecated `catalog_items.unit_price` mirror is
+ * dropped). A partner-currency row is not guaranteed: an item created from
+ * cost + markup in a different currency can have zero rows in the partner
+ * currency. A missing row is therefore a real, user-actionable gap, not a bug — this
  * throws `item_price_required` (409) before any provider call, same shape as
  * `income_account_required`.
  */
@@ -1126,7 +1183,45 @@ async function persistRemoteRef(params: {
 export async function syncMappedEntity(
   input: SyncMappedEntityInput,
   runInDbContext: DbContextRunner,
-): Promise<MappingRow> {
+): Promise<MappingResult> {
+  assertNoAmbientDbContext('syncMappedEntity');
+  const redis = getRedis();
+  if (!redis) throw new Error('QuickBooks mapping sync coordination is unavailable');
+  const key = `accounting-mapping-sync:${input.partnerId}:${input.provider}:${input.breezeEntityType}:${input.breezeEntityId}`;
+  const token = randomUUID();
+  const ttl = 5 * 60 * 1000;
+  if (await redis.set(key, token, 'PX', ttl, 'NX') !== 'OK') {
+    throw new AccountingMappingError('sync_in_progress', 409, 'QuickBooks mapping sync is already in progress');
+  }
+  // The web's explicit sync and the worker must not both CREATE from the same
+  // pending row. Renew across slow provider calls without holding a DB connection.
+  const renewal = setInterval(() => {
+    void redis.eval(
+      "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end",
+      1, key, token, ttl,
+    ).catch((err: unknown) => captureException(err instanceof Error ? err : new Error(String(err))));
+  }, 30_000);
+  renewal.unref();
+  try {
+    return await syncMappedEntityUnderLease(input, runInDbContext);
+  } finally {
+    clearInterval(renewal);
+    try {
+      await redis.eval(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        1, key, token,
+      );
+    } catch (err) {
+      // A release outage must not replace a successfully persisted remote ref.
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+}
+
+async function syncMappedEntityUnderLease(
+  input: SyncMappedEntityInput,
+  runInDbContext: DbContextRunner,
+): Promise<MappingResult> {
   const { partnerId, provider, breezeEntityType, breezeEntityId } = input;
   assertNoAmbientDbContext('syncMappedEntity');
 
@@ -1152,30 +1247,44 @@ export async function syncMappedEntity(
       : null;
     const isCreate = existingRef === null;
 
-    if (breezeEntityType === 'org') {
-      const org = await loadOwnedOrg(breezeEntityId, partnerId);
-      if (isCreate) assertCreateCurrencyMatchesRealm(conn, org.currencyCode, 'organization');
-      return { conn, mapping, existingRef, kind: 'org' as const, payload: buildCustomerPayload(org) };
-    }
+    try {
+      if (breezeEntityType === 'org') {
+        const org = await loadOwnedOrg(breezeEntityId, partnerId);
+        if (isCreate) assertCreateCurrencyMatchesRealm(conn, org.currencyCode, 'organization');
+        return { conn, mapping, existingRef, kind: 'org' as const, payload: buildCustomerPayload(org) };
+      }
 
-    if (isCreate && !conn.defaultIncomeAccountRef) {
-      throw new AccountingMappingError(
-        'income_account_required',
-        409,
-        'Select a default QuickBooks income account before creating catalog items in QuickBooks',
-      );
+      if (isCreate && !conn.defaultIncomeAccountRef) {
+        throw new AccountingMappingError(
+          'income_account_required',
+          409,
+          'Select a default QuickBooks income account before creating catalog items in QuickBooks',
+        );
+      }
+      const item = await loadOwnedCatalogItem(breezeEntityId, partnerId);
+      const { currencyCode, unitPrice } = await resolveItemSellPrice(item, partnerId);
+      // The Item payload's currency is the PARTNER's default currency (see
+      // resolveItemSellPrice), so that is what QBO would stamp the new Item at.
+      if (isCreate) assertCreateCurrencyMatchesRealm(conn, currencyCode, 'catalog item');
+      return {
+        conn, mapping, existingRef, kind: 'catalog_item' as const,
+        payload: buildItemPayload(item, conn, currencyCode, unitPrice),
+      };
+    } catch (err) {
+      if (!(err instanceof AccountingMappingError) || ![
+        'currency_mismatch', 'income_account_required', 'item_price_required',
+      ].includes(err.code)) throw err;
+      // Return the refusal from this transaction so lastError commits before
+      // the typed error reaches the route or worker. A throw here rolls it back.
+      await db.update(accountingEntityMappings)
+        .set({ lastError: err.message, updatedAt: new Date() })
+        .where(and(eq(accountingEntityMappings.id, mapping.id), eq(accountingEntityMappings.partnerId, partnerId)))
+        .returning();
+      return { refusal: err };
     }
-    const item = await loadOwnedCatalogItem(breezeEntityId, partnerId);
-    const { currencyCode, unitPrice } = await resolveItemSellPrice(item, partnerId);
-    // The Item payload's currency is the PARTNER's default currency (see
-    // resolveItemSellPrice), so that is what QBO would stamp the new Item at.
-    if (isCreate) assertCreateCurrencyMatchesRealm(conn, currencyCode, 'catalog item');
-    return {
-      conn, mapping, existingRef, kind: 'catalog_item' as const,
-      payload: buildItemPayload(item, conn, currencyCode, unitPrice),
-    };
   });
 
+  if ('refusal' in prep) throw prep.refusal;
   const { conn, mapping, existingRef } = prep;
   // Token refresh and the upsert both run with NO context held (see
   // `resolveLiveConnection`).
@@ -1214,19 +1323,26 @@ export async function syncMappedEntity(
     throw new AccountingMappingError('quickbooks_error', 502, message);
   }
 
+  let addressImported = false;
+  let synced: MappingRow;
   try {
     // Phase 2 (success) — likewise its own short, self-committing context.
-    return await runInDbContext(() => persistRemoteRef({
-      mappingId: mapping.id,
-      partnerId,
-      remoteEntityId: remote.id,
-      remoteSyncToken: remote.syncToken ?? null,
-      // RemoteRef.currencyCode is only ever populated by upsertCustomer (types.ts)
-      // — a catalog_item sync's `remote` always carries none — but the explicit
-      // entity-type gate documents that this is a deliberate org-only field, not
-      // an accident of which provider methods happen to fill it in today.
-      remoteCurrencyCode: breezeEntityType === 'org' ? (remote.currencyCode ?? null) : null,
-    }));
+    synced = await runInDbContext(async () => {
+      if (prep.kind === 'org' && existingRef && !prep.payload.billAddr) {
+        addressImported = await importMappedAddress(partnerId, breezeEntityId, remote);
+      }
+      return persistRemoteRef({
+        mappingId: mapping.id,
+        partnerId,
+        remoteEntityId: remote.id,
+        remoteSyncToken: remote.syncToken ?? null,
+        // RemoteRef.currencyCode is only ever populated by upsertCustomer (types.ts)
+        // — a catalog_item sync's `remote` always carries none — but the explicit
+        // entity-type gate documents that this is a deliberate org-only field, not
+        // an accident of which provider methods happen to fill it in today.
+        remoteCurrencyCode: breezeEntityType === 'org' ? (remote.currencyCode ?? null) : null,
+      });
+    });
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingMappingService',
@@ -1235,10 +1351,27 @@ export async function syncMappedEntity(
       remote_sync_token: remote.syncToken ?? 'none',
     });
     const label = breezeEntityType === 'org' ? 'customer' : 'item';
-    throw new AccountingMappingError(
-      'quickbooks_error',
-      502,
-      `QuickBooks accepted the ${label} sync (remote id ${remote.id}) but Breeze failed to record it — do not retry; contact support to reconcile`,
-    );
+    const message = `QuickBooks accepted the ${label} sync (remote id ${remote.id}) but Breeze failed to record it — do not retry; contact support to reconcile`;
+    // Exclude this unsafe-to-retry create from the pending-row sweep too.
+    try {
+      await runInDbContext(() => markMappingError(mapping.id, partnerId, message));
+    } catch (markErr) {
+      captureException(markErr instanceof Error ? markErr : new Error(String(markErr)));
+    }
+    throw new AccountingMappingError('record_failed', 502, message);
   }
+  if (addressImported) {
+    // Emit after the transaction commits, so the org Activity tab records only
+    // completed imports. Audit failure must not turn an accepted sync into a retry.
+    try {
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: breezeEntityId, actorType: 'system', initiatedBy: 'integration',
+        action: 'organization.update', resourceType: 'organization', resourceId: breezeEntityId,
+        details: { source: 'quickbooks', message: 'Address imported from QuickBooks' },
+      });
+    } catch (err) {
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  return mappingResult(synced, prep.kind === 'org' ? prep.payload.displayName : prep.payload.name);
 }

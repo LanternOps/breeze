@@ -174,6 +174,13 @@ working. Nothing here changes the stored `force_mfa` flag — the Partner Admin
 posture is intact, and `globalSetup` fails fast with the remedy above rather
 than timing out if it ever lands on `/auth/mfa/setup`.
 
+Separately, new partners now default to the *settings-level* **Require MFA**
+(`security.requireMfa = true`, since 2026-09-18). That axis ignores
+`MFA_FORCE_FOR_PARTNER_ADMIN`. The seeded Default Partner opts out of it
+explicitly in `apps/api/src/db/seed.ts` (`DEV_SEED_DEFAULT_PARTNER_SETTINGS`),
+which is why seeded admins can still log in password-only. A partner created
+through the UI during a run gets the default and its users must enrol.
+
 ### WebAuthn specs need `PUBLIC_APP_URL` to match the browser origin
 
 `intent-self-approve.spec.ts` and `ai-operator-approve-after-browser-close.spec.ts`

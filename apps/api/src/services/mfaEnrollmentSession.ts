@@ -299,6 +299,12 @@ export async function completeInitialMfaEnrollment<T>(
   if (input.identity.mfa !== true) {
     throw new Error('Replacement enrollment identity must be MFA-assured');
   }
+  // The factor this call installs is what assures the replacement session, so
+  // its source can only ever be 'factor' — a caller passing 'policy'/'idp'
+  // here has wired the wrong identity (spec D6).
+  if (input.identity.mfaSrc !== 'factor') {
+    throw new Error('Replacement enrollment identity must be factor-sourced');
+  }
   // Enrollment is the one factor write that must never omit its code set: the
   // codes it returns are the only escape hatch a user locked out of their own
   // factor has, and they exist exactly once. (An omitted pair is the

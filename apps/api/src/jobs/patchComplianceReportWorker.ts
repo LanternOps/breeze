@@ -7,6 +7,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import * as dbModule from '../db';
 import { devicePatches, devices, patchComplianceReports, patches, patchSourceEnum, patchSeverityEnum } from '../db/schema';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
+import { csvRow } from '../services/spreadsheetExport';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -148,7 +149,7 @@ async function generateComplianceSummary(
   );
 }
 
-function formatComplianceCsv(reportId: string, orgId: string, source: PatchSource | null, severity: PatchSeverity | null, summary: ComplianceSummary): string {
+export function formatComplianceCsv(reportId: string, orgId: string, source: PatchSource | null, severity: PatchSeverity | null, summary: ComplianceSummary): string {
   const nowIso = new Date().toISOString();
   const rows: Array<[string, string | number]> = [
     ['report_id', reportId],
@@ -166,8 +167,8 @@ function formatComplianceCsv(reportId: string, orgId: string, source: PatchSourc
   ];
 
   return [
-    'metric,value',
-    ...rows.map(([metric, value]) => `${metric},${JSON.stringify(String(value))}`)
+    csvRow(['metric', 'value']),
+    ...rows.map((row) => csvRow(row))
   ].join('\n');
 }
 

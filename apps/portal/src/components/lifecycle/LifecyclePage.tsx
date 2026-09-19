@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { portalApi, type HardwareLifecyclePortalLatestDto } from '@/lib/api';
 import {
@@ -28,15 +28,50 @@ function withRetryHint(message: string, seconds: number | null): string {
   return `${base} Try again in about ${minutes === 1 ? 'a minute' : `${minutes} minutes`}.`;
 }
 
+/** PageHeader at page level; an h2 with the same lede/action slots when
+ *  embedded under another page's H1. */
+function LifecycleHeader({
+  embedded,
+  lede,
+  action,
+}: {
+  embedded: boolean;
+  lede?: string;
+  action?: React.ReactNode;
+}) {
+  if (!embedded) return <PageHeader title="Hardware lifecycle" lede={lede} action={action} />;
+  return (
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h2 className="font-display text-xl font-semibold tracking-tight text-foreground">Hardware lifecycle</h2>
+        {lede && <p className="mt-1 text-sm text-muted-foreground">{lede}</p>}
+      </div>
+      {action}
+    </div>
+  );
+}
+
 export function LifecyclePage({
   initialRun,
   initialSummary,
+  initialContact = null,
+  // Defaults true (matching LifecyclePlanTable's own default) so an omitted
+  // prop keeps the pre-#5880 link behavior for any caller that hasn't
+  // threaded the flag through yet.
+  enableSelfService = true,
+  embedded = false,
 }: {
   initialRun: LifecycleRun | null;
   initialSummary: HardwareLifecycleSummary | null;
+  initialContact?: HardwareLifecyclePortalLatestDto['contact'];
+  enableSelfService?: boolean;
+  /** Rendered as a tab panel under DevicesPage's H1: the page header
+   *  steps down to a section heading so the page keeps one title. */
+  embedded?: boolean;
 }) {
   const [run, setRun] = useState<LifecycleRun | null>(initialRun);
   const [summary, setSummary] = useState<HardwareLifecycleSummary | null>(initialSummary);
+  const [contact, setContact] = useState(initialContact);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -65,6 +100,7 @@ export function LifecyclePage({
       const payload = latest.data as HardwareLifecyclePortalLatestDto;
       setRun(payload.run);
       setSummary(payload.summary);
+      setContact(payload.contact ?? null);
     } else {
       setMessage(latest.error ?? 'Could not load your hardware lifecycle plan.');
     }
@@ -87,8 +123,8 @@ export function LifecyclePage({
   if (!hasEverGeneratedARun) {
     return (
       <div>
-        <PageHeader
-          title="Hardware lifecycle"
+        <LifecycleHeader
+          embedded={embedded}
           lede="A replacement plan for the machines we manage for you."
         />
         {message && <ErrorNotice>{message}</ErrorNotice>}
@@ -108,8 +144,8 @@ export function LifecyclePage({
 
   return (
     <div>
-      <PageHeader
-        title="Hardware lifecycle"
+      <LifecycleHeader
+        embedded={embedded}
         lede={run ? `As of ${run.generatedAt}` : undefined}
         action={refreshButton}
       />
@@ -123,6 +159,7 @@ export function LifecyclePage({
         title={workstationsHeading}
         ruleSentence={`We plan to replace a computer ${replaceAgeYears} years after purchase, or when its warranty ends if it is still covered past that point.`}
         rows={workstations}
+        enableSelfService={enableSelfService}
       />
       {servers.length > 0 && (
         <LifecyclePlanTable
@@ -130,18 +167,12 @@ export function LifecyclePage({
           title="Servers"
           ruleSentence={`We plan to replace a server ${serverReplaceAgeYears} years after purchase, or when its warranty ends if it is still covered past that point. Server replacements are scheduled outside your business hours.`}
           rows={servers}
+          enableSelfService={enableSelfService}
         />
       )}
 
       <LifecycleRecommendations summary={{ recommendations: summary?.recommendations, other: summary?.other }} />
-      {/* Contact info for the closing line is not yet in the
-          GET /reports/lifecycle/latest payload (apps/api's
-          HardwareLifecyclePortalLatestDto carries only run + summary) — no
-          plumbing exists yet to pass a partner contact through this route.
-          LifecycleClosing already renders nothing without an email, so this
-          section is silent until that follow-up wires contactEmail/contactName
-          through. */}
-      <LifecycleClosing contactEmail={null} contactName={null} />
+      <LifecycleClosing contactEmail={contact?.email} contactName={contact?.name} />
     </div>
   );
 }

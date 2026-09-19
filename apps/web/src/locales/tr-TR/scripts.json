@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Yükseltilmiş yetkiler",
     "relativeTime": {
       "justNow": "Az önce",
       "minutesAgo": "{{count}}m önce",
@@ -1342,6 +1343,11 @@
       "confirmSuffix": "Bu işlem geri alınamaz."
     },
     "library": {
+      "target": "İçe aktarma hedefi",
+      "allOrgs": "Tüm kuruluşlar (iş ortağı genelinde)",
+      "chooseOrg": "Bir kuruluş seçin",
+      "partnerPermission": "Tüm kuruluşlar için betik içe aktaramazsınız. Bunun yerine bir kuruluş seçin.",
+      "importSuccess": "“{{name}}” içe aktarıldı",
       "title": "Sistem Komut Dosyası Kitaplığı",
       "description": "Komut dosyalarını kuruluşunuza aktarın",
       "searchPlaceholder": "Sistem komut dosyalarını arayın...",
@@ -1387,7 +1393,14 @@
     "resultSummary": "{{imported}} içe aktarıldı, {{renamed}} yeniden adlandırıldı, {{versioned}} sürümü oluşturuldu, {{skipped}} atlandı, {{failed}} başarısız oldu",
     "scriptCount": "{{count}} komut dosyaları pakette",
     "statusInvalid": "Geçersiz",
-    "exportLimit": "Paket başına en fazla {{max}} komut dosyasını dışa aktarabilirsiniz."
+    "exportLimit": "Paket başına en fazla {{max}} komut dosyasını dışa aktarabilirsiniz.",
+    "importDoneTitle": "İçe aktarma tamamlandı",
+    "importDoneNothing": "Hiçbir şey içe aktarılmadı",
+    "importDoneOpen": "Komut dosyasını aç",
+    "resultActionImported": "İçe aktarıldı",
+    "resultActionRenamed": "{{name}} adından yeniden adlandırıldı",
+    "resultActionVersioned": "Yeni sürüm olarak eklendi",
+    "resultOpen": "Aç"
   },
   "testRunner": {
     "title": "Test çalıştırması",

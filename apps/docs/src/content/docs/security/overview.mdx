@@ -47,6 +47,7 @@ Breeze implements multi-factor authentication with defense-in-depth:
 | **MFA** | TOTP (RFC 6238), 10 recovery codes (XXXX-XXXX format) |
 | **SMS MFA** | Optional Twilio integration for SMS-based codes |
 | **Passkey MFA** | WebAuthn/FIDO2 (`@simplewebauthn/server`) — phishing-resistant platform authenticators and security keys; per-credential signature counter for clone detection. Enrolment requires a current-password step-up. |
+| **Step-up-protected operations** | Some actions require a fresh second factor at the moment of the action, regardless of the tenant's MFA policy, via a single-use grant from `POST /auth/mfa/step-up` bound to the exact operation and target: adding or removing a factor, rotating recovery codes, registering an approver device, agent rollback, entering or extending device maintenance mode, and moving a device to another organization. Accounts with no enrolled factor cannot perform these. |
 | **Token revocation** | Explicit session invalidation, bulk logout per user; refresh-token family reuse detection (a replayed rotated token revokes the entire family) |
 
 Plaintext tokens are never stored. All token storage uses SHA-256 hashes.

@@ -15,6 +15,7 @@ interface MailboxConnectionDTO {
   status: 'pending_consent' | 'connected' | 'error' | 'reauth_required' | 'disabled';
   lastPolledAt: string | null;
   lastMessageAt: string | null;
+  verificationError: string | null;
 }
 
 const MAILBOX_STATUSES = new Set<MailboxConnectionDTO['status']>([
@@ -47,6 +48,8 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
   if (!isNullableString(value.displayName)) return null;
   if (!isMailboxStatus(value.status)) return null;
   if (!isNullableString(value.lastPolledAt) || !isNullableString(value.lastMessageAt)) return null;
+  const verificationError = 'verificationError' in value ? value.verificationError : null;
+  if (!isNullableString(verificationError)) return null;
 
   return {
     id: value.id,
@@ -55,6 +58,7 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
     status: value.status,
     lastPolledAt: value.lastPolledAt,
     lastMessageAt: value.lastMessageAt,
+    verificationError,
   };
 }
 
@@ -221,6 +225,11 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
               {c.status === 'reauth_required' ? (
                 <p className="text-xs text-destructive">
                   {t('m365Mailbox.reauthRequired')}
+                </p>
+              ) : null}
+              {c.status === 'error' && c.verificationError ? (
+                <p className="text-xs text-destructive" data-testid="m365-verification-error">
+                  {c.verificationError}
                 </p>
               ) : null}
               {canAdminMailbox && (c.status === 'error' || c.status === 'pending_consent') ? (

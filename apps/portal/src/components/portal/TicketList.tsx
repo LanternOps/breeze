@@ -105,7 +105,7 @@ export function TicketList({ tickets, error, enableSupportUsage = false }: Ticke
                   <tr key={ticket.id} className={ROW}>
                     {/* order-* reorders the card: subject and status share the
                         first line, priority and the update time trail below. */}
-                    <td className={cn(CELL, 'order-1 grow')}>
+                    <td className={cn(CELL, 'order-1 min-w-0 grow basis-0 sm:basis-auto')}>
                       <div>
                         <a className="font-semibold text-foreground underline-offset-4 hover:underline" href={withBase(`/tickets/${ticket.id}`)}>
                           {ticket.subject}
@@ -129,7 +129,7 @@ export function TicketList({ tickets, error, enableSupportUsage = false }: Ticke
                         />
                       )}
                     </td>
-                    <td className={cn(CELL, 'order-3')}>
+                    <td className={cn(CELL, 'order-3 basis-full sm:basis-auto')}>
                       {/* Priority is context, not state: plain text so the row
                           keeps ONE mark (status). Urgent and high keep their
                           tinted text; routine priorities stay muted. */}
@@ -146,7 +146,7 @@ export function TicketList({ tickets, error, enableSupportUsage = false }: Ticke
                         {ticket.priority.charAt(0).toUpperCase() + ticket.priority.slice(1)} priority
                       </span>
                     </td>
-                    <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-sm')}>
+                    <td className={cn(CELL, 'order-4 basis-full text-xs text-muted-foreground sm:basis-auto sm:text-sm')}>
                       <span className="sm:hidden">Updated </span>
                       {formatRelativeTime(ticket.updatedAt)}
                     </td>

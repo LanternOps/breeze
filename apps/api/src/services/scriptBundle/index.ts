@@ -35,7 +35,7 @@ import {
   type ScriptWriteAuth
 } from '../scriptWrite';
 import { clearedScriptSecurityAcknowledgementColumns } from '../scriptSecurityAcknowledgement';
-import { cutScriptVersion, type ScriptVersionProvenance } from '../scriptVersions';
+import { cutScriptVersion, type ScriptVersionProvenance, type ScriptVersionTx } from '../scriptVersions';
 import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
   MAX_BUNDLE_TAGS_PER_SCRIPT,
@@ -86,11 +86,12 @@ import {
  */
 export async function findSecretVariableReferences(
   scope: ScriptCreateScope,
-  content: string
+  content: string,
+  dbOrTx: DbOrTx = db
 ): Promise<string[]> {
   const keys = findVariableTokens(content);
   if (keys.length === 0) return [];
-  const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys);
+  const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys, dbOrTx);
   return keys.filter((key) => secrecyByKey.get(key)?.isSecret === true);
 }
 
@@ -117,12 +118,15 @@ interface VariableSecrecy {
  */
 async function lookupVariableSecrecyByKey(
   scope: ScriptCreateScope,
-  keys: string[]
+  keys: string[],
+  dbOrTx: DbOrTx = db
 ): Promise<Map<string, VariableSecrecy>> {
   const result = new Map<string, VariableSecrecy>();
   if (keys.length === 0) return result;
 
   if (scope.orgId) {
+    // Inherited partner variables require the resolver's separate system-scoped
+    // read; a request transaction cannot see them under the tenant RLS policy.
     const variableScope = await loadTenantVariableScope([scope.orgId]);
     const resolved = resolveForOrg(variableScope, scope.orgId);
     for (const key of keys) {
@@ -133,7 +137,7 @@ async function lookupVariableSecrecyByKey(
   }
 
   if (scope.partnerId) {
-    const rows = await db
+    const rows = await dbOrTx
       .select({ key: tenantVariables.key, isSecret: tenantVariables.isSecret })
       .from(tenantVariables)
       .where(
@@ -258,7 +262,8 @@ function readVariableBoundParameters(parameters: unknown): VariableBoundParamete
  */
 export async function findParameterSecretMismatches(
   scope: ScriptCreateScope,
-  parameters: unknown
+  parameters: unknown,
+  dbOrTx: DbOrTx = db
 ): Promise<ParameterSecretMismatch[]> {
   const bound = readVariableBoundParameters(parameters);
   if (bound.length === 0) return [];
@@ -278,7 +283,7 @@ export async function findParameterSecretMismatches(
   const scriptIsPartnerWide = scope.orgId === null;
 
   const keys = [...new Set(bound.map((p) => p.variableKey))];
-  const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys);
+  const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys, dbOrTx);
 
   const mismatches: ParameterSecretMismatch[] = [];
   for (const parameter of bound) {
@@ -493,12 +498,13 @@ export type BundleConflict = { row: ScriptRow; kind: BundleConflictKind };
  */
 async function findConflictByName(
   scope: ScriptCreateScope,
-  name: string
+  name: string,
+  dbOrTx: DbOrTx = db
 ): Promise<BundleConflict | undefined> {
   // Duplicate names are not prevented by any unique index; order by creation
   // so a conflict deterministically resolves to the OLDEST matching row
   // instead of whichever row the query plan happens to return first.
-  const [owned] = await db
+  const [owned] = await dbOrTx
     .select()
     .from(scripts)
     .where(and(eq(scripts.name, name), scopeCondition(scope)))
@@ -509,7 +515,7 @@ async function findConflictByName(
   const partnerWide = partnerWideConflictCondition(scope);
   if (!partnerWide) return undefined;
 
-  const [shared] = await db
+  const [shared] = await dbOrTx
     .select()
     .from(scripts)
     .where(and(eq(scripts.name, name), partnerWide))
@@ -663,7 +669,7 @@ export async function linkTags(scriptId: string, tagIds: string[], isExistingScr
 
 const MAX_RENAME_ATTEMPTS = 100;
 
-async function findFreeName(scope: ScriptCreateScope, base: string): Promise<string | null> {
+async function findFreeName(scope: ScriptCreateScope, base: string, dbOrTx: DbOrTx = db): Promise<string | null> {
   // Generate all candidates up front and resolve them with ONE query per
   // entry, not one per candidate — a fully-conflicting 200-entry bundle would
   // otherwise issue up to 20,000 sequential SELECTs.
@@ -677,7 +683,7 @@ async function findFreeName(scope: ScriptCreateScope, base: string): Promise<str
   // on a partner-wide name reproduces the very duplicate #3450 is about.
   const partnerWide = partnerWideConflictCondition(scope);
   const visible = partnerWide ? or(scopeCondition(scope), partnerWide) : scopeCondition(scope);
-  const taken = await db
+  const taken = await dbOrTx
     .select({ name: scripts.name })
     .from(scripts)
     .where(and(inArray(scripts.name, candidates), visible));
@@ -725,8 +731,10 @@ export async function importBundle(
      * pattern (insertScriptRow clamps that from content, fail closed).
      */
     provenanceFor?: (entry: ScriptBundleEntry, index: number) => Omit<ScriptVersionProvenance, 'createdBy'>;
-  }
+  },
+  transaction?: ScriptVersionTx
 ): Promise<BundleImportResult | ScriptScopeError> {
+  const dbOrTx = transaction ?? db;
   const scope = resolveScriptCreateScope(auth, options.availability, options.orgId);
   if (isScriptScopeError(scope)) return scope;
   const unowned = unownedScopeError(scope);
@@ -754,7 +762,7 @@ export async function importBundle(
       // findSecretVariableReferences's docblock. Per-entry, like every other
       // bundle-import failure mode: one script referencing a secret must not
       // sink the rest of the bundle.
-      const secretRefs = await findSecretVariableReferences(scope, entry.content);
+      const secretRefs = await findSecretVariableReferences(scope, entry.content, dbOrTx);
       if (secretRefs.length > 0) {
         result.errors.push({ index, name: entry.name, error: describeSecretVariableRejection(secretRefs) });
         continue;
@@ -764,13 +772,13 @@ export async function importBundle(
       // ORG-scoped import target — a tenantSecret→PARTNER-owned-secret binding
       // are all per-entry errors the same way. The ownership tier comes from
       // `scope`, the tier this bundle is being imported at.
-      const mismatches = await findParameterSecretMismatches(scope, entry.parameters);
+      const mismatches = await findParameterSecretMismatches(scope, entry.parameters, dbOrTx);
       if (mismatches.length > 0) {
         result.errors.push({ index, name: entry.name, error: describeParameterSecretMismatch(mismatches) });
         continue;
       }
 
-      const conflict = await findConflictByName(scope, entry.name);
+      const conflict = await findConflictByName(scope, entry.name, dbOrTx);
       const existing = conflict?.row;
 
       if (existing && options.mode === 'skip') {
@@ -816,7 +824,7 @@ export async function importBundle(
         // the body that will actually run. The previous body already has its
         // own row — cut at creation or by the 2026-10-16-100000 head backfill.
         // cutScriptVersion owns scripts.version, so this SET must not carry it.
-        await db.transaction(async (tx) => {
+        await dbOrTx.transaction(async (tx) => {
         await tx
           .update(scripts)
           .set({
@@ -854,8 +862,8 @@ export async function importBundle(
           });
         });
 
-        const tagIds = await ensureTagIds(scope, mergeTags(entry.tags, options.tags));
-        await linkTags(existing.id, tagIds, true);
+        const tagIds = await ensureTagIds(scope, mergeTags(entry.tags, options.tags), dbOrTx);
+        await linkTags(existing.id, tagIds, true, dbOrTx);
 
         result.versioned++;
         result.scripts.push({ index, name: entry.name, action: 'versioned', scriptId: existing.id });
@@ -866,7 +874,7 @@ export async function importBundle(
       let action: 'imported' | 'renamed' = 'imported';
       if (existing) {
         // mode === 'rename'
-        const free = await findFreeName(scope, entry.name);
+        const free = await findFreeName(scope, entry.name, dbOrTx);
         if (!free) {
           result.errors.push({
             index,
@@ -893,15 +901,15 @@ export async function importBundle(
         runAs: entry.runAs,
         exitCodeSeverityMapping: entry.exitCodeSeverityMapping ?? null
       }, options.provenanceFor
-        ? { provenance: { ...options.provenanceFor(entry, index), createdBy: auth.user.id } }
-        : { origin: 'imported' });
+        ? { tx: transaction, provenance: { ...options.provenanceFor(entry, index), createdBy: auth.user.id } }
+        : { tx: transaction, origin: 'imported' });
       if (!created) {
         result.errors.push({ index, name: entry.name, error: 'Insert returned no row' });
         continue;
       }
 
-      const tagIds = await ensureTagIds(scope, mergeTags(entry.tags, options.tags));
-      await linkTags(created.id, tagIds, false);
+      const tagIds = await ensureTagIds(scope, mergeTags(entry.tags, options.tags), dbOrTx);
+      await linkTags(created.id, tagIds, false, dbOrTx);
 
       if (action === 'renamed') result.renamed++;
       else result.imported++;

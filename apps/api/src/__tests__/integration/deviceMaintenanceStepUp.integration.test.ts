@@ -122,7 +122,7 @@ import { devices } from '../../db/schema';
 import { deviceRoutes } from '../../routes/devices';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { maintenanceResourceDigest, mintStepUpGrant } from '../../services/mfaStepUpGrant';
-import { lockMaintenanceAssurance } from '../../services/maintenanceAuthorization';
+import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import type { AuthContext } from '../../middleware/auth';
 import { createIntegrationTestClient, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -295,7 +295,7 @@ describe('device maintenance step-up: denial leaves the row byte-identical (RMM-
   it('holds the actor epoch lock until the maintenance transaction finishes', async () => {
     const binding = { userId: env.env.user.id, operation: 'device_maintenance' as const, authEpoch: 1, mfaEpoch: 1, sid: randomUUID(), resourceDigest: '' };
     await getTestDb().transaction(async (tx) => {
-      expect(await lockMaintenanceAssurance(tx, { user: { id: binding.userId }, token: { aep: 1, mep: 1 } } as AuthContext, binding)).toBe(true);
+      expect(await lockActorAssurance(tx, { user: { id: binding.userId }, token: { aep: 1, mep: 1 } } as AuthContext, binding)).toBe(true);
       let blocked = false;
       try {
         await getTestDb().transaction(async (resetTx) => {

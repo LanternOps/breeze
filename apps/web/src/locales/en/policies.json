@@ -1336,6 +1336,8 @@
       "readyToDeployStandalone": "Ready to deploy."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Auto-install armed",
+      "complianceCheckQueued": "Compliance check queued",
       "failedToLoadSoftwarePolicyData": "Failed to load software policy data",
       "couldNotLoadLatestPolicyDetailsShowing": "Could not load latest policy details. Showing cached data.",
       "couldNotLoadPolicyDetailsShowingCached": "Could not load policy details. Showing cached data.",
@@ -1375,7 +1377,19 @@
       "failedToUpdatePolicy": "Failed to update policy",
       "failedToCreatePolicy": "Failed to create policy",
       "policyUpdated": "Policy updated successfully",
-      "policyCreated": "Policy created successfully"
+      "policyCreated": "Policy created successfully",
+      "armInstallRequiresMfa": "Arming automatic install requires multi-factor authentication. Complete MFA, then try again.",
+      "armInstallRequiresPermission": "Arming automatic install requires the devices.execute permission. Ask an administrator to grant it, then try again.",
+      "installStatusPending": "Install queued",
+      "installStatusInProgress": "Installing…",
+      "installStatusCompleted": "Installed",
+      "installStatusFailed": "Install failed",
+      "installStatusGaveUp": "Gave up after repeated failures",
+      "installStatusSkipped": "Skipped this pass",
+      "installSkippedNoCatalog": "A required rule has no linked catalog item, so there's nothing to install. Add a catalog link in the policy editor to fix this.",
+      "installSkippedCapOrPlatform": "Not a failure — either the per-pass install cap was reached or this device's platform has no install method for the software. May be attempted again next pass.",
+      "installAttempts": "{{count}} attempt(s)",
+      "installLastAttempt": "Last install attempt: "
     },
     "deploymentList": {
       "running": "Running",
@@ -1413,7 +1427,9 @@
       "noDeploymentsYet": "No deployments have been created yet.",
       "failedToCancelDeployment": "Failed to cancel deployment",
       "deploymentCancelled": "Deployment cancelled",
-      "pageOf": "Page {{page}} of {{pages}}"
+      "pageOf": "Page {{page}} of {{pages}}",
+      "policyOwned": "Policy-owned",
+      "policyOwnedTooltip": "Created automatically by a software policy's auto-install remediation"
     },
     "deploymentProgress": {
       "queued": "Queued",
@@ -1597,6 +1613,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 devices — usually because this policy is not assigned to any device yet, but a fully compliant fleet or an empty site allowlist also reads as 0",
+      "manageAssignments": "Manage configuration policy assignments",
+      "gracePeriodHelp": "Applied on the next compliance pass",
       "scope": "Scope",
       "allOrganizations": "All organizations",
       "partnerWideTemplate": "(partner-wide template)",
@@ -1641,7 +1660,16 @@
       "autoUninstall2": "autoUninstall",
       "gracePeriod": "grace-period",
       "gracePeriod2": "gracePeriod",
-      "saving": "Saving..."
+      "saving": "Saving...",
+      "catalogLink": "Linked catalog item",
+      "catalogLinkNone": "None — not linked",
+      "catalogUnavailable": "The software catalog couldn't be loaded, so the catalog-link pickers below are empty. This is not the same as having no catalog items — reload the page before assuming a rule can't be linked.",
+      "autoInstall": "Auto-install missing software",
+      "autoInstallCatalogWarning": "{{count}} of {{total}} rule(s) have no linked catalog item and will be detected as missing but never installed.",
+      "dryRunLoading": "Checking how many devices this will affect...",
+      "dryRunResult": "This will install missing software on approximately {{count}} device(s).",
+      "dryRunUnavailable": "Device-count preview isn't available yet. Arming will still take effect on the next compliance pass.",
+      "dryRunNewPolicy": "This is a new policy — device impact isn't known until the first compliance pass after you save."
     },
     "softwareCatalog": {
       "ready": "Ready",

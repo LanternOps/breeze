@@ -25,6 +25,18 @@ vi.mock('./TicketPartsCard', () => ({
   default: (p: { ticketId: string; currencyCode?: string }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
 }));
 
+// Stubbed for the same reason TicketPartsCard is: this suite is not testing the
+// checklist. It matters more here, though — the real card self-fetches, and this
+// file's catch-all fetch mock answers unknown URLs with `{success:true}`, which
+// the checklist client correctly rejects as a failed load. That reports
+// `known: false`, and the resolve/close gate then fails CLOSED (by design,
+// #5808 W01), which would block the status changes these tests assert. The
+// checklist's own behaviour is covered by TicketChecklistCard.test.tsx and
+// TicketWorkbench.checklistConfirm.test.tsx.
+vi.mock('./TicketChecklistCard', () => ({
+  default: () => <div data-testid="ticket-checklist-card-stub" />,
+}));
+
 vi.mock('../../lib/ticketConfigApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/ticketConfigApi')>();
   return { ...actual, fetchTicketConfig: vi.fn().mockResolvedValue(null) };

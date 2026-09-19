@@ -30,7 +30,12 @@
     "toast": {
       "approved": "Correctif approuvé",
       "declined": "Correctif refusé",
+      "declinedAllRings": "Correctif refusé pour tous les anneaux de mise à jour",
       "deferred": "Correctif reporté"
+    },
+    "allRings": {
+      "label": "Effacer toutes les approbations d’anneaux",
+      "description": "Révoque également l’approbation de ce correctif dans tous les autres anneaux de mise à jour de ce partenaire, pas seulement dans la portée actuelle."
     },
     "confirm": {
       "title": "Confirmer l’approbation du correctif",
@@ -264,6 +269,7 @@
     "actions": {
       "deploy": "Déployer",
       "review": "Critique",
+      "unapprove": "Annuler l’approbation",
       "details": "Détails",
       "approveCount": "Approuvez {{count}}",
       "declineCount": "Déclin {{count}}",

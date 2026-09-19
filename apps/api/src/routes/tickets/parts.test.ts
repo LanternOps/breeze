@@ -98,6 +98,14 @@ vi.mock('../../db/schema', () => ({
     description: 'description', isBillable: 'isBillable', billingStatus: 'billingStatus',
     hourlyRate: 'hourlyRate', isApproved: 'isApproved', addedBy: 'addedBy'
   },
+  // #5783 W01: ticketChecklistService is reachable from routes/tickets/index.ts,
+  // and its module-scope CHECKLIST_ORDER reads these columns at import time.
+  ticketChecklistItems: {
+    id: 'id', orgId: 'orgId', ticketId: 'ticketId', label: 'label', detail: 'detail',
+    position: 'position', doneAt: 'doneAt', doneByUserId: 'doneByUserId', source: 'source',
+    sourceTemplateItemId: 'sourceTemplateItemId', createdBy: 'createdBy',
+    createdAt: 'createdAt', updatedAt: 'updatedAt',
+  },
   ticketParts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', addedBy: 'addedBy',
     description: 'description', quantity: 'quantity', unitPrice: 'unitPrice',
@@ -394,7 +402,7 @@ describe('GET /export/billables.csv', () => {
     const body = await res.text();
     const headerLine = body.split('\n')[0];
     const dataLine = body.split('\n')[1]?.replaceAll('"', '');
-    expect(headerLine).toBe('type,date,organization,ticket,description,technician,quantity,rate,amount,currency,billing_status,approved');
+    expect(headerLine).toBe('"type","date","organization","ticket","description","technician","quantity","rate","amount","currency","billing_status","approved"');
     expect(body).toContain('T-2026-0001');
     expect(dataLine).toContain(',62.50,USD,not_billed,');
     expect(body).not.toContain('cost');
@@ -490,7 +498,7 @@ describe('GET /export/billables.csv', () => {
 
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(
-      'type,date,organization,ticket,description,technician,quantity,rate,amount,currency,billing_status,approved',
+      '"type","date","organization","ticket","description","technician","quantity","rate","amount","currency","billing_status","approved"',
     );
   });
 });

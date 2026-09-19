@@ -33,11 +33,34 @@
       "maxConcurrentDesignRuns": "A Fleet Design run is already in progress for this organization.",
       "designRate": "This organization has reached its Fleet Design run limit for now.",
       "duplicate": "A matching Fleet Design run was already requested.",
-      "generic": "The run was not started ({{reason}})."
+      "generic": "The run was not started ({{reason}}).",
+      "noDesignerAgent": "No Fleet Designer agent exists yet for this organization's partner."
     },
     "fileAsDocument": "File as document",
     "fileAsDocumentSuccess": "Design filed in the document library.",
-    "fileAsDocumentError": "Could not file the design as a document."
+    "fileAsDocumentError": "Could not file the design as a document.",
+    "designerSetup": {
+      "status": {
+        "missing": "No Fleet Designer agent exists yet.",
+        "off": "The Fleet Designer agent is turned off.",
+        "disabled": "The Fleet Designer agent is disabled.",
+        "killSwitchOff": "AI agents are turned off platform-wide right now."
+      },
+      "enableHint": "Enable it here. The designer only reads your fleet and writes a design; it never changes a device.",
+      "askPartnerAdmin": "Ask a partner administrator to enable the Fleet Designer agent under Settings → AI Agents.",
+      "killSwitchHint": "This is a platform setting; nothing on this page can change it.",
+      "enableButton": "Enable Fleet Designer",
+      "enableSuccess": "Fleet Designer enabled.",
+      "enableError": "Could not enable Fleet Designer.",
+      "errors": {
+        "partnerScopeRequired": "Only a partner administrator can enable the Fleet Designer agent.",
+        "partnerAdminRequired": "Only a partner administrator can enable the Fleet Designer agent.",
+        "killSwitchOff": "AI agents are turned off platform-wide right now.",
+        "agentKindExists": "A designer agent already exists. Refresh and try again.",
+        "actPrerequisitesNotMet": "The designer agent needs a recipient before it can run. Add one under Settings → AI Agents.",
+        "invalidRecipients": "Your account could not be set as the designer's recipient. Add one under Settings → AI Agents."
+      }
+    }
   },
   "sections": {
     "found": "What was found",
@@ -130,5 +153,21 @@
       "scope": "Function / policy",
       "detail": "Detail"
     }
+  },
+  "evidence": {
+    "notMeasured": "Not measured",
+    "org": "Organization",
+    "devices": "Devices",
+    "software": "Software inventory",
+    "services": "System services",
+    "network": "Network evidence",
+    "posture": "Security posture",
+    "health": "Fleet health",
+    "configuration": "Configuration",
+    "automation": "Automation evidence",
+    "logs": "Event logs",
+    "counts": "Activity counts",
+    "precursors": "Early warning indicators",
+    "drift": "Drift since the approved design"
   }
 }

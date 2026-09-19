@@ -58,6 +58,9 @@ const preview = {
       enrollmentIp: '198.51.100.2',
     }],
     denials24h: 4,
+    sendingDomains: [
+      { domain: 'mail.acme.example', status: 'verified', verifiedAt: '2026-09-01T00:00:00.000Z' },
+    ],
     matchedSuspendedAxes: ['email_domain' as const, 'billing_card_fingerprint' as const],
   },
 };

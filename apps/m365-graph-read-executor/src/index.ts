@@ -8,6 +8,7 @@ import { createEdDsaInternalRequestAuthenticator } from './internalAuth';
 import { createMicrosoftGraphClient } from './microsoft/graphClient';
 import { createExecutorOperations } from './operations';
 import { createSigninLimiter } from './signinLimiter';
+import { createSigninEventsLimiter } from './signinEventsLimiter';
 import { createSyncContinuationCodec } from './syncContinuation';
 
 type Serve = (options: {
@@ -45,6 +46,7 @@ export async function startConfiguredExecutor(): Promise<{ close(): void }> {
       limits: config.sync,
       continuations: createSyncContinuationCodec({ key: config.sync.continuationKey }),
       signinLimiter: createSigninLimiter({ requestsPerMinute: config.sync.signinActivityRpm }),
+      signinEventsLimiter: createSigninEventsLimiter({ requestsPerMinute: config.sync.signinEventsRpm }),
     },
   });
   const app = createExecutorApp({

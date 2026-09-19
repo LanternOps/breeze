@@ -176,6 +176,8 @@ function input(f: Fixture, runId = f.runId): NarrativePersistInput {
     occurrenceKey: '2026-08-31T07:00:00+02:00',
     context: narrativeContext(),
     outcome: narrativeOutcome(),
+    // #4248 W03 — email deliveries are covered by narrativeEmailDelivery.integration.test.ts.
+    emailRecipientUserIds: [],
   };
 }
 

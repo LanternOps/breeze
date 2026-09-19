@@ -5,16 +5,23 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  devicePatches: { id: 'id', patchId: 'patchId', deviceId: 'deviceId', status: 'status', createdAt: 'createdAt' },
+  devicePatches: { id: 'id', patchId: 'patchId', deviceId: 'deviceId', orgId: 'orgId', status: 'status', createdAt: 'createdAt', availableVersion: 'availableVersion' },
   patches: {
     id: 'id', externalId: 'externalId', title: 'title', category: 'category',
     severity: 'severity', releaseDate: 'releaseDate', requiresReboot: 'requiresReboot',
-    source: 'source', packageId: 'packageId', version: 'version',
+    source: 'source', packageId: 'packageId', version: 'version', supersededBy: 'supersededBy',
   },
   patchApprovals: { patchId: 'patchId', status: 'status', ringId: 'ringId', partnerId: 'partnerId' },
   organizations: { id: 'id', partnerId: 'partnerId' },
+  patchPolicies: { id: 'id', kind: 'kind', deferralDays: 'deferralDays', partnerId: 'partnerId' },
+  devices: { id: 'id', orgId: 'orgId' },
   OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending'],
 }));
+
+// patchEligibility.ts (W02) composes the live path from these; the suites
+// below only exercise the config-injected adapter.
+vi.mock('./featureConfigResolver', () => ({ resolvePatchConfigDetailsForDevice: vi.fn() }));
+vi.mock('./configPolicyPatching', () => ({ loadPolicyLocalPatchConfig: vi.fn() }));
 
 import { db } from '../db';
 import {
@@ -25,11 +32,11 @@ import {
   evaluateAppRule,
   isCategoryAllowed,
   parseRingAutoApprove,
-  resolveApprovedPatchesForDevice,
   THIRD_PARTY_PATCH_SOURCES,
   type ApprovalEvaluationConfig,
   type RingConfig,
 } from './patchApprovalEvaluator';
+import { resolveApprovedPatchesForDevice } from './patchEligibility';
 
 // Compile-time checks: deprecated alias and exported source list stay usable.
 const _aliasCheck: RingConfig = { ringId: null, categoryRules: [], autoApprove: {}, deferralDays: 0 };

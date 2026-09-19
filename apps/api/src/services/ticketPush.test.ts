@@ -113,6 +113,13 @@ describe('isEligibleTicketRecipient', () => {
     m.getUserPermissions.mockReset();
   });
 
+  it('bypasses cached permissions when revalidating a changed ticket scope', async () => {
+    m.getUserPermissions.mockResolvedValueOnce(null);
+    const active = { userId: 'u-2', partnerId: 'p-1', status: 'active', email: null };
+    expect(await isEligibleTicketRecipient(active, 'p-1', 'o-1', null, { bypassCache: true })).toBe(false);
+    expect(m.getUserPermissions).toHaveBeenCalledWith('u-2', { partnerId: 'p-1', orgId: 'o-1' }, { bypassCache: true });
+  });
+
   it('requires an active same-partner recipient before resolving permissions', async () => {
     const invited = { userId: 'u-2', partnerId: 'p-1', status: 'invited', email: 'u@example.test' };
     const foreign = { userId: 'u-3', partnerId: 'p-2', status: 'active', email: null };

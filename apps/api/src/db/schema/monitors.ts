@@ -30,6 +30,22 @@ export const networkMonitors = pgTable('network_monitors', {
   lastResponseMs: real('last_response_ms'),
   lastError: text('last_error'),
   consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+  // #5754 — the certificate observed on the last http_check, promoted out of
+  // the untyped network_monitor_results.details blob so the expiring_certs
+  // sweep kind has a queryable evidence source. NULL everywhere means "never
+  // observed under the current agent"; there is deliberately no backfill,
+  // because historical rows carry no observed host or state.
+  tlsNotAfter: timestamp('tls_not_after', { withTimezone: true }),
+  // THE endpoint the certificate belongs to. Redirects are followed by
+  // default, so a monitor on a.example can legitimately report b.example's
+  // certificate; a finding that omits this names the wrong endpoint.
+  tlsObservedHost: varchar('tls_observed_host', { length: 255 }),
+  tlsIssuer: varchar('tls_issuer', { length: 255 }),
+  tlsObservedAt: timestamp('tls_observed_at', { withTimezone: true }),
+  // 'observed' | 'handshake_failed' | 'not_tls', emitted by the agent and
+  // never derived: a handshake failure returns before certificate extraction,
+  // so a null tls_not_after must never read as "fine".
+  tlsState: varchar('tls_state', { length: 16 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
