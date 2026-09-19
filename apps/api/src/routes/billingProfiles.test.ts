@@ -1,10 +1,13 @@
 // apps/api/src/routes/billingProfiles.test.ts
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { listWorkTypes, createWorkType, updateWorkType, archiveWorkType, authRef, permsRef } = vi.hoisted(() => ({
+const { listWorkTypes, createWorkType, updateWorkType, archiveWorkType, authRef, permsRef, permissionCalls } = vi.hoisted(() => ({
   listWorkTypes: vi.fn(), createWorkType: vi.fn(), updateWorkType: vi.fn(), archiveWorkType: vi.fn(),
   authRef: { current: { scope: 'partner', partnerId: '11111111-1111-4111-8111-111111111111' } as { scope: string; partnerId: string | null } | null },
   permsRef: { current: { permissions: [{ resource: 'billing_profiles', action: 'read' }, { resource: 'billing_profiles', action: 'write' }] } },
+  // Appended by the requirePermission mock at MODULE LOAD (the middleware
+  // factories run when billingProfiles.ts is imported), in registration order.
+  permissionCalls: [] as Array<{ resource: string; action: string }>,
 }));
 
 vi.mock('../services/workTypeService', () => ({
@@ -26,7 +29,17 @@ vi.mock('../middleware/auth', async () => ({
     if (!scopes.includes(auth.scope)) return c.json({ error: 'Forbidden' }, 403);
     await next();
   },
-  requirePermission: () => async (c: any, next: any) => {
+  // The (resource, action) args matter: this mock used to DISCARD them and wave
+  // every request through, so a route wired to the wrong permission -- or to
+  // none at all -- passed every test in this file. It now records the pair the
+  // route actually runs under AND enforces it against permsRef.
+  requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
+    const granted = permsRef.current.permissions.some(
+      (p: { resource: string; action: string }) =>
+        (p.resource === resource || p.resource === '*') && (p.action === action || p.action === '*'),
+    );
+    if (!granted) return c.json({ error: 'Forbidden', requires: { resource, action } }, 403);
+    permissionCalls.push({ resource, action });
     c.set('permissions', permsRef.current);
     await next();
   }
@@ -168,5 +181,46 @@ describe('service errors', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Work type not found', code: 'WORK_TYPE_NOT_FOUND' });
     expect(service.mock.calls[0]?.slice(0, 2)).toEqual([workTypeId, partnerId]);
+  });
+});
+
+describe('permission wiring', () => {
+  beforeEach(() => { permissionCalls.length = 0; });
+
+  it.each([
+    ['GET', '/work-types', 'read'],
+    ['POST', '/work-types', 'write'],
+    ['PATCH', `/work-types/${workTypeId}`, 'write'],
+    ['DELETE', `/work-types/${workTypeId}`, 'write'],
+  ] as const)('%s %s runs under billing_profiles:%s and nothing else', async (method, path, action) => {
+    const previous = permsRef.current;
+    permsRef.current = { permissions: [{ resource: 'billing_profiles', action }] };
+    listWorkTypes.mockResolvedValue([]);
+    createWorkType.mockResolvedValue({ id: workTypeId, name: 'Remote', isActive: true });
+    updateWorkType.mockResolvedValue({ id: workTypeId, name: 'Remote', isActive: true });
+    archiveWorkType.mockResolvedValue({ workType: { id: workTypeId, isActive: false }, clearedCategoryCount: 0 });
+    const res = await billingProfilesRoutes.request(path, {
+      method,
+      ...(method === 'POST' || method === 'PATCH'
+        ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Remote' }) }
+        : {}),
+    });
+    expect(res.status).toBeLessThan(400);
+    expect(permissionCalls).toEqual([{ resource: 'billing_profiles', action }]);
+
+    // CONTROL: the OTHER billing_profiles permission alone is not enough --
+    // proves the route is gated on this exact pair, not merely on "some
+    // permission middleware ran".
+    permissionCalls.length = 0;
+    permsRef.current = { permissions: [{ resource: 'billing_profiles', action: action === 'read' ? 'write' : 'read' }] };
+    const denied = await billingProfilesRoutes.request(path, {
+      method,
+      ...(method === 'POST' || method === 'PATCH'
+        ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Remote' }) }
+        : {}),
+    });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ requires: { resource: 'billing_profiles', action } });
+    permsRef.current = previous;
   });
 });
