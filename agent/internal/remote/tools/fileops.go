@@ -664,7 +664,13 @@ func openCleanupTarget(goos, cleanPath, volumeRoot string) (*cleanupTarget, erro
 			volumeRoot = string(filepath.Separator)
 		}
 	}
-	if !isRealPathUnderRoot(volumeRoot, anchor) {
+	underRoot, err := isRealPathUnderRoot(volumeRoot, anchor)
+	if err != nil {
+		// A resolution error (e.g. EACCES on a component) is refused, not
+		// guessed at — same stance as a genuine cross-volume anchor.
+		return nil, fmt.Errorf("%s anchor %s could not be resolved on volume %s: %w", CleanupGuardRejectedPrefix, anchor, volumeRoot, err)
+	}
+	if !underRoot {
 		return nil, fmt.Errorf("%s anchor %s is not on volume %s", CleanupGuardRejectedPrefix, anchor, volumeRoot)
 	}
 

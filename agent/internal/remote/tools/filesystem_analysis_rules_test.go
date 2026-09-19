@@ -194,8 +194,51 @@ func TestEnumerateWindowsRecycleBinsReportsReadErrors(t *testing.T) {
 	}
 }
 
+// §13 row 11 follow-up: isRealPathUnderRoot used to collapse EVERY
+// EvalSymlinks error — permission-denied included — into "not under root",
+// silently dropping a real trash dir with no trace. A non-ENOENT error must
+// surface as a scanError, and an EACCES specifically must bump
+// permissionDeniedCount, the same contract estimateDirectorySize already
+// upholds for a locked directory.
+func TestTrashPathsForRootReportsPermissionDeniedTrashDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode bits this test relies on")
+	}
+	scanRoot := t.TempDir()
+	locked := filepath.Join(scanRoot, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	trash := filepath.Join(locked, ".Trash")
+	if err := os.MkdirAll(trash, 0o700); err != nil {
+		t.Fatalf("mkdir trash: %v", err)
+	}
+	// EvalSymlinks on trash must traverse `locked`, which we now seal off.
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	home := locked
+	paths, scanErrors, permissionDeniedCount := trashPathsForRoot("darwin", scanRoot, home)
+	for _, p := range paths {
+		if p == trash {
+			t.Fatalf("a permission-denied trash dir must not be silently offered as a candidate, got %v", paths)
+		}
+	}
+	if len(scanErrors) == 0 {
+		t.Fatal("expected the permission error to be reported, got none")
+	}
+	if permissionDeniedCount == 0 {
+		t.Fatal("expected permissionDeniedCount to be bumped for the EACCES")
+	}
+}
+
 func TestTrashPathsForRootIsVolumeScopedOnWindows(t *testing.T) {
-	paths, scanErrors := trashPathsForRoot("windows", `C:\Users\alice`, "")
+	paths, scanErrors, _ := trashPathsForRoot("windows", `C:\Users\alice`, "")
 	if len(paths) != 0 || len(scanErrors) != 0 {
 		t.Fatalf("a scan rooted below the volume root must emit no bin candidates, got %v / %+v", paths, scanErrors)
 	}
@@ -210,7 +253,7 @@ func TestTrashPathsForRootPosixSkipsTrashOutsideTheScannedRoot(t *testing.T) {
 		}
 	}
 	elsewhere := t.TempDir()
-	paths, _ := trashPathsForRoot("linux", elsewhere, home)
+	paths, _, _ := trashPathsForRoot("linux", elsewhere, home)
 	for _, path := range paths {
 		if strings.HasPrefix(path, home) {
 			t.Fatalf("trash under %s must not be offered for a scan rooted at %s (got %v)", home, elsewhere, paths)
@@ -225,7 +268,7 @@ func TestTrashPathsForRootPosixUsesHome(t *testing.T) {
 			t.Fatalf("mkdir trash: %v", err)
 		}
 	}
-	paths, _ := trashPathsForRoot("linux", "/", home)
+	paths, _, _ := trashPathsForRoot("linux", "/", home)
 	want := filepath.Join(home, ".local", "share", "Trash")
 	found := false
 	for _, p := range paths {
@@ -237,7 +280,7 @@ func TestTrashPathsForRootPosixUsesHome(t *testing.T) {
 		t.Fatalf("expected %s in %v", want, paths)
 	}
 
-	paths, _ = trashPathsForRoot("darwin", "/", home)
+	paths, _, _ = trashPathsForRoot("darwin", "/", home)
 	want = filepath.Join(home, ".Trash")
 	found = false
 	for _, p := range paths {

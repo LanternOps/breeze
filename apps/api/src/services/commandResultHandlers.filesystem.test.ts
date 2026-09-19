@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -31,6 +31,8 @@ vi.mock('../routes/agents/helpers', () => ({
   handleFilesystemAnalysisCommandResult: vi.fn(async () => {}),
 }));
 
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   db: {
@@ -42,10 +44,16 @@ vi.mock('../db', () => ({
   },
 }));
 
+import { db } from '../db';
 import { commandResultHandlers } from './commandResultHandlers';
 import { handleFilesystemAnalysisCommandResult } from '../routes/agents/helpers';
+import { captureException } from './sentry';
 
 describe('filesystem_analysis result handler registration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('is registered, so the WebSocket leg persists the snapshot', () => {
     expect(commandResultHandlers['filesystem_analysis']).toBeTypeOf('function');
   });
@@ -78,5 +86,42 @@ describe('filesystem_analysis result handler registration', () => {
     });
 
     expect(handleFilesystemAnalysisCommandResult).toHaveBeenCalledWith(command, result, 'org-123');
+  });
+
+  // An unknown device was warned about and silently dropped, with no Sentry
+  // trail — an on-call engineer had only the console log (which most
+  // deployments don't ship) to notice a scan result was orphaned.
+  it('reports an unknown device to Sentry, not just a console warning', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const command = {
+      id: 'cmd-2',
+      deviceId: 'dev-missing',
+      type: 'filesystem_analysis',
+      payload: { path: '/', trigger: 'on_demand', scanMode: 'baseline' },
+    } as never;
+    const result = { status: 'completed', stdout: '{"path":"/"}' } as never;
+
+    await commandResultHandlers['filesystem_analysis']!({
+      agentId: 'agent-1',
+      command,
+      commandId: 'cmd-2',
+      result,
+      resolvedDeviceId: 'dev-missing',
+      stdout: '{"path":"/"}',
+    });
+
+    expect(handleFilesystemAnalysisCommandResult).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ commandId: 'cmd-2', resolvedDeviceId: 'dev-missing' }),
+    );
+    warn.mockRestore();
   });
 });

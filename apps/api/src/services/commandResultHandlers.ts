@@ -953,6 +953,7 @@ async function handleFilesystemAnalysisResult({
   command,
   result,
   resolvedDeviceId,
+  commandId,
 }: Parameters<CommandResultHandler>[0]): Promise<void> {
   const { handleFilesystemAnalysisCommandResult } = await import('../routes/agents/helpers');
   const [device] = await db
@@ -961,7 +962,11 @@ async function handleFilesystemAnalysisResult({
     .where(eq(devices.id, resolvedDeviceId))
     .limit(1);
   if (!device) {
-    console.warn(`[commandResultHandlers] filesystem_analysis result for unknown device ${resolvedDeviceId}`);
+    const message = `[commandResultHandlers] filesystem_analysis result for unknown device ${resolvedDeviceId}`;
+    console.warn(message);
+    // A dropped scan result is silent data loss otherwise: nothing but this
+    // console line (which most deployments don't ship) ever showed it.
+    captureException(new Error(message), undefined, { commandId, resolvedDeviceId });
     return;
   }
   await handleFilesystemAnalysisCommandResult(command, result, device.orgId);

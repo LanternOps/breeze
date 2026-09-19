@@ -569,7 +569,8 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 
 	// Trash usage is calculated separately from known locations, scoped to the
 	// volume that was scanned (defect 2: the bin was hardcoded to C:\).
-	trashPaths, trashScanErrors := getTrashPaths(cleanRoot)
+	trashPaths, trashScanErrors, trashPermissionDenied := getTrashPaths(cleanRoot)
+	permissionDeniedCount += trashPermissionDenied
 	for _, trashScanError := range trashScanErrors {
 		if len(scanErrors) >= maxFSErrors {
 			break
@@ -1245,9 +1246,10 @@ func enumerateWindowsRecycleBins(volumeRoot string) ([]string, []FilesystemScanE
 
 // trashPathsForRoot is getTrashPaths with the platform and home directory
 // passed in, so both grammars are testable from any host.
-func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanError) {
+func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanError, int64) {
 	paths := make([]string, 0, 12)
 	scanErrors := make([]FilesystemScanError, 0, 2)
+	var permissionDeniedCount int64
 	seen := make(map[string]struct{})
 	addPath := func(p string) {
 		if p == "" {
@@ -1257,8 +1259,19 @@ func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanE
 		// POSIX trash enumeration used to ignore the scan root entirely, so a
 		// /data scan proposed deleting the OS volume's trash (spec §13 row 11).
 		// Windows is already volume-scoped by isWindowsVolumeRoot above.
-		if goos != "windows" && !isRealPathUnderRoot(scanRoot, clean) {
-			return
+		if goos != "windows" {
+			underRoot, err := isRealPathUnderRoot(scanRoot, clean)
+			if err != nil {
+				// A non-ENOENT EvalSymlinks failure (e.g. EACCES on a parent
+				// component) used to collapse into "not under root" and drop the
+				// trash dir with no trace. Report it like any other scan error
+				// instead (spec §13 row 11 follow-up).
+				appendScanError(&scanErrors, clean, err, &permissionDeniedCount)
+				return
+			}
+			if !underRoot {
+				return
+			}
 		}
 		if _, ok := seen[clean]; ok {
 			return
@@ -1276,7 +1289,7 @@ func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanE
 	switch goos {
 	case "windows":
 		if !isWindowsVolumeRoot(scanRoot) {
-			return paths, scanErrors
+			return paths, scanErrors, permissionDeniedCount
 		}
 		binPaths, binErrors := enumerateWindowsRecycleBins(scanRoot)
 		for _, p := range binPaths {
@@ -1309,10 +1322,10 @@ func trashPathsForRoot(goos, scanRoot, home string) ([]string, []FilesystemScanE
 		}
 		addPath(filepath.Join("/root", ".local", "share", "Trash"))
 	}
-	return paths, scanErrors
+	return paths, scanErrors, permissionDeniedCount
 }
 
-func getTrashPaths(scanRoot string) ([]string, []FilesystemScanError) {
+func getTrashPaths(scanRoot string) ([]string, []FilesystemScanError, int64) {
 	home, _ := os.UserHomeDir()
 	return trashPathsForRoot(runtime.GOOS, scanRoot, home)
 }
@@ -1322,22 +1335,33 @@ func getTrashPaths(scanRoot string) ([]string, []FilesystemScanError) {
 // trash directory reached through a symlink out of the scanned tree is not in
 // scope, and a candidate that cannot be resolved at all is refused rather than
 // guessed at (spec §13 row 11).
-func isRealPathUnderRoot(scanRoot, candidate string) bool {
+//
+// A non-nil error means EvalSymlinks failed for a reason OTHER than the path
+// not existing (e.g. EACCES on an intermediate component) — the caller must
+// surface that as a scan error rather than silently treating it the same as
+// "not under root" (spec §13 row 11 follow-up).
+func isRealPathUnderRoot(scanRoot, candidate string) (bool, error) {
 	realRoot, err := filepath.EvalSymlinks(scanRoot)
 	if err != nil {
-		return false
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
 	}
 	realCandidate, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
-		// A trash directory that does not exist is not a candidate anyway —
-		// estimateDirectorySize would drop it a moment later.
-		return false
+		if os.IsNotExist(err) {
+			// A trash directory that does not exist is not a candidate anyway —
+			// estimateDirectorySize would drop it a moment later.
+			return false, nil
+		}
+		return false, err
 	}
 	if realCandidate == realRoot {
-		return true
+		return true, nil
 	}
 	prefix := strings.TrimSuffix(realRoot, string(filepath.Separator)) + string(filepath.Separator)
-	return strings.HasPrefix(realCandidate, prefix)
+	return strings.HasPrefix(realCandidate, prefix), nil
 }
 
 func estimateDirectorySize(root string, deadline time.Time, maxEntries int, permissionDenied *int64) (sizeBytes int64, filesScanned int64, timedOut bool, err error) {
