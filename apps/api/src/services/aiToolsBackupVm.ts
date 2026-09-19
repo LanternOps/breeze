@@ -66,6 +66,8 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'backup snapshot recovery as a Hyper-V virtual machine or Linux rebuild to a VHDX image',
     // Both engines' hosts are device args: the central gate (enforceDeviceArgs)
     // runs the org+site check on whichever one the call carries.
     deviceArgs: ['targetDeviceId', 'rebuildHostDeviceId'],
@@ -260,6 +262,8 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'backup snapshot instant boot as a virtual machine on a target device',
     deviceArgs: ['targetDeviceId'],
     definition: {
       name: 'instant_boot_vm',
@@ -386,6 +390,8 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'virtual machine restore resource estimate for a backup snapshot',
     definition: {
       name: 'get_vm_restore_estimate',
       description: 'Get a resource estimate for restoring a snapshot as a virtual machine.',

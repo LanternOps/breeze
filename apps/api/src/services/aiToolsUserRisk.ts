@@ -63,6 +63,8 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'devices',
+    searchHint: 'fleet device reliability, uptime, crashes, hangs, hardware and service failures',
     definition: {
       name: 'get_fleet_health',
       description: 'Query device reliability scores across the fleet. Returns devices ranked by reliability (worst first) with uptime, crash history, and failure metrics.',
@@ -167,6 +169,8 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'security',
+    searchHint: 'user risk rankings, score factors and trends across organizations',
     definition: {
       name: 'get_user_risk_scores',
       description: 'Return ranked user risk scores with factor breakdowns and trend direction for accessible organizations.',
@@ -241,6 +245,8 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'security',
+    searchHint: 'user risk profile, score factors, trend history and risk events',
     definition: {
       name: 'get_user_risk_detail',
       description: 'Fetch a single user risk profile including latest score, factors, trend history, and risk-impacting events.',
@@ -281,6 +287,8 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2 as AiToolTier,
+    domain: 'security',
+    searchHint: 'security awareness training assignments for a user',
     definition: {
       name: 'assign_security_training',
       description: 'Assign security awareness training to a user and emit auditable events.',

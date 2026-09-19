@@ -67,6 +67,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'local backup vault inventory, configuration and synchronization status',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_vaults',
@@ -148,6 +150,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'local backup vault details and synchronization summaries for one device',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_vault_status',
@@ -237,6 +241,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'local backup vault synchronization for a vault or selected snapshot',
     definition: {
       name: 'trigger_vault_sync',
       description: 'Dispatch a vault sync command for a specific local vault.',
@@ -334,6 +340,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'local backup vault configuration: create, update path, storage type and retention',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'configure_vault',

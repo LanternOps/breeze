@@ -72,6 +72,8 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'security',
+    searchHint: 'audit log, recent actions, actors and resource changes',
     definition: {
       name: 'query_audit_log',
       description: 'Search the audit log for recent actions. Useful for investigating what happened on devices or who made changes.',
@@ -218,6 +220,8 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'security',
+    searchHint: 'device change history: software, services, startup, network, scheduled tasks, users, hardware and OS versions',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_change_log',

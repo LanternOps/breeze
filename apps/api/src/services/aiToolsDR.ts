@@ -169,6 +169,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'disaster recovery plans, status, RPO/RTO targets and recovery group counts',
     definition: {
       name: 'query_dr_plans',
       description: 'List disaster recovery plans with plan status, RPO/RTO targets, and plan-group counts.',
@@ -241,6 +243,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'disaster recovery plan details, recovery groups and restore configuration',
     definition: {
       name: 'get_dr_plan_details',
       description: 'Get a disaster recovery plan with all plan groups and restore configuration details.',
@@ -286,6 +290,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'backup',
+    searchHint: 'disaster recovery execution status, plan run history and execution details',
     definition: {
       name: 'get_dr_execution_status',
       description: 'Get DR execution details for a specific execution or list executions for a plan.',
@@ -391,6 +397,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3,
+    domain: 'backup',
+    searchHint: 'disaster recovery plan execution: rehearsal, failover, failback',
     definition: {
       name: 'execute_dr_plan',
       description: 'Create a DR execution record and queue the execution manifest for failover, failback, or rehearsal.',
@@ -467,6 +475,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 2,
+    domain: 'backup',
+    searchHint: 'disaster recovery plans: create, update; recovery groups: add, update, delete',
     deviceArgs: ['devices'],
     definition: {
       name: 'manage_dr_plan',
