@@ -13,7 +13,9 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
-import { AI_SYSTEM_PROMPT_BASE } from './aiAgentSystemPrompt';
+import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
+import { renderToolIndexByDomain } from './aiToolIndex';
+import { listChatSurfaceToolNames } from './aiAgentSdkTools';
 import { getActiveDeviceContext } from './brainDeviceContext';
 import {
   sanitizePageContext,
@@ -611,6 +613,8 @@ export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageC
   const parts: string[] = [];
 
   parts.push(AI_SYSTEM_PROMPT_BASE);
+  parts.push(renderToolIndexByDomain(listChatSurfaceToolNames()));
+  parts.push(AI_SYSTEM_PROMPT_TAIL);
 
 
 
