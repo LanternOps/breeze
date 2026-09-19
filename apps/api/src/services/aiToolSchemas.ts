@@ -23,15 +23,6 @@ import {
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 
-// Execution plane W05 (spec §5.5) — zero-import leaf, so this schema map does
-// not acquire the launch tool's runtime graph (artifact service, admission,
-// the streaming session manager, the chat run bridge).
-import {
-  WORKSPACE_LAUNCH_MAX_GOAL_CHARS,
-  WORKSPACE_LAUNCH_MAX_INPUT_DEVICES,
-  WORKSPACE_LAUNCH_MAX_INPUT_HANDLES,
-} from './workspace/workspaceLaunchLimits';
-
 // Reusable validators
 const uuid = z.string().guid();
 
@@ -163,6 +154,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
     flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
     limit: z.number().int().min(1).optional(),
+  }),
+
+  get_network_asset_reachability: z.object({
+    asset_id: uuid,
   }),
 
   get_ip_history: z.object({
@@ -1284,16 +1279,6 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceIds: z.array(uuid).max(200).optional(),
     siteId: uuid.optional(),
     maxRows: z.number().int().min(1).max(1_000_000).optional(),
-  }),
-
-  // Execution plane W05 (spec §5.5). Mirrors the MCP `tool()` declaration
-  // exactly, through the same exported constants — a mismatch means the SDK
-  // accepts an input the central validator rejects.
-  workspace_launch_analysis: z.object({
-    goal: z.string().min(1).max(WORKSPACE_LAUNCH_MAX_GOAL_CHARS),
-    deviceIds: z.array(uuid).max(WORKSPACE_LAUNCH_MAX_INPUT_DEVICES).optional(),
-    siteId: uuid.optional(),
-    inputHandles: z.array(uuid).max(WORKSPACE_LAUNCH_MAX_INPUT_HANDLES).optional(),
   }),
 
   // Execution plane W04 — sandbox workspace tools. Bounds mirror

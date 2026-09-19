@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { partners } from '../db/schema';
+import { readTimeTrackingSessionSuggestions } from '@breeze/shared';
 
 /**
  * W06 (#3900) partner-wide flag for auto-suggested time entries. Lives in
@@ -20,12 +21,15 @@ export const SESSION_SUGGESTION_DEFAULTS: SessionSuggestionSettings = Object.fre
   mergeGapMinutes: 10,
 });
 
-function asRecord(val: unknown): Record<string, unknown> {
-  return val && typeof val === 'object' && !Array.isArray(val) ? (val as Record<string, unknown>) : {};
-}
-
 export function parseSessionSuggestionSettings(partnerSettings: unknown): SessionSuggestionSettings {
-  const block = asRecord(asRecord(asRecord(partnerSettings).timeTracking).sessionSuggestions);
+  // Tolerant read against the shared contract (W02-API / M14): validated data
+  // on the happy path, the raw sub-object plus a warning when a stored row
+  // doesn't match — never a throw, and never a whole-object drop that would
+  // discard the fields that ARE valid.
+  const { settings: block, valid } = readTimeTrackingSessionSuggestions(partnerSettings);
+  if (!valid) {
+    console.warn('[timeSuggestionSettings] stored timeTracking.sessionSuggestions failed validation; falling back to per-field defaults');
+  }
   const int = (v: unknown, fallback: number) =>
     typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : fallback;
   return {

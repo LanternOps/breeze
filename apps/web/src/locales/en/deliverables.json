@@ -67,13 +67,26 @@
       "on_ticket_resolve": "Delivered when the linked ticket resolves"
     },
     "autoEvidenceReport": "Attach report runs as evidence",
+    "autoEvidenceNone": "None",
+    "autoEvidenceHelp": "Evidence is generated on the due day and becomes visible to the customer when the occurrence is delivered.",
+    "autoEvidenceEmpty": "No managed evidence report types are available yet.",
     "owner": "Owner",
     "ticketCategory": "Ticket category",
     "portalVisible": "Show in customer portal",
-    "sortOrder": "Sort order"
+    "sortOrder": "Sort order",
+    "instructions": "Internal instructions",
+    "instructionsHint": "Internal — never shown to the customer.",
+    "checklistTemplate": "Checklist template",
+    "checklistTemplateNone": "None",
+    "checklistTemplateAllOrgs": "All orgs",
+    "checklistTemplateManage": "Manage checklist templates"
   },
   "drawer": {
     "title": "Occurrences",
+    "empty_one": "No occurrences yet. The first one is planned {{count}} day before its due date.",
+    "empty_other": "No occurrences yet. The first one is planned {{count}} days before its due date.",
+    "emptyWithDate_one": "No occurrences yet. The first one is planned {{count}} day before its due date ({{date}}).",
+    "emptyWithDate_other": "No occurrences yet. The first one is planned {{count}} days before its due date ({{date}}).",
     "evidence": "Evidence",
     "noEvidence": "No evidence attached",
     "late": "Late",
@@ -84,7 +97,10 @@
     "uploadEvidence": "Upload a file as evidence",
     "uploadEvidenceHint": "PDF, JPEG, PNG or WebP, up to 10 MB. The file is filed in this organization’s document library.",
     "evidenceDocument": "Document",
-    "upload": "Upload"
+    "upload": "Upload",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Show checklist",
+    "hideChecklist": "Hide checklist"
   },
   "evidence": {
     "reportRun": "Report run",
@@ -177,7 +193,8 @@
       "leadDays": "Open this many days before due",
       "graceDays": "Mark missed this many days after due",
       "artifactRequired": "Artifact required",
-      "completionMode": "Completion"
+      "completionMode": "Completion",
+      "autoEvidenceReportType": "Evidence report type"
     },
     "ownerScope": {
       "legend": "Who is this set for?",

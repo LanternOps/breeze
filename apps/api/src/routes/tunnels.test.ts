@@ -34,16 +34,29 @@ const { evaluateCapability, partnerIdForDevice, partnerTrustMode, unresolvedPart
 }));
 
 // --- DB mock ---
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const mockDb: Record<string, any> = {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
-  },
-  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
-}));
+  };
+  // `transaction` hands the callback a DISTINCT `tx` whose insert delegates to
+  // the same mocked queue — so tests can assert the savepointed write went
+  // through `tx` (a write through the ambient `db` inside the callback would
+  // defeat the savepoint in production).
+  const mockTx = {
+    insert: vi.fn((...args: unknown[]) => mockDb.insert(...args)),
+    select: vi.fn((...args: unknown[]) => mockDb.select(...args)),
+  };
+  mockDb.transaction = vi.fn(async (fn: (tx: any) => any) => fn(mockTx));
+  mockDb.__tx = mockTx;
+  return {
+    db: mockDb,
+    runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   tunnelSessions: {},
@@ -598,11 +611,12 @@ describe('POST /tunnels/proxy-connect', () => {
       .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)   // device lookup
       .mockReturnValueOnce(makeSelectChain([assetRow]) as any)       // discovered asset lookup
       .mockReturnValueOnce(makeSelectChain([]) as any)               // source-ip allowlist (none = allowed)
-      // --- Call 2: insert conflicts, re-select finds the same rule ---
+      .mockReturnValueOnce(makeSelectChain([]) as any)               // pre-check: no rule yet
+      // --- Call 2: pre-check finds the rule, no insert attempted ---
       .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
       .mockReturnValueOnce(makeSelectChain([assetRow]) as any)
       .mockReturnValueOnce(makeSelectChain([]) as any)
-      .mockReturnValueOnce(makeSelectChain([newRule]) as any);       // re-select existing rule
+      .mockReturnValueOnce(makeSelectChain([newRule]) as any);       // pre-check: existing rule
 
     vi.mocked(db.insert)
       // --- Call 1 ---
@@ -611,7 +625,6 @@ describe('POST /tunnels/proxy-connect', () => {
       .mockReturnValueOnce(makeInsertChain([proxySessionRow]) as any)     // session insert
       .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any)          // audit: tunnel.open
       // --- Call 2 ---
-      .mockReturnValueOnce(rejectingInsertChain() as any)                 // allowlist insert conflicts (23505)
       .mockReturnValueOnce(makeInsertChain([{ ...proxySessionRow, id: 'session-proxy-0002' }]) as any) // session insert
       .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any);         // audit: tunnel.open
 
@@ -661,9 +674,7 @@ describe('POST /tunnels/proxy-connect', () => {
       .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)   // device lookup
       .mockReturnValueOnce(makeSelectChain([assetRow]) as any)       // discovered asset lookup
       .mockReturnValueOnce(makeSelectChain([]) as any)               // source-ip allowlist
-      .mockReturnValueOnce(makeSelectChain([disabledRule]) as any);  // re-select existing (disabled) rule
-
-    vi.mocked(db.insert).mockReturnValueOnce(rejectingInsertChain() as any); // allowlist insert conflicts
+      .mockReturnValueOnce(makeSelectChain([disabledRule]) as any);  // pre-check finds the (disabled) rule
 
     const res = await app.request('/tunnels/proxy-connect', {
       method: 'POST',
@@ -678,14 +689,48 @@ describe('POST /tunnels/proxy-connect', () => {
     // Never silently re-enabled, and no tunnel session created for a
     // disabled target.
     expect(db.update).not.toHaveBeenCalled();
-    expect(db.insert).toHaveBeenCalledTimes(1); // only the failed allowlist insert attempt
+    expect(db.insert).not.toHaveBeenCalled(); // the pre-check found it; nothing to insert
+  });
+
+  // Concurrent first-Connect race: the pre-check misses, the savepointed insert
+  // loses to the other writer (23505), and the winner's row is re-selected.
+  // The savepoint keeps the request transaction usable for that re-select and
+  // the session insert that follows (prod 2026-09-15: without it, 25P02 → 500).
+  it('re-selects the winner\'s rule when the savepointed insert loses a concurrent race', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([assetRow]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any)               // source-ip allowlist
+      .mockReturnValueOnce(makeSelectChain([]) as any)               // pre-check: nothing yet
+      .mockReturnValueOnce(makeSelectChain([newRule]) as any);       // re-select the winner's row
+
+    vi.mocked(db.insert)
+      .mockReturnValueOnce(rejectingInsertChain() as any)                 // allowlist insert loses (23505)
+      .mockReturnValueOnce(makeInsertChain([proxySessionRow]) as any)     // session insert
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any);         // audit: tunnel.open
+
+    const res = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).tunnel).toBeDefined();
+    // The losing insert ran inside a nested transaction (savepoint) and went
+    // through `tx`, not the ambient `db` proxy.
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect((db as any).__tx.insert).toHaveBeenCalledTimes(1);
+    // No allowlist.create audit — this caller did not create the rule.
+    expect(auditCalls(db.insert as any).filter((a) => a.action === 'tunnel.allowlist.create')).toHaveLength(0);
   });
 
   it('returns {tunnel} only — no ticket — on a successful connect', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
       .mockReturnValueOnce(makeSelectChain([assetRow]) as any)
-      .mockReturnValueOnce(makeSelectChain([]) as any);
+      .mockReturnValueOnce(makeSelectChain([]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any);              // pre-check: no rule yet
 
     vi.mocked(db.insert)
       .mockReturnValueOnce(makeInsertChain([newRule]) as any)
@@ -718,7 +763,8 @@ describe('POST /tunnels/proxy-connect', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
       .mockReturnValueOnce(makeSelectChain([assetRow]) as any)
-      .mockReturnValueOnce(makeSelectChain([]) as any);
+      .mockReturnValueOnce(makeSelectChain([]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any);              // pre-check: no rule yet
 
     vi.mocked(db.insert)
       .mockReturnValueOnce(makeInsertChain([newRule]) as any)

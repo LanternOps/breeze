@@ -116,12 +116,14 @@ import {
 } from '../__tests__/integration/db-utils';
 import { releaseApprovedIntent } from './intentReleaseWorker';
 
-// m365_disable_user / m365_reset_password → { resource: 'm365', action:
-// 'execute' } in aiGuardrails.TOOL_PERMISSIONS. revalidation step (e)
+// m365_disable_user / m365_reset_password → { resource: 'organizations',
+// action: 'write' } in aiGuardrails.TOOL_PERMISSIONS (2026-09-17 ROLE audit
+// §2.6: `m365` was never a resource in the canonical catalog; the M365 surface
+// is owned by organizations:read/write at its routes). revalidation step (e)
 // re-checks the REQUESTER still holds this against their freshly-rebuilt
 // role, so the requester's org role must carry it or release fails
 // `rbac_denied` (not the M365 path).
-const M365_EXECUTE = { resource: 'm365', action: 'execute' } as const;
+const M365_EXECUTE = { resource: 'organizations', action: 'write' } as const;
 const APPROVALS_DECIDE = { resource: 'approvals', action: 'decide' } as const;
 
 /** Real org-scope AuthContext for the requester, same shape authMiddleware

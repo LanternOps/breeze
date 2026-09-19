@@ -115,6 +115,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'sso_token_exchange_grants', // One-time SSO exchange authority. Forced RLS, one system-only ALL policy; only guarded auth lifecycle transactions may consume it.
   'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
   'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.
+  'email_provider_domain_releases', // Provider-side "delete this domain" outbox (spec 2026-09-17 partner sending domains §3.3). Deliberately carries NO partner_id: cascadeDeletePartner deletes from every table that has one, which would erase the provider handle this table exists to keep across the partner's deletion. No tenant axis. Forced RLS, single system-only policy → only system context. Not in EXEMPT_TABLES: with no org_id and no shape-list entry, no offender scan reaches it.
 ]);
 
 // Tables with org_id metadata that are intentionally not generic org-tenant
@@ -316,6 +317,30 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // for cascadeDeletePartner's dynamic partner_id sweep.
   // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
   ['org_merge_events', 'partner_id'],
+  // partner_sending_domains / partner_sender_identities (spec 2026-09-17,
+  // partner sending domains W02): the MSP's custom outbound From domain and
+  // one sender identity per (partner, mail stream). Partner-axis (Shape 3),
+  // deliberately no org_id — the From domain is the MSP's identity, and a
+  // per-org sending domain is the internal-phishing shape (spec §3.1). No
+  // org_id means no cascade / export-policy / org-merge registration;
+  // cascadeDeletePartner's dynamic partner_id sweep erases both, and its
+  // topological order puts identities before domains via the composite FK.
+  // GRANT includes DELETE for that sweep. The sibling outbox
+  // email_provider_domain_releases is INTENTIONAL_UNSCOPED above — it must
+  // never gain a partner_id column.
+  // Functional cross-partner forge proof: partnerSendingDomainsRls.integration.test.ts.
+  ['partner_sending_domains', 'partner_id'],
+  ['partner_sender_identities', 'partner_id'],
+  // partner_sending_daily_stats (spec 2026-09-17 §9.3, partner sending domains
+  // W06): per-partner, per-UTC-day delivery counters written by the Resend
+  // delivery webhook. Partner-axis (Shape 3) like its two siblings above, and
+  // deliberately without a domain_id dimension — the spec's bounce/complaint
+  // thresholds and the auto-suspension kill switch are both per PARTNER. No
+  // org_id means no cascade / export-policy / org-merge registration;
+  // cascadeDeletePartner's dynamic partner_id sweep erases it, and the GRANT
+  // includes DELETE for that sweep.
+  // Functional cross-partner forge proof: partnerSendingDailyStats.integration.test.ts.
+  ['partner_sending_daily_stats', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -371,6 +396,22 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // ticketChecklistTemplatesPartnerRls.integration.test.ts.
   'ticket_checklist_templates',
   'ticket_checklist_template_items',
+  // tool_sources / tool_source_tools (Tool catalog W01, #5215 / #5216, spec
+  // 2026-09-07 §5): a registration of an external MCP server is org-scoped
+  // (org_id set) OR partner-wide (partner_id set, org_id NULL — one MSP
+  // registration every customer's AI session can reach). Created dual-axis from
+  // day one in 2026-10-16-193500-tool-sources, with both partner-wide SELECT
+  // branches in that same migration, so neither needs a
+  // PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry. tool_source_tools DENORMALISES the
+  // owner from its parent (constraint trigger tool_source_tools_owner_guard_trg
+  // keeps them equal) so the per-session resolver stays one indexed query. The
+  // org_id column means org-tenant auto-discovery already asserts the
+  // breeze_has_org_access branch, so these entries are what assert the
+  // breeze_has_partner_access (partner-wide) branch. CHECKs
+  // <table>_one_owner_chk enforce exactly one axis. Functional cross-partner
+  // forge proof: toolSourcesPartnerRls.integration.test.ts.
+  'tool_sources',
+  'tool_source_tools',
   'users',
   'deployment_invites',
   'access_reviews',
@@ -661,6 +702,12 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
   'ticket_checklist_templates',
   'ticket_checklist_template_items',
+  // tool_sources_one_owner_chk / tool_source_tools_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-193500 (#5216).
+  // Both partner-wide SELECT branches ship in that same migration, so neither
+  // needs a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
+  'tool_sources',
+  'tool_source_tools',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',

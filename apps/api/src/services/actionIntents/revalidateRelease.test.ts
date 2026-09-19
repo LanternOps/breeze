@@ -2,7 +2,24 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 
 vi.mock('../aiTools', () => ({ getToolTier: vi.fn(() => 3) }));
-vi.mock('../aiGuardrails', () => ({ checkToolPermission: vi.fn(async () => null) }));
+vi.mock('../aiGuardrails', () => ({
+  checkToolPermission: vi.fn(async () => null),
+  checkPermissionRequirements: vi.fn(async () => null),
+}));
+// Tool catalog W01 PR B (#5216): the external-tool binding branch. Both
+// loaders are mocked at the module boundary; the live-DB behaviour of the
+// resolver is covered in toolSources/resolver.test.ts and the partner RLS
+// integration suite.
+vi.mock('../toolSources/resolver', () => ({
+  loadTenantToolBindingState: vi.fn(async () => null),
+  loadTenantToolForExecution: vi.fn(async () => null),
+}));
+vi.mock('../toolSources/guardrails', () => ({
+  tenantToolPermissionRequirement: vi.fn((tier: number) => ({
+    resource: 'external_tools',
+    action: tier === 1 ? 'use' : 'write',
+  })),
+}));
 vi.mock('./agentReleaseAuthority', () => ({
   checkAgentReleaseAuthority: vi.fn(async () => ({ ok: true })),
 }));
@@ -38,12 +55,16 @@ vi.mock('../aiAgents/sweepActMode', () => ({
 }));
 
 import { revalidateApprovedIntentForRelease } from './revalidateRelease';
-import { checkToolPermission } from '../aiGuardrails';
+import { checkToolPermission, checkPermissionRequirements } from '../aiGuardrails';
+import { loadTenantToolBindingState, loadTenantToolForExecution } from '../toolSources/resolver';
+import { getToolTier } from '../aiTools';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { validateAuthorizationKeys } from './policyDecidable';
 import { policyDecideEnabled } from '../../config/env';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
+import { buildAuthContextForIntent } from './actorContext';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 
 /** Minimal ActionIntent shape the function actually reads. */
 function intentFixture(overrides: Record<string, unknown> = {}) {
@@ -536,5 +557,205 @@ describe('revalidateApprovedIntentForRelease script_reviewer branch (AI script a
     );
     expect(result).toEqual({ ok: false, errorCode: 'digest_mismatch' });
     expect(revalidateScriptReviewerEvidence).not.toHaveBeenCalled();
+  });
+});
+
+describe('revalidateApprovedIntentForRelease external tool branch (tool catalog W01 PR B, #5216)', () => {
+  const TOOL_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const args = { name: 'Printer 3', companyId: 42 };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const externalIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    actionName: 'hudu__create_asset',
+    arguments: args,
+    argumentDigest: digest,
+    riskTier: 3,
+    approvalScope: 'supervised',
+    toolSourceToolId: TOOL_ID,
+    toolRevision: 'rev-7',
+    ...overrides,
+  });
+  const liveState = (overrides: { tool?: Record<string, unknown>; source?: Record<string, unknown> } = {}) => ({
+    tool: { id: TOOL_ID, enabled: true, removedAt: null, revision: 'rev-7', tier: 3, ...overrides.tool },
+    source: { id: 'src-1', status: 'active', ...overrides.source },
+  });
+  const descriptor = { id: TOOL_ID, qualifiedName: 'hudu__create_asset', tier: 3, revision: 'rev-7' };
+
+  beforeEach(() => {
+    vi.mocked(loadTenantToolBindingState).mockResolvedValue(liveState() as never);
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor, source: {} } as never);
+  });
+
+  it('releases when the live row is enabled, the source active and the revision unchanged — and hands back the descriptor', async () => {
+    const result = await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.tenantTool).toBe(descriptor);
+    // The core registry is never consulted for a qualified name: it would
+    // answer `undefined` and fail the release as tier_escalated.
+    expect(getToolTier).not.toHaveBeenCalled();
+    expect(checkToolPermission).not.toHaveBeenCalled();
+    // RBAC is the external_tools:write grant, re-checked against the REBUILT
+    // auth, not the caller's stale one.
+    expect(checkPermissionRequirements).toHaveBeenCalledWith(
+      expect.objectContaining({ user: { id: 'user-1' } }),
+      [{ resource: 'external_tools', action: 'write' }],
+    );
+    // The dispatch-time reload re-applies the owner predicate for the actor.
+    expect(loadTenantToolForExecution).toHaveBeenCalledWith(TOOL_ID, expect.objectContaining({ user: { id: 'user-1' } }));
+  });
+
+  it('refuses with external_tool_drift when the tool revision changed since approval', async () => {
+    vi.mocked(loadTenantToolBindingState).mockResolvedValue(liveState({ tool: { revision: 'rev-8' } }) as never);
+    const result = await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'external_tool_drift' });
+    expect(loadTenantToolForExecution).not.toHaveBeenCalled();
+  });
+
+  it('refuses with external_tool_disabled when the tool is disabled, removed, or gone', async () => {
+    vi.mocked(loadTenantToolBindingState).mockResolvedValueOnce(liveState({ tool: { enabled: false } }) as never);
+    expect(await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest }))
+      .toMatchObject({ ok: false, errorCode: 'external_tool_disabled' });
+
+    vi.mocked(loadTenantToolBindingState).mockResolvedValueOnce(liveState({ tool: { removedAt: new Date() } }) as never);
+    expect(await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest }))
+      .toMatchObject({ ok: false, errorCode: 'external_tool_disabled' });
+
+    vi.mocked(loadTenantToolBindingState).mockResolvedValueOnce(null);
+    expect(await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest }))
+      .toMatchObject({ ok: false, errorCode: 'external_tool_disabled' });
+  });
+
+  it('refuses with external_tool_source_unavailable when the source is in error or disabled', async () => {
+    for (const status of ['error', 'disabled']) {
+      vi.mocked(loadTenantToolBindingState).mockResolvedValueOnce(liveState({ source: { status } }) as never);
+      expect(await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest }))
+        .toMatchObject({ ok: false, errorCode: 'external_tool_source_unavailable' });
+    }
+  });
+
+  it('refuses with external_tool_disabled when the actor-scoped dispatch reload resolves nothing (kill switch / owner mismatch)', async () => {
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue(null);
+    const result = await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'external_tool_disabled' });
+  });
+
+  it('refuses with rbac_denied when the rebuilt actor no longer holds external_tools:write', async () => {
+    vi.mocked(checkPermissionRequirements).mockResolvedValueOnce('Missing permission: external_tools:write');
+    const result = await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'rbac_denied' });
+  });
+
+  it('a THROWN binding load fails closed as external_tool_check_failed, never escaping to strand the claimed intent', async () => {
+    vi.mocked(loadTenantToolBindingState).mockRejectedValueOnce(new Error('connection terminated'));
+    const result = await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'external_tool_check_failed' });
+    // Distinct from a real revocation: an operator scanning error_code must be
+    // able to tell an infrastructure fault from a disabled tool.
+    expect(result).not.toMatchObject({ errorCode: 'external_tool_disabled' });
+  });
+
+  it('a THROWN actor-scoped reload fails closed as external_tool_check_failed too', async () => {
+    vi.mocked(loadTenantToolForExecution).mockRejectedValueOnce(new Error('redis blip'));
+    const result = await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'external_tool_check_failed' });
+  });
+
+  it('refuses a malformed binding (tool id without a revision) instead of trusting it', async () => {
+    const result = await revalidateApprovedIntentForRelease(externalIntent({ toolRevision: null }), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'external_tool_drift' });
+    expect(loadTenantToolBindingState).not.toHaveBeenCalled();
+  });
+
+  it('leaves the core path untouched — no tenantTool on a core release', async () => {
+    const coreArgs = { to: ['a@example.com'] };
+    const coreDigest = computeArgumentDigest(canonicalizeArguments(coreArgs));
+    const result = await revalidateApprovedIntentForRelease(
+      intentFixture({ arguments: coreArgs, argumentDigest: coreDigest, toolSourceToolId: null, toolRevision: null }),
+      { boundArgumentDigest: coreDigest },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.tenantTool).toBeUndefined();
+    expect(loadTenantToolBindingState).not.toHaveBeenCalled();
+    expect(getToolTier).toHaveBeenCalled();
+  });
+});
+
+describe('revalidateApprovedIntentForRelease org-wide governance site ceiling', () => {
+  const args = { userPrincipalName: 'victim@contoso.test' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const governanceIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    actionName: 'm365_disable_user',
+    arguments: args,
+    argumentDigest: digest,
+    ...overrides,
+  });
+
+  /**
+   * Defence in depth behind the raise gate in intentService.ts: the ceiling is
+   * re-derived LIVE here (actorContext rebuilds allowedSiteIds from the DB),
+   * so a requester who was unrestricted when they raised the intent and has
+   * since been confined to a site does not get the approved identity-tenant
+   * mutation released on their behalf.
+   */
+  it('refuses release when the requester has SINCE become site-restricted', async () => {
+    vi.mocked(buildAuthContextForIntent).mockResolvedValueOnce({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      user: { id: 'user-1' }, principal: { kind: 'user_session' },
+      allowedSiteIds: ['site-1'],
+    } as never);
+
+    const result = await revalidateApprovedIntentForRelease(
+      governanceIntent(),
+      { boundArgumentDigest: digest },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'site_ceiling',
+      details: { reason: SITE_CEILING_WRITE_DENIED_MESSAGE },
+    });
+    // The refusal stands on its own — it does not depend on RBAC also failing.
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('refuses release when the rebuilt context carries an exact-DEVICE ceiling', async () => {
+    vi.mocked(buildAuthContextForIntent).mockResolvedValueOnce({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      user: { id: 'user-1' }, principal: { kind: 'user_session' },
+      allowedDeviceIds: ['device-1'],
+    } as never);
+
+    const result = await revalidateApprovedIntentForRelease(
+      governanceIntent({ actionName: 'google_suspend_user' }),
+      { boundArgumentDigest: digest },
+    );
+    expect(result).toMatchObject({ ok: false, errorCode: 'site_ceiling' });
+  });
+
+  it('releases the same intent for a still-UNRESTRICTED requester', async () => {
+    // Control: the default actorContext mock carries no ceiling at all.
+    const result = await revalidateApprovedIntentForRelease(
+      governanceIntent(),
+      { boundArgumentDigest: digest },
+    );
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it('does not gate a NON-governance tool for a site-restricted requester', async () => {
+    // Control on the other axis: a site ceiling is normal for device work and
+    // must not become a blanket release refusal.
+    vi.mocked(buildAuthContextForIntent).mockResolvedValueOnce({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      user: { id: 'user-1' }, principal: { kind: 'user_session' },
+      allowedSiteIds: ['site-1'],
+    } as never);
+    const plainArgs = { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' };
+    const plainDigest = computeArgumentDigest(canonicalizeArguments(plainArgs));
+
+    const result = await revalidateApprovedIntentForRelease(
+      intentFixture({ actionName: 'manage_services', arguments: plainArgs, argumentDigest: plainDigest }),
+      { boundArgumentDigest: plainDigest },
+    );
+    expect(result).toMatchObject({ ok: true });
   });
 });

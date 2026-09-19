@@ -49,8 +49,12 @@
   "deciding": "Wird gesendet…",
   "expiresIn": "Läuft in {{minutes}} Min. ab",
   "expiresSoon": "Läuft in weniger als einer Minute ab",
+  "expiresInHours": "Läuft in {{hours}} Std. ab",
+  "expiresInDays": "Läuft in {{days}} Tagen ab",
   "expired": "Abgelaufen",
   "unknownOrganization": "Unbekannte Organisation",
+  "intentNoLongerPending": "Diese Genehmigung ist nicht mehr ausstehend.",
+  "dismiss": "Ausblenden",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{action}} für {{org}} genehmigt",
   "pagination": {
@@ -62,6 +66,7 @@
   "errors": {
     "noApproverDevice": "Registrieren Sie in Ihrem Profil ein Genehmigungsgerät und versuchen Sie es erneut.",
     "notSoleApprover": "Eine andere berechtigte Person muss diese Anfrage genehmigen.",
+    "siteCeiling": "Diese Genehmigung gewährt organisationsweite Berechtigungen. Ihr Zugriff ist auf bestimmte Standorte beschränkt, daher muss eine andere Person diese Anfrage entscheiden.",
     "verificationFailed": "Die Überprüfung wurde abgebrochen oder ist fehlgeschlagen. Versuchen Sie es erneut.",
     "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
     "expired": "Diese Anfrage ist abgelaufen, bevor eine Entscheidung getroffen wurde.",
@@ -86,5 +91,25 @@
       "approvedPromoteFailed": "Genehmigt, aber die Anfrage zur Vorautorisierung konnte nicht gesendet werden. Versuchen Sie es erneut in den Agenteneinstellungen.",
       "policyDecideDisabled": "Genehmigt. Die Vorautorisierung konnte nicht angefordert werden, da sie für diese Bereitstellung deaktiviert ist."
     }
-  }
+  },
+  "recent": {
+    "title": "Kürzlich",
+    "subtitle": "Bereits entschieden oder abgeschlossen",
+    "loading": "Kürzliche Genehmigungen werden geladen…",
+    "error": "Kürzliche Genehmigungen konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Kürzlich wurde nichts abgeschlossen.",
+    "status": {
+      "failed": "Fehlgeschlagen",
+      "rejected": "Abgelehnt",
+      "expired": "Abgelaufen",
+      "cancelled": "Abgebrochen",
+      "completed": "Abgeschlossen",
+      "denied": "Abgelehnt",
+      "approved": "Genehmigt",
+      "reported": "Gemeldet",
+      "unknown": "Unbekannt"
+    }
+  },
+  "proposedByAgentExecuteNotice": "Eine Genehmigung führt dies jetzt aus — kein Testlauf, auch nicht im Schattenmodus."
 }

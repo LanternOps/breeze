@@ -35,6 +35,10 @@ const state = vi.hoisted(() => ({
   ambientContext: undefined as { scope: string } | undefined,
   /** Every ambient scope a select ran under — pins the read to a system context. */
   selectScopes: [] as Array<string | undefined>,
+  /** #4442 W05 — every raw `db.execute` (the cohort's per-org advisory lock). */
+  executed: [] as unknown[],
+  /** #4442 W05 — the ambient scope each `db.execute` ran under. */
+  executeScopes: [] as Array<string | undefined>,
 }));
 
 function resetDbState(): void {
@@ -43,6 +47,8 @@ function resetDbState(): void {
   state.selectCount = 0;
   state.ambientContext = undefined;
   state.selectScopes = [];
+  state.executed = [];
+  state.executeScopes = [];
 }
 
 vi.mock('../../db', () => {
@@ -68,7 +74,14 @@ vi.mock('../../db', () => {
   }
 
   return {
-    db: { select: vi.fn(() => selectBuilder()) },
+    db: {
+      select: vi.fn(() => selectBuilder()),
+      execute: vi.fn(async (q: unknown) => {
+        state.executed.push(q);
+        state.executeScopes.push(state.ambientContext?.scope);
+        return [];
+      }),
+    },
     getCurrentDbAccessContext: vi.fn(() => state.ambientContext),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
@@ -90,6 +103,24 @@ vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
 
 const captureException = vi.hoisted(() => vi.fn());
 vi.mock('../sentry', () => ({ captureException }));
+
+// #4442 W05 — the readiness cohort reads the exposure ledger through the ONE
+// shared `computeExposureBudget`. Mocked here so this suite stays a pure unit
+// test of the wiring; the arithmetic itself is covered by
+// `sweepActCohort.test.ts` and, against real Postgres, by
+// `sweepActFanout.integration.test.ts`.
+const computeExposureBudget = vi.hoisted(() =>
+  vi.fn(async () => ({
+    distinctDevices: 0,
+    exposedDeviceIds: new Set<string>() as ReadonlySet<string>,
+    allowance: 50,
+    contractDeviceCount: 1000,
+    maxFleetPercentPerDay: 5,
+    policyDecisionsToday: 0,
+    maxPolicyDecisionsPerDay: 200,
+    windowHours: 24 as const,
+  })));
+vi.mock('../actionIntents/exposureBudget', () => ({ computeExposureBudget }));
 
 import {
   persistSweepFindings,
@@ -131,6 +162,13 @@ function runInput(overrides: Partial<Parameters<typeof persistSweepFindings>[0]>
     // mutating tool.
     toolAllowlist: ['manage_services', 'remediate_vulnerability'],
     maxActionsPerRun: 3,
+    // #4442 W05 — cohort caps. Generous by default so the pre-existing gate
+    // suite is unaffected; the cohort's own arithmetic is tested in
+    // `sweepActCohort.test.ts` and against real Postgres in
+    // `sweepActFanout.integration.test.ts`.
+    maxFleetPercentPerDay: 100,
+    maxPolicyDecisionsPerDay: 200,
+    maxUnattendedDevicesPerSweep: 50,
     evidenceDeviceIds: new Set([DEVICE_A, DEVICE_B]) as ReadonlySet<string>,
     // #4442 W04 — the SYSTEM's own subjects for the rows it loaded. The
     // default covers the two service names this suite proposes restarts for,
@@ -859,6 +897,9 @@ describe('projectSweep', () => {
     expect(dto).toEqual({
       scheduleId: SCHEDULE_ID,
       occurrenceKey: '2026-08-29T06:00:00Z',
+      // No cohort verdict on the fixture's SweepProposalRecord, so there is
+      // nothing truthful to roll up.
+      actSummary: null,
       // Unknown kinds are dropped, catalog-checked exactly as the run loop
       // narrows `triggerRef.sweepKinds`.
       kinds: ['service_down', 'disk_pressure'],
@@ -879,6 +920,12 @@ describe('projectSweep', () => {
             disposition: 'intent_created',
             reason: null,
             intentId: INTENT_A,
+            // `intentOutcomes` defaults to an empty map in this call, so the
+            // live outcome is unknown; the fixture's proposal record carries
+            // no cohort verdict either.
+            outcome: null,
+            cohort: null,
+            stoppedBy: null,
           },
         },
         {
@@ -927,6 +974,9 @@ describe('projectSweep', () => {
       disposition: 'refused',
       reason: 'not_allowlisted',
       intentId: null,
+      outcome: null,
+      cohort: null,
+      stoppedBy: null,
     });
     expect(dto!.findings[0]!.deviceHostname).toBeNull();
   });
@@ -998,5 +1048,160 @@ describe('projectSweep', () => {
       scheduleId: null, occurrenceKey: null, kinds: [], evidenceTruncated: false,
     });
     expect(dto!.findings[0]!.proposal).toBeNull();
+  });
+});
+
+// #4442 W05 — the readiness cohort's WIRING inside `persistSweepFindings`.
+// The walk's arithmetic itself lives in `sweepActCohort.test.ts` (pure) and is
+// proved against real Postgres in `sweepActFanout.integration.test.ts`; what
+// is asserted here is that the occurrence reads the ledger once, under the
+// per-org advisory lock, and that a non-member is minted as an ORDINARY card
+// rather than dropped.
+describe('persistSweepFindings — the readiness cohort (#4442 W05)', () => {
+  const ORIGINAL_FLAG = process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED;
+
+  afterEach(() => {
+    if (ORIGINAL_FLAG === undefined) delete process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED;
+    else process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = ORIGINAL_FLAG;
+  });
+
+  /** Baseline armed, no org override, then the device existence read. */
+  function queueArmedSchedule(deviceRows: Array<{ id: string }>): void {
+    state.selectQueue.push([{ id: SCHEDULE_ID, actMode: true }]);
+    state.selectQueue.push([]);
+    state.selectQueue.push(deviceRows);
+  }
+
+  it('takes the SAME per-org advisory lock the authorize path takes, under a system context', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    queueArmedSchedule([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    await persistSweepFindings(runInput(), outcomeWith(restartFinding(DEVICE_A)), agentAuth);
+
+    expect(state.executed).toHaveLength(1);
+    const query = new PgDialect().sqlToQuery(state.executed[0] as SQL);
+    expect(query.sql).toContain('pg_advisory_xact_lock');
+    expect(query.sql).toContain('hashtextextended');
+    expect(query.params).toEqual([`ai-exposure:${ORG_ID}`]);
+    expect(state.executeScopes).toEqual(['system']);
+  });
+
+  it('reads the exposure ledger ONCE per occurrence, not once per proposal', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    queueArmedSchedule([{ id: DEVICE_A }, { id: DEVICE_B }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    await persistSweepFindings(
+      runInput(),
+      outcomeWith(restartFinding(DEVICE_A), restartFinding(DEVICE_B)),
+      agentAuth,
+    );
+
+    expect(computeExposureBudget).toHaveBeenCalledTimes(1);
+    expect(computeExposureBudget).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+    }));
+    // No `deviceId`: the walk projects the union itself rather than asking
+    // the ledger to project one hypothetical device.
+    const budgetArgs = (computeExposureBudget.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0];
+    expect(budgetArgs).not.toHaveProperty('deviceId');
+  });
+
+  it('a DISARMED occurrence computes no cohort at all — no ledger read, no lock, no cohort fields', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    state.selectQueue.push([{ id: SCHEDULE_ID, actMode: false }]);
+    state.selectQueue.push([]);
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    const result = await persistSweepFindings(
+      runInput(), outcomeWith(restartFinding(DEVICE_A)), agentAuth,
+    );
+
+    expect(computeExposureBudget).not.toHaveBeenCalled();
+    expect(state.executed).toEqual([]);
+    expect(result.proposals[0]!.cohort).toBeUndefined();
+    expect(result.proposals[0]!.stoppedBy).toBeUndefined();
+  });
+
+  it('mints the cohort prefix act-eligible and the REST as ordinary cards — nothing is dropped', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    queueArmedSchedule([{ id: DEVICE_A }, { id: DEVICE_B }]);
+    // One device's worth of allowance: the second device falls outside.
+    computeExposureBudget.mockResolvedValueOnce({
+      distinctDevices: 0,
+      exposedDeviceIds: new Set<string>() as ReadonlySet<string>,
+      allowance: 1,
+      contractDeviceCount: 20,
+      maxFleetPercentPerDay: 5,
+      policyDecisionsToday: 0,
+      maxPolicyDecisionsPerDay: 200,
+      windowHours: 24 as const,
+    });
+    createActionIntent
+      .mockResolvedValueOnce({ id: INTENT_A, status: 'pending_approval' })
+      .mockResolvedValueOnce({ id: INTENT_B, status: 'pending_approval' });
+
+    const result = await persistSweepFindings(
+      runInput(),
+      outcomeWith(restartFinding(DEVICE_A), restartFinding(DEVICE_B)),
+      agentAuth,
+    );
+
+    // BOTH proposals still became pending intents — the cohort bounds
+    // act-eligibility, never existence.
+    expect(result.proposals.map((p) => p.disposition)).toEqual(['intent_created', 'intent_created']);
+    expect(result.intentIds).toEqual([INTENT_A, INTENT_B]);
+
+    const byDevice = new Map(
+      createActionIntent.mock.calls.map(([, input]) => [
+        (input.scope as { deviceId: string }).deviceId, input,
+      ]),
+    );
+    // DEVICE_A sorts first under the documented order, so it is the member.
+    expect(byDevice.get(DEVICE_A)!.sweepAct).toEqual(expect.objectContaining({ scheduleActMode: true }));
+    expect(byDevice.get(DEVICE_B)!.sweepAct).toBeUndefined();
+
+    const recordFor = (deviceId: string) => result.proposals.find((p) => p.deviceId === deviceId)!;
+    expect(recordFor(DEVICE_A).cohort).toBe(true);
+    expect(recordFor(DEVICE_B).cohort).toBe(false);
+    expect(recordFor(DEVICE_B).stoppedBy).toBe('fleet_cap');
+  });
+
+  it('does NOT label a proposal refused for an UNRELATED reason with a capacity cap', async () => {
+    // Review fix: `stoppedBy` is the CAPACITY explanation. A proposal whose
+    // tool is not allowlisted was never cohort-eligible — it is waiting on a
+    // human for a reason that has nothing to do with the caps, and stamping
+    // it with `fleet_cap` would be a plainly wrong explanation on the run
+    // detail.
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    queueArmedSchedule([{ id: DEVICE_A }, { id: DEVICE_B }]);
+    computeExposureBudget.mockResolvedValueOnce({
+      distinctDevices: 0,
+      exposedDeviceIds: new Set<string>() as ReadonlySet<string>,
+      allowance: 1,
+      contractDeviceCount: 20,
+      maxFleetPercentPerDay: 5,
+      policyDecisionsToday: 0,
+      maxPolicyDecisionsPerDay: 200,
+      windowHours: 24 as const,
+    });
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    const result = await persistSweepFindings(
+      // DEVICE_B's proposal names a tool the agent may not use at all.
+      runInput({ toolAllowlist: ['remediate_vulnerability'] }),
+      outcomeWith(restartFinding(DEVICE_A), restartFinding(DEVICE_B)),
+      agentAuth,
+    );
+
+    for (const record of result.proposals) {
+      expect(record.reason).toBe('not_allowlisted');
+      expect(record.cohort).toBe(false);
+      // Never cohort-eligible -> no capacity explanation.
+      expect(record.stoppedBy).toBeNull();
+    }
   });
 });

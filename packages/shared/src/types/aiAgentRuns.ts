@@ -516,7 +516,54 @@ export interface AiAgentRunSweepFindingDto {
     disposition: 'intent_created' | 'refused' | 'cap_reached' | 'error';
     reason: SweepProposalReason | null;
     intentId: string | null;
+    /**
+     * #4442 W05 — what actually HAPPENED to the minted intent, read live off
+     * `action_intents` rather than inferred from the run's pending-only
+     * `intent_ids`. `null` when no intent was minted, or when the intent is
+     * no longer readable. `auto_executing` is the act-mode case: approved by
+     * POLICY, not by a human.
+     */
+    outcome: AiAgentRunSweepProposalOutcome | null;
+    /**
+     * #4442 W05 — was this proposal inside the occurrence's readiness cohort,
+     * i.e. minted act-eligible? `null` for a DISARMED occurrence and for every
+     * run from before act mode, which is what keeps those rendering exactly as
+     * they did. `false` means an ordinary supervised card — never a drop.
+     */
+    cohort: boolean | null;
+    /**
+     * #4442 W05 — which cap ended the cohort walk (`fleet_cap`, `day_cap` or
+     * `occurrence_cap`), so the UI can say WHY the rest are waiting. `null`
+     * when nothing bound, and for a disarmed occurrence.
+     */
+    stoppedBy: string | null;
   } | null;
+}
+
+/**
+ * #4442 W05 — the live outcome of a sweep-minted intent. `auto_executing`
+ * exists because act mode makes the interesting outcomes non-pending: an
+ * intent approved by POLICY (`decided_via = 'policy'`) is running unattended,
+ * which reads very differently from one a human approved.
+ */
+export const AI_AGENT_RUN_SWEEP_PROPOSAL_OUTCOMES = [
+  'pending', 'auto_executing', 'executed', 'failed', 'declined', 'expired',
+] as const;
+export type AiAgentRunSweepProposalOutcome =
+  (typeof AI_AGENT_RUN_SWEEP_PROPOSAL_OUTCOMES)[number];
+
+/**
+ * #4442 W05 — the per-occurrence act roll-up shown above the findings table.
+ * `devicesActed` counts DISTINCT devices whose proposal was minted
+ * act-eligible, not intents; `devicesProposed` counts distinct devices any
+ * surviving proposal named. Deliberately NOT a promise of atomic execution: a
+ * cohort member can still lose the authorize race or fail decide-time
+ * revalidation and degrade to a human approval on its own.
+ */
+export interface AiAgentRunSweepActSummaryDto {
+  devicesActed: number;
+  devicesProposed: number;
+  stoppedBy: string | null;
 }
 
 /**
@@ -528,6 +575,12 @@ export interface AiAgentRunSweepFindingDto {
 export interface AiAgentRunSweepDto {
   scheduleId: string | null;
   occurrenceKey: string | null;
+  /**
+   * #4442 W05 — the act roll-up, or `null` for a DISARMED occurrence and for
+   * every pre-act-mode run (no cohort was ever computed, so there is nothing
+   * truthful to say).
+   */
+  actSummary: AiAgentRunSweepActSummaryDto | null;
   kinds: AiSweepKind[];
   summary: string;
   findings: AiAgentRunSweepFindingDto[];
@@ -573,6 +626,8 @@ export interface AiAgentRunWorkspaceDto {
   region: 'eu' | 'us';
   status: string;
   bootstrapHash: string | null;
+  /** Exact selected image reference; null for legacy/unknown runtimes. */
+  runtimeImage: string | null;
   createdAt: string;
   readyAt: string | null;
   destroyedAt: string | null;

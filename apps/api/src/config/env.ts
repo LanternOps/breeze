@@ -113,6 +113,18 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+// SEC-038 W06 (#5537). When on, every remote-desktop start dispatch site
+// refuses an agent that has not declared desktopFenceProtocolVersion=1 (the
+// durable start/terminal generation fence from W04/W05) with 503
+// agent_upgrade_required — the same fail-closed shape as the #5481
+// revocation-lease gate. Default OFF: the release that introduces the gate is
+// a fleet no-op (old agents stay protected by the lease), and the flag is
+// flipped one release later once agents have auto-updated. Read at CALL time
+// so a test can flip it per-case without vi.resetModules().
+export function remoteDesktopFenceRequired(): boolean {
+  return envFlag('REMOTE_DESKTOP_FENCE_REQUIRED', false);
+}
+
 // #4442 W04 (AI sweeps act mode). A SUB-flag of
 // BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED, not a replacement for it: the sweep
 // lane widens autonomy to targets the run never established for itself (a
@@ -126,6 +138,23 @@ export function policyDecideEnabled(): boolean {
 // policyDecide.sweepFlagOff.test.ts, the regression control for exactly that).
 // Read at CALL time, like policyDecideEnabled above, so a test can flip it
 // per case without vi.resetModules().
+// Task A7 (tool-catalog W1, spec docs/superpowers/plans/ai-mcp/2026-09-07-tool-catalog-w1-tool-sources-mcp.md).
+// Platform kill switch for the tool-catalog / tool-sources feature. Default
+// OFF (dark-ship). Read at CALL time, like policyDecideEnabled() above, so a
+// test can flip it per-case without vi.resetModules().
+export function toolSourcesEnabled(): boolean {
+  return envFlag('TOOL_SOURCES_ENABLED', false);
+}
+
+// Task A7. Sub-flag of toolSourcesEnabled(): whether a tool source's outbound
+// fetch may target a private/loopback/link-local address. Default OFF, and
+// refused outright on the hosted platform (validate.ts superRefine) — a
+// tool source that can reach a partner's internal network from a shared
+// hosted egress path is an SSRF vector, so this is self-hosted-only.
+export function toolSourcesAllowPrivateEgress(): boolean {
+  return envFlag('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS', false);
+}
+
 export function sweepActEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', false);
 }

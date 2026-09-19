@@ -146,6 +146,120 @@ describe('monitorService ownership + validation (#5289)', () => {
   });
 });
 
+const ESCALATION_POLICY = '55555555-5555-4555-8555-555555555555';
+
+function mockSelectQueue(rows: Array<Record<string, unknown> | undefined>) {
+  const fn = dbMock.select as unknown as { mockReturnValueOnce: (v: unknown) => void };
+  for (const row of rows) {
+    fn.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve(row ? [row] : []),
+        }),
+      }),
+    });
+  }
+}
+
+describe('createMonitorDefinition escalation-policy owner compatibility (#5676)', () => {
+  it('skips the compat lookup and reaches compile when there is no escalation policy', async () => {
+    // beforeEach leaves `transaction` throwing, so a reject here proves the
+    // guard clauses above it (ownership, shape) all passed through cleanly
+    // and execution reached the write path without a DB read for the policy.
+    await expect(
+      createMonitorDefinition(input({ escalationPolicyId: null }), auth()),
+    ).rejects.toThrow('transaction should not be reached in these cases');
+    expect(dbMock.select).not.toHaveBeenCalled();
+  });
+
+  it('rejects an org-scoped monitor referencing another org\'s escalation policy', async () => {
+    mockSelectQueue([{ orgId: '33333333-3333-4333-8333-333333333333', partnerId: null }]);
+
+    await expect(
+      createMonitorDefinition(input({ escalationPolicyId: ESCALATION_POLICY }), auth()),
+    ).rejects.toBeInstanceOf(MonitorValidationError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('allows an org-scoped monitor referencing its own org\'s escalation policy', async () => {
+    mockSelectQueue([{ orgId: ORG, partnerId: null }]);
+    (dbMock.transaction as unknown as { mockImplementation: (fn: () => Promise<string>) => void }).mockImplementation(async () => 'ok');
+
+    await expect(
+      createMonitorDefinition(input({ escalationPolicyId: ESCALATION_POLICY }), auth()),
+    ).resolves.toBe('ok');
+  });
+
+  it("allows an org-scoped monitor referencing its own partner's partner-wide escalation policy", async () => {
+    mockSelectQueue([
+      { orgId: null, partnerId: PARTNER },
+      { partnerId: PARTNER },
+    ]);
+    (dbMock.transaction as unknown as { mockImplementation: (fn: () => Promise<string>) => void }).mockImplementation(async () => 'ok');
+
+    await expect(
+      createMonitorDefinition(input({ escalationPolicyId: ESCALATION_POLICY }), auth()),
+    ).resolves.toBe('ok');
+  });
+
+  it("rejects an org-scoped monitor referencing another partner's partner-wide escalation policy", async () => {
+    mockSelectQueue([
+      { orgId: null, partnerId: OTHER_PARTNER },
+      { partnerId: PARTNER },
+    ]);
+
+    await expect(
+      createMonitorDefinition(input({ escalationPolicyId: ESCALATION_POLICY }), auth()),
+    ).rejects.toBeInstanceOf(MonitorValidationError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a partner-wide monitor referencing an org-owned escalation policy', async () => {
+    mockSelectQueue([{ orgId: ORG, partnerId: null }]);
+
+    await expect(
+      createMonitorDefinition(
+        input({ ownerScope: 'partner', escalationPolicyId: ESCALATION_POLICY }),
+        auth({ scope: 'partner', partnerOrgAccess: 'all' }),
+      ),
+    ).rejects.toBeInstanceOf(MonitorValidationError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a partner-wide monitor referencing another partner's partner-wide escalation policy", async () => {
+    mockSelectQueue([{ orgId: null, partnerId: OTHER_PARTNER }]);
+
+    await expect(
+      createMonitorDefinition(
+        input({ ownerScope: 'partner', escalationPolicyId: ESCALATION_POLICY }),
+        auth({ scope: 'partner', partnerOrgAccess: 'all' }),
+      ),
+    ).rejects.toBeInstanceOf(MonitorValidationError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('allows a partner-wide monitor referencing its own partner-wide escalation policy', async () => {
+    mockSelectQueue([{ orgId: null, partnerId: PARTNER }]);
+    (dbMock.transaction as unknown as { mockImplementation: (fn: () => Promise<string>) => void }).mockImplementation(async () => 'ok');
+
+    await expect(
+      createMonitorDefinition(
+        input({ ownerScope: 'partner', escalationPolicyId: ESCALATION_POLICY }),
+        auth({ scope: 'partner', partnerOrgAccess: 'all' }),
+      ),
+    ).resolves.toBe('ok');
+  });
+
+  it('rejects a monitor referencing a nonexistent escalation policy', async () => {
+    mockSelectQueue([undefined]);
+
+    await expect(
+      createMonitorDefinition(input({ escalationPolicyId: ESCALATION_POLICY }), auth()),
+    ).rejects.toBeInstanceOf(MonitorValidationError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * `existingRow` is a full row `getMonitorDefinition` (called first by both
  * update and delete) can return. `mockExisting` points the mocked
@@ -247,5 +361,41 @@ describe('updateMonitorDefinition / deleteMonitorDefinition run for real (#5289 
       ),
     ).rejects.toBeInstanceOf(MonitorValidationError);
     expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it("updateMonitorDefinition: rejects setting escalationPolicyId to another org's escalation policy (#5676)", async () => {
+    // Sequenced, not `mockExisting`'s persistent mockReturnValue: the first
+    // select is getMonitorDefinition's existing-row read, the second is the
+    // new guard's policy-ownership lookup — they must return different rows.
+    mockSelectQueue([
+      existingRow(),
+      { orgId: '33333333-3333-4333-8333-333333333333', partnerId: null },
+    ]);
+
+    await expect(
+      updateMonitorDefinition(
+        'monitor-1',
+        { escalationPolicyId: ESCALATION_POLICY } as UpdateMonitorDefinitionInput,
+        auth(),
+      ),
+    ).rejects.toBeInstanceOf(MonitorValidationError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it("updateMonitorDefinition: allows setting escalationPolicyId to the org's own partner-wide escalation policy (#5676)", async () => {
+    mockSelectQueue([
+      existingRow(), // getMonitorDefinition: org-owned, orgId=ORG
+      { orgId: null, partnerId: PARTNER }, // escalation policy: partner-wide
+      { partnerId: PARTNER }, // organizations lookup for ORG's partner
+    ]);
+    (dbMock.transaction as unknown as { mockImplementation: (fn: () => Promise<string>) => void }).mockImplementation(async () => 'ok');
+
+    await expect(
+      updateMonitorDefinition(
+        'monitor-1',
+        { escalationPolicyId: ESCALATION_POLICY } as UpdateMonitorDefinitionInput,
+        auth(),
+      ),
+    ).resolves.toBe('ok');
   });
 });

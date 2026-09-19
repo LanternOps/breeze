@@ -21,6 +21,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { slaDefinitionOutOfScope, slaScopeNarrowed, type SlaTargetShape } from '../services/slaSiteScope';
 import { METRIC_ANOMALY_V1_SHADOW_VERSION } from '../services/metricAnomalies';
 
 export const analyticsRoutes = new Hono();
@@ -92,6 +93,45 @@ async function resolveSiteAllowedDeviceIds(
   return orgDevices
     .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
     .map((d) => d.id);
+}
+
+// `permissions`-shaped caller adapted to the AuthContext shape the shared SLA
+// gate speaks, so routes and the AI tool layer run the SAME implementation
+// (services/slaSiteScope.ts).
+function slaScopeAuthFor(perms: UserPermissions | undefined) {
+  return {
+    allowedSiteIds: perms?.allowedSiteIds,
+    canAccessSite: (siteId: string | null | undefined) =>
+      // `perms` undefined means unrestricted, in which case the gate is never
+      // consulted (`slaScopeNarrowed` is false) — the guard is for the type.
+      !!perms && typeof siteId === 'string' && canAccessSite(perms, siteId),
+  };
+}
+
+/**
+ * Drop SLA definitions whose `target_type`/`target_ids` name sites or devices a
+ * site-restricted caller cannot reach. Site is an app-layer axis only — RLS
+ * does not defend it — and both this route and `query_analytics` filtered on
+ * `org_id` alone, disclosing out-of-scope compliance figures and the target
+ * UUIDs themselves.
+ */
+async function filterSlaDefinitionsForSiteScope<T extends SlaTargetShape>(
+  orgId: string | null | undefined,
+  perms: UserPermissions | undefined,
+  rows: T[],
+): Promise<T[]> {
+  const scopeAuth = slaScopeAuthFor(perms);
+  if (!slaScopeNarrowed(scopeAuth) || rows.length === 0) return rows;
+  const needsDeviceAxis = rows.some((r) => (r.targetType ?? '').toLowerCase() === 'device');
+  // `null` means "not resolved" and DENIES downstream; `[]` means "resolved to
+  // nothing". A narrowed caller with no orgId cannot resolve a device set, so
+  // it must get `[]` rather than `null` collapsing into "unrestricted"
+  // (review #6110). Only `needsDeviceAxis === false` may pass `null`, and then
+  // no row reaches the device branch at all.
+  const allowedDeviceIds = needsDeviceAxis
+    ? (orgId ? (await resolveSiteAllowedDeviceIds(orgId, perms)) ?? [] : [])
+    : null;
+  return rows.filter((r) => !slaDefinitionOutOfScope(scopeAuth, r, allowedDeviceIds));
 }
 
 const timeSeriesQuerySchema = z.object({
@@ -1575,6 +1615,24 @@ analyticsRoutes.get(
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (slaScopeNarrowed(slaScopeAuthFor(perms))) {
+      // A narrowed caller cannot be paginated in SQL: visibility depends on
+      // each definition's target_ids, which no index can express. SLA
+      // definitions are few per org, so fetch the org's set, apply the site
+      // gate, then paginate in memory — the total stays honest.
+      const allRows = await db
+        .select()
+        .from(slaDefinitionsTable)
+        .where(whereCondition)
+        .orderBy(desc(slaDefinitionsTable.updatedAt), desc(slaDefinitionsTable.id));
+      const visible = await filterSlaDefinitionsForSiteScope(auth.orgId, perms, allRows);
+      return c.json({
+        data: visible.slice(offset, offset + limit),
+        pagination: { page, limit, total: visible.length }
+      });
+    }
+
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(slaDefinitionsTable)
@@ -1684,6 +1742,14 @@ analyticsRoutes.get(
 
     const hasAccess = await ensureOrgAccess(sla.orgId, auth);
     if (!hasAccess) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    // Org access is not site access: a definition targeting sites or devices
+    // this caller cannot reach stays hidden (same gate as GET /analytics/sla).
+    const compliancePerms = c.get('permissions') as UserPermissions | undefined;
+    const visibleSla = await filterSlaDefinitionsForSiteScope(sla.orgId, compliancePerms, [sla]);
+    if (visibleSla.length === 0) {
       return c.json({ error: 'Access denied' }, 403);
     }
 

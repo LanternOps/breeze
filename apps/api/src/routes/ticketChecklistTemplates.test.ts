@@ -184,6 +184,29 @@ describe('ticket checklist template routes (#5783 W02)', () => {
     expect(deleteChecklistTemplate).toHaveBeenCalledWith(TEMPLATE, expect.anything());
   });
 
+  it('DELETE maps the in-use guard onto a 409 carrying the referencing rows', async () => {
+    // #5808 W03: the delete guard's whole point is telling the user WHAT is in
+    // the way, so `details` has to survive the route's error envelope.
+    deleteChecklistTemplate.mockRejectedValueOnce(
+      Object.assign(new Error('This checklist template is still used by a deliverable'), {
+        status: 409,
+        code: 'CHECKLIST_TEMPLATE_IN_USE',
+        details: { deliverables: [{ id: 'd-1', name: 'Monthly review' }], templateItems: [] },
+      }),
+    );
+    const res = await app.request(`/ticket-checklist-templates/${TEMPLATE}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('CHECKLIST_TEMPLATE_IN_USE');
+    expect(body.details).toEqual({
+      deliverables: [{ id: 'd-1', name: 'Monthly review' }],
+      templateItems: [],
+    });
+  });
+
   it('GET passes includeInactive through', async () => {
     listChecklistTemplates.mockResolvedValueOnce([]);
     const res = await app.request('/ticket-checklist-templates?includeInactive=true', {

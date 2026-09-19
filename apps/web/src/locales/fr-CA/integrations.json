@@ -774,6 +774,15 @@
     "syncedWithTaxVariance": "Synchronisé avec un écart de taxe"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Opérations QuickBooks en attente",
+    "owedLoadError": "Impossible de charger les opérations en attente. Rechargez la page pour réessayer.",
+    "owedCount": "Opérations en attente : {{total}}",
+    "owedEmpty": "Aucune opération en attente",
+    "owedDelete": "Supprimer le paiement",
+    "owedPush": "Envoyer le paiement",
+    "owedViewInvoice": "Voir la facture",
+    "owedInvoiceUnavailable": "Facture non disponible",
+    "owedAge": "En attente depuis {{minutes}} min",
     "quickbooksConnected": "QuickBooks connecté.",
     "quickbooksConnectionFailedPleaseTryAgain": "Connexion QuickBooks échouée. Veuillez réessayer.",
     "failedToStartTheQuickBooksConnection": "Impossible de démarrer la connexion QuickBooks.",

@@ -13,7 +13,7 @@ import {
   invoiceLineDevices, invoiceLines, contractBillingPeriods, contractBillingPeriodOutcomes,
 } from '../db/schema';
 import { getOwnedInvoiceOr404, requireInvoiceAccess } from './invoiceService';
-import { getOwnedContractOr404, type OverageSummary } from './contractService';
+import { getOwnedContractOr404, requireWholeContractSiteAccess, type OverageSummary } from './contractService';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { ContractServiceError, type ContractActor } from './contractTypes';
 import type { InvoiceLineDeviceCountedAs } from '@breeze/shared';
@@ -128,6 +128,14 @@ export async function getPeriodOutcome(
   actor: ContractActor,
 ): Promise<{ recorded: boolean; outcome: PeriodOutcome | null }> {
   await getOwnedContractOr404(contractId, actor);
+  // #6110 finding 4: every field below is a WHOLE-CONTRACT aggregate — the
+  // period's device snapshot total, its uncovered/flagged counts, its per-role
+  // digest and its billed overage are summed across ALL the contract's lines,
+  // including lines a site-restricted actor cannot see. Org access is therefore
+  // not sufficient; the site axis has to clear the whole document, the same bar
+  // `computeContractEstimate` sets for the forward-looking estimate. No-op (and
+  // zero extra queries) for an unrestricted actor.
+  await requireWholeContractSiteAccess(actor, contractId);
   const [period] = await db.select({ id: contractBillingPeriods.id }).from(contractBillingPeriods)
     .where(and(
       eq(contractBillingPeriods.id, periodId),

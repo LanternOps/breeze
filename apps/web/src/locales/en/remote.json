@@ -30,8 +30,12 @@
     "desktopUnavailable": "Desktop Unavailable",
     "dismiss": "Dismiss",
     "downloadFor": "Download for {{platform}}",
+    "ending": {
+      "description": "The previous session is still shutting down on the device. Wait a moment and try again.",
+      "title": "Session still ending"
+    },
     "errors": {
-      "agentUpgradeRequired": "Remote desktop needs an agent update on this device (session revocation lease support). The agent updates itself automatically — this usually clears within a minute. Terminal and file transfer are unaffected.",
+      "agentUpgradeRequired": "Remote desktop needs an agent update on this device (session revocation lease and start fence support). The agent updates itself automatically — this usually clears within a minute. Terminal and file transfer are unaffected.",
       "connectionFailed": "Connection failed",
       "createDesktopCode": "Failed to create desktop connect code",
       "createDesktopSession": "Failed to create desktop session",
@@ -63,6 +67,21 @@
     "openInBrowser": "Open in Browser",
     "policyDisabled": "Remote desktop is disabled by policy",
     "policyDisabledNamed": "Remote desktop is disabled by policy \"{{name}}\"",
+    "revoked": {
+      "title": "Session revoked",
+      "setUpMfa": "Set up MFA",
+      "reasons": {
+        "session_ended": "The session had already ended.",
+        "user_inactive": "Your account is no longer active.",
+        "epoch_baseline_missing": "Your permissions could not be verified. Try connecting again.",
+        "permissions_changed": "Your permissions changed after this session started. Reconnect to continue with your current access.",
+        "membership_removed": "You no longer have access to this organization or device.",
+        "site_scope_lost": "This device is outside your assigned site scope.",
+        "mfa_required": "Multi-factor authentication is now required for remote desktop access.",
+        "hard_deadline": "This session reached its maximum allowed duration.",
+        "default": "The session was ended by a security policy. Reconnect to try again."
+      }
+    },
     "unavailable": {
       "default": "Desktop is unavailable on this device",
       "headless": "This device has no display — remote desktop is unavailable",
@@ -664,7 +683,8 @@
       "connecting": "Connecting...",
       "disconnected": "Disconnected",
       "failed": "Failed",
-      "pending": "Pending"
+      "pending": "Pending",
+      "teardownPending": "Ending (awaiting device)"
     },
     "subtitle": "Remote access audit log",
     "title": "Session History",
@@ -700,6 +720,7 @@
       "timeline": "Timeline"
     },
     "subtitle": "View and audit remote access sessions",
+    "teardownPending": "Awaiting device confirmation",
     "title": "Session History",
     "viewDevice": "View Device",
     "viewRecording": "View Recording"

@@ -67,13 +67,26 @@
       "on_ticket_resolve": "Bağlı bilet çözüldüğünde teslim edilmiş sayılır"
     },
     "autoEvidenceReport": "Rapor çalıştırmalarını kanıt olarak ekle",
+    "autoEvidenceNone": "Yok",
+    "autoEvidenceHelp": "Kanıt, vade gününde oluşturulur ve tekrarlama teslim edildiğinde müşteriye görünür hale gelir.",
+    "autoEvidenceEmpty": "Henüz kullanılabilir yönetilen kanıt raporu türü yok.",
     "owner": "Sorumlu",
     "ticketCategory": "Bilet kategorisi",
     "portalVisible": "Müşteri portalında göster",
-    "sortOrder": "Sıralama"
+    "sortOrder": "Sıralama",
+    "instructions": "Dahili talimatlar",
+    "instructionsHint": "Dahili — müşteriye asla gösterilmez.",
+    "checklistTemplate": "Kontrol listesi şablonu",
+    "checklistTemplateNone": "Yok",
+    "checklistTemplateAllOrgs": "Tüm kuruluşlar",
+    "checklistTemplateManage": "Kontrol listesi şablonlarını yönet"
   },
   "drawer": {
     "title": "Oluşumlar",
+    "empty_one": "Henüz oluşum yok. İlki, son tarihinden {{count}} gün önce planlanır.",
+    "empty_other": "Henüz oluşum yok. İlki, son tarihinden {{count}} gün önce planlanır.",
+    "emptyWithDate_one": "Henüz oluşum yok. İlki, son tarihinden {{count}} gün önce planlanır ({{date}}).",
+    "emptyWithDate_other": "Henüz oluşum yok. İlki, son tarihinden {{count}} gün önce planlanır ({{date}}).",
     "evidence": "Kanıtlar",
     "noEvidence": "Ekli kanıt yok",
     "late": "Gecikmiş",
@@ -84,7 +97,10 @@
     "uploadEvidence": "Kanıt olarak bir dosya yükle",
     "uploadEvidenceHint": "PDF, JPEG, PNG veya WebP, 10 MB'a kadar. Dosya bu kuruluşun belge kitaplığına kaydedilir.",
     "evidenceDocument": "Belge",
-    "upload": "Yükle"
+    "upload": "Yükle",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Kontrol listesini göster",
+    "hideChecklist": "Kontrol listesini gizle"
   },
   "evidence": {
     "reportRun": "Rapor çalıştırması",
@@ -177,7 +193,8 @@
       "leadDays": "Son tarihten bu kadar gün önce aç",
       "graceDays": "Son tarihten bu kadar gün sonra kaçırıldı olarak işaretle",
       "artifactRequired": "Kanıt gerekli",
-      "completionMode": "Tamamlama"
+      "completionMode": "Tamamlama",
+      "autoEvidenceReportType": "Kanıt raporu türü"
     },
     "ownerScope": {
       "legend": "Bu set kimin için?",

@@ -12,9 +12,9 @@
  * row, flattened: the sandbox reads these with pandas/jq, so nested objects and
  * a `logs: [...]` envelope would both be hostile.
  */
-import { and, desc, gt, lt, or, eq } from 'drizzle-orm';
+import { and, desc, gt, lt, or, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { agentLogs, deviceMetrics } from '../db/schema';
+import { agentLogs, deviceMetrics, devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { searchFleetLogs } from './logSearch';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
@@ -23,6 +23,8 @@ import { readCatalog, readDeviceFindings, normStatus } from './aiToolsVulnerabil
 import {
   generateDeviceInventoryReport,
   generateSoftwareInventoryReport,
+  readDeviceInventoryRows,
+  readSoftwareInventoryRows,
 } from './reportGenerationService';
 // `aiLiveReportAuthority` lives in aiToolsFleet.ts (exported by Task 4), NOT in
 // siteScope.ts — importing it from the latter is a module-not-found at runtime.
@@ -67,8 +69,9 @@ export interface DatasetRequest {
   filters: Record<string, unknown>;
   deviceIds: string[] | null;
   /** Devices frozen at admission, or null outside a run frame. Only the
-   *  inventory adapters read it (their generator has no deviceIds filter);
-   *  every other adapter is already narrowed by `deviceIds` + its builder. */
+   *  inventory adapters read it directly (as a `deviceIds` fallback into their
+   *  generator); every other adapter is already narrowed by `deviceIds` + its
+   *  builder. */
   runTargets: string[] | null;
   siteId: string | null;
   pageSize: number;
@@ -118,6 +121,50 @@ async function scopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
 
 /** A pager that yields nothing — the shape a zero-in-scope caller gets. */
 const emptyPager: ExportPager = async () => ({ rows: [], nextCursor: null });
+
+/** Agent attribution ids are not human report principals. Keep their export
+ * inside the intersection of the authenticated ceiling and frozen run frame.
+ *
+ * A missing allowlist or frozen run frame is NOT an error case — `runTargets`
+ * is only ever populated inside an `analysis` run frame (spec §8). A
+ * ticket/anomaly/design ai_agent principal never carries one, and that is an
+ * ordinary device-less call, not a caller bug: it must resolve to an empty
+ * export exactly like the other zero-in-scope branches below, never a thrown
+ * error that would surface as a tool failure on every such run.
+ *
+ * A principal org that disagrees with the REQUEST org is the opposite: it can
+ * only come from a caller wiring the wrong org into the request, and reporting
+ * it as an empty export would dress a caller bug up as "no data". Throw (like
+ * `export_requires_run`) so it is visible (#6096 D4). */
+async function agentInventoryPager(req: DatasetRequest, software: boolean): Promise<ExportPager> {
+  if (req.auth.orgId !== req.orgId) {
+    throw new Error(
+      'export_dataset: the agent principal\'s organization does not match the requested organization',
+    );
+  }
+  if (!req.auth.allowedDeviceIds?.length || !req.runTargets?.length) {
+    return emptyPager;
+  }
+  const frame = new Set(req.runTargets);
+  const requested = req.deviceIds === null ? null : new Set(req.deviceIds);
+  const ids = req.auth.allowedDeviceIds.filter((id) => frame.has(id) && (!requested || requested.has(id)));
+  if (!ids.length) return emptyPager;
+  const conditions: SQL[] = [inArray(devices.id, ids)];
+  if (req.auth.allowedSiteIds) {
+    if (!req.auth.allowedSiteIds.length) return emptyPager;
+    conditions.push(inArray(devices.siteId, req.auth.allowedSiteIds));
+  }
+  if (req.siteId) {
+    if (req.auth.canAccessSite && !req.auth.canAccessSite(req.siteId)) return emptyPager;
+    conditions.push(eq(devices.siteId, req.siteId));
+  }
+  if (!software && Array.isArray(req.filters.osTypes) && req.filters.osTypes.length) {
+    conditions.push(inArray(devices.osType, req.filters.osTypes as Array<'windows' | 'macos' | 'linux'>));
+  }
+  return singlePagePager(() => software
+    ? readSoftwareInventoryRows(req.orgId, conditions)
+    : readDeviceInventoryRows(req.orgId, conditions));
+}
 
 /** A source that produces its whole result in one builder call. Wrapped as a
  *  one-page pager so the writer's cap/preview machinery is identical for all
@@ -259,54 +306,29 @@ const agentLogsAdapter: DatasetAdapter = {
  *  `device_inventory` at 100 rows — the REPORT GENERATORS are the complete
  *  builders behind both, and the ones `generate_report action: 'generate'`
  *  itself calls. Each returns its full result in one call, so one page. The
- *  writer's row/byte caps still apply to what that page yields.
- *
- *  ASYMMETRY TO KNOW: `generateSoftwareInventoryReport` honours
- *  `filters.deviceIds` (reportGenerationService.ts:~404); `generateDeviceInventoryReport`
- *  (:284-330) does NOT — it reads `siteIds` and `osTypes` only. Passing
- *  `deviceIds` to it is silently ignored, so a device-restricted export would
- *  return the whole org. The device adapter therefore post-filters what comes
- *  back. Its rows carry `hostname`, not a device id, so the restriction is
- *  resolved to hostnames through `verifyDeviceAccess` — the same gate the other
- *  adapters use. Hostnames are NOT guaranteed unique within an org (re-images,
- *  manual assets, cross-site duplicates), so this is a real, narrow §8
- *  data-minimisation gap, not just an inconvenience — tracked as
- *  https://github.com/LanternOps/breeze/issues/5776. FOLLOW-UP: give
- *  `generateDeviceInventoryReport` a real `filters.deviceIds` branch and a
- *  `deviceId` column, then delete this post-filter. */
-async function restrictionHostnames(req: DatasetRequest): Promise<Set<string> | null> {
-  // `deviceIds` when the caller named devices; otherwise the run's frozen set
-  // (spec §8 data minimisation). Null = no restriction, i.e. a direct call with
-  // no run frame and no device argument.
-  const ids = req.deviceIds ?? req.runTargets;
-  if (!ids || ids.length === 0) return null;
-  const hostnames = new Set<string>();
-  await runWithConcurrency(ids, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
-    const verifyDeviceAccess = await getVerifyDeviceAccess();
-    const access = await verifyDeviceAccess(deviceId, req.auth);
-    if ('error' in access) return;
-    if (access.device.hostname) hostnames.add(access.device.hostname);
-  });
-  return hostnames;
-}
-
+ *  writer's row/byte caps still apply to what that page yields. */
 const deviceInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
+    if (req.auth.principal?.kind === 'ai_agent') return agentInventoryPager(req, false);
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
-    const allowedHostnames = await restrictionHostnames(req);
+    // #5776: `generateDeviceInventoryReport` now honours `filters.deviceIds`
+    // (same as `generateSoftwareInventoryReport`), so the run-target
+    // restriction goes straight into the query instead of a hostname-based
+    // post-filter — hostnames are not unique within an org, so filtering rows
+    // by hostname could admit a device outside the run's frozen target set.
+    const restrictTo = req.deviceIds ?? req.runTargets;
     return singlePagePager(async () => {
       const result = await generateDeviceInventoryReport(req.orgId, {
         filters: {
+          ...(restrictTo && restrictTo.length > 0 ? { deviceIds: restrictTo } : {}),
           ...(req.siteId ? { siteIds: [req.siteId] } : {}),
           ...(Array.isArray(req.filters.osTypes) ? { osTypes: req.filters.osTypes } : {}),
         },
       }, authority);
-      const rows = (result.rows ?? []) as Array<Record<string, unknown>>;
-      if (!allowedHostnames) return rows;
-      return rows.filter((row) => typeof row.hostname === 'string' && allowedHostnames.has(row.hostname));
+      return (result.rows ?? []) as Array<Record<string, unknown>>;
     });
   },
 };
@@ -315,6 +337,7 @@ const softwareInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
+    if (req.auth.principal?.kind === 'ai_agent') return agentInventoryPager(req, true);
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
     // This generator DOES honour filters.deviceIds, so the restriction goes
@@ -333,17 +356,42 @@ const softwareInventoryAdapter: DatasetAdapter = {
 };
 
 /** `analyze_metrics` is single-device by construction (`deviceArgs:
- *  ['deviceId']`). The export fans out across the requested devices and PACES
- *  the fan-out at EXPORT_DEVICE_CONCURRENCY so one analysis cannot saturate
- *  the API (spec §5.4). One page per device.
+ *  ['deviceId']`). The export fans out across the requested devices, PACED at
+ *  EXPORT_DEVICE_CONCURRENCY so one analysis cannot saturate the API (spec
+ *  §5.4) — but unlike the other device-scoped adapters (vulnerabilities,
+ *  custom_fields), a device's samples are NOT a one-shot bounded read: at
+ *  minute granularity, 24h of `hoursBack` is already ~1,440 rows, well past
+ *  `req.pageSize` (500). A hard per-device cap would silently drop the rest
+ *  (#5775) — the writer's row/wall caps can't see it, because the truncation
+ *  would happen one layer below what they observe.
  *
- *  KNOWN GAP, tracked as https://github.com/LanternOps/breeze/issues/5775:
- *  each device's page is capped at `req.pageSize` (500) samples with no
- *  continuation WITHIN a device — a device with more samples in the window
- *  than that (e.g. 24h at minute granularity ≈ 1440) silently loses the
- *  rest, and nothing sets `truncated: true` for it (the writer's row/wall
- *  caps can't see this — the truncation happens one layer below what they
- *  observe). Needs real per-device pagination, not a hard per-device cap. */
+ *  So each device in the CURRENT concurrency batch pages within itself on a
+ *  `timestamp` keyset (querying strictly older than the oldest row seen so
+ *  far) until a page comes back short of `pageSize`, which is the only signal
+ *  that no more rows exist for it in the window — only THEN does the batch
+ *  advance to the next slice of devices. `(device_id, timestamp)` is the
+ *  table's own primary key, so timestamps are unique per device and the `lt`
+ *  cursor can't skip or double-count a row at the boundary. `verifyDeviceAccess`
+ *  runs once per device (at batch entry), not once per page.
+ *
+ *  TWO ACCEPTED TRADEOFFS from running potentially many rounds per device
+ *  instead of one:
+ *  (1) The site axis (`allowedSiteIds`/`canAccessSite` — RLS does NOT enforce
+ *      it, see this file's own header) is checked once at batch entry and NOT
+ *      re-verified on later rounds for that same device. A device whose site
+ *      access is revoked mid-export keeps paging until exhausted rather than
+ *      stopping immediately. Accepted because a re-check per round would add a
+ *      DB round trip per page for no observed threat model change, and the
+ *      window is still bounded by `hoursBack` (≤168h) and the writer's own
+ *      120s wall cap.
+ *  (2) A long run of access-denied devices is scanned to the end of
+ *      `deviceIds` within ONE `pager()` call (the inner `for(;;)` only returns
+ *      once it has rows or has exhausted every device), so the writer's
+ *      wall-clock check can't interrupt mid-scan the way it could when every
+ *      batch used to return control after one query. Accepted because the
+ *      practical device-count bound (`analysisMaxInputDevicesPerRun`) keeps a
+ *      denied-only run cheap; a future caller without that bound should
+ *      revisit this. */
 const metricsAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: true,
@@ -352,42 +400,78 @@ const metricsAdapter: DatasetAdapter = {
     const since = new Date(Date.now() - hoursBack * 3_600_000);
     // W04: an analysis run that names no devices gets its frozen set.
     const deviceIds = req.deviceIds ?? req.runTargets ?? [];
-    let index = 0;
 
-    return async () => {
-      if (index >= deviceIds.length) return { rows: [], nextCursor: null };
-      const batch = deviceIds.slice(index, index + EXPORT_DEVICE_CONCURRENCY);
-      index += batch.length;
+    interface BatchDevice {
+      deviceId: string;
+      hostname: string | null;
+      before: Date | null;
+      done: boolean;
+    }
+    let batchStart = 0;
+    let batch: BatchDevice[] = [];
+    let batchInitialized = false;
 
-      const collected: Array<Record<string, unknown>> = [];
-      await runWithConcurrency(batch, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
+    async function initBatch(): Promise<void> {
+      const slice = deviceIds.slice(batchStart, batchStart + EXPORT_DEVICE_CONCURRENCY);
+      const next: BatchDevice[] = [];
+      await runWithConcurrency(slice, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
         // The same per-device gate `analyze_metrics` performs. The central
         // `enforceDeviceArgs` gate already ran over `deviceIds`; this is the
         // builder's own check and is kept so the two paths stay identical.
         const verifyDeviceAccess = await getVerifyDeviceAccess();
         const access = await verifyDeviceAccess(deviceId, req.auth);
         if ('error' in access) return;
-        const samples = await db
-          .select()
-          .from(deviceMetrics)
-          .where(and(eq(deviceMetrics.deviceId, deviceId), gt(deviceMetrics.timestamp, since)))
-          .orderBy(desc(deviceMetrics.timestamp))
-          .limit(req.pageSize);
-        for (const sample of samples) {
-          collected.push({
-            deviceId,
-            hostname: access.device.hostname,
-            timestamp: sample.timestamp instanceof Date ? sample.timestamp.toISOString() : String(sample.timestamp),
-            cpuPercent: sample.cpuPercent,
-            ramPercent: sample.ramPercent,
-            ramUsedMb: sample.ramUsedMb,
-            diskPercent: sample.diskPercent,
-            diskUsedGb: sample.diskUsedGb,
-          });
-        }
+        next.push({ deviceId, hostname: access.device.hostname, before: null, done: false });
       });
+      batch = next;
+      batchInitialized = true;
+    }
 
-      return { rows: collected, nextCursor: index < deviceIds.length ? String(index) : null };
+    return async () => {
+      for (;;) {
+        if (!batchInitialized) await initBatch();
+        const active = batch.filter((d) => !d.done);
+        if (active.length === 0) {
+          batchStart += EXPORT_DEVICE_CONCURRENCY;
+          if (batchStart >= deviceIds.length) return { rows: [], nextCursor: null };
+          batchInitialized = false;
+          continue;
+        }
+
+        const collected: Array<Record<string, unknown>> = [];
+        await runWithConcurrency(active, EXPORT_DEVICE_CONCURRENCY, async (entry) => {
+          const conditions = [eq(deviceMetrics.deviceId, entry.deviceId), gt(deviceMetrics.timestamp, since)];
+          if (entry.before) conditions.push(lt(deviceMetrics.timestamp, entry.before));
+          const samples = await db
+            .select()
+            .from(deviceMetrics)
+            .where(and(...conditions))
+            .orderBy(desc(deviceMetrics.timestamp))
+            .limit(req.pageSize);
+          for (const sample of samples) {
+            collected.push({
+              deviceId: entry.deviceId,
+              hostname: entry.hostname,
+              timestamp: sample.timestamp instanceof Date ? sample.timestamp.toISOString() : String(sample.timestamp),
+              cpuPercent: sample.cpuPercent,
+              ramPercent: sample.ramPercent,
+              ramUsedMb: sample.ramUsedMb,
+              diskPercent: sample.diskPercent,
+              diskUsedGb: sample.diskUsedGb,
+            });
+          }
+          const last = samples[samples.length - 1];
+          if (samples.length < req.pageSize || !last) {
+            entry.done = true;
+          } else {
+            entry.before = last.timestamp instanceof Date ? last.timestamp : new Date(last.timestamp as unknown as string);
+          }
+        });
+
+        const moreInBatch = batch.some((d) => !d.done);
+        const moreBatches = batchStart + EXPORT_DEVICE_CONCURRENCY < deviceIds.length;
+        return { rows: collected, nextCursor: moreInBatch || moreBatches ? 'more' : null };
+      }
     };
   },
 };

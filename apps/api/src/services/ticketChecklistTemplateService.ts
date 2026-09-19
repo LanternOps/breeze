@@ -18,6 +18,7 @@ import type {
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { listChecklist, type ChecklistSummary } from './ticketChecklistService';
+import { assertChecklistTemplateNotInUse } from './checklistTemplateReference';
 
 /**
  * Ticket checklist templates (spec #5783 §4.2, §4.3, §6.2). Dual ownership per
@@ -40,12 +41,12 @@ import { listChecklist, type ChecklistSummary } from './ticketChecklistService';
  * TICKET's org_id, never the template's owner (which is NULL for a partner-wide
  * template).
  *
- * NOTE (W03): there is deliberately no `assertChecklistTemplateNotInUse` here.
- * Nothing can reference a template until W03 adds the two
- * `checklist_template_id` columns, so `deleteChecklistTemplate` is an ordinary
- * delete and W03 adds the 409 `CHECKLIST_TEMPLATE_IN_USE` guard in the same
- * task that adds the columns. A stub that always answered "not in use" would be
- * worse than none, because the next reader would believe it works.
+ * W03 (#5811) added the delete guard: `deleteChecklistTemplate` now refuses
+ * with 409 `CHECKLIST_TEMPLATE_IN_USE` when a deliverable or a deliverable
+ * template item points at the template, because the FKs are `ON DELETE SET
+ * NULL` and a silently emptied future checklist is exactly the failure to
+ * prevent. The rules themselves live in `./checklistTemplateReference`, shared
+ * with the two deliverable writers.
  */
 
 export interface ChecklistTemplateActor {
@@ -403,6 +404,15 @@ export async function deleteChecklistTemplate(
 ): Promise<void> {
   const existing = await loadChecklistTemplateOr404(templateId, actor);
   requireWritable(existing, actor);
+  // ORDER MATTERS. The 404 (cannot see it) and the 403 (can see it, may not
+  // write it) both come first: a 409 naming the referencing deliverables would
+  // otherwise tell a caller who is not allowed to know that the template exists
+  // and what uses it.
+  //
+  // #5808 W03 — deleting a referenced template would SET NULL the pointer and
+  // silently empty every FUTURE occurrence's checklist. Deactivation
+  // (`isActive: false`) is the supported retirement path.
+  await assertChecklistTemplateNotInUse(existing.id);
   // Items ride the two branch FKs (both ON DELETE CASCADE).
   await db.delete(ticketChecklistTemplates).where(eq(ticketChecklistTemplates.id, existing.id));
 }

@@ -83,6 +83,10 @@ const limitsFields = z.object({
   maxDesignRunsPerDay: z.number().int().min(1).max(24),
   designBudgetCentsPerRun: z.number().int().min(25).max(2000),
   designMaxTurns: z.number().int().min(8).max(120),
+  // #5870 — pinned design-profile wall clock; same bounds as
+  // analysisWallClockSeconds (60s floor, 1800s ceiling — the validator's
+  // global wallClockSeconds max).
+  designWallClockSeconds: z.number().int().min(60).max(1800),
   // Patch-profile admission caps (AI patch agent W01) — see
   // AiAgentLimits.maxConcurrentPatchRuns's docstring. Per-day cap over a
   // 24h window like design; a patch run is one-per-org-per-day.
@@ -105,6 +109,12 @@ const limitsFields = z.object({
   analysisMaxConcurrentRuns: z.number().int().min(1).max(5),
   analysisMaxStepTimeoutSeconds: z.number().int().min(10).max(600),
   analysisMaxStepsPerRun: z.number().int().min(1).max(100),
+  // Sweep act-mode caps (#4442 W05) — see
+  // AiAgentLimits.maxUnattendedDevicesPerSweep's docstring. The device cap
+  // has no 0-disables value: "unattended on zero devices" is act mode off,
+  // which is the `act_mode` flag's job, not a limit's.
+  maxUnattendedDevicesPerSweep: z.number().int().min(1).max(50),
+  sweepPromoteThreshold: z.number().int().min(1).max(200),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({

@@ -338,6 +338,105 @@ describe('ImpactPage', () => {
     expect(screen.getByTestId('ai-impact-edit-weights')).toBeInTheDocument();
   });
 
+  // #5885 follow-up (sweep paper cut G2-2): at the widest window there is no
+  // wider window to advise into — ImpactMeasuredBand already learned this
+  // lesson for its own omission copy in #5885. The main EmptyState must stop
+  // saying "Widen the reporting window above" once windowDays is already the
+  // widest option in AI_AGENT_IMPACT_WINDOWS.
+  it('does not advise widening the window when the widest window still has no outcomes', async () => {
+    window.location.hash = '#90';
+    const zero = dto({
+      window: 90,
+      totals: {
+        alertsJudged: 0,
+        noiseFlagged: 0,
+        suppressionsApplied: 0,
+        ticketsTriaged: 0,
+        draftsSent: 0,
+        fixesProposed: 0,
+        fixesExecuted: 0,
+        fixWatchesHeld: 0,
+        fixWatchesRecurred: 0,
+        narrativesDelivered: 0,
+        fleetDesignsDelivered: 0,
+        estSecondsSaved: 0,
+        llmCents: 0,
+      },
+      series: [
+        {
+          day: '2026-08-30',
+          alertsJudged: 0,
+          noiseFlagged: 0,
+          suppressionsApplied: 0,
+          ticketsTriaged: 0,
+          draftsSent: 0,
+          fixesProposed: 0,
+          fixesExecuted: 0,
+          fixWatchesHeld: 0,
+          fixWatchesRecurred: 0,
+          narrativesDelivered: 0,
+          fleetDesignsDelivered: 0,
+          estSecondsSaved: 0,
+          llmCents: 0,
+        },
+      ],
+      positiveFeedback: { up: 0, down: 0, rate: null },
+    });
+    mockImpact(zero);
+    render(<ImpactPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-impact-empty')).toBeInTheDocument());
+    const empty = screen.getByTestId('ai-impact-empty');
+    expect(empty).not.toHaveTextContent('Widen the reporting window above');
+    expect(empty).toHaveTextContent('Not enough data');
+  });
+
+  it('still advises widening the window when a narrower window has no outcomes', async () => {
+    window.location.hash = '#7';
+    const zero = dto({
+      window: 7,
+      totals: {
+        alertsJudged: 0,
+        noiseFlagged: 0,
+        suppressionsApplied: 0,
+        ticketsTriaged: 0,
+        draftsSent: 0,
+        fixesProposed: 0,
+        fixesExecuted: 0,
+        fixWatchesHeld: 0,
+        fixWatchesRecurred: 0,
+        narrativesDelivered: 0,
+        fleetDesignsDelivered: 0,
+        estSecondsSaved: 0,
+        llmCents: 0,
+      },
+      series: [
+        {
+          day: '2026-08-30',
+          alertsJudged: 0,
+          noiseFlagged: 0,
+          suppressionsApplied: 0,
+          ticketsTriaged: 0,
+          draftsSent: 0,
+          fixesProposed: 0,
+          fixesExecuted: 0,
+          fixWatchesHeld: 0,
+          fixWatchesRecurred: 0,
+          narrativesDelivered: 0,
+          fleetDesignsDelivered: 0,
+          estSecondsSaved: 0,
+          llmCents: 0,
+        },
+      ],
+      positiveFeedback: { up: 0, down: 0, rate: null },
+    });
+    mockImpact(zero);
+    render(<ImpactPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-impact-empty')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-impact-empty')).toHaveTextContent('Widen the reporting window above');
+  });
+
   it('hides Export PDF (both the toolbar and overflow-menu copies) when the window has no outcomes', async () => {
     const zero = dto({
       totals: {

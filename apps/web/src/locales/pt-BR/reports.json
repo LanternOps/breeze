@@ -224,6 +224,22 @@
       "serverReplaceAgeYears": "Planejar substituição de servidores após (anos)",
       "serverReplaceAgeYearsHelp": "Os servidores seguem seu próprio cronograma e aparecem em uma seção separada do relatório."
     },
+    "vulnerabilityManagementOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório",
+      "includeAccepted": "Incluir riscos aceitos e exceções",
+      "includeAcceptedHelp": "Lista os achados aceitos e mitigados, sinalizando aqueles cuja aceitação vence no próximo período.",
+      "severity": {
+        "critical": "Crítica",
+        "high": "Alta",
+        "low": "Baixa",
+        "medium": "Média"
+      },
+      "severityFloor": "Severidade mínima na lista",
+      "severityFloorHelp": "Achados abaixo desta severidade ficam fora das tabelas. Isso nunca oculta um achado explorado ativamente (KEV) nem de EPSS alto: esses são sempre contados e listados.",
+      "topN": "Tamanho da lista de correção",
+      "topNHelp": "Quantos achados com correção disponível a tabela de prioridade contém. O relatório informa quantos ficaram de fora em vez de truncar silenciosamente."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Configuracao do Relatório",
       "description": "Gere um relatório unico sem salva-lo.",
@@ -284,6 +300,14 @@
         "replaceNow": "Substituir agora",
         "unknownAge": "Idade desconhecida"
       },
+      "vulnerabilityManagement": {
+        "critical": "Críticos abertos",
+        "expiringExceptions": "Exceções que vencem no próximo período",
+        "high": "Altos abertos",
+        "highEpss": "Exploração provável",
+        "knownExploited": "Explorados ativamente (KEV)",
+        "notMeasured": "N/D"
+      },
       "reportTypes": {
         "ai_fleet_design": "Projeto de Frota",
         "ai_org_narrative": "Narrativa Semanal de Operações com IA",
@@ -292,9 +316,23 @@
         "device_inventory": "Inventario de Dispositivos",
         "executive_summary": "Resumo Executivo",
         "hardware_lifecycle": "Ciclo de vida do hardware",
+        "vulnerability_management": "Gestão de vulnerabilidades",
+        "identity_access_review": "Revisão de identidade e acesso",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças",
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
+      },
+      "threatDetection": {
+        "agents": "Endpoints com agente de detecção",
+        "breezeDevices": "Dispositivos gerenciados pelo Breeze",
+        "carriedIn": "Herdadas, ainda abertas",
+        "coverage": "Limites deste relatório",
+        "devicesWithoutAgent": "Dispositivos gerenciados sem agente",
+        "notMeasured": "N/D",
+        "opened": "Detecções registradas",
+        "resolved": "Detecções resolvidas"
       },
       "tryAgain": "Tentar novamente",
       "values": {
@@ -304,6 +342,26 @@
       "viewModes": {
         "chart": "Grafico",
         "table": "Tabela"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Dispositivos Breeze não inscritos",
+        "dataGaps": "O que não foi possível medir",
+        "intuneDevices": "Inscritos no Intune",
+        "intuneWithoutBreezeLink": "Registros do Intune sem vínculo",
+        "noncompliant": "Fora de conformidade",
+        "notMeasured": "N/D",
+        "staleEnrolments": "Inscrições desatualizadas"
+      },
+      "identityAccess": {
+        "notMeasured": "N/D",
+        "coverage": "Limites deste relatório",
+        "signins": "Logins interativos",
+        "distinctUsers": "Contas que fizeram login",
+        "failures": "Logins que falharam",
+        "admins": "Contas com papel de administrador",
+        "adminsWithoutMfa": "Administradores sem MFA",
+        "mfaUnknown": "Estado de MFA desconhecido",
+        "dormant": "Contas ociosas"
       }
     },
     "reportsList": {
@@ -341,6 +399,9 @@
       },
       "loading": "Carregando relatórios...",
       "never": "Nunca",
+      "success": {
+        "generated": "Relatório \"{{name}}\" gerado."
+      },
       "visibleInPortal": "Visível no portal do cliente",
       "newReport": "Novo Relatório",
       "nextOccurrence": "Proximo: {{next}}",
@@ -352,9 +413,13 @@
         "device_inventory": "Inventario de Dispositivos",
         "executive_summary": "Resumo Executivo",
         "hardware_lifecycle": "Ciclo de vida do hardware",
+        "vulnerability_management": "Gestão de vulnerabilidades",
+        "identity_access_review": "Revisão de identidade e acesso",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças",
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
       },
       "runsTable": {
         "actions": "Acoes",
@@ -862,10 +927,14 @@
         "devices": "Dispositivos",
         "executive_summary": "Resumo Executivo",
         "hardware_lifecycle": "Ciclo de vida do hardware",
+        "vulnerability_management": "Gestão de vulnerabilidades",
+        "identity_access_review": "Revisão de identidade e acesso",
         "patches": "Patches",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças",
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
       },
       "schedules": {
         "daily": "Diario",
@@ -900,14 +969,61 @@
           "description": "Plano de substituição de dispositivos pronto para o cliente: idade, garantia, datas de substituição e status de suporte do sistema operacional, com uma recomendação por etapas.",
           "name": "Relatório de ciclo de vida do hardware"
         },
+        "vulnerability_management": {
+          "description": "Achados abertos por severidade, com os explorados ativamente (KEV) e os de EPSS alto destacados separadamente, os achados com correção disponível a tratar primeiro e as exceções de risco aceito que vencem no próximo período.",
+          "name": "Relatório de gestão de vulnerabilidades"
+        },
+        "identity_access_review": {
+          "name": "Revisão de identidade e acesso",
+          "description": "Os logins interativos do Microsoft 365 em um período, com o inventário de identidades, as contas ociosas, a postura de acesso condicional e a presença de clientes de acesso remoto — e com a janela realmente coberta declarada no próprio relatório."
+        },
         "security_compliance_posture": {
           "description": "Evidências prontas para seguro/vetting: cobertura de EDR, criptografia, firewall, patches, vulnerabilidades, acesso privilegiado e integrações de segurança com consolidações percentuais de implementação.",
           "name": "Postura de Seguranca e Conformidade (Seguro)"
+        },
+        "threat_detection_review": {
+          "description": "As detecções de ameaças mantidas em um período, com a janela realmente coberta declarada no próprio relatório — nunca um zero para uma fonte que não estava conectada.",
+          "name": "Revisão de detecção de ameaças"
+        },
+        "endpoint_management_review": {
+          "description": "Evidência do Microsoft Intune: cobertura de inscrição, detalhamento de conformidade com tendência de 30 dias, inscrições desatualizadas e licenças, informando a atualidade de cada sincronização.",
+          "name": "Revisão de gerenciamento de endpoints do Intune"
         }
       },
       "title": "Modelos de Relatório",
       "useTemplate": "Usar modelo",
       "useTemplateTitle": "Usar {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Cancelar",
+      "coverageNote": "O relatório imprime a janela que realmente cobre. Se a fonte de detecção não estava conectada durante parte do período, ele diz isso em vez de informar zero.",
+      "createReport": "Criar relatório",
+      "includeCarriedIn": "Incluir detecções herdadas",
+      "includeCarriedInHelp": "Detecções abertas antes deste período e ainda não resolvidas são listadas junto com as do próprio período.",
+      "topIncidents": "Listar no máximo (detecções)",
+      "topIncidentsHelp": "Limita a tabela de detecções para que um mês agitado não gere um PDF de cem páginas. O relatório informa quantas ficaram de fora em vez de truncar silenciosamente."
+    },
+    "endpointManagementOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório",
+      "includeLicences": "Incluir licenças",
+      "includeLicencesHelp": "Mostra as licenças em uso em relação às licenças compradas de cada produto Microsoft 365.",
+      "staleEnrolmentDays": "Sinalizar inscrições sem contato há (dias)",
+      "staleEnrolmentDaysHelp": "Um dispositivo que não se comunica com o Intune por esta quantidade de dias conta como inscrição desatualizada. A medida é feita pela cadência de sincronização do Intune, e não pelo período do relatório.",
+      "trendDays": "Janela da tendência de conformidade (dias)",
+      "trendDaysHelp": "Até onde a tendência diária de conformidade recua nos resumos de postura do Microsoft 365."
+    },
+    "identityAccessOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório",
+      "orgWideNote": "Este relatório abrange toda a organização. Os dados de identidade do Microsoft 365 não têm dimensão de site, portanto não podem ser restringidos a sites específicos, e uma conta limitada a certos sites não consegue gerá-lo.",
+      "dormantDays": "Considerar uma conta ociosa após (dias)",
+      "dormantDaysHelp": "São listadas as contas habilitadas sem nenhum login bem-sucedido registrado nesse número de dias. Uma conta nunca vista fazendo login aparece como “nunca observada”, o que não é o mesmo que um intervalo longo.",
+      "homeCountries": "Países de login esperados (códigos ISO)",
+      "homeCountriesHelp": "Códigos de país de duas letras separados por vírgulas, por exemplo US, CA. Logins fora da lista são contados. Se o campo ficar vazio, a seção diz “não configurado”, nunca “nenhum login do exterior”.",
+      "adminDetail": "Incluir o detalhamento de logins de administradores",
+      "adminDetailHelp": "Lista cada login interativo de uma conta com papel de administrador, incluindo o endereço de origem. É a seção que um auditor lê primeiro.",
+      "coverageNote": "O relatório cobre apenas logins interativos e imprime a janela que realmente cobre. A Microsoft mantém os registros de login por cerca de 30 dias e exige uma licença Entra ID P1 ou P2 para liberá-los, de modo que o primeiro relatório após ativar a coleta é parcial e diz isso."
     }
   }
 }

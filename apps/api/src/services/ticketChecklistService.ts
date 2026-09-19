@@ -77,8 +77,15 @@ function toView(row: TicketChecklistItemRow): ChecklistItemView {
  * Total order: (position, created_at, id). `position` alone is not unique —
  * deliberately, so a whole-list reorder is one statement — so the tie-breakers
  * are what make paging and rendering deterministic.
+ *
+ * Built LAZILY rather than at module load: #5808 W03 made
+ * serviceDeliverableService import this module, which pulls it into module
+ * graphs whose suites only PARTIALLY mock `../db/schema`. Touching a schema
+ * column at import time turns such a partial mock into a whole-file load
+ * failure that names this line rather than the mock (routes/portal.test.ts,
+ * routes/portal.compat.test.ts). Nothing is gained by computing it once.
  */
-const CHECKLIST_ORDER = [
+const checklistOrder = () => [
   asc(ticketChecklistItems.position),
   asc(ticketChecklistItems.createdAt),
   asc(ticketChecklistItems.id),
@@ -92,7 +99,7 @@ export async function listChecklist(
     .select()
     .from(ticketChecklistItems)
     .where(eq(ticketChecklistItems.ticketId, ticketId))
-    .orderBy(...CHECKLIST_ORDER)) as TicketChecklistItemRow[];
+    .orderBy(...checklistOrder())) as TicketChecklistItemRow[];
   const items = rows.map(toView);
   return { items, done: items.filter((i) => i.done).length, total: items.length };
 }

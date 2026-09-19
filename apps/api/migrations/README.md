@@ -104,6 +104,12 @@ with anything.
   `breeze_partner_export_(device_child|site_child|material)_(insert|update|delete)`
   triggers, acquire **all partners shared first, then all orgs exclusive**, each
   in ascending UUID order, over the union of rows every write will touch.
+  Configuration-material tables instead require **all partners exclusive first,
+  then all orgs under those exclusive partners**, using
+  `breeze_partner_export_lock_partners_exclusive` and
+  `breeze_partner_export_lock_orgs_under_exclusive_partners`. This covers
+  `configuration_owner_*`, `direct_org_*`, `policy_child_*`, `assignment_*`,
+  `custom_values_update`, and `normalized_policy_child` trigger functions.
   System scope must precede the discovery reads too. Use this shape from
   `2026-10-14-100050-discovered-assets-source-backfill-prelock.sql` (#5357):
 
@@ -146,16 +152,14 @@ with anything.
   Enforced without a database by `apps/api/src/db/migrationPartnerExportLocks.test.ts`
   in **Test API** (#5360). It derives tables from literal trigger declarations
   and `FOREACH … IN ARRAY ARRAY[...]` trigger-installation loops. Its literal
-  baseline records exactly seven shipped offenders and **must never grow**.
-  Shipped offenders need fix-forward repairs; new files must satisfy the rule.
-  Coverage is limited to the `device_child_*`, `site_child_*`, and `material_*`
-  insert/update/delete trigger families named above; the configuration-material
-  family (`breeze_partner_export_configuration_owner_*`, `direct_org_*`,
-  `policy_child_*`, `assignment_*`, `custom_values_update`, and
-  `normalized_policy_child` in the 2026-07-24 configuration-material-state and
-  2026-07-25 canonical-configuration migrations) is a documented follow-up outside
-  this PR because it uses `breeze_partner_export_lock_partners_exclusive` and
-  `breeze_partner_export_lock_orgs_under_exclusive_partners`.
+  baselines record exactly seven shipped device/site/material offenders and
+  fourteen configuration-material offenders (#5912), each with its own frozen
+  cutoff; neither baseline **may ever grow**. Both families use the same scanner
+  and reasoned annotation exception. Configuration tables are also derived from
+  the literal declarations and loops in the 2026-07-24 configuration-material-state
+  and 2026-07-25 canonical-configuration migrations, including normalized policy
+  children. Shipped offenders need fix-forward repairs; new files must satisfy
+  their family's helper pair before writing.
 
 ## Never edit a shipped migration
 

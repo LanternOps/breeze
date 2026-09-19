@@ -187,6 +187,8 @@ describe('m365 tenant sync — schema invariants (live catalog)', () => {
     `)) as unknown as Array<{ typname: string; labels: string[] }>;
     expect(rows.find((r) => r.typname === 'm365_sync_domain')!.labels).toEqual([
       'users', 'signin_activity', 'intune_devices', 'ca_policies', 'skus', 'secure_score',
+      // #5784 W05 appended the seventh label; ALTER TYPE ADD VALUE appends.
+      'signin_events',
     ]);
     expect(rows.find((r) => r.typname === 'm365_sync_status')!.labels).toEqual([
       'success', 'partial', 'needs_consent', 'throttled', 'error',

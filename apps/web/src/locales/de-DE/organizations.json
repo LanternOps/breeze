@@ -202,6 +202,9 @@
     }
   },
   "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} Organisationen)",
+    "partnerOption_one": "{{id}}… ({{count}} Organisation)",
+    "partnerScopeHint": "Die Konten eines Partners werden angezeigt; die Summen unten gelten nur für diesen Partner",
     "title": "Organisationen",
     "description": "Jeder Kunde, was ihm noch fehlt und was offen ist.",
     "loading": "Organisationen werden geladen…",

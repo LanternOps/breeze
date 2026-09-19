@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { ContractsList } from './ContractsList';
 import CurrencyMismatchesTab from './CurrencyMismatchesTab';
@@ -12,9 +11,16 @@ import CurrencyMismatchesTab from './CurrencyMismatchesTab';
 // from a banner on the list, not a tab. Net: no tab bar in the default state.
 type Tab = 'contracts' | 'currency-mismatches';
 
-// Deep links minted before the split. `navigateTo(..., { replace: true })` keeps
-// them out of the back stack, so Back from /agreements/templates returns to
-// whatever the user was on before, not to a URL that immediately re-redirects.
+// Deep links minted before the split. This uses `window.location.replace`
+// rather than Astro's `navigate()` (via `navigateTo`): on a fresh deep-link
+// load `history.state` is null, and Astro's `navigate()` throws reading it
+// inside its own async `updateDOM` — an error Astro swallows internally, so
+// it never reaches `navigateTo`'s try/catch and its fallback never fires,
+// leaving the address bar and title stranded on /contracts. A full navigation
+// is correct here regardless: this is a cross-page redirect, it must work
+// from a cold load, and `replace` (not `assign`) keeps it out of the back
+// stack, so Back from /agreements/templates returns to whatever the user was
+// on before, not to a URL that immediately re-redirects.
 const LEGACY_REDIRECTS: Record<string, string> = {
   templates: '/agreements/templates',
   documents: '/agreements/signed',
@@ -32,7 +38,7 @@ export default function ContractsTabs() {
     const redirect = () => {
       const raw = new URLSearchParams(window.location.hash.replace(/^#/, '')).get('tab');
       const target = raw ? LEGACY_REDIRECTS[raw] : undefined;
-      if (target) void navigateTo(target, { replace: true });
+      if (target) window.location.replace(target);
     };
     redirect();
     window.addEventListener('hashchange', redirect);

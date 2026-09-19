@@ -32,6 +32,12 @@ vi.mock('../db', () => {
   return { db: chain() };
 });
 
+// #5808 W03 — the delete guard's RULES live in ./checklistTemplateReference and
+// have their own suite. Mocked here so these cases test the ORDERING inside
+// deleteChecklistTemplate (404 -> 403 -> 409) rather than re-testing the rules.
+const refMocks = vi.hoisted(() => ({ assertChecklistTemplateNotInUse: vi.fn() }));
+vi.mock('./checklistTemplateReference', () => refMocks);
+
 import { db as mockedDb } from '../db';
 import {
   addChecklistTemplateItem,
@@ -140,6 +146,8 @@ describe('partner-wide write gating', () => {
   beforeEach(() => {
     dbMocks.rows.length = 0;
     resetDbCalls();
+    refMocks.assertChecklistTemplateNotInUse.mockReset();
+    refMocks.assertChecklistTemplateNotInUse.mockResolvedValue(undefined);
   });
 
   it('a partner admin may create a partner-wide template', async () => {
@@ -185,6 +193,52 @@ describe('partner-wide write gating', () => {
     await expect(deleteChecklistTemplate('t-1', PARTNER_TECH)).rejects.toBeInstanceOf(
       PartnerWideWriteDeniedError,
     );
+  });
+
+  // ── #5808 W03: the CHECKLIST_TEMPLATE_IN_USE delete guard ────────────────
+  it('refuses to delete a template a deliverable still references (409)', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: 'o-1', partnerId: null }]);
+    refMocks.assertChecklistTemplateNotInUse.mockRejectedValueOnce(
+      Object.assign(new Error('in use'), {
+        status: 409,
+        code: 'CHECKLIST_TEMPLATE_IN_USE',
+        details: { deliverables: [{ id: 'd-1', name: 'Monthly review' }], templateItems: [] },
+      }),
+    );
+    await expect(deleteChecklistTemplate('t-1', PARTNER_ADMIN)).rejects.toMatchObject({
+      status: 409,
+      code: 'CHECKLIST_TEMPLATE_IN_USE',
+      details: { deliverables: [{ id: 'd-1', name: 'Monthly review' }] },
+    });
+    // Nothing was deleted: the guard runs BEFORE the delete.
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('deletes when nothing references the template', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: 'o-1', partnerId: null }]);
+    refMocks.assertChecklistTemplateNotInUse.mockResolvedValueOnce(undefined);
+    await expect(deleteChecklistTemplate('t-1', PARTNER_ADMIN)).resolves.toBeUndefined();
+    expect(refMocks.assertChecklistTemplateNotInUse).toHaveBeenCalledWith('t-1');
+    expect(db.delete).toHaveBeenCalled();
+  });
+
+  it('404s BEFORE consulting the in-use guard', async () => {
+    // A caller who cannot see the template must not learn from a 409 that it
+    // exists and what references it.
+    dbMocks.rows.push([]);
+    await expect(deleteChecklistTemplate('FOREIGN', PARTNER_ADMIN)).rejects.toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
+    });
+    expect(refMocks.assertChecklistTemplateNotInUse).not.toHaveBeenCalled();
+  });
+
+  it('403s a partner tech BEFORE consulting the in-use guard', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: null, partnerId: 'p-1' }]);
+    await expect(deleteChecklistTemplate('t-1', PARTNER_TECH)).rejects.toBeInstanceOf(
+      PartnerWideWriteDeniedError,
+    );
+    expect(refMocks.assertChecklistTemplateNotInUse).not.toHaveBeenCalled();
   });
 
   it('a partner tech MAY update an ORG-owned template they can reach', async () => {

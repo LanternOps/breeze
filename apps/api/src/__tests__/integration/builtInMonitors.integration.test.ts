@@ -139,8 +139,8 @@ describe('ensureBuiltInMonitorsForPartner', () => {
       db.select({ id: configurationPolicies.id }).from(configurationPolicies).where(eq(configurationPolicies.partnerId, partner.id)),
     );
     expect(policies).toEqual([]);
-    const effective = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(device.id));
-    expect(effective).toEqual([]);
+    const resolution = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(device.id));
+    expect(resolution).toEqual({ kind: 'resolved', monitors: [] });
 
     expect(await marker(partner.id)).toMatchObject({ version: 2 });
   });

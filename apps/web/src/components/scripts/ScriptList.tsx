@@ -48,6 +48,7 @@ type ScriptListProps = {
   onEdit?: (script: Script) => void;
   onDuplicate?: (script: Script) => void;
   onDelete?: (script: Script) => void;
+  onOpenLibrary?: () => void;
   pageSize?: number;
   timezone?: string;
   organizations?: Organization[];
@@ -108,6 +109,7 @@ export default function ScriptList({
   onEdit,
   onDuplicate,
   onDelete,
+  onOpenLibrary,
   pageSize = 10,
   timezone,
   organizations = [],
@@ -256,6 +258,10 @@ export default function ScriptList({
             data-testid="script-origin-filter"
             value={originFilter}
             onChange={event => {
+              if (event.target.value === 'system' && onOpenLibrary) {
+                onOpenLibrary();
+                return;
+              }
               setOriginFilter(event.target.value);
               setCurrentPage(1);
             }}

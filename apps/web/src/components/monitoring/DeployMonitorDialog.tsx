@@ -94,6 +94,7 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
             body: JSON.stringify(body),
           }),
         errorFallback: t('deploy.errors.attach'),
+        successMessage: t('deploy.attached'),
         onUnauthorized: UNAUTHORIZED,
       });
       onDeployed();

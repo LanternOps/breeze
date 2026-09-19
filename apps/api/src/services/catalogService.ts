@@ -201,8 +201,6 @@ export async function createCatalogItem(input: CreateCatalogItemInput, actor: Ca
       billingType: input.billingType,
       billingFrequency: input.billingFrequency ?? null,
       commitmentTermMonths: input.commitmentTermMonths ?? null,
-      // Deprecated mirror of the partner-currency price-book row (read by nothing).
-      unitPrice: priceMap.get(partnerCurrency) ?? '0.00',
       costBasis,
       markupPercent: input.markupPercent != null ? input.markupPercent.toFixed(2) : null,
       costCurrency,
@@ -248,8 +246,8 @@ async function getOwnedItemOr404(id: string, partnerId: string, dbc: DbExecutor 
 
 // Catalog-side lock order: every writer that touches an item AND its price /
 // override rows locks the catalog_items row FIRST, then mutates
-// catalog_item_prices / catalog_item_org_pricing, then writes the unit_price
-// mirror. An item-first/price-first split would be an AB/BA deadlock.
+// catalog_item_prices / catalog_item_org_pricing. An item-first/price-first
+// split would be an AB/BA deadlock.
 async function lockOwnedItemOr404(id: string, partnerId: string, tx: DbExecutor) {
   const rows = await tx.select().from(catalogItems)
     .where(and(eq(catalogItems.id, id), eq(catalogItems.partnerId, partnerId))).limit(1).for('update');
@@ -268,23 +266,14 @@ async function upsertPriceRow(tx: DbExecutor, itemId: string, partnerId: string,
   return rows[0]!;
 }
 
-async function writeUnitPriceMirror(tx: DbExecutor, itemId: string, partnerId: string, unitPrice: string) {
-  const rows = await tx.update(catalogItems).set({ unitPrice, updatedAt: new Date() })
-    .where(and(eq(catalogItems.id, itemId), eq(catalogItems.partnerId, partnerId))).returning();
-  return rows[0];
-}
-
 export async function setItemPrice(itemId: string, currencyCode: string, input: SetItemPriceInput, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
   const unitPrice = input.unitPrice.toFixed(2);
   const row = await db.transaction(async (tx) => {
     await lockOwnedItemOr404(itemId, partnerId, tx); // item lock FIRST
-    const partnerCurrency = await resolvePartnerCurrency(partnerId, tx);
     assertPriceInRange(unitPrice);
     assertRepresentable(unitPrice, currencyCode);
-    const price = await upsertPriceRow(tx, itemId, partnerId, currencyCode, unitPrice);
-    if (currencyCode === partnerCurrency) await writeUnitPriceMirror(tx, itemId, partnerId, unitPrice); // mirror LAST
-    return price;
+    return await upsertPriceRow(tx, itemId, partnerId, currencyCode, unitPrice);
   });
   await emitCatalogEvent({ type: 'catalog.item.price_changed', catalogItemId: itemId, partnerId, actorUserId: actor.userId });
   return row;
@@ -294,11 +283,8 @@ export async function removeItemPrice(itemId: string, currencyCode: string, acto
   const partnerId = requirePartner(actor);
   await db.transaction(async (tx) => {
     await lockOwnedItemOr404(itemId, partnerId, tx);
-    const partnerCurrency = await resolvePartnerCurrency(partnerId, tx);
     await tx.delete(catalogItemPrices)
       .where(and(eq(catalogItemPrices.itemId, itemId), eq(catalogItemPrices.currencyCode, currencyCode)));
-    // The mirror has no source once the partner-currency row is gone.
-    if (currencyCode === partnerCurrency) await writeUnitPriceMirror(tx, itemId, partnerId, '0.00');
   });
   await emitCatalogEvent({ type: 'catalog.item.price_changed', catalogItemId: itemId, partnerId, actorUserId: actor.userId });
   return { ok: true };
@@ -316,14 +302,13 @@ export async function removeItemPrice(itemId: string, currencyCode: string, acto
  * price: an operator who hand-adjusted the EUR row would otherwise have it
  * silently reset to Pax8 MSRP by a re-import, reported as a plain "Imported"
  * toast. Only a currency with no row at all is added; existing rows are left
- * alone (and reported back as `preserved` so the caller can say so), and the
- * deprecated unit_price mirror is rewritten only when the partner-currency row
- * is one of the ADDED ones. No cost × markup derivation here either. A cost
- * without a currency (the importedCost gap) leaves the stored cost untouched.
+ * alone (and reported back as `preserved` so the caller can say so). No cost ×
+ * markup derivation here either. A cost without a currency (the importedCost
+ * gap) leaves the stored cost untouched.
  *
- * Runs under the catalog-side lock order (item row FIRST, price rows, mirror
- * LAST) and returns the same item-plus-price-book shape createCatalogItem does,
- * plus `pricingApplied`.
+ * Runs under the catalog-side lock order (item row FIRST, then price rows) and
+ * returns the same item-plus-price-book shape createCatalogItem does, plus
+ * `pricingApplied`.
  */
 export async function applyImportedPricingBySku(
   sku: string,
@@ -374,10 +359,6 @@ export async function applyImportedPricingBySku(
         .where(and(eq(catalogItems.id, existing.id), eq(catalogItems.partnerId, partnerId))).returning();
       item = rows[0] ?? item;
     }
-    // Mirror only a row we actually added — rewriting it for a PRESERVED row
-    // would reset the mirror to the feed price the price book just refused.
-    const mirror = added.includes(partnerCurrency) ? priceMap.get(partnerCurrency) : undefined;
-    if (mirror !== undefined) item = (await writeUnitPriceMirror(tx, existing.id, partnerId, mirror)) ?? item; // mirror LAST
     const prices = await tx.select({ currencyCode: catalogItemPrices.currencyCode, unitPrice: catalogItemPrices.unitPrice })
       .from(catalogItemPrices).where(eq(catalogItemPrices.itemId, existing.id)).orderBy(asc(catalogItemPrices.currencyCode));
     return { ...item, prices, pricingApplied: { added, preserved } };
@@ -396,7 +377,7 @@ export async function listItemPrices(itemId: string, actor: CatalogActor) {
 export async function updateCatalogItem(id: string, input: UpdateCatalogItemInput, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
   const updated = await db.transaction(async (tx) => {
-    // Lock order: catalog_items row FIRST, then price rows, then the mirror.
+    // Lock order: catalog_items row FIRST, then price rows.
     const existing = await lockOwnedItemOr404(id, partnerId, tx);
     const partnerCurrency = await resolvePartnerCurrency(partnerId, tx);
 
@@ -479,12 +460,9 @@ export async function updateCatalogItem(id: string, input: UpdateCatalogItemInpu
     try {
       const rows = await tx.update(catalogItems).set(patch)
         .where(and(eq(catalogItems.id, id), eq(catalogItems.partnerId, partnerId))).returning();
-      let row = rows[0]!;
+      const row = rows[0]!;
       if (priceWrite) {
         await upsertPriceRow(tx, id, partnerId, priceWrite.currencyCode, priceWrite.unitPrice);
-        if (priceWrite.currencyCode === partnerCurrency) {
-          row = (await writeUnitPriceMirror(tx, id, partnerId, priceWrite.unitPrice)) ?? row; // mirror LAST
-        }
       }
       // Flipping a bundle back to a plain item (true -> false) must drop its
       // component rows — otherwise they linger orphaned and would resurface if the
@@ -526,7 +504,7 @@ export async function listCatalogItems(query: ListCatalogQuery, actor: CatalogAc
       WHERE p.item_id = ${catalogItems.id} AND p.currency_code = ${query.currencyCode})`);
   }
   // The aggregated price book rides along so list consumers (items tab, pickers)
-  // never read the deprecated unit_price mirror and never N+1 the detail route.
+  // never N+1 the detail route.
   // `::text` keeps numeric amounts as strings inside the JSON. The outer column
   // is spelled out (`catalog_items.id`): inside a SELECT-list sql`` chunk Drizzle
   // renders `${catalogItems.id}` unqualified, which would bind to `p.id`.
@@ -1132,8 +1110,9 @@ async function withBundleLockTimeoutMapped<T>(fn: () => Promise<T>): Promise<T> 
  * JPY 100.50 — the migrations keep such rows as-is, snapshots rule) is the
  * typed PRICE_NOT_REPRESENTABLE gap (409, #3775 review #4): it never enters a
  * new document, is never rounded, and is never skipped in favour of the next
- * candidate. Fix it with PUT /catalog/:id/prices/:code. Never converts and
- * NEVER reads the deprecated catalog_items.unit_price mirror. Runs on `dbc` so
+ * candidate. Fix it with PUT /catalog/:id/prices/:code. Never converts, and
+ * reads the price book only — the deprecated catalog_items.unit_price mirror it
+ * used to refuse to read was dropped in #3812. Runs on `dbc` so
  * document services resolve inside their already-locked transaction (document
  * row → lines → sources); every catalog read here is a plain SELECT — no
  * FOR UPDATE on the document path.
