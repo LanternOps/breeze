@@ -4,12 +4,27 @@ import { fetchWithAuth } from "../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import {
+  AssignmentFilterBadges,
+  AssignmentRoleOsFilters,
+  assignmentFilterPayload,
+} from "./AssignmentRoleOsFilters";
 type Assignment = {
   id: string;
   level: string;
   targetId: string;
   priority: number;
+  roleFilter?: string[] | null;
+  osFilter?: string[] | null;
 };
+function sameFilterSet(
+  a?: string[] | null,
+  b?: string[] | null,
+): boolean {
+  const left = [...(a ?? [])].sort();
+  const right = [...(b ?? [])].sort();
+  return left.length === right.length && left.every((value, i) => value === right[i]);
+}
 type OrgSummary = {
   id: string;
   name: string;
@@ -23,8 +38,8 @@ const SEARCH_DEBOUNCE_MS = 300;
 // Partner-owned policies (#2280) are a reusable library. "All organizations"
 // (a single partner-level assignment) and a subset (N organization-level
 // assignments) are mutually exclusive: turning on All orgs removes per-org
-// rows; checking any org removes the partner row. Site/group/device precision
-// lives in the advanced Assignments tab.
+// rows; checking any org removes the partner row. Role/OS filters ride on
+// those assignment rows. Site/group/device levels stay API-only.
 //
 // This panel fetches its OWN paginated, server-searched org list (never the
 // nav org store, which silently truncates at 50) — see #2285 review: a
@@ -41,6 +56,8 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [error, setError] = useState<string>();
+  const [roleFilter, setRoleFilter] = useState<string[]>([]);
+  const [osFilter, setOsFilter] = useState<string[]>([]);
   const [orgs, setOrgs] = useState<OrgSummary[]>([]);
   const [orgsLoading, setOrgsLoading] = useState(false);
   const [page, setPage] = useState(1);
@@ -150,6 +167,25 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
       .forEach((a) => m.set(a.targetId, a));
     return m;
   }, [assignments]);
+  useEffect(() => {
+    if (assignmentsLoading) return;
+    if (partnerAssignment) {
+      setRoleFilter([...(partnerAssignment.roleFilter ?? [])]);
+      setOsFilter([...(partnerAssignment.osFilter ?? [])]);
+      return;
+    }
+    const orgRows = assignments.filter((a) => a.level === "organization");
+    if (orgRows.length === 0) return;
+    const first = orgRows[0]!;
+    const shared = orgRows.every(
+      (row) =>
+        sameFilterSet(row.roleFilter, first.roleFilter) &&
+        sameFilterSet(row.osFilter, first.osFilter),
+    );
+    if (!shared) return;
+    setRoleFilter([...(first.roleFilter ?? [])]);
+    setOsFilter([...(first.osFilter ?? [])]);
+  }, [assignmentsLoading, assignments, partnerAssignment]);
   const orgsById = useMemo(() => {
     const m = new Map<string, OrgSummary>();
     orgs.forEach((o) => m.set(o.id, o));
@@ -236,7 +272,11 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
               ),
             );
         }
-        const r = await post({ level: "partner", priority: 0 }); // server derives targetId (#1724)
+        const r = await post({
+          level: "partner",
+          priority: 0,
+          ...assignmentFilterPayload(roleFilter, osFilter),
+        }); // server derives targetId (#1724)
         if (!r.ok)
           throw new Error(
             extractApiError(
@@ -280,6 +320,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
           level: "organization",
           targetId: orgId,
           priority: 0,
+          ...assignmentFilterPayload(roleFilter, osFilter),
         });
         if (!r.ok)
           throw new Error(
@@ -337,6 +378,21 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
           )}
         </p>
 
+        <div className="mt-4">
+          <AssignmentRoleOsFilters
+            roleFilter={roleFilter}
+            osFilter={osFilter}
+            onRoleFilterChange={setRoleFilter}
+            onOsFilterChange={setOsFilter}
+            disabled={rowsDisabled}
+          />
+          <p className="mt-2 text-xs text-muted-foreground">
+            {i18n.t(
+              "policies:configurationPolicies.organizationScopePanel.filtersApplyOnAssign",
+            )}
+          </p>
+        </div>
+
         <label className="mt-4 flex items-center gap-3 rounded-md border bg-muted/30 p-3">
           <input
             type="checkbox"
@@ -347,9 +403,19 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
             disabled={rowsDisabled}
             onChange={toggleAllOrgs}
           />
-          <span className="text-sm font-medium">
-            {i18n.t(
-              "policies:configurationPolicies.organizationScopePanel.allOrganizationsPartnerWide2",
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium">
+              {i18n.t(
+                "policies:configurationPolicies.organizationScopePanel.allOrganizationsPartnerWide2",
+              )}
+            </span>
+            {partnerAssignment && (
+              <span className="mt-1 block">
+                <AssignmentFilterBadges
+                  roleFilter={partnerAssignment.roleFilter}
+                  osFilter={partnerAssignment.osFilter}
+                />
+              </span>
             )}
           </span>
         </label>
@@ -362,7 +428,9 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
               )}
             </h3>
             <div className="mt-2 divide-y rounded-md border">
-              {assignedOrgs.map((org) => (
+              {assignedOrgs.map((org) => {
+                const assignment = orgAssignmentByOrgId.get(org.id);
+                return (
                 <label
                   key={org.id}
                   className="flex items-center gap-3 px-3 py-2 text-sm"
@@ -374,9 +442,20 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
                     disabled={rowsDisabled}
                     onChange={() => toggleOrg(org.id)}
                   />
-                  <span>{org.name}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block">{org.name}</span>
+                    {assignment && (
+                      <span className="mt-1 block">
+                        <AssignmentFilterBadges
+                          roleFilter={assignment.roleFilter}
+                          osFilter={assignment.osFilter}
+                        />
+                      </span>
+                    )}
+                  </span>
                 </label>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

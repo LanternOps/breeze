@@ -11,7 +11,16 @@ function jsonRes(body: unknown, ok = true, status = 200) {
   return Promise.resolve({ ok, status, json: () => Promise.resolve(body) });
 }
 
-function assignmentsRes(data: Array<{ id: string; level: string; targetId: string; priority: number }>) {
+function assignmentsRes(
+  data: Array<{
+    id: string;
+    level: string;
+    targetId: string;
+    priority: number;
+    roleFilter?: string[] | null;
+    osFilter?: string[] | null;
+  }>,
+) {
   return jsonRes({ data });
 }
 
@@ -267,5 +276,87 @@ describe('OrganizationScopePanel', () => {
     });
 
     await waitFor(() => expect(screen.queryByText(/Searching…/i)).not.toBeInTheDocument());
+  });
+
+  it('renders role and OS filter chips', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    expect(await screen.findByText('Role Filter')).toBeInTheDocument();
+    expect(screen.getByText('OS Filter')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Server' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Windows' })).toBeInTheDocument();
+  });
+
+  it('POSTs a partner assignment with roleFilter when Server is selected and All orgs is toggled on', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    const allOrgs = await screen.findByRole('checkbox', { name: /All organizations/i });
+    fireEvent.click(screen.getByRole('button', { name: 'Server' }));
+    fireEvent.click(allOrgs);
+
+    await waitFor(() => expect(findCall('/configuration-policies/p1/assignments', 'POST')).toBeTruthy());
+    const post = findCall('/configuration-policies/p1/assignments', 'POST')!;
+    const body = JSON.parse((post[1] as RequestInit).body as string);
+    expect(body).toMatchObject({ level: 'partner', priority: 0, roleFilter: ['server'] });
+    expect(body).not.toHaveProperty('targetId');
+    expect(body).not.toHaveProperty('osFilter');
+  });
+
+  it('POSTs an org assignment with osFilter when Windows is selected and an org is checked', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    const contoso = await screen.findByRole('checkbox', { name: /Contoso Ltd/i });
+    fireEvent.click(screen.getByRole('button', { name: 'Windows' }));
+    fireEvent.click(contoso);
+
+    await waitFor(() => expect(findCall('/configuration-policies/p1/assignments', 'POST')).toBeTruthy());
+    const post = findCall('/configuration-policies/p1/assignments', 'POST')!;
+    const body = JSON.parse((post[1] as RequestInit).body as string);
+    expect(body).toMatchObject({
+      level: 'organization',
+      targetId: 'org-contoso',
+      osFilter: ['windows'],
+    });
+    expect(body).not.toHaveProperty('roleFilter');
+  });
+
+  it('shows a Server badge on All orgs when the partner assignment has a role filter', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() =>
+        assignmentsRes([{ id: 'ap1', level: 'partner', targetId: PARTNER_ID, priority: 0, roleFilter: ['server'] }]),
+      )
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    expect(await screen.findByRole('checkbox', { name: /All organizations/i })).toBeChecked();
+    // Chip button plus the stored-assignment badge.
+    expect(screen.getAllByText('Server')).toHaveLength(2);
+  });
+
+  it('shows a Linux badge on an assigned org row', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() =>
+        assignmentsRes([{
+          id: 'a1',
+          level: 'organization',
+          targetId: 'org-acme',
+          priority: 0,
+          osFilter: ['linux'],
+        }]),
+      )
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    expect(await screen.findByRole('checkbox', { name: /Acme Corp/i })).toBeChecked();
+    expect(screen.getAllByText('Linux')).toHaveLength(2);
   });
 });

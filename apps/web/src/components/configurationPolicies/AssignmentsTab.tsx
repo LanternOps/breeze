@@ -4,9 +4,13 @@ import { cn } from "@/lib/utils";
 import { extractApiError } from "@/lib/apiError";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, handleActionError } from "@/lib/runAction";
-import { DEVICE_ROLES, getDeviceRoleLabel } from "@/lib/deviceRoles";
 import HelpTooltip from "../shared/HelpTooltip";
 import OrganizationScopePanel from "./OrganizationScopePanel";
+import {
+  AssignmentFilterBadges,
+  AssignmentRoleOsFilters,
+  assignmentFilterPayload,
+} from "./AssignmentRoleOsFilters";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type Assignment = {
@@ -37,20 +41,6 @@ const orgOwnedAssignmentLevels = [
   },
   { value: "device", labelKey: "common:labels.device" },
 ];
-const osFilterOptions = [
-  {
-    value: "windows",
-    labelKey: "policies:configurationPolicies.assignmentsTab.windows",
-  },
-  {
-    value: "macos",
-    labelKey: "policies:configurationPolicies.assignmentsTab.macOS",
-  },
-  {
-    value: "linux",
-    labelKey: "policies:configurationPolicies.assignmentsTab.linux",
-  },
-];
 type Props = {
   policyId: string;
   // null for partner-owned ("all organizations") policies.
@@ -69,10 +59,6 @@ export default function AssignmentsTab({
   partnerId,
 }: Props) {
   const { t } = useTranslation(["policies", "common"]);
-  const getOsLabel = (value: string): string => {
-    const option = osFilterOptions.find((o) => o.value === value);
-    return option ? t(/* i18n-dynamic */ option.labelKey) : value;
-  };
   const isPartnerOwned = !!partnerId;
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
@@ -310,10 +296,7 @@ export default function AssignmentsTab({
               // caller's / policy's own partner_id and ignores any client value.
               ...(isPartnerLevel ? {} : { targetId: newTargetId.trim() }),
               priority: Number(newPriority) || 0,
-              ...(newRoleFilter.length > 0
-                ? { roleFilter: newRoleFilter }
-                : {}),
-              ...(newOsFilter.length > 0 ? { osFilter: newOsFilter } : {}),
+              ...assignmentFilterPayload(newRoleFilter, newOsFilter),
             }),
           }),
         errorFallback: fallback,
@@ -355,97 +338,13 @@ export default function AssignmentsTab({
       handleActionError(err, fallback);
     }
   };
-  // Role + OS filter pickers — shared by the org-owned and partner-wide add cards.
   const filterFields = (
-    <div className="grid gap-4 sm:grid-cols-2">
-      <div>
-        <label className="text-sm font-medium">
-          {i18n.t("policies:configurationPolicies.assignmentsTab.roleFilter")}
-          <span className="text-xs text-muted-foreground">
-            {i18n.t("policies:configurationPolicies.assignmentsTab.optional")}
-          </span>
-          <HelpTooltip
-            text={i18n.t(
-              "policies:configurationPolicies.assignmentsTab.restrictThisAssignmentToDevicesWithSpecific",
-            )}
-          />
-        </label>
-        <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-10">
-          {DEVICE_ROLES.map((role) => {
-            const isSelected = newRoleFilter.includes(role);
-            return (
-              <button
-                key={role}
-                type="button"
-                onClick={() => {
-                  setNewRoleFilter((prev) =>
-                    isSelected
-                      ? prev.filter((r) => r !== role)
-                      : [...prev, role],
-                  );
-                }}
-                className={cn(
-                  "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition",
-                  isSelected
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60",
-                )}
-              >
-                {getDeviceRoleLabel(role)}
-              </button>
-            );
-          })}
-        </div>
-        {newRoleFilter.length === 0 && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            {i18n.t(
-              "policies:configurationPolicies.assignmentsTab.noRestrictionAppliesToAllDeviceRoles",
-            )}
-          </p>
-        )}
-      </div>
-      <div>
-        <label className="text-sm font-medium">
-          {i18n.t("policies:configurationPolicies.assignmentsTab.oSFilter")}
-          <span className="text-xs text-muted-foreground">
-            {i18n.t("policies:configurationPolicies.assignmentsTab.optional2")}
-          </span>
-        </label>
-        <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-10">
-          {osFilterOptions.map((os) => {
-            const isSelected = newOsFilter.includes(os.value);
-            return (
-              <button
-                key={os.value}
-                type="button"
-                onClick={() => {
-                  setNewOsFilter((prev) =>
-                    isSelected
-                      ? prev.filter((o) => o !== os.value)
-                      : [...prev, os.value],
-                  );
-                }}
-                className={cn(
-                  "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition",
-                  isSelected
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60",
-                )}
-              >
-                {t(/* i18n-dynamic */ os.labelKey)}
-              </button>
-            );
-          })}
-        </div>
-        {newOsFilter.length === 0 && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            {i18n.t(
-              "policies:configurationPolicies.assignmentsTab.noRestrictionAppliesToAllOperatingSystems",
-            )}
-          </p>
-        )}
-      </div>
-    </div>
+    <AssignmentRoleOsFilters
+      roleFilter={newRoleFilter}
+      osFilter={newOsFilter}
+      onRoleFilterChange={setNewRoleFilter}
+      onOsFilterChange={setNewOsFilter}
+    />
   );
   const priorityField = (
     <div>
@@ -550,38 +449,10 @@ export default function AssignmentsTab({
                     {assignment.priority}
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {(!assignment.roleFilter ||
-                        assignment.roleFilter.length === 0) &&
-                        (!assignment.osFilter ||
-                          assignment.osFilter.length === 0) && (
-                          <span className="text-xs text-muted-foreground">
-                            {i18n.t(
-                              "policies:configurationPolicies.assignmentsTab.allDevices",
-                            )}
-                          </span>
-                        )}
-                      {assignment.roleFilter &&
-                        assignment.roleFilter.length > 0 &&
-                        assignment.roleFilter.map((role) => (
-                          <span
-                            key={role}
-                            className="inline-flex items-center rounded-full border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-700"
-                          >
-                            {getDeviceRoleLabel(role)}
-                          </span>
-                        ))}
-                      {assignment.osFilter &&
-                        assignment.osFilter.length > 0 &&
-                        assignment.osFilter.map((os) => (
-                          <span
-                            key={os}
-                            className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-700"
-                          >
-                            {getOsLabel(os)}
-                          </span>
-                        ))}
-                    </div>
+                    <AssignmentFilterBadges
+                      roleFilter={assignment.roleFilter}
+                      osFilter={assignment.osFilter}
+                    />
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end">
