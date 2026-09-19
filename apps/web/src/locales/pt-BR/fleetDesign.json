@@ -9,6 +9,7 @@
     "startButton": "Iniciar um design de frota",
     "startError": "Não foi possível iniciar a execução do design de frota.",
     "startSuccess": "Execução do design de frota iniciada.",
+    "running": "Design de frota em execução…",
     "empty": "Ainda não há designs de frota para esta organização.",
     "loadError": "Falha ao carregar os designs de frota.",
     "detailLoadError": "Falha ao carregar este design de frota.",
