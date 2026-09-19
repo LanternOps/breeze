@@ -50,6 +50,18 @@ Verified on `main` at `b8dd148bd8` (2026-09-19):
   handles `alert_rules` rows; the inline policy rules in the owner's screenshot have no path to
   Monitors at all, and multi-condition rules cannot convert (`monitorConversion.ts:50-57`).
 
+Three further defects surfaced during the design review of this spec (Codex xhigh, verified in
+code 2026-09-19) and are filed as #6342, #6343, #6344; they are prerequisites, not part of the program:
+
+- **Monitors of kind `offline` have no firing path.** The sweep selects online devices only
+  (`alertWorker.ts:196-199`), and the offline-transition path queries `alert_rules` with
+  `targetType IN (all, org, site, device)` — never `monitor` (`offlineAlertEffects.ts:31-37`).
+- **A monitor's `restart_service` response never reaches the agent.** Saving a monitor normalizes
+  `execute_command` actions down to `{type, command, shell}` (`automationRuntime.ts:671-680`),
+  dropping the `kind` discriminator the watch builder requires (`routes/agents/helpers.ts:2152`).
+- **The monitor resolver ignores assignment `roleFilter` / `osFilter`** (`monitorResolver.ts` has
+  no reference to either; `configurationPolicy.ts:2434` applies both for every other feature).
+
 The community proposal was right about the object and right about the problem. What it
 described — one place to say *what to watch, what to run, who to tell, when to involve a human*
 — is exactly what has not happened at the screen level.
@@ -70,8 +82,11 @@ monitoring-software framing. That is the misalignment. This spec replaces it:
 
 Two invariants every wave must preserve:
 
-1. **Every device alert traces to exactly one monitor.** No second authoring object, no second
-   evaluation path, no rule that is not a monitor.
+1. **Every condition-based device alert traces to exactly one monitor.** Metric, state, event
+   log, service, process, script and network-check conditions have one authoring object, one
+   evaluation path, one row. *Sourced* alerts raised by a feature's own engine (compliance
+   bridge, warranty, patch jobs, security, backup) keep their producers; those are feature
+   settings, not condition rules, and are out of scope.
 2. **Every notification traces to one delivery decision a technician can read on screen.** No
    emergent fallback; the default is a row you can edit.
 
@@ -111,6 +126,16 @@ Two invariants every wave must preserve:
 | C8 | Multi-condition rules | **New `composite` monitor kind** (`all: [{kind, condition}]`) compiling to an `{logic:'and'}` group. No OR (no write path produces one today). | — |
 | C9 | Agent-side watch settings | **Restart parameters move to the `restart_service` response action; the per-policy check interval stays a per-policy setting on the Monitors tab.** `alertOnStop` and `alertSeverity` on watches are dropped (stored, never read: `aiToolsConfigPolicy.ts:880`). | — |
 | C10 | Network checks | **Become monitors of kind `network_check` in the final wave.** The Network page keeps assets, SNMP templates and results. | — |
+
+## Prerequisite defects (must land before W05c)
+
+| Issue | Defect | Why it gates conversion |
+|---|---|---|
+| #6342 | `offlineAlertEffects` must resolve monitors for the device (via `resolveMonitorsForDevice`) alongside legacy rules, honouring per-monitor duration | converting an inline "Device offline" rule would silently stop it firing |
+| #6343 | `normalizeActions` keeps `kind`, `maxAttempts`, `cooldownSeconds` on `execute_command`; the watch builder reads them | converting a watch with `autoRestart` would silently lose the restart |
+| #6344 | `resolveMonitorsForDevice` applies assignment `roleFilter`/`osFilter` exactly as `resolveEffectiveConfigWithExecutor` does | converting a policy assigned "servers only" would widen it to every device |
+
+Each is a single-PR fix with an integration test, filed and fixed independently of this program.
 
 ## End state
 
@@ -260,17 +285,39 @@ dispatcher ignores unknown keys.
 **Monitors** (W05c):
 
 - `MONITOR_KINDS` gains `composite`. Condition schema
-  `{ all: z.array({ kind: MonitorKind (not composite), condition: record }).min(2).max(10) }`,
-  cross-validated child-by-child against each kind's schema. `toAlertCondition` returns
-  `{ logic: 'and', conditions: children.map(spec.toAlertCondition) }`. `overridableKeys: []`
-  (per-policy overrides of a composite are not offered; the override path replaces the root
-  node wholesale, `alertService.ts:943-952`, so an empty overridable set is the honest contract).
+  `{ match: 'all' | 'any', children: [{ kind, condition }] (2..10) }`, cross-validated
+  child-by-child. **Children are restricted to server-evaluated kinds** (`cpu`, `memory`,
+  `disk`, `offline`, `event_log`, `patch_compliance`, `cert_expiry`, `bandwidth`, `disk_io`,
+  `network_errors`, `antivirus`, `software_presence`, `backup_continuity`): agent-delivered and
+  worker-provisioned kinds (`service`, `process`, `process_resource`, `script`, `network_check`)
+  are selected by root kind when the agent config, script probe and network rows are built
+  (`helpers.ts:2109`, `monitorScriptWorker.ts:174`, `monitorCompiler.ts:306`), so a composite
+  child of those kinds would never receive evidence. `toAlertCondition` returns
+  `{ logic: match === 'all' ? 'and' : 'or', conditions: children.map(spec.toAlertCondition) }`.
+  No nesting. `overridableKeys: []` (the override path replaces the root node wholesale,
+  `alertService.ts:943-952`; an empty overridable set is the honest contract). Existing OR or
+  nested groups (the standalone-rule API accepts arbitrary `conditions`, `routes/alerts/
+  schemas.ts:29`) convert only when they are one flat `any` group; deeper trees are
+  `unconvertible:nested_group`.
+- `service` / `process` / `network_check` `consecutiveFailures` widens to `1..100` to match the
+  watch domain (`validators/index.ts:941` vs `monitors.ts:79`); no watch is unconvertible on
+  range.
+- The `monitors` feature link gains an `inheritance` setting, `'cumulative' | 'replace'`
+  (default `cumulative`, stored on the link's `inline_settings`). `replace` makes
+  `resolveMonitorsForDevice` treat that policy's attachment set the way every other feature is
+  resolved — closest policy wins, parent attachments not consulted — which is what a converted
+  child policy needs to reproduce its inline behavior exactly (see Conversion). The policy
+  Monitors tab exposes it as one switch: *Add to inherited monitors / Replace inherited
+  monitors*.
 - `restart_service` action params gain `maxAttempts`, `cooldownSeconds`; the agent watch builder
   (`routes/agents/helpers.ts:2137-2157`) reads them instead of `MONITOR_WATCH_DEFAULTS`.
-- `config_policy_monitoring_settings.feature_link_id` is re-pointed by migration from each
-  policy's `monitoring` link to its `monitors` link (creating the `monitors` link when the policy
-  has none). The `monitors` feature's inline settings gain `checkIntervalSeconds`; the
-  `monitoring` feature's decompose/assemble paths are deleted in W05d.
+- `checkIntervalSeconds` stays on `config_policy_monitoring_settings` keyed by the `monitoring`
+  link **until W05d**: the agent config builder joins that link only (`helpers.ts:2305-2312`)
+  and re-keying earlier would drop unconverted watches from the wire. In W05c the Monitors
+  tab's *Check interval* writes through to that row (creating an empty-watch `monitoring` link
+  if the policy has none). W05d's migration re-keys the row to the `monitors` link, the
+  `monitors` inline settings gain `checkIntervalSeconds`, and the `monitoring` feature's
+  decompose/assemble paths are deleted.
 
 **Config feature types** (W05d): `alert_rule` and `monitoring` are removed from
 `CONFIG_FEATURE_TYPES` and listed in a new `RETIRED_CONFIG_FEATURE_TYPES` (shared constants).
@@ -295,14 +342,21 @@ Delivery page's "test this rule set" affordance. Precedence, in order, first hit
 4. The org's `is_default` row if present, else the partner's `is_default` row.
 5. No default row (fresh install with no channels) → inbox only, logged.
 
-In-app notifications remain unconditional (step 0). Escalation is scheduled when the winning
-step carries an `escalationPolicyId`; a monitor's own `escalationPolicyId` applies in step 2
-only. The all-enabled-channels fallback is deleted.
+In-app notifications remain unconditional (step 0). **Escalation resolves independently of
+channels**: the monitor's own `escalationPolicyId` if set (today `inherit` + explicit escalation
+already works, `notificationDispatcher.ts:443`), else the winning routing row's, else none.
+The all-enabled-channels fallback is deleted.
+
+**Transitional (W05b → W05d):** steps 1–2 also honour a legacy source's own overrides —
+`alert_rules.overrideSettings.notificationChannelIds/escalationPolicyId` and
+`config_policy_alert_rules.notification_channel_ids/escalation_policy_id` — for unretired rows,
+so nothing changes for a rule until it is converted. That branch is deleted in W05d.
 
 **Migration** (`2026-…-delivery-default-rows.sql`, system scope): for every partner with ≥1
-enabled partner-wide channel, insert a partner `is_default` row with those channels; for every
-org with ≥1 enabled org-owned channel, insert an org `is_default` row with the org's channels
-**plus** its partner's partner-wide channels (that is what the fallback sent). Report both
+**enabled** partner-wide channel, insert a partner `is_default` row with those channels; for
+every org with ≥1 **enabled** org-owned channel, insert an org `is_default` row with the org's
+enabled channels **plus** its partner's enabled partner-wide channels (that is exactly the
+fallback query at `notificationDispatcher.ts:362-371`, `enabled = true` on both axes). Report both
 counts. Day one is behavior-identical. Release notes state the one change: *new channels are not
 subscribed to anything until added to a routing row.*
 
@@ -310,12 +364,19 @@ subscribed to anything until added to a routing row.*
 
 Every legacy source becomes a monitor definition owned on the **same axis as the source's
 policy** (org-owned policy → org monitor; partner-wide policy → partner monitor), attached to
-that policy, and the source row is retired in the same transaction. A ledger row records
-`{source_table, source_id, monitor_id, policy_id, converted_by, converted_at, preview_hash}` in
-`monitor_conversions` — **one new table**, org-XOR-partner dual-ownership (shape per the
-partner-wide playbook), registered in the org cascade list, export policy, and
-`DUAL_AXIS_TENANT_TABLES` in the same PR. Conversion is idempotent on `(source_table,
-source_id)`.
+that policy, and the source row is retired in the same transaction. A ledger records it in
+**two new tables**: `monitor_conversions` `{id, org_id XOR partner_id, source_table, source_id,
+policy_id, converted_by, converted_at, preview_hash, reverted_at}` and
+`monitor_conversion_outputs` `{conversion_id, monitor_id, role ('primary' | 'resource_cpu' |
+'resource_memory' | 'response'), moved_alert_ids jsonb}` — a watch can produce up to three
+monitors. Both are org-XOR-partner (partner-wide playbook shape, SELECT-only partner branch),
+registered in `CORE_ORG_CASCADE_DELETE_ORDER` (outputs before conversions before
+`monitor_definitions`), `CORE_TENANT_EXPORT_POLICY` (`moved_alert_ids` is `excludedOpen`), and
+`DUAL_AXIS_TENANT_TABLES` in the same PR. Any composite FK that carries `org_id` is `DEFERRABLE
+INITIALLY IMMEDIATE`. Conversion is idempotent on `(source_table, source_id)`; **Revert** on a
+ledger row un-retires the source, deletes the output monitors (attachments cascade) and restores
+`alerts.rule_id`/`config_policy_id` for `moved_alert_ids`. The source row's
+`converted_to_monitor_id` holds the primary output.
 
 | Source | Becomes | Mapping notes | Unconvertible when |
 |---|---|---|---|
@@ -323,35 +384,49 @@ source_id)`.
 | `config_policy_alert_rules` row, 2–10 conditions | `composite` monitor | children through the same converter | any child unconvertible |
 | `config_policy_monitoring_watches` row | `service` or `process` monitor; **plus** a `process_resource` monitor per set threshold (`cpuThresholdPercent`, `memoryThresholdMb`) | `alertAfterConsecutiveFailures` → `consecutiveFailures`; `autoRestart` → `restart_service` response with `maxAttempts`/`cooldownSeconds` from the row; `thresholdDurationSeconds` → `durationMinutes` (rounded up) on the resource monitor; `alertOnStop` and `alertSeverity` ignored (stored, never read at runtime — mapping them would *change* behavior) | never (all fields map) |
 | `config_policy_monitoring_settings.checkIntervalSeconds` | policy Monitors tab *Check interval* | row re-keyed, not converted | — |
-| `alert_templates` unmanaged + its `alert_rules` | monitor + attachment to a **new policy** assigned to the rule's target (existing `ruleConversionService` path: `createConfigPolicy`, `assignPolicy`, `addFeatureLink`) | existing converter | template `conditions` is the editor envelope (no `type`) — retired with reason `unconvertible:no_condition`; the editor never produced a firing rule |
+| `alert_templates` unmanaged + its `alert_rules` | monitor + attachment to a **new policy** assigned to the rule's target (existing `ruleConversionService` path: `createConfigPolicy`, `assignPolicy`, `addFeatureLink`) | existing converter | template `conditions` is the editor envelope (no `type`) — retired with reason `unconvertible:no_condition`. Exception: templates the compliance bridge fires directly (`policyAlertBridge.ts:230`, sourced alerts, no evaluator) are **not** alert-rule templates and are left alone |
 | `automations` / `config_policy_automations` with `trigger.event = 'alert.triggered'` | if `filter.ruleId` or `filter.configPolicyAlertRuleId` names a source being converted → appended to that monitor's `responses` (device-bound, dedup by action fingerprint); otherwise → **kept** as an Alert workflow under Jobs with `filter` left as is (policy-scoped ones are re-homed to a standalone automation assigned to the same policy) | actions carried verbatim (max 10 per monitor) | never |
 
-**Inheritance correction.** Inline `alert_rule` is whole-feature-replace (closest policy wins,
-`configurationPolicy.ts:2480-2506`); monitors are cumulative with per-monitor override
-(`monitorResolver.ts:13-24`). Converting a child policy naively would re-enable every parent
-rule the child had replaced. The converter therefore, for a policy P with parent chain
-P₁…Pₙ that carry inline rules:
+**Inheritance correction.** Inline `alert_rule` is whole-feature-replace: role/OS filters,
+then level, assignment priority, creation time, one winning feature
+(`configurationPolicy.ts:2434-2506`). Monitors are cumulative, rank a policy's own attachment
+ahead of inherited ones before priority, and accumulate across unrelated assignments
+(`monitorResolver.ts:73-81`). Attaching parent monitors to a child with `enabled: false` cannot
+reproduce that. The converter therefore does not try to emulate replacement with attachments;
+it **sets `inheritance: 'replace'` on the `monitors` link of every converted policy that had
+its own inline `alert_rule` feature**, and the resolver (with the prerequisite filter fix)
+selects that policy's attachment set exactly as the legacy resolver selected its feature. A
+tech flips the switch to `cumulative` deliberately, later, per policy.
 
-1. Converts parents first (top-down); a child is not convertible while a parent has unretired
-   inline rules — the preview says so.
-2. For each of P's inline rules whose fingerprint (kind + normalized condition) equals a parent's
-   already-converted monitor: attach the **parent's monitor** to P with `overrides` = the
-   differing overridable keys (severity, threshold, duration) instead of creating a new monitor.
-3. For each parent monitor with no fingerprint match in P: attach it to P with `enabled: false`,
-   `overrides: null`, so P's devices keep seeing exactly what P's inline set produced.
-4. Remaining P rules become new monitors attached to P.
+Monitor reuse across policies (attach an existing monitor instead of minting one) happens only
+on **full behavioral equivalence**: kind, normalized condition, severity, cooldown, auto-resolve,
+delivery and responses all equal. Otherwise a new monitor is created.
 
-The preview renders the resulting per-device diff for a sample device in each assignment
-(`previewEffectiveConfig` for before, `resolveMonitorsForDevice` for after) and refuses to
-convert if any sample device would gain or lose an active condition.
+**Equivalence check.** The preview is not a sample: for every device in the policy's assignment
+scope it computes the legacy effective condition set (`previewEffectiveConfig`) and the
+post-conversion set (`resolveMonitorsForDevice` on the proposed attachments, in a dry-run
+transaction) and refuses when any device gains or loses an active condition or changes
+severity, cooldown or delivery. Above 500 devices the check runs as a job and the panel shows
+progress; the ledger stores the `preview_hash` so a stale preview cannot be confirmed.
 
-**Open alerts.** Converting a source does not touch open alerts. A `retired` inline rule keeps
-its cooldown key and dedupe; the next sweep evaluates the monitor instead, whose dedupe is by
-`(rule_id, device_id)` on the compiled rule. To avoid a duplicate at the boundary, the converter
-copies the source's open-alert `(device_id → alert_id)` pairs into the compiled rule's dedupe
-set by updating `alerts.rule_id` to the compiled rule where `alerts.config_policy_id = source.id
-AND status IN ('open','acknowledged')`. Auto-resolve for those alerts then runs under the
-monitor's `autoResolve` setting.
+**Open alerts.** Alert status is `active | acknowledged | resolved | suppressed | dismissed`;
+dedupe considers `active, acknowledged, suppressed` (`alertService.ts:202-206`); legacy
+auto-resolve keys on `config_policy_id IS NOT NULL` (`:1393-1397`) and cooldown resolution
+prefers `config_policy_id` (`:744-748`). For every non-terminal alert of a converted source
+the converter, in the same transaction: sets `alerts.rule_id` to the compiled rule, sets
+`alerts.config_policy_id = NULL`, records the source id in `alerts.context.convertedFrom`
+(history and the detail page read it), and lists the ids in the ledger's `moved_alert_ids`.
+Cooldown state keyed `cpar:<source>:<device>` is re-keyed to the compiled rule's key. The alert
+is then deduped, cooled and auto-resolved by the monitor path only.
+
+**Other writers of legacy rows** (all changed in W05c so conversion is not undone):
+
+| Writer | Today | Becomes |
+|---|---|---|
+| Onboarding `modules/mcpInvites/tools/configureDefaults.ts:142` | inserts unmanaged baseline `alert_rules` per org | attaches the partner's built-in monitors to the org's default policy |
+| `scripts/migrateToConfigPolicies.ts:397` | recreates inline `config_policy_alert_rules` | script retired (W05d) |
+| Fleet Designer `fleetDesign/apply.ts:309-371` | writes `alert_rule` and `monitoring` links | writes monitor attachments |
+| AI `manage_policy_feature_link` | writes both legacy features | refuses (W05d), points at `manage_monitor_definitions` |
 
 **Who runs it.**
 
@@ -416,8 +491,8 @@ conversion instructions and deadline (W05c), the removals and the boot check (W0
 |---|---|---|
 | **W05a — stop the bleeding** (2 PRs, no schema) | Delete false hint; duplicate-condition warning on policy Monitors and Alerts tabs; **Create monitor** and Recommended strip on the policy Monitors tab; freeze creation on policy Alerts tab, S&P tab and Alert Templates (existing rows still editable; "converts in the next release" notice); remove `conditionTypes`/`deviceTags` from the routing API schema; delete orphaned `AlertRuleEditPage`/`AlertRuleEditor`/`hub.*` keys/`/monitoring/*` stubs; add a *superseded* banner to the 09-08 spec | merged |
 | **W05b — delivery** (3 PRs) | `resolveDelivery` + preview endpoint; routing `escalation_policy_id`, `is_default`, `monitorKinds`; default-row migration; Delivery page (Channels · Routing · Escalation policies) with `/alerts/channels` redirect; monitor Notify card shows resolved inheritance; dispatcher on the resolver; fallback deleted; delivery MCP tool | one integration test proving dispatch and preview agree for org-row, partner-row, default-row and inbox-only cases against real Postgres |
-| **W05c — conversion** (5 PRs) | `composite` kind; `restart_service` params + agent builder; settings re-key; retirement columns; `monitor_conversions`; converter for all five sources incl. inheritance correction and open-alert carry-over; per-policy panel + partner-level Convert everything; Needs-conversion filter on Monitors; Alert workflows filter + payload fields; device page Monitoring tab; Fleet Designer and AI-tool changes; Alert Templates pages deleted | hosted: ledger shows zero unretired rows on EU and US; self-hosted banner live |
-| **W05d — retirement** (2 PRs, ≥1 release after W05c) | Migration runs the converter in system scope for leftovers; policy `#alert_rule`/`#monitoring` tabs, `/alerts/rules`, legacy routers (410), `monitoring` feature decompose/assemble, `evaluateDeviceAlertsFromPolicy` deleted; `RETIRED_CONFIG_FEATURE_TYPES`; boot check | — |
+| **W05c — conversion** (5 PRs; requires the three prerequisite fixes merged) | `composite` kind; `inheritance` link setting + resolver; `consecutiveFailures` widening; `restart_service` params + agent builder; Check-interval write-through; retirement columns; `monitor_conversions`; converter for all five sources incl. inheritance correction and open-alert carry-over; per-policy panel + partner-level Convert everything; Needs-conversion filter on Monitors; Alert workflows filter + payload fields; device page Monitoring tab; Fleet Designer and AI-tool changes; Alert Templates pages deleted | hosted: ledger shows zero unretired rows on EU and US; self-hosted banner live |
+| **W05d — retirement** (2 PRs, ≥1 release after W05c) | Migration runs the converter in system scope for leftovers; settings re-key to the `monitors` link; transitional delivery overrides removed; `migrateToConfigPolicies` script deleted; policy `#alert_rule`/`#monitoring` tabs, `/alerts/rules`, legacy routers (410), `monitoring` feature decompose/assemble, `evaluateDeviceAlertsFromPolicy` deleted; `RETIRED_CONFIG_FEATURE_TYPES`; boot check | — |
 | **W05e — network checks** (3 PRs) | Network Monitor → **Network** (Assets · Templates · Results); check authoring in Monitors (kind `network_check`, target = asset); unmanaged `network_monitors` rows converted with the same ledger; `network_monitor_alert_rules` retired | — |
 
 W05a and W05b are independent of each other. W05c depends on both. W05d depends on W05c having
@@ -433,7 +508,9 @@ shipped in a prior release. W05e is separable and may be re-planned after W05d.
 | Composite override semantics surprise | Composite has no overridable keys; the policy row shows "override not available for composite monitors" |
 | Watches with thresholds become two monitors | Preview shows both; names derive from the watch (`"<name> — CPU"`) |
 | Fleet Designer and AI tools keep writing legacy features | Both are changed in W05c and the legacy write paths refuse in W05d; `aiAgentSdkTools.mcpCoverage.test.ts` pins the tool surface |
-| Alert history loses provenance | Rows are retired, never deleted; `alerts.config_policy_id` and `alerts.rule_id` keep resolving; detail page shows "converted to monitor X" |
+| Alert history loses provenance | Rows are retired, never deleted; moved alerts carry `context.convertedFrom`; detail page shows "converted to monitor X" |
+| `inheritance: replace` surprises a tech who later attaches a partner-wide monitor to a parent | The policy Monitors tab shows the switch state and, in replace mode, lists the inherited monitors being ignored |
+| A prerequisite fix slips and conversion proceeds | The converter refuses to run unless the three fixes' feature checks pass (a startup-registered capability list), and the panel says which is missing |
 
 ## Review log
 
@@ -444,6 +521,17 @@ shipped in a prior release. W05e is separable and may be re-planned after W05d.
   open-alert continuity requirement, and "do not retire every alert.triggered automation —
   broad ones change coverage if copied per monitor". All four adopted above (Inheritance
   correction, C9, Open alerts, C7). Codex's end-state tab lists match §End state.
+- 2026-09-19 (second round, written spec) — Codex xhigh found ten defects in the draft; all
+  verified in code and adopted: offline-monitor firing gap, restart discriminator loss and
+  resolver filter gap (now *Prerequisite defects*); delivery must not change for unconverted
+  rules and escalation must resolve independently of channel inheritance (§Delivery
+  resolution); parent-suppression could not emulate whole-feature replacement (now the
+  `inheritance: replace` link setting + full-scope equivalence check); open-alert carry-over
+  had the wrong statuses and left `config_policy_id` live (rewritten); settings re-key would
+  have dropped unconverted watches (deferred to W05d); composite children must be
+  server-evaluated kinds and OR groups exist (restricted + `match`); onboarding and the
+  migrate script write legacy rows (inventoried); `consecutiveFailures` domains differ
+  (widened); ledger could not hold one-to-many (outputs table).
 - Owner (2026-09-19): framing approved — "alerting is the purpose in an RMM; monitors serve
   it"; Monitors name kept; explicit delivery default with opt-in new channels approved.
 
