@@ -200,7 +200,10 @@ async function resolveTicketOrg(
 
 async function getCategoryDefaults(
   categoryId: string
-): Promise<{ defaultBillable: boolean; defaultHourlyRate: string | null; rateCurrency: string | null; defaultWorkTypeId: string | null } | null> {
+): Promise<{
+  defaultBillable: boolean; defaultHourlyRate: string | null; rateCurrency: string | null;
+  defaultWorkTypeId: string | null; defaultWorkTypeIsActive: boolean | null;
+} | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
@@ -210,9 +213,14 @@ async function getCategoryDefaults(
           defaultBillable: ticketCategories.defaultBillable,
           defaultHourlyRate: ticketCategories.defaultHourlyRate,
           rateCurrency: ticketCategories.rateCurrency,
-          defaultWorkTypeId: ticketCategories.defaultWorkTypeId
+          defaultWorkTypeId: ticketCategories.defaultWorkTypeId,
+          // Joined, not a second round trip: the default must not be stamped
+          // once the work type is archived (see resolveTicketLink). null when
+          // the category has no default at all.
+          defaultWorkTypeIsActive: workTypes.isActive
         })
         .from(ticketCategories)
+        .leftJoin(workTypes, eq(workTypes.id, ticketCategories.defaultWorkTypeId))
         .where(eq(ticketCategories.id, categoryId))
         .limit(1)
     )
@@ -300,8 +308,13 @@ async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
     // D6 + match-or-skip: a default rate is used only when entered in the org's currency.
     defaultHourlyRate: resolveDefaultRate(org!.currencyCode, orgSettings, category),
     // Spec §3.1: server-side default keeps clients without a picker compatible.
-    // Retired categories still supply defaults; do not filter on is_active.
-    defaultWorkTypeId: category?.defaultWorkTypeId ?? null
+    // Retired CATEGORIES still supply defaults; do not filter on the category's
+    // is_active. The WORK TYPE's is_active is a different matter: archiving one
+    // clears it off every category in the same transaction
+    // (workTypeService.archiveWorkType), and this is the belt-and-braces for a
+    // row that predates that or was written around it — a picker that no longer
+    // offers a work type must not have the server keep stamping it.
+    defaultWorkTypeId: category?.defaultWorkTypeIsActive ? (category.defaultWorkTypeId ?? null) : null
   };
 }
 

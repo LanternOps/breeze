@@ -315,3 +315,34 @@ it('MOUNT: switching tickets resets both work type selections', async () => {
   fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
   expect(screen.getByTestId('ticket-billing-quick-add-work-type')).toHaveValue('');
 });
+
+// "No work type" was unreachable: the handler sent workTypeId only when truthy,
+// so an explicit blank was indistinguishable from an untouched picker and the
+// server applied the CATEGORY default anyway. The service already distinguishes
+// undefined from null (timeEntryService.test.ts "explicit null clears category
+// default") — the client just never sent the null.
+it('MOUNT: choosing "No work type" in quick-add sends an explicit null, not an omission', async () => {
+  render(<TicketTimeBilling ticketId="tk-1" />);
+  fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+  const picker = screen.getByTestId('ticket-billing-quick-add-work-type');
+  await waitFor(() => expect(picker).toBeEnabled());
+  fireEvent.change(picker, { target: { value: 'wt-2' } });
+  fireEvent.change(picker, { target: { value: '' } }); // the blank "No work type" option
+  fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '30' } });
+  fireEvent.click(screen.getByTestId('ticket-billing-quick-add-submit'));
+  await waitFor(() => {
+    const body = requestBody('/time-entries');
+    expect(body).toHaveProperty('workTypeId');
+    expect(body.workTypeId).toBeNull();
+  });
+});
+
+it('MOUNT: choosing "No work type" before starting a timer sends an explicit null', async () => {
+  render(<TicketTimeBilling ticketId="tk-1" />);
+  const picker = await screen.findByTestId('timer-work-type');
+  await waitFor(() => expect(picker).toBeEnabled());
+  fireEvent.change(picker, { target: { value: 'wt-1' } });
+  fireEvent.change(picker, { target: { value: '' } });
+  fireEvent.click(screen.getByTestId('ticket-billing-start-timer'));
+  await waitFor(() => expect(requestBody('/time-entries/start')).toEqual({ ticketId: 'tk-1', workTypeId: null }));
+});

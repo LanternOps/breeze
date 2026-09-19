@@ -5,6 +5,8 @@ import { subscribePartnerCurrencyCache } from '../../lib/partnerCurrencyCache';
 
 export interface WorkTypeOption { id: string; name: string; isActive: boolean }
 
+const LOG_TAG = '[WorkTypeSelect]';
+
 type WorkTypeState = { workTypes: WorkTypeOption[]; loading: boolean; failed: boolean };
 const cache: {
   value: WorkTypeOption[] | null;
@@ -30,19 +32,29 @@ async function loadWorkTypes(): Promise<WorkTypeOption[] | null> {
     const request = (async () => {
       try {
         const response = await fetchWithAuth('/billing-profiles/work-types');
-        if (!response.ok) return null;
+        if (!response.ok) {
+          // A disabled picker with nothing in the console is unsupportable:
+          // the tech reports "I can't pick a work type" and there is no trace
+          // of whether it was a 403, a 500 or a bad payload.
+          console.error(LOG_TAG, `work type list request failed with HTTP ${response.status}`);
+          return null;
+        }
         const body = await response.json();
         if (!Array.isArray(body?.workTypes) || !body.workTypes.every((item: unknown) => {
           if (!item || typeof item !== 'object') return false;
           const option = item as Partial<WorkTypeOption>;
           return typeof option.id === 'string' && typeof option.name === 'string'
             && typeof option.isActive === 'boolean';
-        })) return null;
+        })) {
+          console.error(LOG_TAG, 'work type list response was malformed; expected { workTypes: WorkTypeOption[] }');
+          return null;
+        }
         const options = (body.workTypes as WorkTypeOption[]).filter((option) => option.isActive);
         if (cache.generation === generation) cache.value = options;
         return options;
-      } catch {
+      } catch (err) {
         // Failed reads are not cached; a later mount can retry.
+        console.error(LOG_TAG, err);
         return null;
       }
     })().finally(() => {

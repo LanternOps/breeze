@@ -555,7 +555,10 @@
         "label": "Modelos de e-mail",
         "description": "Chamados, orçamentos, faturas, convites"
       },
-      "sendingDomains": { "label": "Endereços de envio", "description": "Envie e-mails do seu próprio domínio" },
+      "sendingDomains": {
+        "label": "Endereços de envio",
+        "description": "Envie e-mails do seu próprio domínio"
+      },
       "aiBudgets": {
         "label": "Orçamentos de IA",
         "description": "Limites de gastos com IA"
@@ -5794,6 +5797,8 @@
     "create": "Adicionar tipo de trabalho",
     "archive": "Arquivar",
     "archived": "Arquivado",
+    "archivedClearedDefaults_one": "Arquivado. Removido como padrão de {{count}} categoria.",
+    "archivedClearedDefaults_other": "Arquivado. Removido como padrão de {{count}} categorias.",
     "saveError": "Não foi possível salvar o tipo de trabalho. Tente novamente.",
     "saveSuccess": "Tipo de trabalho salvo.",
     "nameTaken": "Já existe um tipo de trabalho com esse nome.",

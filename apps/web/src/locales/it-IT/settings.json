@@ -555,7 +555,10 @@
         "label": "Modelli e-mail",
         "description": "Ticket, preventivi, fatture, inviti"
       },
-      "sendingDomains": { "label": "Indirizzi mittente", "description": "Invia email dal tuo dominio" },
+      "sendingDomains": {
+        "label": "Indirizzi mittente",
+        "description": "Invia email dal tuo dominio"
+      },
       "aiBudgets": {
         "label": "Budget AI",
         "description": "Limiti di spesa AI"
@@ -5794,6 +5797,8 @@
     "create": "Aggiungi tipo di lavoro",
     "archive": "Archivia",
     "archived": "Archiviato",
+    "archivedClearedDefaults_one": "Archiviato. Rimosso come predefinito da {{count}} categoria.",
+    "archivedClearedDefaults_other": "Archiviato. Rimosso come predefinito da {{count}} categorie.",
     "saveError": "Impossibile salvare il tipo di lavoro. Riprova.",
     "saveSuccess": "Tipo di lavoro salvato.",
     "nameTaken": "Esiste già un tipo di lavoro con questo nome.",

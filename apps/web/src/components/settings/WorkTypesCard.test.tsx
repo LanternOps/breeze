@@ -8,6 +8,7 @@ import { resetWorkTypeCache } from '../shared/WorkTypeSelect';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+import { navigateTo } from '@/lib/navigation';
 vi.mock('../../lib/authScope', () => ({ loginPathWithNext: () => '/login' }));
 vi.mock('../shared/WorkTypeSelect', () => ({ resetWorkTypeCache: vi.fn() }));
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -39,6 +40,51 @@ describe('WorkTypesCard', () => {
     fireEvent.click(archive);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/billing-profiles/work-types/wt-1', expect.objectContaining({ method: 'DELETE' })));
     await waitFor(() => expect(resetWorkTypeCache).toHaveBeenCalledOnce());
+  });
+
+  // Archiving also NULLs the work type off every category that used it as a
+  // default (server side, same transaction). Saying nothing would let a tech
+  // discover their category configuration had changed only much later.
+  it('names how many categories lost the work type as their default', async () => {
+    mutationResponse = response({ workType: { id: 'wt-1', name: 'Remote', isActive: false }, clearedCategoryCount: 2 });
+    render(<WorkTypesCard />);
+    fireEvent.click(await screen.findByTestId('work-type-archive-wt-1'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: expect.stringMatching(/2 categor/i) }),
+    ));
+  });
+
+  it('CONTROL: says nothing about categories when none were cleared', async () => {
+    mutationResponse = response({ workType: { id: 'wt-1', name: 'Remote', isActive: false }, clearedCategoryCount: 0 });
+    render(<WorkTypesCard />);
+    fireEvent.click(await screen.findByTestId('work-type-archive-wt-1'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: expect.not.stringMatching(/categor/i) }),
+    ));
+  });
+
+  // A 401 on the INITIAL load is a session problem, not "work types are
+  // unavailable" -- the repo pattern is to let the auth redirect handle it
+  // rather than render a retry button over an expired session.
+  it('treats a 401 on load as auth, not as a load failure', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockImplementation(async (_url, init) => init?.method ? mutationResponse : response({}, 401));
+    render(<WorkTypesCard />);
+    await waitFor(() => expect(navigateTo).toHaveBeenCalled());
+    expect(screen.queryByTestId('work-types-load-error')).toBeNull();
+    errorSpy.mockRestore();
+  });
+
+  it('logs the status when the list load fails for a non-auth reason', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockImplementation(async (_url, init) => init?.method ? mutationResponse : response({}, 503));
+    render(<WorkTypesCard />);
+    await screen.findByTestId('work-types-load-error');
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('WorkTypesCard'),
+      expect.objectContaining({ message: expect.stringContaining('503') }),
+    );
+    errorSpy.mockRestore();
   });
 
   it('renames with PATCH and refreshes picker data', async () => {

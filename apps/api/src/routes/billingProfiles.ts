@@ -65,12 +65,16 @@ app.patch('/work-types/:id', writePerm, async (c) => {
 // ARCHIVES. A work type is stamped on historical time entries; removing one
 // would raise 23503 against the NO ACTION FK, and a SET NULL "fix" would
 // rewrite billing history. The response carries isActive:false so the UI can
-// say "archived" rather than "deleted".
+// say "archived" rather than "deleted", and clearedCategoryCount so it can say
+// how many ticket categories just lost it as their default (the service clears
+// those in the same transaction — otherwise the server would keep stamping a
+// work type the picker no longer offers).
 app.delete('/work-types/:id', writePerm, async (c) => {
   const auth = c.get('auth');
   if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
   try {
-    return c.json({ workType: await archiveWorkType(c.req.param('id')!, auth.partnerId) });
+    const { workType, clearedCategoryCount } = await archiveWorkType(c.req.param('id')!, auth.partnerId);
+    return c.json({ workType, clearedCategoryCount });
   } catch (err) { return fail(c, err); }
 });
 

@@ -104,3 +104,43 @@ it('retries on a later mount after a network failure', async () => {
   await waitFor(() => expect(screen.getByTestId('wt')).toHaveTextContent('Remote'));
   expect(screen.getByTestId('wt')).toBeEnabled();
 });
+
+// Both failure paths previously collapsed to `null` with nothing logged: the
+// picker went disabled and the only evidence was a greyed-out select.
+describe('WorkTypeSelect load failures are logged', () => {
+  it('logs the HTTP status on a non-ok response', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValue({ ok: false, status: 503, json: async () => ({}) });
+    render(<WorkTypeSelect value={null} onChange={() => {}} testId="wt" />);
+    await waitFor(() => expect(screen.getByTestId('wt')).toBeDisabled());
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('WorkTypeSelect'),
+      expect.stringContaining('503'),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('logs the thrown reason on a network failure', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockRejectedValue(new Error('offline'));
+    render(<WorkTypeSelect value={null} onChange={() => {}} testId="wt" />);
+    await waitFor(() => expect(screen.getByTestId('wt')).toBeDisabled());
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('WorkTypeSelect'),
+      expect.objectContaining({ message: 'offline' }),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('logs a malformed payload rather than silently showing an empty picker', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ workTypes: 'nope' }) });
+    render(<WorkTypeSelect value={null} onChange={() => {}} testId="wt" />);
+    await waitFor(() => expect(screen.getByTestId('wt')).toBeDisabled());
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('WorkTypeSelect'),
+      expect.stringContaining('malformed'),
+    );
+    errorSpy.mockRestore();
+  });
+});

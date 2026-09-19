@@ -555,7 +555,10 @@
         "label": "E-posta şablonları",
         "description": "Biletler, teklifler, faturalar, davetler"
       },
-      "sendingDomains": { "label": "Gönderen adresleri", "description": "E-postaları kendi alan adınızdan gönderin" },
+      "sendingDomains": {
+        "label": "Gönderen adresleri",
+        "description": "E-postaları kendi alan adınızdan gönderin"
+      },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
         "description": "AI harcama sınırları"
@@ -5794,6 +5797,8 @@
     "create": "İş türü ekle",
     "archive": "Arşivle",
     "archived": "Arşivlendi",
+    "archivedClearedDefaults_one": "Arşivlendi. {{count}} kategoride varsayılan olmaktan çıkarıldı.",
+    "archivedClearedDefaults_other": "Arşivlendi. {{count}} kategoride varsayılan olmaktan çıkarıldı.",
     "saveError": "İş türü kaydedilemedi. Lütfen tekrar deneyin.",
     "saveSuccess": "İş türü kaydedildi.",
     "nameTaken": "Bu ada sahip bir iş türü zaten var.",

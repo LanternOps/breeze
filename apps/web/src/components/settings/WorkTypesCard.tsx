@@ -27,12 +27,22 @@ export default function WorkTypesCard({ onLoad }: { onLoad?: (workTypes: WorkTyp
     setFailed(false);
     try {
       const response = await fetchWithAuth(`${endpoint}?includeInactive=true`);
-      if (!response.ok) throw new Error('Work type list unavailable');
+      // A 401 is an expired session, not "work types are unavailable" —
+      // rendering a retry button over it just makes the user click into the
+      // same 401. Hand it to the auth redirect, the repo's 401 pattern.
+      if (response.status === 401) {
+        void navigateTo(loginPathWithNext(), { replace: true });
+        return;
+      }
+      if (!response.ok) throw new Error(`Work type list unavailable (HTTP ${response.status})`);
       const data = await response.json();
-      if (!Array.isArray(data?.workTypes)) throw new Error('Invalid work type list');
+      if (!Array.isArray(data?.workTypes)) throw new Error('Invalid work type list: missing workTypes array');
       setWorkTypes(data.workTypes);
       onLoad?.(data.workTypes);
-    } catch {
+    } catch (err) {
+      // Never collapse the reason to a bare flag: a card stuck on "could not
+      // load" with nothing in the console is unsupportable.
+      console.error('[WorkTypesCard] failed to load work types', err);
       setFailed(true);
     } finally {
       setLoading(false);
@@ -50,7 +60,18 @@ export default function WorkTypesCard({ onLoad }: { onLoad?: (workTypes: WorkTyp
           method,
           ...(method === 'DELETE' ? {} : { body: JSON.stringify({ name: nextName }) }),
         }),
-        successMessage: t('workTypes.saveSuccess'),
+        // Archiving ALSO clears the work type off every ticket category that
+        // used it as a default (server side, one transaction). Report that —
+        // silently rewriting a tech's category configuration is exactly the
+        // kind of invisible mutation runAction exists to prevent.
+        successMessage: (data: unknown) => {
+          const cleared = method === 'DELETE' && data && typeof data === 'object'
+            ? (data as { clearedCategoryCount?: unknown }).clearedCategoryCount
+            : undefined;
+          return typeof cleared === 'number' && cleared > 0
+            ? t('workTypes.archivedClearedDefaults', { count: cleared })
+            : t('workTypes.saveSuccess');
+        },
         errorFallback: t('workTypes.saveError'),
         friendly: (code) => code === 'WORK_TYPE_NAME_TAKEN' ? t('workTypes.nameTaken') : undefined,
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true }),
@@ -79,7 +100,7 @@ export default function WorkTypesCard({ onLoad }: { onLoad?: (workTypes: WorkTyp
         <button type="submit" data-testid="work-type-create" className={buttonClass} disabled={busy || !name.trim()}>{t('workTypes.create')}</button>
       </form>
       {loading ? <p className="mt-4 text-sm text-muted-foreground" role="status">{t('ticketCategoriesPage.loading')}</p>
-        : failed ? <div className="mt-4 flex flex-wrap items-center gap-2 text-sm" role="alert">
+        : failed ? <div className="mt-4 flex flex-wrap items-center gap-2 text-sm" role="alert" data-testid="work-types-load-error">
           {t('workTypes.loadError')}
           <button type="button" className={buttonClass} onClick={() => void load()}>{t('ticketCategoriesPage.retry')}</button>
         </div>

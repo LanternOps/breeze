@@ -71,8 +71,13 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   // #5321: the rate box shows the ticket's resolved default until the tech
   // types over it, so a prefill still lands when the summary resolves after the
   // panel is already open.
-  const [workTypeId, setWorkTypeId] = useState<string | null>(null);
-  const [timerWorkTypeId, setTimerWorkTypeId] = useState<string | null>(null);
+  // THREE states, not two. `undefined` = the tech never touched the picker, so
+  // omit the field and let the server apply the ticket category's default.
+  // `null` = they explicitly chose "No work type", which must be SENT — sending
+  // nothing would re-apply the category default and make that option
+  // unreachable on any category that has one.
+  const [workTypeId, setWorkTypeId] = useState<string | null | undefined>(undefined);
+  const [timerWorkTypeId, setTimerWorkTypeId] = useState<string | null | undefined>(undefined);
   const [rate, setRate] = useState('');
   const [rateDirty, setRateDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -111,8 +116,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
   useEffect(() => {
     setQuickAddOpen(false);
-    setWorkTypeId(null);
-    setTimerWorkTypeId(null);
+    setWorkTypeId(undefined);
+    setTimerWorkTypeId(undefined);
     setMinutes('');
     setDescription('');
     setBillable(true);
@@ -142,7 +147,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     // button in flight keeps the happy path single-shot.
     if (startingTimer) return;
     setStartingTimer(true);
-    void startTimerAction({ ticketId, ...(timerWorkTypeId ? { workTypeId: timerWorkTypeId } : {}) })
+    void startTimerAction({ ticketId, ...(timerWorkTypeId !== undefined ? { workTypeId: timerWorkTypeId } : {}) })
       .catch((err) => handleActionError(err, t('ticketTimeBilling.toast.startTimerFailed')))
       .finally(() => setStartingTimer(false));
   };
@@ -170,8 +175,9 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               endedAt: end.toISOString(),
               description: description || undefined,
               isBillable: billable,
-              // Omit blank to preserve the server-side category default.
-              ...(workTypeId ? { workTypeId } : {}),
+              // Untouched (undefined) omits the field so the server-side
+              // category default applies; an explicit "No work type" sends null.
+              ...(workTypeId !== undefined ? { workTypeId } : {}),
               ...(rateNumber !== undefined ? { hourlyRate: rateNumber } : {}),
             }),
           }),
@@ -179,7 +185,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         successMessage: t('ticketTimeBilling.toast.logged'),
       });
       setQuickAddOpen(false);
-      setWorkTypeId(null);
+      setWorkTypeId(undefined);
       setMinutes('');
       setDescription('');
       setRate('');
@@ -233,7 +239,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
       <label className="mt-2 block text-[11px] text-muted-foreground">
         {t('workType.label')}
-        <WorkTypeSelect value={timerWorkTypeId} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer} />
+        <WorkTypeSelect value={timerWorkTypeId ?? null} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer} />
       </label>
       <div className="mt-2 flex gap-2">
         <button
@@ -279,7 +285,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           />
           <label className="block text-[11px] text-muted-foreground">
             {t('workType.label')}
-            <WorkTypeSelect value={workTypeId} onChange={setWorkTypeId} testId="ticket-billing-quick-add-work-type" disabled={busy} />
+            <WorkTypeSelect value={workTypeId ?? null} onChange={setWorkTypeId} testId="ticket-billing-quick-add-work-type" disabled={busy} />
           </label>
           <div className="flex items-center gap-1.5">
             <input

@@ -555,7 +555,10 @@
         "label": "Email templates",
         "description": "Tickets, quotes, invoices, invites"
       },
-      "sendingDomains": { "label": "Sender Addresses", "description": "Send email from your own domain" },
+      "sendingDomains": {
+        "label": "Sender Addresses",
+        "description": "Send email from your own domain"
+      },
       "aiBudgets": {
         "label": "AI Budgets",
         "description": "AI spending limits"
@@ -5794,6 +5797,8 @@
     "create": "Add work type",
     "archive": "Archive",
     "archived": "Archived",
+    "archivedClearedDefaults_one": "Archived. Cleared as the default on {{count}} category.",
+    "archivedClearedDefaults_other": "Archived. Cleared as the default on {{count}} categories.",
     "saveError": "Could not save the work type. Please try again.",
     "saveSuccess": "Work type saved.",
     "nameTaken": "A work type with this name already exists.",

@@ -2,6 +2,8 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { workTypes, type WorkType } from '../db/schema/workTypes';
+// ticketCategories lives in tickets.ts; ticketConfig.ts holds orgTicketSettings.
+import { ticketCategories } from '../db/schema/tickets';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export const WORK_TYPE_NAME_MAX = 60;
@@ -84,9 +86,40 @@ export async function updateWorkType(
  * archived, never removed: a hard DELETE would raise 23503 against the NO
  * ACTION time_entries_work_type_partner_fk, and "fixing" that with SET NULL
  * would silently rewrite billing history.
+ *
+ * Archiving ALSO clears the row as `ticket_categories.default_work_type_id`
+ * across the partner, in the same transaction. Without that, the picker stops
+ * offering the work type while the server-side category default goes on
+ * stamping it on every new time entry — an archive that visibly did nothing.
+ * The count comes back so the UI can say what else changed rather than
+ * silently rewriting a technician's category configuration.
  */
-export async function archiveWorkType(id: string, partnerId: string): Promise<WorkType> {
-  return updateWorkType(id, partnerId, { isActive: false });
+export async function archiveWorkType(
+  id: string,
+  partnerId: string,
+): Promise<{ workType: WorkType; clearedCategoryCount: number }> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(workTypes)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(eq(workTypes.id, id), eq(workTypes.partnerId, partnerId)))
+      .returning();
+    if (!row) throw new WorkTypeServiceError('Work type not found', 404, 'WORK_TYPE_NOT_FOUND');
+
+    // partnerId is in the predicate as well as the id: the composite FK means a
+    // category can only ever reference a work type of its own partner, but an
+    // explicit tenancy predicate keeps that visible at the call site.
+    const cleared = await tx
+      .update(ticketCategories)
+      .set({ defaultWorkTypeId: null, updatedAt: new Date() })
+      .where(and(
+        eq(ticketCategories.partnerId, partnerId),
+        eq(ticketCategories.defaultWorkTypeId, id),
+      ))
+      .returning({ id: ticketCategories.id });
+
+    return { workType: row, clearedCategoryCount: cleared.length };
+  });
 }
 
 /**

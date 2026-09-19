@@ -92,12 +92,22 @@ describe('POST /work-types', () => {
 });
 
 describe('DELETE /work-types/:id', () => {
+  const archived = { id: '33333333-3333-4333-8333-333333333333', name: 'Remote', isActive: false };
+
   it('ARCHIVES rather than deleting — the response says isActive:false', async () => {
-    archiveWorkType.mockResolvedValue({ id: '33333333-3333-4333-8333-333333333333', name: 'Remote', isActive: false });
+    archiveWorkType.mockResolvedValue({ workType: archived, clearedCategoryCount: 0 });
     const res = await billingProfilesRoutes.request('/work-types/33333333-3333-4333-8333-333333333333', { method: 'DELETE' });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ workType: { id: '33333333-3333-4333-8333-333333333333', name: 'Remote', isActive: false } });
+    expect(await res.json()).toEqual({ workType: archived, clearedCategoryCount: 0 });
     expect(archiveWorkType).toHaveBeenCalledWith('33333333-3333-4333-8333-333333333333', '11111111-1111-4111-8111-111111111111');
+  });
+
+  // The UI has to be able to tell the tech that archiving also rewrote their
+  // category configuration; a bare 200 would hide it.
+  it('reports how many categories lost this work type as their default', async () => {
+    archiveWorkType.mockResolvedValue({ workType: archived, clearedCategoryCount: 3 });
+    const res = await billingProfilesRoutes.request('/work-types/33333333-3333-4333-8333-333333333333', { method: 'DELETE' });
+    expect(await res.json()).toMatchObject({ clearedCategoryCount: 3 });
   });
 });
 

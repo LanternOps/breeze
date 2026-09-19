@@ -555,7 +555,10 @@
         "label": "Plantillas de correo",
         "description": "Tickets, cotizaciones, facturas, invitaciones"
       },
-      "sendingDomains": { "label": "Direcciones de envío", "description": "Envía correos desde tu propio dominio" },
+      "sendingDomains": {
+        "label": "Direcciones de envío",
+        "description": "Envía correos desde tu propio dominio"
+      },
       "aiBudgets": {
         "label": "AI Presupuestos",
         "description": "límites de gasto AI"
@@ -5794,6 +5797,8 @@
     "create": "Agregar tipo de trabajo",
     "archive": "Archivar",
     "archived": "Archivado",
+    "archivedClearedDefaults_one": "Archivado. Se quitó como predeterminado en {{count}} categoría.",
+    "archivedClearedDefaults_other": "Archivado. Se quitó como predeterminado en {{count}} categorías.",
     "saveError": "No se pudo guardar el tipo de trabajo. Inténtelo de nuevo.",
     "saveSuccess": "Tipo de trabajo guardado.",
     "nameTaken": "Ya existe un tipo de trabajo con este nombre.",

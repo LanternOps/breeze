@@ -1904,7 +1904,7 @@ describe('workTypeId stamping', () => {
         dbMocks.selectResults.push(
           [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
           [{ partnerId: 'p-1', currencyCode: 'USD' }],
-          [{ defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD', defaultWorkTypeId: categoryWorkType }],
+          [{ defaultBillable: true, defaultHourlyRate: '125.00', rateCurrency: 'USD', defaultWorkTypeId: categoryWorkType, defaultWorkTypeIsActive: true }],
           [{ currencyCode: 'USD' }],
           [{ id: 't-1', orgId: 'o-1' }],
         );
@@ -2015,7 +2015,7 @@ describe('workTypeId validation (finding 1: unvalidated id -> composite FK 23503
     dbMocks.selectResults.push(
       [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
       [{ partnerId: 'p-1', currencyCode: 'USD' }],
-      [{ defaultBillable: true, defaultHourlyRate: null, rateCurrency: null, defaultWorkTypeId: categoryWorkType }],
+      [{ defaultBillable: true, defaultHourlyRate: null, rateCurrency: null, defaultWorkTypeId: categoryWorkType, defaultWorkTypeIsActive: true }],
       [{ currencyCode: 'USD' }],
       [{ id: 't-1', orgId: 'o-1' }],
     );
@@ -2023,5 +2023,50 @@ describe('workTypeId validation (finding 1: unvalidated id -> composite FK 23503
     await createTimeEntry({ ...span, ticketId: 't-1' }, ACTOR);
     expect(workTypeMocks.getActiveWorkType).not.toHaveBeenCalled();
     expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: categoryWorkType });
+  });
+});
+
+describe('category default work type is skipped when the work type is ARCHIVED (finding 3)', () => {
+  const categoryWorkType = '22222222-2222-4222-8222-222222222222';
+  const span = {
+    startedAt: new Date('2026-06-11T09:00:00Z'),
+    endedAt: new Date('2026-06-11T09:30:00Z'),
+  };
+
+  const seedTicket = (defaultWorkTypeIsActive: boolean | null) => dbMocks.selectResults.push(
+    [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
+    [{ partnerId: 'p-1', currencyCode: 'USD' }],
+    [{ defaultBillable: true, defaultHourlyRate: null, rateCurrency: null,
+       defaultWorkTypeId: categoryWorkType, defaultWorkTypeIsActive }],
+    [{ currencyCode: 'USD' }],
+    [{ id: 't-1', orgId: 'o-1' }],
+  );
+
+  it('CONTROL: an ACTIVE category default is still stamped', async () => {
+    seedTicket(true);
+    dbMocks.insertResult = [{ id: 'te-1', workTypeId: categoryWorkType }];
+    await createTimeEntry({ ...span, ticketId: 't-1' }, ACTOR);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: categoryWorkType });
+  });
+
+  it('an ARCHIVED category default stamps null instead', async () => {
+    seedTicket(false);
+    dbMocks.insertResult = [{ id: 'te-1', workTypeId: null }];
+    await createTimeEntry({ ...span, ticketId: 't-1' }, ACTOR);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: null });
+  });
+
+  it('a category with NO default work type stamps null (left join misses)', async () => {
+    dbMocks.selectResults.push(
+      [{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }],
+      [{ partnerId: 'p-1', currencyCode: 'USD' }],
+      [{ defaultBillable: true, defaultHourlyRate: null, rateCurrency: null,
+         defaultWorkTypeId: null, defaultWorkTypeIsActive: null }],
+      [{ currencyCode: 'USD' }],
+      [{ id: 't-1', orgId: 'o-1' }],
+    );
+    dbMocks.insertResult = [{ id: 'te-1', workTypeId: null }];
+    await createTimeEntry({ ...span, ticketId: 't-1' }, ACTOR);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ workTypeId: null });
   });
 });
