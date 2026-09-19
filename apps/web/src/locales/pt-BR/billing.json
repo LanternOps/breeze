@@ -2139,6 +2139,7 @@
     "saveSuccess": "Configurações de cobrança da organização salvas",
     "tax": {
       "partnerDefault": "Padrão do parceiro",
+      "partnerDefaultWithValue": "{{pct}}% (padrão do parceiro)",
       "taxExempt": "Isento de impostos",
       "taxId": "ID fiscal",
       "taxRate": "Alíquota de imposto (%)",

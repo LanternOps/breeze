@@ -2139,6 +2139,7 @@
     "saveSuccess": "Die Abrechnungseinstellungen der Organisation wurden gespeichert",
     "tax": {
       "partnerDefault": "Partnerstandard",
+      "partnerDefaultWithValue": "{{pct}} % (Partnerstandard)",
       "taxExempt": "Steuerfrei",
       "taxId": "Steuer-ID",
       "taxRate": "Steuersatz (%)",
