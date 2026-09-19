@@ -2,7 +2,7 @@
 // boot media. See spec docs/superpowers/specs/backup/2026-09-10-bare-metal-boot-media-recovery-design.md
 // Sec8.1-Sec8.2 and plan docs/superpowers/plans/backup/2026-09-10-bare-metal-w04a-recovery-codes-state-machine-checkin.md.
 // Migration: apps/api/migrations/2026-10-15-160200-bare-metal-recoveries.sql;
-// W05b DR linkage columns: 2026-10-20-140000-bare-metal-recoveries-dr-link.sql.
+// W05b DR linkage columns: 2026-10-20-150000-bare-metal-recoveries-dr-link.sql.
 import { sql } from 'drizzle-orm';
 import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
