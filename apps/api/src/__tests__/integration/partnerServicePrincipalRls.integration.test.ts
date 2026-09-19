@@ -29,7 +29,7 @@ const SCOPE_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-10-08-101600-enrollment-keys-scope.sql',
 );
-const CONTRACT_SCOPE_MIGRATION = '2026-10-17-140100-partner-api-contract-scopes.sql';
+const CONTRACT_SCOPE_MIGRATION = '2026-10-20-150000-partner-api-contract-scopes.sql';
 const READ_SCOPES = [
   'organizations:read',
   'sites:read',

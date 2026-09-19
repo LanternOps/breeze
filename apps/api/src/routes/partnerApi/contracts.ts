@@ -80,7 +80,8 @@ function auditContract(
     orgId: string;
     action: string;
     resourceId: string;
-    resourceName: string;
+    /** Optional: ContractLineAudit.contractName is absent on some line paths. */
+    resourceName?: string;
     details?: Record<string, unknown>;
   },
 ): void {
