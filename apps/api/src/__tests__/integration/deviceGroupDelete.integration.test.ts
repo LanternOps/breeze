@@ -2,7 +2,7 @@ import './setup';
 import { describe, it, expect } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, sites, devices, deviceGroups, deviceGroupMemberships, groupMembershipLog, contracts, contractLines, quotes, quoteLines } from '../../db/schema';
+import { partners, organizations, sites, devices, deviceGroups, deviceGroupMemberships, groupMembershipLog, contracts, contractLines, quotes, quoteLines, configurationPolicies, configPolicyAssignments } from '../../db/schema';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from '../../services/deviceGroupDelete';
 
 async function seed() {
@@ -76,6 +76,34 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
     expect(line).toMatchObject({ deviceGroupId: null, deviceGroupName: 'VIP' });
     const logs = await withSystemDbAccessContext(() => db.select().from(groupMembershipLog).where(eq(groupMembershipLog.groupId, f.group.id)));
     expect(logs).toHaveLength(0);
+  });
+
+  runDb('deletes a group targeted by config policy assignments and cleans up the assignment (#5855)', async () => {
+    const f = await seed();
+    const [policy] = await withSystemDbAccessContext(() =>
+      db.insert(configurationPolicies).values({
+        orgId: f.orgId,
+        partnerId: f.partnerId,
+        name: `Policy ${Math.random().toString(36).slice(2, 8)}`,
+      }).returning({ id: configurationPolicies.id })
+    );
+    await withSystemDbAccessContext(() =>
+      db.insert(configPolicyAssignments).values({
+        configPolicyId: policy!.id,
+        level: 'device_group',
+        targetId: f.group.id,
+        priority: 0,
+      })
+    );
+
+    const res = await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId));
+    expect(res).toEqual({ group: { id: f.group.id, name: 'VIP', orgId: f.orgId }, affectedDeviceIds: [f.deviceId] });
+    const still = await withSystemDbAccessContext(() => db.select().from(deviceGroups).where(eq(deviceGroups.id, f.group.id)));
+    expect(still).toHaveLength(0);
+    const assignments = await withSystemDbAccessContext(() =>
+      db.select().from(configPolicyAssignments).where(eq(configPolicyAssignments.targetId, f.group.id))
+    );
+    expect(assignments).toHaveLength(0);
   });
 
   runDb('refuses a group with children, and NOT_FOUND for a group in another org', async () => {
