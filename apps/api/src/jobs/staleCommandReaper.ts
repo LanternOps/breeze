@@ -73,7 +73,7 @@ const SHORTEST_TIMEOUT_MS = 5 * 60 * 1000; // conservative SQL pre-filter
 const BACKUP_COMMAND_TYPES = new Set([
   'backup_run', 'backup_stop', 'backup_restore', 'backup_verify',
   'backup_test_restore', 'backup_cleanup', 'vm_restore_from_backup',
-  'vm_instant_boot', 'bmr_recover', 'mssql_backup', 'mssql_restore',
+  'vm_instant_boot', 'bmr_recover', 'bare_metal_rebuild', 'mssql_backup', 'mssql_restore',
   'hyperv_backup', 'hyperv_restore',
 ]);
 
@@ -528,7 +528,7 @@ export async function reapStaleDeviceCommands(): Promise<number> {
     if (BACKUP_COMMAND_TYPES.has(cmd.type)) {
       recordBackupCommandTimeout(cmd.type, 'reaper');
     }
-    if (cmd.type === 'backup_restore' || cmd.type === 'vm_restore_from_backup' || cmd.type === 'vm_instant_boot' || cmd.type === 'bmr_recover') {
+    if (cmd.type === 'backup_restore' || cmd.type === 'vm_restore_from_backup' || cmd.type === 'vm_instant_boot' || cmd.type === 'bmr_recover' || cmd.type === 'bare_metal_rebuild') {
       recordRestoreTimeout(cmd.type);
     }
 

@@ -326,7 +326,7 @@ export async function enforcePublicRateLimit(
 
 export async function enforceTokenRateLimit(
   c: any,
-  action: 'authenticate' | 'download' | 'exchange' | 'progress',
+  action: 'authenticate' | 'download' | 'exchange' | 'progress' | 'reissue',
   tokenHash: string,
   limit: number,
   windowSeconds: number

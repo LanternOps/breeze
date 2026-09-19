@@ -304,6 +304,11 @@ export const bmrRecoveryCreateSchema = z.object({
   identity: z.enum(['original', 'new']).default('original'),
 });
 
+// W05a: POST /bmr/recoveries/:id/cancel — body is optional.
+export const bmrRecoveryCancelSchema = z
+  .object({ reason: z.string().trim().min(1).max(500).optional() })
+  .default({});
+
 export const bmrRecoveryListSchema = z.object({
   deviceId: z.string().guid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),

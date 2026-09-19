@@ -8,6 +8,7 @@ describe('command timeouts', () => {
     expect(getCommandTimeoutMs(CommandTypes.VM_RESTORE_FROM_BACKUP)).toBe(60 * 60 * 1000);
     expect(getCommandTimeoutMs(CommandTypes.VM_INSTANT_BOOT)).toBe(60 * 60 * 1000);
     expect(getCommandTimeoutMs(CommandTypes.BMR_RECOVER)).toBe(60 * 60 * 1000);
+    expect(getCommandTimeoutMs(CommandTypes.BARE_METAL_REBUILD)).toBe(60 * 60 * 1000);
   });
 
   it('gives a claimed software install a two-hour execution budget (#5128)', () => {
