@@ -180,6 +180,10 @@ const (
 	CmdVMRestoreFromBackup = "vm_restore_from_backup"
 	CmdVMRestoreEstimate   = "vm_restore_estimate"
 	CmdBMRRecover          = "bmr_recover"
+	// CmdBareMetalRebuild (W05a) runs the rebuild engine on a Linux host
+	// against a server-minted recovery token (payload: recoveryId, token,
+	// server, target{kind,path,imageSizeBytes}, identity).
+	CmdBareMetalRebuild = "bare_metal_rebuild"
 
 	// Log shipping
 	CmdSetLogLevel = "set_log_level"

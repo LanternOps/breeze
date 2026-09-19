@@ -104,8 +104,26 @@ func biosLayoutJSON(t *testing.T) []byte {
 // inside the handler closures, never before the server has started.
 func newTokenModeTestServer(t *testing.T, layoutJSON []byte) (server *httptest.Server, statuses func() []string) {
 	t.Helper()
+	return newTokenModeTestServerWithRecovery(t, layoutJSON, "new", "")
+}
+
+// newTokenModeTestServerWithRecovery is newTokenModeTestServer with the
+// bootstrap's recovery binding under test control: identity "original"
+// plus a nonce (the marker case), "new" (no nonce needed), or "" for a
+// token that is not bound to any bare-metal recovery at all (the
+// "recovery" key is then omitted from the bootstrap).
+func newTokenModeTestServerWithRecovery(t *testing.T, layoutJSON []byte, identity, nonce string) (server *httptest.Server, statuses func() []string) {
+	t.Helper()
 	var mu sync.Mutex
 	var posted []string
+	recovery := ""
+	if identity != "" {
+		recovery = fmt.Sprintf(`, "recovery": {"id": "rec-1", "identity": %q, "deviceId": "dev-1", "snapshotId": "snap-1"`, identity)
+		if nonce != "" {
+			recovery += fmt.Sprintf(`, "nonce": %q`, nonce)
+		}
+		recovery += "}"
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/backup/bmr/recover/authenticate", func(w http.ResponseWriter, r *http.Request) {
@@ -126,10 +144,9 @@ func newTokenModeTestServer(t *testing.T, layoutJSON []byte) (server *httptest.S
 					"pathQueryParam": "path", "tokenHeaderName": "authorization",
 					"tokenHeaderFormat": "Bearer <recovery-token>", "requiresAuthentication": true,
 					"pathPrefix": "snapshots/snap-1", "expiresAt": ""
-				},
-				"recovery": {"id": "rec-1", "identity": "new", "deviceId": "dev-1", "snapshotId": "snap-1"}
+				}%s
 			}
-		}`, "http://"+r.Host+"/download")
+		}`, "http://"+r.Host+"/download", recovery)
 		_, _ = w.Write([]byte(body))
 	})
 	mux.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
