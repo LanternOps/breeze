@@ -13,7 +13,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, type ExecuteToolOptions } from './aiTools';
+import { executeTool, aiTools, getAllRegisteredToolNames, type ExecuteToolOptions } from './aiTools';
 import { WORKSPACE_MCP_SHAPES, WORKSPACE_TOOL_DESCRIPTIONS } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
@@ -364,6 +364,16 @@ export const TOOL_TIERS = {
   google_assign_license: 3,
   google_remove_license: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
+
+/**
+ * Names the chat/Helper Agent SDK server registers: TOOL_TIERS keys that
+ * resolve to registered tools. Lives here to avoid a reverse import cycle
+ * from aiTools.ts and a CommonJS require in the ESM source runtime.
+ */
+export function listChatSurfaceToolNames(): string[] {
+  const registered = new Set(getAllRegisteredToolNames());
+  return Object.keys(TOOL_TIERS).filter((name) => registered.has(name)).sort();
+}
 
 // All tool names, prefixed for SDK MCP format
 export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(

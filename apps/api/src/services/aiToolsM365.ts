@@ -52,6 +52,15 @@ export const m365ToolTiers: Record<string, 1 | 3> = {
   m365_reset_password: 3,
 };
 
+/** One-line tool-search hints for session-aware M365 tools. Keys mirror m365ToolTiers. */
+export const m365ToolSearchHints: Readonly<Record<string, string>> = {
+  m365_lookup_user: 'Find a Microsoft 365 user by email, account enabled state, licenses and MFA status',
+  m365_recent_signins: 'Recent Entra sign-in events, failed logins and conditional access outcomes for a user',
+  m365_list_group_memberships: 'Microsoft 365 group memberships for a user, security groups and distribution lists',
+  m365_disable_user: 'Disable a Microsoft 365 user account and block sign-in',
+  m365_reset_password: 'Reset a Microsoft 365 user password and require a password change at next sign-in',
+};
+
 // v1 single-customer seeding: every action is attributed to one static acting
 // principal + one agent principal sourced from env. This is a deliberate v1
 // shortcut (per-technician principal mapping is a known follow-up) — see the
