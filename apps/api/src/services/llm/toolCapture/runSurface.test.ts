@@ -9,6 +9,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 import { denyPreToolUse, runSurfaceCapture } from './runSurface';
 import { CAPTURE_SURFACES, type CaptureSurface } from './surfaces';
 import { buildBreezeSdkTools } from '../../aiAgentSdkTools';
+import { AI_SYSTEM_PROMPT_BASE } from '../../aiAgentSystemPrompt';
 
 /** An async generator standing in for the SDK's `query()` return value. */
 async function* messages(items: unknown[]): AsyncGenerator<unknown> {
@@ -93,6 +94,30 @@ describe('runSurfaceCapture', () => {
     const distinctNames = new Set(buildBreezeSdkTools(() => { throw new Error('unused'); }).map((t) => t.name));
     expect(result.registeredToolCount).toBe(distinctNames.size);
     expect(result.registeredToolNames).toEqual([...distinctNames].sort());
+  });
+
+  it('calls query() with the full expected options contract', async () => {
+    queryMock.mockReturnValueOnce(messages([
+      { type: 'result', subtype: 'success', session_id: 's-contract', num_turns: 1, duration_ms: 5, total_cost_usd: 0 },
+    ]));
+
+    await runSurfaceCapture({ ...baseOpts, resume: 'prior-session' });
+
+    expect(queryMock).toHaveBeenCalledWith({
+      prompt: 'test prompt',
+      options: expect.objectContaining({
+        tools: [],
+        allowedTools: [...CAPTURE_SURFACES.chat.allowedTools],
+        mcpServers: { [CAPTURE_SURFACES.chat.mcpServerName]: expect.anything() },
+        includePartialMessages: CAPTURE_SURFACES.chat.includePartialMessages,
+        maxTurns: 2,
+        resume: 'prior-session',
+        systemPrompt: AI_SYSTEM_PROMPT_BASE,
+        settingSources: [],
+        thinking: { type: 'disabled' },
+        persistSession: true,
+      }),
+    });
   });
 
   it('an onlyTools surface reports the subset size, not the full registry', async () => {

@@ -29,4 +29,12 @@ describe('CAPTURE_SURFACES derive from the surfaces\' own exports', () => {
   it('every surface records where its values came from', () => {
     for (const s of Object.values(CAPTURE_SURFACES)) expect(s.source).toMatch(/\.ts:\d+/);
   });
+
+  it('every allowedTools entry is namespaced under mcp__<mcpServerName>__', () => {
+    for (const s of Object.values(CAPTURE_SURFACES)) {
+      for (const name of s.allowedTools) {
+        expect(name.startsWith(`mcp__${s.mcpServerName}__`), `${s.id}: ${name}`).toBe(true);
+      }
+    }
+  });
 });
