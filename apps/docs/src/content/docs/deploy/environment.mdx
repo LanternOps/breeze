@@ -170,6 +170,11 @@ deployment env vars.
 | `SMTP_TIMEOUT_MS` | `30000` | How long an outbound SMTP send may take before it is abandoned. Applies to **all** outbound mail. Without a bound, a wedged mail host can hold a send open for nodemailer's ten-minute default |
 | `MAILGUN_TIMEOUT_MS` | `120000` | The same bound for the Mailgun HTTP transport |
 
+Sending customer-facing mail from a partner's own domain, rather than from
+`EMAIL_FROM`, is set up separately — see [Custom sender
+addresses](/deploy/custom-sender-addresses/) for the `EMAIL_DOMAINS_*` variables
+and the three ways to configure them.
+
 ## SMS (Twilio)
 
 | Variable | Default | Description |
