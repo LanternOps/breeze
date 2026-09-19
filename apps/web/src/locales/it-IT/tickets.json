@@ -123,7 +123,9 @@
       "retry": "Riprova",
       "remove": "Rimuovi file",
       "tooMany": "Puoi allegare al massimo {{max}} file a un commento.",
-      "tooLarge": "{{name}} supera i 10 MB."
+      "tooLarge": "{{name}} supera i 10 MB.",
+      "sentWithoutAttachment_one": "Nota pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
+      "sentWithoutAttachment_other": "Nota pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili."
     }
   },
   "ticketFeed": {

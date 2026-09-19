@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OverflowTabs, overflowTabId, overflowPanelId, type OverflowTab } from './OverflowTabs';
 
@@ -355,6 +355,54 @@ describe('OverflowTabs', () => {
       const menu = screen.getByRole('menu') as HTMLElement;
       // jsdom: trigger rect bottom is 0, innerHeight 768 → 768 - 0 - 16
       expect(menu.style.maxHeight).toBe('752px');
+    });
+  });
+
+  describe('re-measuring after webfonts settle (sweep paper cut #7)', () => {
+    const manyTabs: OverflowTab[] = Array.from({ length: 6 }, (_, i) => ({
+      id: `t${i}`,
+      label: `Tab ${i}`,
+      icon: <span data-testid={`icon-${i}`} />,
+    }));
+
+    afterEach(() => {
+      restoreLayout();
+      delete (document as unknown as { fonts?: unknown }).fonts;
+    });
+
+    it('re-measures once document.fonts.ready resolves, collapsing further if labels grew wider', async () => {
+      // Fallback-font pass: narrow labels, several fit at this container width.
+      let width = 50;
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+        configurable: true,
+        get: () => width,
+      });
+      Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+        configurable: true,
+        value: 340,
+      });
+
+      let resolveReady: () => void = () => {};
+      const ready = new Promise<void>((resolve) => {
+        resolveReady = resolve;
+      });
+      (document as unknown as { fonts: { ready: Promise<void> } }).fonts = { ready };
+
+      render(<OverflowTabs tabs={manyTabs} activeTab="t0" onTabChange={() => {}} testIdPrefix="x-" />);
+
+      const beforeCount = screen.getAllByRole('tab').length;
+      expect(beforeCount).toBeGreaterThan(1);
+      expect(beforeCount).toBeLessThan(manyTabs.length);
+
+      // The webfont swaps in: every label is now meaningfully wider.
+      width = 140;
+      await act(async () => {
+        resolveReady();
+        await ready;
+      });
+
+      const afterCount = screen.getAllByRole('tab').length;
+      expect(afterCount).toBeLessThan(beforeCount);
     });
   });
 });

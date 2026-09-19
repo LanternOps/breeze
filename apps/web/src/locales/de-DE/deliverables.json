@@ -174,7 +174,7 @@
   "templates": {
     "pageTitle": "Leistungsvorlagen",
     "pageDescription": "Definieren Sie eine Servicestufe einmal und wenden Sie sie auf jeden Kunden an. Partnerweite Sets stehen jeder von Ihnen verwalteten Organisation zur Verfügung.",
-    "empty": "Noch keine Vorlagensets.",
+    "empty": "Noch keine Vorlagensets. Erstellen Sie eines, um eine wiederverwendbare Servicestufe für Ihre Kunden zu definieren.",
     "allOrganizations": "Alle Orgs",
     "actions": {
       "newSet": "Neues Vorlagenset",

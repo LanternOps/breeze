@@ -9,6 +9,7 @@
     "startButton": "Lancer une conception de flotte",
     "startError": "Impossible de lancer l'exécution de la conception de flotte.",
     "startSuccess": "Exécution de la conception de flotte lancée.",
+    "running": "Conception de flotte en cours d’exécution…",
     "empty": "Aucune conception de flotte pour cette organisation pour le moment.",
     "loadError": "Échec du chargement des conceptions de flotte.",
     "detailLoadError": "Échec du chargement de cette conception de flotte.",

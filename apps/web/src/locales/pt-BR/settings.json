@@ -95,7 +95,7 @@
     "loading": "Carregando entidades de serviço…",
     "loadFailed": "Falha ao carregar as entidades de serviço.",
     "retry": "Tentar novamente",
-    "empty": "Nenhuma entidade de serviço ainda.",
+    "empty": "Nenhuma entidade de serviço ainda. Crie uma para começar.",
     "name": "Nome",
     "principalDescription": "Descrição",
     "scopes": "Escopos",
@@ -555,7 +555,10 @@
         "label": "Modelos de e-mail",
         "description": "Chamados, orçamentos, faturas, convites"
       },
-      "sendingDomains": { "label": "Endereços de envio", "description": "Envie e-mails do seu próprio domínio" },
+      "sendingDomains": {
+        "label": "Endereços de envio",
+        "description": "Envie e-mails do seu próprio domínio"
+      },
       "aiBudgets": {
         "label": "Orçamentos de IA",
         "description": "Limites de gastos com IA"
@@ -705,7 +708,8 @@
     "errorCheckFailed": "Não foi possível iniciar a verificação de DNS.",
     "errorRemoveFailed": "Não foi possível remover o domínio.",
     "errorIdentityFailed": "Não foi possível salvar o endereço de remetente.",
-    "errorTestFailed": "Não foi possível enviar o e-mail de teste."
+    "errorTestFailed": "Não foi possível enviar o e-mail de teste.",
+    "removeTitle": "Remover o domínio de envio?"
   },
   "loginBranding": {
     "saved": "Identidade visual do login salva",
@@ -3831,7 +3835,10 @@
     "passkeyStepUpNoUsableFactor": "O fator atual da sua conta não pode ser confirmado aqui. Entre em contato com um administrador para adicionar uma chave de acesso.",
     "passkeyStepUpIncorrectCode": "Código incorreto. Tente novamente.",
     "passkeyStepUpTooManyAttempts": "Muitas tentativas. Tente novamente em alguns minutos.",
-    "passkeyStepUpVerificationExpired": "A verificação expirou. Verifique novamente."
+    "passkeyStepUpVerificationExpired": "A verificação expirou. Verifique novamente.",
+    "passkeyRegistrationServerError": "Falha ao registrar a chave de acesso. Tente novamente.",
+    "deletePasskeyVerifyHeading": "Verificar para excluir uma chave de acesso",
+    "deletePasskeyVerifyHint": "Digite aqui um código MFA atual antes de remover uma das chaves de acesso acima. Este código não afeta a adição de uma nova chave de acesso."
   },
   "roleManager": {
     "roles": "Funções",

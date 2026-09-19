@@ -97,6 +97,34 @@ describe('OrgBillingSettings — billing contact', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Settings rule 4 (blank = inherit, always show the inherited VALUE + source):
+// a blank org tax rate must show the resolved partner-default percent in the
+// placeholder, not just the word "Partner default" (sweep paper cut #15).
+// ---------------------------------------------------------------------------
+
+describe('OrgBillingSettings — tax rate inherited-value placeholder', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('shows the partner default percent in the placeholder when the org rate is blank', async () => {
+    fetchMock.mockResolvedValue(orgPayload({ taxRate: null, partnerDefaultTaxRate: '0.075' }));
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
+
+    const input = screen.getByTestId('org-billing-taxrate') as HTMLInputElement;
+    expect(input.value).toBe('');
+    expect(input.placeholder).toBe('7.5% (partner default)');
+  });
+
+  it('falls back to the plain "Partner default" placeholder when the partner has no default set', async () => {
+    fetchMock.mockResolvedValue(orgPayload({ taxRate: null, partnerDefaultTaxRate: null }));
+    render(<OrgBillingSettings orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('org-billing-settings')).toBeInTheDocument());
+
+    expect((screen.getByTestId('org-billing-taxrate') as HTMLInputElement).placeholder).toBe('Partner default');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Multi-currency wave 6 (#3778): the org currency selector + change flow.
 // Selecting a code NEVER mutates — it fetches the advisory impact preview and
 // opens a confirmation panel. Only the panel's confirm button PATCHes, and it

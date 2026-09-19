@@ -174,7 +174,7 @@
   "templates": {
     "pageTitle": "Plantillas de entregables",
     "pageDescription": "Defina un nivel de servicio una vez y aplíquelo a cualquier cliente. Los conjuntos de todo el partner están disponibles para cada organización que administra.",
-    "empty": "Aún no hay conjuntos de plantillas.",
+    "empty": "Aún no hay conjuntos de plantillas. Cree uno para definir un nivel de servicio reutilizable para sus clientes.",
     "allOrganizations": "Todas las orgs",
     "actions": {
       "newSet": "Nuevo conjunto de plantillas",

@@ -95,7 +95,7 @@
     "loading": "Chargement des principaux de service…",
     "loadFailed": "Échec du chargement des principaux de service.",
     "retry": "Réessayer",
-    "empty": "Aucun principal de service pour le moment.",
+    "empty": "Aucun principal de service pour le moment. Créez-en un pour commencer.",
     "name": "Nom",
     "principalDescription": "Description",
     "scopes": "Portées",
@@ -555,7 +555,10 @@
         "label": "Modèles d'e-mail",
         "description": "Tickets, devis, factures, invitations"
       },
-      "sendingDomains": { "label": "Adresses d'expédition", "description": "Envoyez vos e-mails depuis votre propre domaine" },
+      "sendingDomains": {
+        "label": "Adresses d'expédition",
+        "description": "Envoyez vos e-mails depuis votre propre domaine"
+      },
       "aiBudgets": {
         "label": "Budgets IA",
         "description": "Limites de dépenses en IA"
@@ -705,7 +708,8 @@
     "errorCheckFailed": "Impossible de lancer la vérification DNS.",
     "errorRemoveFailed": "Impossible de supprimer le domaine.",
     "errorIdentityFailed": "Impossible d'enregistrer l'adresse d'expéditeur.",
-    "errorTestFailed": "Impossible d'envoyer l'e-mail de test."
+    "errorTestFailed": "Impossible d'envoyer l'e-mail de test.",
+    "removeTitle": "Retirer le domaine d'envoi ?"
   },
   "loginBranding": {
     "saved": "Enregistrement de la marque enregistrée",
@@ -3831,7 +3835,10 @@
     "passkeyStepUpNoUsableFactor": "Le facteur actuel de votre compte ne peut pas être confirmé ici. Contactez un administrateur pour ajouter une clé d'accès.",
     "passkeyStepUpIncorrectCode": "Code incorrect. Veuillez réessayer.",
     "passkeyStepUpTooManyAttempts": "Trop de tentatives. Veuillez réessayer dans quelques minutes.",
-    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau."
+    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau.",
+    "passkeyRegistrationServerError": "L'inscription de la clé d'accès a échoué. Veuillez réessayer.",
+    "deletePasskeyVerifyHeading": "Vérifier pour supprimer une clé d'accès",
+    "deletePasskeyVerifyHint": "Saisissez ici un code MFA actuel avant de supprimer l'une des clés d'accès ci-dessus. Ce code n'a aucun effet sur l'ajout d'une nouvelle clé d'accès."
   },
   "roleManager": {
     "roles": "Rôles",

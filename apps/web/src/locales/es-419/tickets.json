@@ -123,7 +123,9 @@
       "retry": "Reintentar",
       "remove": "Quitar archivo",
       "tooMany": "Puedes adjuntar como máximo {{max}} archivos a un comentario.",
-      "tooLarge": "{{name}} supera los 10 MB."
+      "tooLarge": "{{name}} supera los 10 MB.",
+      "sentWithoutAttachment_one": "Nota publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
+      "sentWithoutAttachment_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos."
     }
   },
   "ticketFeed": {

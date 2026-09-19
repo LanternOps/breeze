@@ -177,4 +177,37 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     expect(createPasskeyCredentialMock).not.toHaveBeenCalled();
     expect(mintStepUpGrantMock).not.toHaveBeenCalled();
   });
+
+  // Sweep paper cut #13: `#passkey-factor-code` ("Current MFA code") proves
+  // the DELETE flow only — handleAddPasskey never reads it — but it used to
+  // render unlabeled inside the "Add a passkey" card next to the Add button,
+  // so a code typed there looked required and did nothing. It must now be
+  // visually and textually scoped to deleting, not to adding.
+  it('scopes the delete-only MFA code field away from the Add passkey action', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      const u = String(url);
+      if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      return makeJsonResponse({});
+    });
+
+    render(<ProfilePage initialUser={mfaProtectedUser} />);
+
+    await screen.findByText(/No passkeys are registered/i);
+
+    const factorCodeInput = screen.getByLabelText(/Current MFA code/i, { selector: '#passkey-factor-code' });
+    // The field must live under a heading that names DELETE, not ADD —
+    // proving it is no longer nested inside the "Add a passkey" card.
+    const deleteSection = factorCodeInput.closest('div.rounded-md.border');
+    expect(deleteSection?.textContent).toMatch(/delete/i);
+
+    // Filling it must have zero effect on the Add passkey button: it stays
+    // disabled/enabled purely on password + SR2-20 step-up state, which this
+    // fixture never triggers absent a submit.
+    fireEvent.change(factorCodeInput, { target: { value: '123456' } });
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    expect(screen.getByTestId('passkey-add')).not.toBeDisabled();
+  });
 });

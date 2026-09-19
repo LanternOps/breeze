@@ -34,6 +34,7 @@
     "policiesCount_one": "{{count}} criterio",
     "policiesCount_other": "{{count}} criteri",
     "notDeployed": "Non distribuito",
+    "toggleEnabled": "Abilitato: {{name}}",
     "errors": {
       "fetch": "Impossibile caricare i monitor",
       "delete": "Impossibile eliminare il monitor",

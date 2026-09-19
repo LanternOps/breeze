@@ -2139,6 +2139,7 @@
     "saveSuccess": "Paramètres de facturation de l'organisation enregistrés",
     "tax": {
       "partnerDefault": "Valeur par défaut du partenaire",
+      "partnerDefaultWithValue": "{{pct}} % (valeur par défaut du partenaire)",
       "taxExempt": "Exonéré de taxe",
       "taxId": "Identifiant fiscal",
       "taxRate": "Taux de taxe (%)",
