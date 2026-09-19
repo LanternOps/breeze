@@ -1048,7 +1048,7 @@ What should remain: the Drizzle column declarations (`schema/tickets.ts:26-29`, 
 - [ ] **Step 3: Full sweep green**
 
 ```bash
-cd apps/api && npx vitest run && npx tsc --noEmit -p tsconfig.json
+cd apps/api && npx vitest run && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p tsconfig.json
 cd apps/web && npx vitest run
 cd packages/shared && npx vitest run
 cd .. && pnpm lint

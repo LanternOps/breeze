@@ -64,7 +64,7 @@ Every task's requirements implicitly include this section.
 | `packages/shared/src/constants/permissions.ts` | `BILLING_PROFILES_READ` / `BILLING_PROFILES_WRITE` grants |
 | `apps/api/src/db/seed.ts` | `DEFAULT_PERMISSIONS` rows for the two new grants |
 | `apps/api/src/routes/permissionsCatalog.ts` | `RESOURCE_LABELS.billing_profiles` |
-| `apps/api/src/services/aiToolsTicketing.ts` | `workType` parameter on `log_time_entry` / `start_timer` / `stop_timer`; new read-only `list_work_types` action |
+| `apps/api/src/services/aiToolsTicketing.ts` | `workType` parameter on `log_time_entry` / `start_timer` (**not** `stop_timer` — spec §3.7: a timer is priced at start); new read-only `list_work_types` action |
 | `apps/api/scripts/labour-pricing-dry-run.lib.ts` (+ `.test.ts`) | New. Pure report-building logic over rows handed in — unit-testable with no DB |
 | `apps/api/scripts/labour-pricing-dry-run.ts` | New. Read-only CLI: reads prod, calls the lib, prints the report |
 | `apps/web/src/components/shared/WorkTypeSelect.tsx` (+ `.test.tsx`) | New. Shared picker, fetches `/billing-profiles/work-types` once and caches |
@@ -1278,7 +1278,7 @@ app.route('/billing-profiles', billingProfilesRoutes);
 - [ ] **Step 5: Run to green and typecheck**
 
 ```bash
-cd apps/api && npx vitest run src/routes/billingProfiles.test.ts && npx tsc --noEmit -p tsconfig.json
+cd apps/api && npx vitest run src/routes/billingProfiles.test.ts && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p tsconfig.json
 ```
 
 Expected: PASS, no type errors.
@@ -1548,7 +1548,9 @@ git commit -m "feat(ticketing): default work type on ticket categories (#4615 W0
 
 **Interfaces:**
 - Consumes: `listWorkTypes` (Task 4).
-- Produces: a `workType` string parameter (id **or** name, case-insensitive) on `log_time_entry`, `start_timer` and `stop_timer`; a new read-only `list_work_types` action returning `{ workTypes: [{ id, name }] }`.
+- Produces: a `workType` string parameter (id **or** name, case-insensitive) on `log_time_entry` and `start_timer` **only**; a new read-only `list_work_types` action returning `{ workTypes: [{ id, name }] }`.
+
+**`stop_timer` takes no `workType`.** Spec §3.7: a timer is priced at start, so the work type belongs to the start call. Accepting one on stop would look like it re-stamps the entry and silently would not. `stop_timer` therefore *rejects* a `workType` with an explicit error telling the caller to edit the time entry instead — never ignores it.
 
 **Accept id or name** (spec §6). An LLM will say "On-site" far more often than a uuid. Resolve: if the value parses as a uuid, use it directly; otherwise case-insensitively match an **active** work type for the acting partner and fail with a clear message listing the valid names when there is no match. Do not silently drop an unmatched value — a dropped work type becomes a wrongly-priced entry in W02.
 

@@ -1518,7 +1518,7 @@ git commit -m "test(billing): pin the block-hours drawdown contract (#4628 W03, 
 
 ```bash
 pnpm --filter @breeze/shared build
-cd apps/api && npx tsc --noEmit
+cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit
 cd ../web && npx tsc --noEmit
 cd ../.. && pnpm --filter @breeze/api test --run
 pnpm --filter @breeze/web test --run
