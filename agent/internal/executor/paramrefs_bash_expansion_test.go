@@ -181,6 +181,26 @@ func TestRenderBashParamExpansionWordBody(t *testing.T) {
 			want:   `echo ${u:-'}' "${BREEZE_PARAM_P}"}`,
 		},
 		{
+			name:   "error-message word renders the one-word form",
+			script: `echo ${u:?{{p}}}`,
+			params: p,
+			want:   `echo ${u:?"${BREEZE_PARAM_P}"}`,
+		},
+		{
+			// The inner expansion decides its own form by walking out to the
+			// real enclosing context, which here is unquoted script text.
+			name:   "a nested expansion word body renders the one-word form",
+			script: `echo ${u:-${v:-{{p}}}}`,
+			params: p,
+			want:   `echo ${u:-${v:-"${BREEZE_PARAM_P}"}}`,
+		},
+		{
+			name:   "a nested expansion inside double quotes keeps the bare form",
+			script: `echo "${u:-${v:-{{p}}}}"`,
+			params: p,
+			want:   `echo "${u:-${v:-${BREEZE_PARAM_P}}}"`,
+		},
+		{
 			name:   "pattern replacement renders the one-word form",
 			script: `echo ${u/a/{{p}}}`,
 			params: p,

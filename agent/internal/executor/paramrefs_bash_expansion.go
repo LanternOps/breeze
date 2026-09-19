@@ -165,10 +165,13 @@ func (r *bashRenderer) stepParamWord(f *bashFrame) error {
 //
 // Two operators leave a residual that quoting cannot reach, because they make
 // the expansion's result an unquoted expansion of the VARIABLE rather than of
-// the word: `${u:=word}` (bash re-splits the assigned value) and the
-// replacement half of `${u/pat/rep}`. Those split identically with no
-// placeholder involved — it is the author's own unquoted expansion — and the
-// one-word form is still emitted there so the value is never read as a glob.
+// the word: the replacement half of `${u/pat/rep}`, and `${u:=word}` on bash
+// >= 5 (bash 3.2 keeps the assigned value one word there; bash 5.2 re-splits
+// it, so the word count is version-dependent and no test pins it — the value
+// the variable RECEIVES is intact on both, and that is what is asserted).
+// Those split identically with no placeholder involved — it is the author's own
+// unquoted expansion — and the one-word form is still emitted there so the
+// value is never read as a glob.
 //
 // The name region (before any operator) keeps the bare form: neither form is
 // valid bash there (`${${X}}` and `${"${X}"}` are both a bad substitution), so

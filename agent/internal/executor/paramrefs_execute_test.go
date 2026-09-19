@@ -122,6 +122,48 @@ func TestExecuteBashParameterValuesSurviveIntact(t *testing.T) {
 			want:   "* a b",
 		},
 		{
+			name:   `nested default-value expansion is one word, not split or globbed`,
+			script: `printf '%s\n' ${u:-${v:-{{p}}}}`,
+			params: map[string]string{"p": "* a b"},
+			want:   "* a b",
+		},
+		{
+			// An empty value still occupies its own word: the bare form used to
+			// vanish entirely, shifting every argument after it.
+			name:   `an empty value occupies its own word`,
+			script: `printf '[%s]' x ${u:-{{p}}} y`,
+			params: map[string]string{"p": ""},
+			want:   "[x][][y]",
+		},
+		{
+			// `${u:=word}` assigns the quoted word, so the VARIABLE receives the
+			// value intact. The word count of the expansion itself is
+			// bash-version-dependent there (see paramWordForm), so only the
+			// assigned value is asserted.
+			name:   `assign-default expansion assigns the value intact`,
+			script: `: ${u:={{p}}}; printf '[%s]' "$u"`,
+			params: map[string]string{"p": "* a b"},
+			want:   "[* a b]",
+		},
+		{
+			// A pattern position gets the value as a LITERAL, not a glob: the
+			// bare form would let `a*` match and strip the leading `a`.
+			name:   `prefix removal matches the value literally`,
+			script: `w=ab.txt; printf '%s\n' ${w#{{p}}}`,
+			params: map[string]string{"p": "a*"},
+			want:   "ab.txt",
+		},
+		{
+			// Documented residual: the replacement half puts the value into the
+			// VARIABLE's value, which the author's unquoted expansion then
+			// splits — identically with no placeholder present. Pinned so a
+			// change in that behaviour is deliberate.
+			name:   `replacement half still splits the surrounding expansion`,
+			script: `v=zaz; printf '[%s]' ${v/a/{{p}}}`,
+			params: map[string]string{"p": "a b"},
+			want:   "[za][bz]",
+		},
+		{
 			name:   "heredoc body",
 			script: "cat <<EOF\nv={{p}}\nEOF\n",
 			params: map[string]string{"p": "$(id) & echo no"},
