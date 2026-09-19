@@ -52,7 +52,7 @@ vi.mock('./commandQueue', () => ({
 
 vi.mock('./filesystemAnalysis', () => ({
   buildCleanupPreview: vi.fn(() => ({
-    candidates: [{ path: '/tmp/junk.log', category: 'temp', sizeBytes: 1024 }],
+    candidates: [{ path: '/tmp/junk.log', category: 'temp_files', sizeBytes: 1024, safe: true, modifiedAt: new Date(Date.now() - 72 * 3600_000).toISOString() }],
     estimatedBytes: 1024,
     candidateCount: 1,
     categories: ['temp'],
@@ -97,7 +97,7 @@ describe('disk_cleanup requestedBy FK under an agent principal', () => {
     vi.clearAllMocks();
     dbMockState.userRows = []; // agent id never resolves against `users`
     dbMockState.deviceRows = [
-      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online' },
+      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'host-1', status: 'online', osType: 'linux', agentVersion: '0.115.0' },
     ];
     dbMockState.insertedRuns = [];
   });
