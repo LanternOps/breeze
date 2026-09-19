@@ -1,5 +1,6 @@
 ---
-tracking_issue: TBD
+tracking_issue: LanternOps/breeze#4628
+wave_issue: LanternOps/breeze#6333
 spec: docs/superpowers/specs/billing/2026-09-17-billing-profiles-work-types-spec.md
 wave: W02 — the cut-over (one PR). Closes LanternOps/breeze#4628
 blast_radius: high (billing data, tenancy, migration)
