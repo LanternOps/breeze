@@ -1820,7 +1820,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
       expect(ticketWrites.find((write) => write.table === tickets)?.values).toEqual({ assignedTo: null, updatedAt: expect.any(Date) });
@@ -1856,7 +1856,7 @@ describe('POST /devices/:id/move-org', () => {
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
         headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(200);
       expect(statements.map(collapseStmt)).toContain(

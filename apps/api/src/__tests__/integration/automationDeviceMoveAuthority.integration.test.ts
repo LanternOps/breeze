@@ -38,6 +38,7 @@ import {
 import { __testOnly as cisJobsTestOnly } from '../../jobs/cisJobs';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 import {
   createOrganization,
   createPartner,
@@ -700,7 +701,9 @@ describe('automation and CIS pre-command authority across device org moves', () 
       const movePromise = app.request(`/devices/${device!.id}/move-org`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: destinationOrg.id, siteId: destinationSite.id }),
+        body: JSON.stringify(
+          await withMoveOrgStepUpGrant(token, device!.id, { orgId: destinationOrg.id, siteId: destinationSite.id }),
+        ),
       });
       const dispatchPromise = withSystemDbAccessContext(() =>
         executeAutomationRun(run!.id, [device!.id]));
