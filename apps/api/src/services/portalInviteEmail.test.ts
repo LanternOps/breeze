@@ -24,6 +24,7 @@ describe('buildPortalInviteTemplate', () => {
       inviteUrl,
       orgName: 'Acme Co',
       inviterName: 'Tess',
+      partnerId: null,
       custom: null,
     });
     expect(t.html).toContain('Tess invited you');
@@ -41,6 +42,7 @@ describe('buildPortalInviteTemplate', () => {
       inviteUrl,
       orgName: 'Acme Co',
       inviterName: 'Tess',
+      partnerId: null,
       custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Hi from {{requester_name}}.</p>' },
     });
     expect(t.html).toContain('Hi from Tess.');
@@ -54,6 +56,7 @@ describe('buildPortalInviteTemplate', () => {
       to: 'c@a.example',
       inviteUrl,
       inviterName: 'javascript:alert(1)',
+      partnerId: null,
       custom: {
         subject: 'Invite',
         heading: 'Invite',
