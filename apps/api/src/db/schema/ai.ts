@@ -142,7 +142,8 @@ export const aiToolExecutions = pgTable('ai_tool_executions', {
   completedAt: timestamp('completed_at')
 }, (table) => ({
   sessionIdIdx: index('ai_tool_executions_session_id_idx').on(table.sessionId),
-  statusIdx: index('ai_tool_executions_status_idx').on(table.status)
+  statusIdx: index('ai_tool_executions_status_idx').on(table.status),
+  createdAtIdx: index('ai_tool_executions_created_at_idx').on(table.createdAt)
 }));
 
 // ============================================
