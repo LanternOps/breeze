@@ -112,6 +112,11 @@ x-api-env: &api-env
   RECOVERY_MEDIA_WORK_DIR: ${RECOVERY_MEDIA_WORK_DIR:-/data/recovery-work}
   # Backup GC per-object grace (ms). Lab/test knob only; leave unset in production (48h).
   BACKUP_GC_GRACE_MS: ${BACKUP_GC_GRACE_MS:-}
+  # Backup storage reclamation (D18, #5429). All optional; unset = default. Production floors apply.
+  BACKUP_BASE_LEASE_MS: ${BACKUP_BASE_LEASE_MS:-}
+  BACKUP_PUBLISH_MARGIN_MS: ${BACKUP_PUBLISH_MARGIN_MS:-}
+  BACKUP_RESTORE_PIN_LINGER_MS: ${BACKUP_RESTORE_PIN_LINGER_MS:-}
+  BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS: ${BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: "true"
   # Agent diagnostic log retention (worker role; all optional, see .env.example).

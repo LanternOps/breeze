@@ -42,4 +42,30 @@ say "R1: newest file snapshot must still restore byte-exact (its references poin
 SNAP=$($L snapshots "$DEV" | jq -r 'select(.backupType=="file") | .id' | head -1); echo "newest row $SNAP"
 RID=$($L restore "$SNAP" '{"targetPath":"/home/ubuntu/assure/postfix/R1"}'); $L wait-restore "$RID" 2400 | tee "$R/postfix-R1-restore.json" | jq -c '{status,restoredFiles,restoredSize,errorSummary,failed:(.resultDetails.failedFiles|tostring|.[:200])}'
 $S/vmssh 'ROOT=/home/ubuntu/assure/postfix/R1/home/ubuntu/assure/src; sudo ~/assure/hash-tree.sh ~/assure/src > ~/assure/pre3.tsv; sudo ~/assure/hash-tree.sh "$ROOT" > ~/assure/post-R1.tsv; ~/assure/compare-hashes.sh ~/assure/pre3.tsv ~/assure/post-R1.tsv --expect-skipped "^meta/links/" | grep -v "^  \(many/\|names/LLLL\)" | head -16' 2>/dev/null | tee "$R/postfix-R1-compare.txt"
+
+say "R4: reclaimed prefixes must be empty and retired"
+FAIL=0
+for lbl in $LABELS; do
+  n=$($S/mc ls -r lab/breeze-lab/snapshots/$lbl/ 2>/dev/null | wc -l | tr -d ' ')
+  swept=$(psql "select count(*) from backup_snapshot_retirements where snapshot_id='$lbl' and swept_at is not null")
+  echo "$lbl: $n objects remain, swept_at set: $swept"
+  # Objects a retained manifest still references legitimately survive; everything else must be gone.
+  refd=$(for m in $(psql "select snapshot_id from backup_snapshots where device_id='$DEV'"); do
+           $S/mc cat lab/breeze-lab/snapshots/$m/manifest.json 2>/dev/null | jq -r '.files[].backupPath' | grep "^snapshots/$lbl/" ; done | sort -u | wc -l | tr -d ' ')
+  echo "$lbl: $refd objects still referenced by retained manifests"
+  if [ "$n" -ne "$refd" ]; then echo "FAIL: $lbl has $n objects but only $refd are referenced"; FAIL=1; fi
+  if [ "$refd" -eq 0 ] && [ "$swept" -ne 1 ]; then echo "FAIL: $lbl fully reclaimed but retirement not marked swept"; FAIL=1; fi
+done
+
+say "R4b: unrelated manifests (other devices / modes) untouched"
+for m in $(psql "select snapshot_id from backup_snapshots where device_id<>'$DEV'"); do
+  $S/mc stat lab/breeze-lab/snapshots/$m/manifest.json >/dev/null 2>&1 || { echo "FAIL: retained manifest $m missing"; FAIL=1; }
+done
+
+say "R4c: bucket total dropped"
+TOTAL_AFTER=$($S/mc ls -r lab/breeze-lab/snapshots/ 2>/dev/null | wc -l | tr -d ' ')
+echo "objects in bucket: before=$TOTAL_BEFORE after=$TOTAL_AFTER"
+[ "$TOTAL_AFTER" -lt "$TOTAL_BEFORE" ] || { echo "FAIL: nothing reclaimed"; FAIL=1; }
+
 echo; echo "### DONE gc"
+exit $FAIL
