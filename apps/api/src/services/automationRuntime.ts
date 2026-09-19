@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
-import { scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
+import { scriptParametersSchema, alertTriggerKey, buildTriggerKey, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   alertRules,
@@ -23,7 +23,7 @@ import {
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
-import { deliveryTtlMs, isOfflineQueueEnabled, type OfflinePolicy } from './commandOfflinePolicy';
+import { deliveryTtlMs, type OfflinePolicy } from './commandOfflinePolicy';
 import { loadTenantVariableScope, type TenantVariableScope } from './tenantVariableResolution';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 import { publishEvent } from './eventBus';
@@ -33,6 +33,7 @@ import {
   type AgentRunSkipReason,
   type CreateAgentRunInput,
 } from './aiAgents/runService';
+import { resolveAlertCategory } from './aiAgents/patchWorkClassifier';
 import {
   getEmailRecipients,
   sendEmailNotification,
@@ -440,14 +441,9 @@ function asWhenOffline(value: unknown): 'queue' | 'skip' {
   return value === 'skip' ? 'skip' : 'queue';
 }
 
-/**
- * #5128 W4. Automations rejected offline devices outright before this wave, so
- * their queue arm is gated on `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` (default
- * on since W4, removed in W5). With the flag off, or with the action set to
- * 'skip', the dispatch keeps today's `device_offline` failure verbatim.
- */
+/** Queue until the standard delivery deadline unless the action explicitly skips offline devices. */
 function automationOfflinePolicy(whenOffline: 'queue' | 'skip' | undefined): OfflinePolicy {
-  if (asWhenOffline(whenOffline) === 'skip' || !isOfflineQueueEnabled()) {
+  if (asWhenOffline(whenOffline) === 'skip') {
     return { kind: 'reject' };
   }
   return { kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') };
@@ -1264,6 +1260,7 @@ type ActionExecutionContext = {
   runId: string;
   /** Present only for event-bound managed runs. */
   trigger?: AutomationTriggerContext;
+  remediationTrigger?: RemediationTrigger;
   device: {
     id: string;
     // Worker-created child rows (alerts, notifications) always take the
@@ -1346,6 +1343,13 @@ type ActionExecutionOutcome =
       commandId?: string;
       scriptExecutionId?: string;
       /**
+       * #5290 — the child ai_triage agent run this action is waiting on. The
+       * action stays NONTERMINAL until `ai.agent.run.completed/failed/skipped`
+       * terminalises it through this correlation; reporting successful enqueue
+       * as `succeeded` made a queued triage look like a completed remediation.
+       */
+      agentRunId?: string;
+      /**
        * #5128 W4 — operator-facing reason this step is not running yet. Only
        * set on the queued-because-offline path; everything else keeps falling
        * back to the run-log message in `persistActionExecutionOutcome`.
@@ -1415,6 +1419,27 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // doing its job, not a data-integrity bug.
   max_concurrent_triage_runs: false,
   triage_rate: false,
+  // Fleet Designer (W01) — the design-profile equivalents. Same
+  // classification again: a design run being declined for volume is a cap
+  // doing its job, not a data-integrity bug.
+  max_concurrent_design_runs: false,
+  design_rate: false,
+  // AI patch agent (W01) — the patch-profile equivalents, same classification.
+  max_concurrent_patch_runs: false,
+  patch_rate: false,
+  // Execution plane W04 — every analysis refusal is a policy, volume or spend
+  // gate (or a provider outage), never a data-integrity bug. `device_not_in_org`
+  // stays classified where it already is.
+  analysis_not_available: false,
+  external_processing_disabled: false,
+  workspace_capability_missing: false,
+  analysis_region_unavailable: false,
+  max_concurrent_analysis_runs: false,
+  analysis_rate: false,
+  compute_budget_exceeded: false,
+  compute_credits_exhausted: false,
+  too_many_input_devices: false,
+  workspace_unavailable: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation
@@ -1477,6 +1502,7 @@ export async function executeRunScriptAction(
     source: { kind: 'saved', script, automationRunId: context.runId },
     parameters,
     triggerType: 'automation',
+    trigger: context.remediationTrigger,
     triggeredBy: context.automation.createdBy ?? null,
     createdBy: context.automation.createdBy ?? null,
     // #4888 — `action.runAs` is now narrowed to the `script_run_as` enum by
@@ -1591,6 +1617,7 @@ export async function executeCommandAction(
       provenance: `automation:${context.automation.id}`,
     },
     timeoutSeconds: 300,
+    trigger: context.remediationTrigger,
     runAs: 'system',
     createdBy: context.automation.createdBy ?? null,
     offlinePolicy: automationOfflinePolicy(action.whenOffline),
@@ -1883,7 +1910,36 @@ async function executeCreateAlertAction(
  * (`managed_automation_skips_automation_created_alerts`), because only the raw
  * event payload still carries `automationId`; `AutomationTriggerContext`
  * deliberately does not. Do not re-implement it here.
+ *
+ * AI patch agent W04 (#5750): this is ALSO the one place alert-driven
+ * remediation is routed. A patch-classified alert (`resolveAlertCategory`,
+ * fail-closed) is offered to the PATCH agent exclusively — device-less,
+ * `triggerRef.focusDeviceId` set — and falls back to the triage admission
+ * only when the gate declines it, with the reason recorded on the triage
+ * run's `triggerRef.patchWorkFallbackReason` (`patchFallbackFor`). The
+ * verdict lane (`alertVerdictSubscriber`) is untouched by all of this.
  */
+/**
+ * AI patch agent W04 (#5750) — the recorded reason a patch-classified alert
+ * fell back to triage. `no_patch_agent`, `patch_agent_off` and
+ * `patch_agent_circuit_open` are the three named opt-out shapes; everything
+ * else the gate can answer is `patch_agent_skipped` with the raw skip kept
+ * beside it, so the trace still says exactly which admission rule declined.
+ */
+export function patchFallbackFor(skipped: AgentRunSkipReason): Record<string, unknown> {
+  switch (skipped) {
+    case 'no_effective_agent':
+      return { patchWorkFallbackReason: 'no_patch_agent' };
+    case 'agent_disabled':
+    case 'mode_off':
+      return { patchWorkFallbackReason: 'patch_agent_off' };
+    case 'circuit_open':
+      return { patchWorkFallbackReason: 'patch_agent_circuit_open' };
+    default:
+      return { patchWorkFallbackReason: 'patch_agent_skipped', patchWorkSkipReason: skipped };
+  }
+}
+
 async function executeAiTriageAction(
   _action: AiTriageAction,
   actionIndex: number,
@@ -1910,6 +1966,13 @@ async function executeAiTriageAction(
   // query on a trigger that cannot populate it.
   let alertContext: CreateAgentRunInput['alertContext'];
 
+  // AI patch agent W04 (#5750) — classify BEFORE building the admission so the
+  // patch route and the triage fallback share one resolution. Fail-closed:
+  // no alert, or nothing resolving, is "not patch work" and triage keeps it.
+  const classification = trigger?.alertId
+    ? await resolveAlertCategory(trigger.alertId, context.device.orgId)
+    : null;
+
   if (trigger?.severity) {
     const [deviceRow] = await db
       .select({ tags: devices.tags })
@@ -1922,30 +1985,78 @@ async function executeAiTriageAction(
       ruleId: trigger.ruleId,
       siteId: context.device.siteId,
       deviceTags: deviceRow?.tags ?? [],
+      category: classification?.category ?? null,
     };
   }
 
-  // managedByAgentId is attribution/bookkeeping. The admission gate resolves
-  // the effective triage agent for the device org; an org override wins over
-  // the managed baseline, while both ids remain traceable through triggerRef.
-  const result = await createAndEnqueueAgentRun({
-    orgId: context.device.orgId,
-    kind: 'triage',
-    triggerKind: 'alert',
-    deviceId: context.device.id,
-    alertId: trigger?.alertId ?? null,
-    triggerEventId: trigger?.eventId ?? null,
-    triggerRef: {
-      automationId: context.automation.id,
-      automationRunId: context.runId,
-      alertRuleId: trigger?.ruleId ?? null,
-      managedByAgentId: agentId,
-    },
-    ...(alertContext ? { alertContext } : {}),
-    dedupeKey: trigger?.alertId
-      ? `alert:${trigger.alertId}`
-      : `event:${trigger?.eventId ?? context.runId}`,
-  });
+  const baseTriggerRef = {
+    automationId: context.automation.id,
+    automationRunId: context.runId,
+    alertRuleId: trigger?.ruleId ?? null,
+    managedByAgentId: agentId,
+  };
+
+  let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>> | null = null;
+  // Which lane actually produced `result` — the action type stays `ai_triage`
+  // (that is the automation action), but every message and log below names
+  // the lane so a technician reading "why did the patch agent not pick this
+  // up" is not sent to the triage agent's config.
+  let routedTo: 'patch' | 'triage' = 'triage';
+  // Why triage got (or kept) the alert. Recorded on the triage run's
+  // triggerRef so a technician can see that a patch alert fell back and why.
+  let patchWorkFallback: Record<string, unknown> = { patchWorkFallbackReason: 'not_patch_work' };
+
+  if (classification?.isPatchWork && trigger?.alertId) {
+    // EXCLUSIVE routing: a patch-classified alert is offered to the PATCH
+    // agent first, as a device-less run with a focus hint (rule 8a's mirror
+    // refuses `deviceId !== null` on the patch profile — a reactive patch run
+    // is org-scoped, not a device run). The gate's own skips are the
+    // fallback signals: no agent / disabled / mode off / circuit open each
+    // fall through to triage with the reason recorded, so a fallback can
+    // never bypass an org opt-out or an open circuit. Any OTHER skip (a
+    // trigger filter, the patch caps, a maintenance hold) falls back too —
+    // the pre-W04 behaviour for that alert was a triage run, and an alert
+    // must never be dropped because neither agent claimed it. `duplicate` is
+    // the one exception: the patch agent already owns this alert.
+    result = await createAndEnqueueAgentRun({
+      orgId: context.device.orgId,
+      kind: 'patch',
+      profile: 'patch',
+      triggerKind: 'alert',
+      deviceId: null,
+      alertId: trigger.alertId,
+      triggerEventId: trigger.eventId ?? null,
+      triggerRef: { ...baseTriggerRef, focusDeviceId: context.device.id, routedFrom: 'triage' },
+      ...(alertContext ? { alertContext: { ...alertContext, focusDeviceId: context.device.id } } : {}),
+      dedupeKey: `patch-alert:${trigger.alertId}`,
+    });
+    routedTo = 'patch';
+
+    if (!result.created && result.skipped !== 'duplicate') {
+      patchWorkFallback = patchFallbackFor(result.skipped);
+      result = null;
+      routedTo = 'triage';
+    }
+  }
+
+  if (result === null) {
+    // managedByAgentId is attribution/bookkeeping. The admission gate resolves
+    // the effective triage agent for the device org; an org override wins over
+    // the managed baseline, while both ids remain traceable through triggerRef.
+    result = await createAndEnqueueAgentRun({
+      orgId: context.device.orgId,
+      kind: 'triage',
+      triggerKind: 'alert',
+      deviceId: context.device.id,
+      alertId: trigger?.alertId ?? null,
+      triggerEventId: trigger?.eventId ?? null,
+      triggerRef: { ...baseTriggerRef, ...patchWorkFallback },
+      ...(alertContext ? { alertContext } : {}),
+      dedupeKey: trigger?.alertId
+        ? `alert:${trigger.alertId}`
+        : `event:${trigger?.eventId ?? context.runId}`,
+    });
+  }
 
   if (result.created) {
     // `created` is NOT "queued". 3c's gate inserts the ledger row first and
@@ -1959,7 +2070,9 @@ async function executeAiTriageAction(
     // the alert is never triaged. The manual trigger route answers 503 on this
     // exact signal; the automation's equivalent is a failed action.
     if (result.run.status === 'failed' || result.run.errorCode === 'enqueue_failed') {
-      const message = 'ai_triage agent run was created but could not be enqueued';
+      const message = routedTo === 'patch'
+        ? 'ai_triage: patch agent run was created but could not be enqueued'
+        : 'ai_triage agent run was created but could not be enqueued';
       return {
         outcome: { status: 'failed', message },
         log: logEntry(message, 'error', {
@@ -1968,33 +2081,37 @@ async function executeAiTriageAction(
           deviceId: context.device.id,
           details: {
             agentRunId: result.run.id,
+            routedTo,
             errorCode: result.run.errorCode ?? 'enqueue_failed',
           },
         }),
       };
     }
 
-    // The child agent run completes out-of-band and reports through
-    // ai.agent.run.* events and 3c recipient notifications. The parent
-    // automation action has no action-result correlation to that child run,
-    // so its terminal contract is successful enqueue (not child completion).
+    // #5290 — the child agent run completes out-of-band and reports through
+    // ai.agent.run.* events. The action result now CARRIES that correlation
+    // (automation_action_results.agent_run_id), so the action stays queued and
+    // is terminalised by the child's own terminal event. Reporting successful
+    // enqueue as `succeeded` used to aggregate the run to `completed` for a
+    // response that had not run — which W03 then wrote onto the episode.
+    const queuedMessage = routedTo === 'patch' ? 'ai_triage queued patch agent run' : 'ai_triage queued agent run';
     return {
-      outcome: { status: 'succeeded' },
-      log: logEntry('ai_triage queued agent run', 'info', {
+      outcome: { status: 'queued', agentRunId: result.run.id, message: queuedMessage },
+      log: logEntry(queuedMessage, 'info', {
         actionType: 'ai_triage',
         actionIndex,
         deviceId: context.device.id,
-        details: { agentRunId: result.run.id },
+        details: { agentRunId: result.run.id, routedTo },
       }),
     };
   }
 
   const hardFailure = AI_TRIAGE_SKIP_IS_FAILURE[result.skipped] ?? true;
-  const message = `ai_triage skipped: ${result.skipped}`;
+  const message = routedTo === 'patch' ? `ai_triage skipped (patch): ${result.skipped}` : `ai_triage skipped: ${result.skipped}`;
   return {
     outcome: hardFailure ? { status: 'failed', message } : { status: 'succeeded' },
     log: logEntry(message, hardFailure ? 'error' : 'info', {
-      actionType: 'ai_triage', actionIndex, deviceId: context.device.id,
+      actionType: 'ai_triage', actionIndex, deviceId: context.device.id, details: { routedTo },
     }),
   };
 }
@@ -2049,6 +2166,7 @@ export async function persistActionExecutionOutcome(
     ...('scriptExecutionId' in outcome && outcome.scriptExecutionId
       ? { scriptExecutionId: outcome.scriptExecutionId }
       : {}),
+    ...('agentRunId' in outcome && outcome.agentRunId ? { agentRunId: outcome.agentRunId } : {}),
     message: 'message' in outcome && outcome.message
       ? outcome.message
       : result.log.message,
@@ -2072,12 +2190,30 @@ async function skipTrailingAutomationActions(
   }
 }
 
+/** Use recorded event identity when available; otherwise the configured
+ * automation or policy is the known cause. Do not parse triggeredBy text. */
+function automationRemediationTrigger(source: {
+  automationId?: string;
+  configPolicyId?: string;
+  triggerContext?: AutomationTriggerContext;
+}): RemediationTrigger {
+  if (source.configPolicyId) {
+    return { kind: 'policy', refId: source.configPolicyId, key: buildTriggerKey(['policy', source.configPolicyId]) };
+  }
+  if (source.triggerContext?.alertId) {
+    return { kind: 'alert', refId: source.triggerContext.alertId, key: alertTriggerKey(null, source.triggerContext.ruleId) };
+  }
+  return { kind: 'automation', refId: source.automationId ?? null, key: buildTriggerKey(['automation', source.automationId ?? '']) };
+}
+
 async function seedDeviceAutomationActions(
   runId: string,
   device: { id: string; orgId: string },
   actions: readonly AutomationAction[],
+  trigger: RemediationTrigger,
 ): Promise<void> {
   await withAutomationRuntimeDb(() => seedAutomationActionResults({
+    trigger,
     runId,
     device,
     actions: actions.map((action, actionIndex) => ({ actionIndex, actionType: action.type })),
@@ -2348,6 +2484,7 @@ async function executeAutomationActionsInOrder(args: {
   channelsById: ActionExecutionContext['channelsById'];
   variableScope: TenantVariableScope;
   trigger: AutomationTriggerContext | undefined;
+  remediationTrigger?: RemediationTrigger;
   onFailure: 'stop' | 'continue' | 'notify';
   notificationTargets?: NotificationTargets;
   createdBy: string | null;
@@ -2479,6 +2616,7 @@ async function executeAutomationActionsInOrder(args: {
           channelsById: args.channelsById,
           variableScope: args.variableScope,
           trigger: args.trigger,
+          remediationTrigger: args.remediationTrigger,
         }, device)));
         logs.push(result.log);
         await persistActionExecutionOutcome(args.runId, device.id, actionIndex, result);
@@ -2749,6 +2887,7 @@ function buildActionExecutionContext(base: {
    *  optional property would let the call site silently drop the event
    *  binding and still compile — the exact #3824 failure mode. */
   trigger: AutomationTriggerContext | undefined;
+  remediationTrigger?: RemediationTrigger;
 }, device: ActionExecutionContext['device']): ActionExecutionContext {
   return { ...base, device };
 }
@@ -2847,8 +2986,9 @@ async function executeAutomationRunInner(
   // Seed a per-device result row (pending) for every targeted device so the
   // execution-history UI can show live progress as each device finishes (#2023).
   await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
+  const remediationTrigger = automationRemediationTrigger({ automationId, triggerContext });
   for (const device of deviceRows) {
-    await seedDeviceAutomationActions(run.id, device, normalized.actions);
+    await seedDeviceAutomationActions(run.id, device, normalized.actions, remediationTrigger);
   }
 
   const existingLogs = getExistingLogs(run.logs);
@@ -2871,6 +3011,7 @@ async function executeAutomationRunInner(
     channelsById,
     variableScope,
     trigger: triggerContext,
+    remediationTrigger,
     onFailure: normalized.onFailure,
     notificationTargets: normalized.notificationTargets,
     resolvedReferences,
@@ -3146,8 +3287,9 @@ export async function executeConfigPolicyAutomationRun(
   }
 
   await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
+  const remediationTrigger = automationRemediationTrigger({ configPolicyId });
   for (const device of deviceRows) {
-    await seedDeviceAutomationActions(run.id, device, actions);
+    await seedDeviceAutomationActions(run.id, device, actions, remediationTrigger);
   }
 
   const notificationChannelIds = new Set<string>();
@@ -3192,6 +3334,7 @@ export async function executeConfigPolicyAutomationRun(
     channelsById,
     variableScope,
     trigger: undefined,
+    remediationTrigger,
     onFailure,
     notificationTargets: notifyTargets,
     resolvedReferences: admission.resolvedReferences,
@@ -3238,6 +3381,8 @@ export async function executeConfigPolicyAutomationRun(
 // Exported for unit tests of the #3824 event-target binding. Internal helper,
 // not part of the runtime's public surface.
 export const __testOnly = {
+  automationRemediationTrigger,
+  seedDeviceAutomationActions,
   buildActionExecutionContext,
   executeAction,
   executeAiTriageAction,

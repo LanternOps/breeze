@@ -90,7 +90,7 @@ describe('partner LLM BYOK billing split', () => {
 
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(fetchSpy).toHaveBeenCalledWith(
-        `https://billing.internal/api/internal/partners/${partner.id}/ai-credits/deduct`,
+        `https://billing.internal/billing/api/internal/partners/${partner.id}/ai-credits/deduct`,
         expect.objectContaining({ method: 'POST' }),
       );
     } finally {

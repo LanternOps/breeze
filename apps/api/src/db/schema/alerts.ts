@@ -57,6 +57,16 @@ export const alertTemplates = pgTable('alert_templates', {
   autoResolveConditions: jsonb('auto_resolve_conditions'),
   cooldownMinutes: integer('cooldown_minutes').notNull().default(5),
   isBuiltIn: boolean('is_built_in').notNull().default(false),
+  // #5289: set only on rows COMPILED from a monitor definition. The compiler
+  // (services/monitors/monitorCompiler.ts) is the single writer; every other
+  // writer refuses a row carrying this with 409. Declared without .references()
+  // to avoid an import cycle with monitorDefinitions (which references the
+  // severity enum and escalation policies from this file); the FK itself is in
+  // the migration and drift detection compares columns, not FK declarations.
+  managedByMonitorId: uuid('managed_by_monitor_id'),
+  // Fleet Designer W03 (#5653): free-text "why" when a template is created
+  // from a design; NULL otherwise.
+  rationale: text('rationale'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -80,6 +90,9 @@ export const alertRules = pgTable('alert_rules', {
   targetId: uuid('target_id').notNull(),
   overrideSettings: jsonb('override_settings'),
   isActive: boolean('is_active').notNull().default(true),
+  // #5289 — see alertTemplates.managedByMonitorId. A compiled rule uses
+  // targetType 'monitor' with targetId = the monitor definition id.
+  managedByMonitorId: uuid('managed_by_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('alert_rules_org_id_idx').on(table.orgId),
@@ -108,6 +121,16 @@ export const alerts = pgTable('alerts', {
   suppressedUntil: timestamp('suppressed_until'),
   dismissedAt: timestamp('dismissed_at'),
   dismissedBy: uuid('dismissed_by').references(() => users.id),
+  // #5289: provenance for alerts raised by a compiled monitor rule, so the UI
+  // can link an alert back to the monitor that authored it. ON DELETE SET NULL
+  // in SQL — deleting a monitor must not delete its history.
+  monitorId: uuid('monitor_id'),
+  // #5290 — the breach episode this alert belongs to (null for non-monitor
+  // alerts). ON DELETE SET NULL in SQL.
+  episodeId: uuid('episode_id'),
+  // #5290 — a recurrence-escalation alert. NEVER auto-resolved, never
+  // auto-suppressed by an AI verdict, always its own correlation root.
+  requiresHuman: boolean('requires_human').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   // Backs the `alerts.critical` device-filter field (#968).

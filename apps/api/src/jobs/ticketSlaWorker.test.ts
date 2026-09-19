@@ -142,6 +142,10 @@ describe('ticketSlaWorker', () => {
       expect(resolutionSql).toContain("status IN ('new', 'open')");
       expect(resolutionSql).toContain('sla_paused_at IS NULL');
       expect(resolutionSql).toContain('FOR UPDATE SKIP LOCKED');
+      // #5573 W02 (spec §4.8): planned work (deliverables, key-date reminders)
+      // has a due date, not an SLA — both passes skip non-support tickets.
+      expect(responseSql).toContain("work_kind = 'support'");
+      expect(resolutionSql).toContain("work_kind = 'support'");
     });
   });
 

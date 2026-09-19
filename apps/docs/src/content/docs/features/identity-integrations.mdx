@@ -63,11 +63,11 @@ Customer Graph Read uses Breeze's dedicated multitenant, certificate-backed appl
 
 <Steps>
 1. Set your Breeze scope to the customer organization and find the **Customer Graph Read** card.
-2. Review the nine required permissions shown on the card, then choose **Connect**.
+2. Review the thirteen required permissions shown on the card, then choose **Connect**.
 3. Complete Breeze MFA and sign in to Microsoft as a Global Administrator or Privileged Role Administrator for that customer tenant.
 4. Review Microsoft's consent screen carefully and accept only if it shows the expected application and exact permissions below.
 5. Complete the second Microsoft identity check. Breeze independently verifies the signed tenant identity, administrator role, service principal, exact grants, and organization probe.
-6. Confirm the card shows **Active**, the expected tenant name/GUID, manifest version 2, and no missing or unexpected permissions.
+6. Confirm the card shows **Active**, the expected tenant name/GUID, manifest version 3, and no missing or unexpected permissions.
 </Steps>
 
 Customer Graph Read requests exactly these Microsoft Graph **application** permissions:
@@ -83,10 +83,57 @@ Customer Graph Read requests exactly these Microsoft Graph **application** permi
 | `Organization.Read.All` | Verify and read the customer organization |
 | `Sites.Read.All` | Read SharePoint site inventory |
 | `User.Read.All` | Read users and directory profiles |
+| `AuditLogsQuery.Read.All` | Run unified audit log queries on request |
+| `Policy.Read.All` | Read Conditional Access policies and named locations |
+| `RoleManagement.Read.Directory` | Read directory role assignments to identify administrators |
+| `SecurityEvents.Read.All` | Read Microsoft Secure Score and its control profiles |
 
 The card shows required, observed, missing, and unexpected grants. **Active** requires exact equality. If Microsoft cannot complete authoritative reconciliation—for example, because `Application.Read.All` was removed—the card becomes **Degraded** and labels the retained observed list **Last-known**, rather than presenting it as current.
 
 Use **Retest** to check an already-bound tenant. Use **Re-consent** when permissions were changed or the manifest is stale. Customer Graph Read is read-only and does not authorize password resets, user disablement, other Graph mutations, Exchange PowerShell, or delegated mail/Teams access.
+
+#### Tenant sync and "as of" semantics
+
+Once a tenant is connected, Breeze keeps a scheduled snapshot of it rather than
+querying Microsoft on every page load. Six domains sync independently:
+
+| Domain | Default cadence | What it stores |
+|---|---|---|
+| Users | 6 hours | Directory profile, licenses, MFA registration state, admin roles |
+| Intune devices | 6 hours | Managed devices, compliance state, and the link to the Breeze device |
+| Conditional Access | 24 hours | Policy definitions and enabled / report-only / disabled state |
+| Licenses | 24 hours | Purchased and consumed seats per SKU |
+| Secure Score | 24 hours | Daily score and per-control detail, backfilled 90 days on first sync |
+| Sign-in activity | 24 hours | Last **successful** interactive sign-in per user |
+
+Every figure Breeze shows carries an **as of** time — the last run that
+completed a full enumeration of that domain, not the last time anything was
+written. A domain that returned only part of the tenant (a very large tenant,
+or Microsoft throttling mid-pull) is labelled **partial** and never causes a
+user or device to be marked as gone. A domain whose permission has not been
+approved yet is labelled **needs consent** and is simply not scheduled; the
+other five keep running.
+
+Cadences adapt on their own: a domain that truncates or runs slowly backs off,
+a domain that has been quiet drifts back toward its default. You can force a
+refresh from the card at most once every 15 minutes per organization.
+
+**Sign-in activity requires Microsoft Entra ID P1 or higher.** On a tenant
+without it, Breeze shows "Sign-in activity needs Entra ID P1" rather than an
+empty or zero value — the data does not exist to be read. Sign-in activity is
+also the one domain Microsoft rate-limits per application rather than per
+tenant, so on large fleets it refreshes less often than the others and its
+"as of" date is the honest answer to how current it is.
+
+Disconnecting a tenant deletes the stored users, devices, policies and license
+rows immediately. Secure Score history and the daily posture rollups are kept
+and stay stamped with the tenant they came from, so reconnecting a different
+tenant never mixes the two.
+
+Breeze stores no sign-in logs, no IP addresses, and no audit-log rows. User
+records are customer data of the customer's own tenant: they are included in an
+organization export, erased with the organization, deleted on disconnect, and
+purged 30 days after a user disappears from the tenant.
 
 ### Legacy direct (existing client-secret method)
 
@@ -170,7 +217,7 @@ Both providers verify credentials live before storing them. For Google Workspace
 Complete both Microsoft steps as a Global Administrator or Privileged Role Administrator in the customer tenant. Other directory roles fail closed even if Microsoft allows them to reach a consent screen.
 
 **Customer Graph Read is degraded.**
-Review missing and unexpected grants on the card. Restore the exact nine-permission manifest, choose **Re-consent**, then **Retest**. If the card says reconciliation is unavailable, restore `Application.Read.All` first; the displayed observed list is last known, not a current assignment inventory.
+Review missing and unexpected grants on the card. Restore the exact thirteen-permission manifest, choose **Re-consent**, then **Retest**. If the card says reconciliation is unavailable, restore `Application.Read.All` first; the displayed observed list is last known, not a current assignment inventory.
 
 **Retest says the verification service is unavailable.**
 This does not mean Microsoft consent was removed. Existing active state is preserved during a transient executor outage. Ask the Breeze operator to restore the private verification service, then Retest again.

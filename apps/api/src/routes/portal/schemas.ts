@@ -187,6 +187,15 @@ export const portalReportRunParamSchema = z.object({
   id: z.string().guid()
 });
 
+// Service deliverables W04 (spec §8).
+export const portalDeliverableParamSchema = z.object({ deliverableId: z.string().guid() });
+export const portalDocumentParamSchema = z.object({ id: z.string().guid() });
+// Spec §8 publishes the last 24 occurrences; the cap lives in the read model
+// too, so a crafted query string cannot widen the window.
+export const portalOccurrenceListSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(24).default(24)
+});
+
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
 
 // Phase 2 (ticket intake forms): subject/description become optional when a

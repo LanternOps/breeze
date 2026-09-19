@@ -1,0 +1,73 @@
+---
+tracking_issue: LanternOps/breeze#6147
+tracking_issue_feature_b: LanternOps/breeze#6154
+wave_issues_a: W01 LanternOps/breeze#6148, W02 LanternOps/breeze#6149, W03 LanternOps/breeze#6150, W04 LanternOps/breeze#6151, W05 LanternOps/breeze#6152, W06 LanternOps/breeze#6153
+wave_issues_b: W01 LanternOps/breeze#6155, W02 LanternOps/breeze#6156, W03 LanternOps/breeze#6157, W04 LanternOps/breeze#6158, W05 LanternOps/breeze#6159, W06 LanternOps/breeze#6160
+branch_a: feature/6147-agent-tool-efficiency/wave-<sub-issue>
+branch_b: feature/6154-mcp-modernization/wave-<sub-issue>
+---
+# Agent tool efficiency + MCP server modernization — Plan Index
+
+**Spec:** `docs/superpowers/specs/ai-mcp/2026-09-17-agent-tool-efficiency-and-mcp-modernization-design.md` (merged as #6161; domain list decided 2026-09-17).
+
+**Issues:** Feature A `#6147` (in-product agents, p1), Feature B `#6154` (external MCP server). Sources: #6139 #6140 #6141 #6143 #6144 #6145; prior art #4907 #3856 #2550.
+
+**Verified against `origin/main` `5f20013cb`** (2026-09-17). Four read-only surveys back every `file:line` in the wave plans; re-grep before editing, line numbers drift.
+
+One plan document per wave; each wave is one PR on its own branch with `Closes #<sub-issue>`. State lives on GitHub (feature-lifecycle) — `get_feature_status` before starting any wave; this index is never the source of truth for status.
+
+| Wave | Plan | Blast radius | Depends on | Plan status |
+|---|---|---|---|---|
+| A-W01 #6148 | [Baseline and harness: per-surface SDK capture (deny mode) + capture proxy, 60-case golden eval + scheduled non-blocking CI, hot/cold report (admin endpoint + operator SQL + index), baseline doc](2026-09-17-agent-tool-efficiency-a01-baseline-harness.md) | low | — | **written** |
+| A-W02 #6149 | [Registry metadata: `domain`/`searchHint`/`alwaysLoad` on `AiTool`, SDK meta from the registry, `CAPABILITY_DOMAINS` relation, generated prompt index, `search_documentation` declared](2026-09-17-agent-tool-efficiency-a02-registry-metadata.md) | low–medium (touches every tool file mechanically) | — | **written** |
+| A-W03 #6150 | [Description diet: one description surface, budget lint with frozen baseline → zero, `manage_policy_feature_link` `describe` action, disambiguation into `DOMAIN_NOTES`, eval gate](2026-09-17-agent-tool-efficiency-a03-description-diet.md) | low | A-W01, A-W02 | **written** |
+| A-W04 #6151 | Load policy per surface (`ENABLE_TOOL_SEARCH` policy, final `alwaysLoad` set, Helper `onlyTools`, page-context domain boost, BYO fallback, cache-stable `extraTools`) | medium | A-W01 numbers, A-W02, A-W03 | **deferred** — see below |
+| A-W05 #6152 | Output efficiency (result shaping for the 20 hottest tools, pagination, large-payload handles) | medium–high | #6140 fixed, A-W01 hot list | **deferred** — see below |
+| A-W06 #6153 | [Agent-first coverage burn-down: 13 read tools (time entries #6139, contacts, incidents, network assets, remediation suggestions, AI-agent reads, sites) + `MCP_COVERAGE` contract](2026-09-17-agent-tool-efficiency-a06-coverage-burndown.md) | per tool; tenancy-sensitive reads | A-W02 | **written** |
+| B-W01 #6155 | [Additive spec catch-up: version negotiation, `MCP-Protocol-Version`, real `serverInfo`, `title`/`annotations`/`_meta`, name order, opt-in pagination, `structuredContent`, docs, per-version conformance](2026-09-17-mcp-modernization-b01-spec-catchup.md) | low | A-W02 | **written** |
+| B-W02 #6156 | Per-grant tool domains + scope UX (`mcp_domains`, `insufficient_scope` step-up, `whoami`) | **high** — auth surface, migration, export-policy classification | B-W01 | **deferred** — quorum owed |
+| B-W03 #6157 | Stateless `2026-07-28` dual-stack | **high** — session-ownership binding | B-W02 | deferred (stacked) |
+| B-W04 #6158 | Tier-3 over MCP via action intents (existing plan `plans/open/2026-07-18-action-intents-mcp-cutover.md`) | **high** | B-W03 | deferred (stacked) |
+| B-W05 #6159 | MCP Apps pilot | medium | B-W04 | deferred (stacked) |
+| B-W06 #6160 | Tasks for long-running tools | medium | B-W04 | deferred (stacked) |
+
+**Order of execution:** A-W01 and A-W02 in parallel (no shared files beyond `apps/api/package.json` scripts vs nothing) → A-W03, A-W06 and B-W01 can all start once A-W02 merges (A-W03 also wants A-W01's eval) → A-W04 after A-W01's baseline doc is filled and the quorum is in.
+
+## Why five plans now and seven later
+
+The spec says plans are written when the wave is next, because A-W01's measurements decide A-W04's shape. Three reasons decide what is plannable today:
+
+- **A-W04** needs numbers that do not exist yet (is tool search on by default per surface, Haiku 4.5 accuracy through search vs a static subset, the hot-tool list that picks the ≤ 15 `alwaysLoad` set) **and** the Codex `xhigh` quorum on the BYO fallback (spec open decision 4; Codex subscription exhausted until 2026-09-19 11:38). Planning it now would be planning against guesses. One fact is already in hand from the installed CLI binary and changes its shape: **tool search silently disables itself on any non-first-party `ANTHROPIC_BASE_URL`** unless `ENABLE_TOOL_SEARCH` is set, and Breeze's `SDK_CHILD_ENV_ALLOWLIST` does not forward that variable at all — so today every catalog/BYO partner session is in the "off" branch and no operator override is possible. A-W04 must add the variable to the allowlist as part of its explicit policy.
+- **A-W05** is gated on #6140 (the redactor that replaces any key containing `session`/`token`/… with `"[REDACTED]"`) and on A-W01's 90-day hot list to choose the 20 tools. #6140 is a live bug and should go to an issue-fixer now, ahead of the waves; it loosens a secrets filter, so it gets a security-reviewed PR of its own.
+- **B-W02…B-W06** are a stacked chain behind B-W01, and B-W02 is a new-table/auth-surface decision (grant shape, migration, export-policy bucket for a capability list — `excludedOpen` per CLAUDE.md) that the repo's working rules send to the advisor quorum before implementation.
+
+## Decisions these plans make (and why)
+
+Recorded here so a reader of one wave sees the whole contract. D1, D2, D7 and D8 are consequential enough that the Codex quorum should be asked to confirm them when the subscription resets; none blocks A-W01.
+
+- **D1 — `domain` is a required field on `AiTool`; `TOOL_CAPABILITY` stays; a relation guards the pair.** A `domain`-like taxonomy already exists: `TOOL_CAPABILITY` (`aiAgents/agentToolCatalog.ts:69`, 17 `AgentCapabilityId` values with a `tone`, exhaustively contract-tested). It is the agent-builder grouping; the spec's 14 domains are the load/grant grouping. They are not 1:1 (`services_startup`, `files_disk`, `remote_access` are all `devices`; `config_policies` spans `security`/`patching`/`backup`), so neither can be derived from the other without bending one. A-W02 adds `CAPABILITY_DOMAINS` (capability → allowed domains) and a contract test, which turns silent drift into a reviewed edit. Rejected: moving `capability` onto `AiTool` too (doubles the mechanical sweep and rewrites a contract test that is doing its job), and deriving domain from capability (loses the closed 14).
+- **D2 — SDK search metadata is attached from the registry, not typed into 147 `tool()` calls.** `tool()`'s fifth parameter (`{ annotations, searchHint, alwaysLoad }`, SDK 0.3.181) writes `_meta['anthropic/searchHint']` / `_meta['anthropic/alwaysLoad']`. A-W02 extracts `buildBreezeSdkTools()` and re-declares each tool through the public `tool()` API with registry metadata (`attachRegistryMeta`). One source of truth (spec principle 2), and the parity test asserts the `_meta` values equal the registry's.
+- **D3 — The prompt index is generated at composition time for the tools a surface actually registers.** `AI_SYSTEM_PROMPT_BASE` splits into `BASE` + `TAIL`; `aiAgent.ts` inserts `renderToolIndexByDomain(listChatSurfaceToolNames())`. The index lists `TOOL_TIERS ∩ registry` only, so it can never advertise a mute tool (#3300 class); `aiAgentSystemPrompt.ts` and `mcpGuidance.ts` stay registry-free on purpose.
+- **D4 — `search_documentation` gets its SDK declaration in A-W02.** The old hand list told the model to use it (`aiAgentSystemPrompt.ts:109,120`) while it sat in `KNOWN_MISSING_TOOL_TIERS` with no `tool()` declaration — chat could never call it. 89 other registered tools are in the same state; they stay undeclared (and unadvertised) until a wave needs them.
+- **D5 — The harness measures in-process, in deny mode.** `query()` with each surface's exact `allowedTools`/`onlyTools`/server (derived from the surfaces' own exports, test-asserted), `canUseTool` refusing every call, so no seeded actor or DB is needed and nothing executes. The SDK stream gives the usage split, TTFT and ToolSearch sightings; an optional local proxy gives the exact `tools[]`/`defer_loading`. **The proxy is itself a non-first-party host**, so proxy runs force `ENABLE_TOOL_SEARCH` explicitly and say so. **Scoped down vs the spec:** calls-to-answer needs real tool execution; A-W01 scores first-call accuracy only.
+- **D6 — Hot/cold ships as both an operator SQL file and a platform-admin endpoint** (spec open decision 3 → both). The SQL answers the question this week on both regions; `GET /api/v1/admin/ai/tool-usage` keeps pruning cheap afterwards. `ai_tool_executions` has no `created_at` index and no surface column; A-W01 adds the index (`CONCURRENTLY`, `@no-transaction`) and derives surface from `ai_sessions.type` + `device_id` (web chat and Helper both write `type='general'`). Follow-up worth filing: write `type: 'helper'` at `routes/helper/index.ts:227`.
+- **D7 — The diet starts by collapsing two description surfaces into one.** 132 of 147 SDK declarations carry their own inline description that shadows the registry's; a lint on the registry alone would not shrink what the chat model sees, and a lint on the SDK alone would miss `manage_policy_feature_link`'s 8.7 KB. A-W03 makes every declaration read `registryDescription()`, then lints once. The 8.7 KB `inlineSettings` reference moves behind a read-only `describe` action (returned per feature type on demand) rather than into docs the model cannot read.
+- **D8 — MCP annotations are derived per action from the tier tables and may only be stricter than `checkGuardrails`.** `readOnlyHint` = every action read-only (via `isReadOnlyResolution`, not `tier === 1`); `destructiveHint` = any action tier ≥ 3. A contract test compares against `checkGuardrails` for every tool × action in one direction. `annotations`/`title`/`_meta`/`structuredContent` are emitted for every negotiated version (additive; old clients ignore them). **Pagination ships dormant** (`MCP_TOOLS_LIST_PAGE_SIZE` unset = single page): a client that ignores `nextCursor` would silently lose tools, and B-W02's per-grant domains are what actually shrink the list.
+- **D9 — `MCP_COVERAGE` has three entry kinds: `tools`, `exempt` (closed reason union), `gap` (issue ref, frozen shrink-only).** An honest registry needs a place for today's known gaps that is not an exemption; the frozen list makes the gap visible and lets it only shrink, the same ratchet the cascade/description/device-args baselines use. Keyed by route *file*, which cannot see sub-resources that live inside a larger file (`sites` in `orgs.ts`, contacts registered onto `orgRoutes`) — entries list several tools per file for that reason.
+
+## Global constraints (all waves)
+
+Repeated in each wave doc; kept here so one page shows the contract.
+
+- **Never rename a tool; never remove an action** (spec principle 6).
+- **Tool never weaker than its route** (#6096/#6110): subsetting and hints are context optimisation; authorization stays in the handler path. New read tools add a row to `aiGuardrails.routeBinding.contract.test.ts`.
+- **Measure before and after** (principle 1): every wave after A-W01 re-runs `ai:tool-eval` and `ai:tool-capture --surface chat --turns 2` and appends a dated row to `docs/superpowers/specs/ai-mcp/2026-09-17-agent-tool-efficiency-baseline.md`. A-W03 gates its PR on "accuracy did not drop".
+- **Tenancy:** no new tables in A-W01/02/03/06 or B-W01. A-W01 adds one index on `ai_tool_executions` (RLS via parent `ai_sessions`; not an org-cascade *column* change, so `CORE_TENANT_EXPORT_POLICY` is untouched). B-W02 is the first wave with a tenancy contract (`mcp_domains` on API keys and OAuth grants: a scope/grant list is a capability list → `excludedOpen`).
+- **Commands:** `cd apps/api && npx vitest run <path>` (substring match — check the file count); never `pnpm --filter <pkg> test -- --run <path>`. Whole unit suite before every PR; `pnpm test:workflow-security` when a workflow changes.
+- **Migrations** (A-W01 only): sort after `main`'s newest (`2026-10-20-100000-partner-sending-domains.sql` today), re-check before every commit, idempotent, no inner transaction, `-- @no-transaction` for `CREATE INDEX CONCURRENTLY`.
+- **Implementation routing** (CLAUDE.md "Model Routing"): these plans are paste-complete for Codex `medium` drivers, one `codex exec` per task; the orchestrator verifies commits, runs the contract bundles and the single `/pr-review-toolkit:review-pr` round. Two tasks are judgement-heavy and deserve a Sonnet reviewer on the diff rather than a second Codex pass: A-W02 Tasks 3a–3c (205 domain + hint assignments) and A-W03 Tasks 4a–4c (description rewrites).
+
+## Not covered by this program (raised 2026-09-17)
+
+- **"REST route rejects the MCP sign-in."** MCP OAuth bearer tokens are accepted only on `/api/v1/mcp/*` (`mcpAuthMiddleware`, `mcpServer.ts:207-233`); the REST API does not accept them and no wave changes that. If the need is "an MCP client should be able to call REST with its grant", it is a new auth-surface decision that belongs beside B-W02 (grant scopes + `whoami`), with its own spec line.
+- **"Nothing in the MCP lists categories."** If this means ticket categories/statuses, it is in #6141's P2 list (`Tickets: … categories, custom statuses`) and outside A-W06's agent-first subset; adding `list_ticket_categories`-style reads to A-W06 is a small, same-shape addition once confirmed.

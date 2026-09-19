@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { listActiveTicketDrafts, sendTicketDraft, discardTicketDraft } from '../../services/ticketService';
+import { listActiveTicketDrafts, sendTicketDraft, discardTicketDraft, postProposalNote } from '../../services/ticketService';
+import { getLatestTicketProposal } from '../../services/aiTicketProposal';
 import { getScopedTicketOr404, actorFrom, handleServiceError } from './tickets';
 
 // P2-4 (#4191), Task A10 — human draft routes: list a ticket's active AI
@@ -85,6 +86,59 @@ ticketAiDraftsRoutes.post(
     try {
       const result = await discardTicketDraft(id, draftId);
       return c.json({ data: result });
+    } catch (err) {
+      return handleServiceError(c, err);
+    }
+  }
+);
+
+// #4211 (W01) — the ticket-detail view of the agent's triage proposal, and the
+// one-click "post it as me". Same RBAC/scoping idiom as the ai-drafts routes
+// above: tickets:read for the read, tickets:write for the post.
+const postNoteSchema = z.object({
+  runId: z.string().guid(),
+  // The technician may edit the summary before posting. Bounded by the
+  // proposal's own summary cap (TicketTriageProposal.summary: 1..2000).
+  content: z.string().trim().min(1).max(2000)
+}).strict();   // .strict() is load-bearing: it rejects an `isPublic` field
+               // outright rather than silently ignoring it. This endpoint has
+               // no public variant, by design.
+
+ticketAiDraftsRoutes.get(
+  '/:id/ai-proposal',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  zValidator('param', idParam),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    return c.json({ data: await getLatestTicketProposal(id) });
+  }
+);
+
+ticketAiDraftsRoutes.post(
+  '/:id/ai-proposal/post-note',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('param', idParam),
+  zValidator('json', postNoteSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const { runId, content } = c.req.valid('json');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    try {
+      const { comment } = await postProposalNote(id, runId, content, actorFrom(c));
+      return c.json({ data: { commentId: comment.id } }, 201);
     } catch (err) {
       return handleServiceError(c, err);
     }

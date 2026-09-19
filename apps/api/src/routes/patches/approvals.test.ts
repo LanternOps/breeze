@@ -63,12 +63,13 @@ vi.mock('./helpers', () => ({
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
   resolvePatchApprovalPartnerIdForRing: vi.fn(async () => ({ partnerId: PARTNER_ID })),
   upsertPatchApproval: vi.fn(async () => undefined),
+  declineAllRingApprovals: vi.fn(async () => ({ ringIds: [null], failedRingIds: [] })),
 }));
 
 import { approvalsRoutes } from './approvals';
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { resolvePatchApprovalPartnerIdForRing, upsertPatchApproval } from './helpers';
+import { declineAllRingApprovals, resolvePatchApprovalPartnerIdForRing, upsertPatchApproval } from './helpers';
 
 const PATCH_ID = '22222222-2222-4222-8222-222222222222';
 let partnerOrgAccess: 'all' | 'selected' | 'none' = 'all';
@@ -242,6 +243,87 @@ describe('patch approvals RBAC gating', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('declined');
+    });
+
+    it('declines every ring approval when allRings is set (#5585)', async () => {
+      mockPatchLookup(true);
+      vi.mocked(declineAllRingApprovals).mockResolvedValueOnce({
+        ringIds: [null, 'ring-a', 'ring-b'],
+        failedRingIds: [],
+      });
+
+      const res = await mountApp().request(`/patches/${PATCH_ID}/decline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+        body: JSON.stringify({ allRings: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        status: 'declined',
+        allRings: true,
+        declinedRingIds: [null, 'ring-a', 'ring-b'],
+        failedRingIds: [],
+        success: true,
+      });
+      expect(body.error).toBeUndefined();
+      expect(declineAllRingApprovals).toHaveBeenCalledWith(PARTNER_ID, PATCH_ID, null, expect.anything());
+      // allRings must go through the dedicated helper, never a single-ring upsert.
+      expect(upsertPatchApproval).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'patch.decline',
+          details: expect.objectContaining({ allRings: true, declinedRingCount: 3, failedRingCount: 0 }),
+        })
+      );
+    });
+
+    // #5585 follow-up: a partial failure must be surfaced as a failure to the
+    // web client, not reported as a clean "declined" — runAction (the web
+    // mutation wrapper) only recognizes an HTTP-200 partial failure via an
+    // explicit `success: false`.
+    it('surfaces a partial allRings failure as success:false with an explanatory error', async () => {
+      mockPatchLookup(true);
+      vi.mocked(declineAllRingApprovals).mockResolvedValueOnce({
+        ringIds: [null, 'ring-a'],
+        failedRingIds: ['ring-b'],
+      });
+
+      const res = await mountApp().request(`/patches/${PATCH_ID}/decline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+        body: JSON.stringify({ allRings: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        declinedRingIds: [null, 'ring-a'],
+        failedRingIds: ['ring-b'],
+        success: false,
+      });
+      expect(typeof body.error).toBe('string');
+      expect(body.error).toContain('1 failed');
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({ declinedRingCount: 2, failedRingCount: 1 }),
+        })
+      );
+    });
+
+    it('rejects allRings combined with ringId with 400', async () => {
+      const res = await mountApp().request(`/patches/${PATCH_ID}/decline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+        body: JSON.stringify({ allRings: true, ringId: '33333333-3333-3333-3333-333333333333' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(declineAllRingApprovals).not.toHaveBeenCalled();
+      expect(upsertPatchApproval).not.toHaveBeenCalled();
     });
 
     it('allows POST /patches/:id/defer', async () => {

@@ -7,7 +7,8 @@ export type ConsumerRequirementRule =
   | 'abuse_or_partner_trust_enabled' // shared abuse/partner-trust consumer
   | 'audit_chain_verify_enabled' // audit verification kill switch
   | 'event_dispatch_enabled'  // D3a: eventDispatch (EVENT_DISPATCH_MODE !== 'off')
-  | 'ai_agents_enabled';      // D3a: aiAgentRunner (AI_AGENTS_ENABLED)
+  | 'ai_agents_enabled'       // D3a: aiAgentRunner (AI_AGENTS_ENABLED)
+  | 'sending_domains_configured'; // W03: sendingDomainsWorker (EMAIL_DOMAINS_PROVIDER set)
 
 export type WorkerInitializerClassification =
   | {
@@ -50,6 +51,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('mlOutputRetention'),
   consumers('offlineDetector'),
   consumers('notificationDispatcher'),
+  // #5306 — daily MFA enrolment grace notices. Plain Redis-required consumer:
+  // it constructs and attaches unconditionally wherever it is placed.
+  consumers('mfaEnrollmentNoticeWorker'),
   consumers('webhookDelivery', ['webhookDeliveryWorker']),
   consumers('policyEvaluationWorker'),
   consumers('softwareComplianceWorker'),
@@ -75,6 +79,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('reliabilityRetention'),
   consumers('processSampleRetention'),
   consumers('deviceMetricsRetention'),
+  consumers('m365SyncRetention'),
   consumers('serviceProcessCheckRetention'),
   consumers('changeLogRetention'),
   consumers('oauthCleanup'),
@@ -99,6 +104,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('networkBaselineWorker'),
   consumers('snmpWorker'),
   consumers('monitorWorker'),
+  consumers('monitorScriptWorker'),
   consumers('unifiWorker'),
   consumers('unifiTelemetryWorker'),
   consumers('snmpRetention'),
@@ -110,6 +116,12 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('dnsSyncWorker'),
   consumers('s1SyncWorker'),
   consumers('huntressSyncWorker'),
+  // The Worker is constructed unconditionally and attached unconditionally;
+  // M365_TENANT_SYNC_ENABLED gates the TICK registration and the processor
+  // body, not the construction. A flag-gated construction would need its own
+  // ConsumerRequirementRule and would leave every api/all process not-ready on
+  // the default configuration.
+  consumers('m365SyncWorker'),
   consumers('pax8SyncWorker'),
   consumers('tdSynnexSftpSyncWorker'),
   consumers('logForwardingWorker'),
@@ -124,7 +136,6 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('backupSlaWorker'),
   consumers('drExecutionWorker'),
   consumers('recoveryMediaWorker'),
-  consumers('recoveryBootMediaWorker'),
   consumers('warrantyWorker'),
   consumers('ssoDomainRecheckWorker'),
   { kind: 'non_consumer', initializer: 'incidentCorrelationWorker' },
@@ -134,6 +145,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('softwareDeploymentScheduler'),
   consumers('pamJobs', ['pamExpiryEnforcerWorker', 'pamStaleRequestWorker']),
   consumers('approvalExpiryReaper'),
+  consumers('workspaceReaper'),
   consumers('offboardingDrainReaper'),
   consumers('intentOutboxPublisher'),
   consumers('aiOperatorTaskOutboxPublisher'),
@@ -145,6 +157,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('intentExpiryReaper'),
   consumers('intentReleaseWorker'),
   consumers('stripeReconcileSweep'),
+  consumers('stripeSessionRevocationSweep'),
   consumers('quoteExpiryReaper'),
   consumers('suppressionExpiryReaper'),
   consumers('ticketNotifyWorker'),
@@ -153,6 +166,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketMailboxPollWorker'),
   consumers('invoiceWorker'),
   consumers('contractWorker'),
+  // ONE initializer constructing TWO Workers, so both stable names are declared.
+  // They must match the attachWorkerObservability strings character for
+  // character — workerReadinessCoverage.test.ts diffs the two sets.
+  consumers('deliverableWorker', ['deliverableWorker', 'deliverableContractEventsWorker']),
   // Registry entries main added after Track C's merge base (wave 3.5d-b names;
   // registry entry name == consumer name). Rows 1-3 and 10-12 already attached
   // under exactly these names on main; rows 4-9 (authBrowserTransitionCleanup
@@ -165,6 +182,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('orgMerge'),
   consumers('pamActuationWorker'),
   consumers('ticketAttachmentReaper'),
+  consumers('aiArtifactSweeper'),
   consumers('ticketOutboxPublisher'),
   consumers('metricAnomalyIncidentPublisher'),
   consumers('aiUnattendedExposureRetention'),
@@ -178,6 +196,20 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('accountingSyncWorker'),
   consumers('aiAgentImpactRollup', ['aiAgentImpactRollupWorker']),
   consumers('aiAgentGraduation'),
+  // W02 (#5612): plain-required (`redis`) — scriptReviewWorker constructs
+  // exactly one Worker unconditionally (it has no feature-flag gate of its
+  // own; BREEZE_AI_SCRIPT_AUTHORING_ENABLED is checked upstream, before any
+  // proposal is ever enqueued) and attaches it under its own registry-key
+  // name.
+  consumers('scriptReviewWorker'),
+  // W03 (#5612): same shape as scriptReviewWorker — one Worker, no flag gate
+  // of its own (the producer is gated), attached under its registry-key name.
+  consumers('scriptVerifyWorker'),
+  // SEC-142/143 (review B3). Plain-required (`redis`): read, not inferred —
+  // aiBudgetReservationSweep reads no feature flag anywhere in the module and
+  // constructs exactly one Worker unconditionally, attaching it under its own
+  // registry-key name.
+  consumers('aiBudgetReservationSweep'),
   // Task 8 merge-forward (origin/main ff9e10aec): five more `global` registry
   // entries. Each was read, not inferred from its name — none is feature-flag
   // gated, every one constructs exactly one Worker and attaches it
@@ -193,6 +225,13 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),
+  // #5290 (W03) — daily monitor breach-episode retention prune, same shape as
+  // mlOutputRetention/metricAnomalyIncidentRetention/agentLogRetention: one
+  // Worker, no flag gate, constructs and attaches unconditionally under its
+  // own registry-key name.
+  consumers('monitorEpisodeRetention'),
+  // #4248 W03 — one Worker, unconditional, attached under its registry name.
+  consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),
   // Merge-forward (origin/main 2026-09-06): three more `socket-owner` registry
   // entries, each read rather than inferred. None is feature-flag gated and
@@ -219,6 +258,17 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
     optionalConsumers: ['eventDispatchMaintenance'],
   },
   consumers('agentCommandRelay'),
+  // Tool Catalog W1 (#5215 / #5216), Task A6 — one Worker, unconditional,
+  // attached under its registry name. Not flag-gated at the readiness layer:
+  // TOOL_SOURCES_ENABLED gates the job PROCESSOR body (discoverSource is
+  // skipped), not whether the Worker itself constructs and attaches.
+  consumers('toolSourceDiscoveryWorker'),
+  // Partner sending domains W03. initializeSendingDomainsWorker returns before
+  // constructing a Worker when EMAIL_DOMAINS_PROVIDER is unset — the default on
+  // every self-hosted install and on hosted until W05 — so a plain-required row
+  // would leave every api/all process permanently not-ready. Same shape and
+  // same reason as aiAgentRunner above.
+  consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {
@@ -236,6 +286,7 @@ function ruleEnabled(
     abuseSignalsEnabled: boolean;
     eventDispatchEnabled: boolean;
     aiAgentsEnabled: boolean;
+    sendingDomainsConfigured: boolean;
   },
 ): boolean {
   switch (rule) {
@@ -249,6 +300,8 @@ function ruleEnabled(
       return input.eventDispatchEnabled;
     case 'ai_agents_enabled':
       return input.aiAgentsEnabled;
+    case 'sending_domains_configured':
+      return input.sendingDomainsConfigured;
   }
 }
 
@@ -260,6 +313,7 @@ export function declareExpectedConsumers(input: {
   auditChainVerifyEnabled: boolean;
   eventDispatchEnabled: boolean;
   aiAgentsEnabled: boolean;
+  sendingDomainsConfigured: boolean;
   registry: WorkerReadinessRegistry;
 }): void {
   if (!input.redisAvailable) return;

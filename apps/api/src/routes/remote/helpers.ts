@@ -3,6 +3,7 @@ import { createHmac, randomBytes, randomUUID } from 'crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { captureException } from '../../services/sentry';
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
+import { terminalIntentSet } from '../../services/remoteDesktopTerminalIntent';
 import {
   remoteSessions,
   devices,
@@ -173,7 +174,7 @@ export async function expireStaleSessions(orgId: string) {
   // capture the expired ids via `.returning()` directly — no duck-type guard.
   const expired = await db
     .update(remoteSessions)
-    .set({ status: 'disconnected', endedAt: now })
+    .set(terminalIntentSet({ status: 'disconnected', endedAt: now }, 'pending'))
     .where(
       and(
         inArray(remoteSessions.deviceId,
@@ -194,7 +195,7 @@ export async function expireStaleSessionsForUser(userId: string) {
   // capture the expired ids via `.returning()` directly — no duck-type guard.
   const expired = await db
     .update(remoteSessions)
-    .set({ status: 'disconnected', endedAt: now })
+    .set(terminalIntentSet({ status: 'disconnected', endedAt: now }, 'pending'))
     .where(
       and(
         eq(remoteSessions.userId, userId),

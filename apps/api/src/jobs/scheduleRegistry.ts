@@ -95,6 +95,9 @@ export const JOB_SCHEDULES = {
   'pax8-sync': '28 4 * * *',
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
+  // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
+  // Ten minutes after the billing sweep so the two never hold the pool together.
+  'deliverable-sweep': '18 5 * * *',
   'tdsynnex-sftp-sync': '38 5 * * *',
   'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',
@@ -131,11 +134,35 @@ export const JOB_SCHEDULES = {
   // only minute 8 before this. Runs well after the day it summarises closed.
   'ai-agent-impact-rollup': '33 18 * * *',
   'ai-agent-op-evidence-retention': '48 18 * * *',
+  // #5306 — daily sweep of the MFA enrolment grace window: sends the "window
+  // opened" notice and the T-3 reminder to role-forced users who have never
+  // held a factor. Hour 19 was unused; minute 3 keeps the daily (mod 5) lane.
+  'mfa-enrollment-notice-sweep': '3 19 * * *',
   // #2787 item 4 — daily purge of removed devices past their org's
   // device_lifecycle retention window. Hour 8 in the daily (≡3 mod 5) lane
   // held 3/23/43; :13 was free. NOT minute 17: that lane is ≡2 (mod 5) and
   // `audit-drift-evaluator` already fires hourly at :17.
   'removed-device-purge': '13 8 * * *',
+  // #5329 (M365 tenant sync, spec §3.7) — daily prune of stale M365 snapshot
+  // rows (30 days past stale_since) and of Secure Score control_scores past
+  // 90 days, both via partial indexes so the sweep never rescans pruned
+  // history. Hour 19 was free in the daily tier; :03 keeps it in the
+  // daily = 3 (mod 5) lane.
+  'm365-sync-retention': '8 19 * * *',
+  // #5290 (Monitoring & automation unification, W03) — daily prune of CLOSED
+  // monitor_episodes rows past the 400-day retention window (open episodes are
+  // never pruned). Hour 20 was entirely free; :03 keeps it in the
+  // daily = 3 (mod 5) lane.
+  'monitor-episode-retention': '3 20 * * *',
+  // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
+  // the hosted drift report (listDomains vs local rows + outbox) and, on a
+  // `static` instance, the re-check that a domain the operator removed from
+  // EMAIL_DOMAINS_STATIC_ALLOWED stops being used. A slot rather than
+  // `repeat: { every: 24h }` — BullMQ anchors `every` to the epoch, so a 24 h
+  // repeatable fires at exactly 00:00:00.000 UTC alongside every other one (see
+  // this file's header). Hour 21 was entirely free; :03 keeps the daily = 3
+  // (mod 5) lane.
+  'sending-domains-daily': '3 21 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
@@ -158,6 +185,9 @@ export const JOB_SCHEDULES = {
   // :32 is one of the two remaining free minutes in the ≡2 (mod 5) lane.
   'ticket-attachment-pending-reaper': '32 * * * *',
   'user-risk-scan': '57 4,10,16,22 * * *',
+  // Execution plane W01 (spec §6.1) — hourly expiry sweep of ai_run_artifacts,
+  // blob then row. :2 is the last free minute in the ≡2 (mod 5) lane.
+  'ai-artifact-expiry-sweeper': '2 * * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -476,6 +477,95 @@ func TestRestoreFromSnapshot_NoFiles(t *testing.T) {
 	}
 	if len(result.Warnings) == 0 {
 		t.Error("expected warning about no matching files")
+	}
+}
+
+// TestRestoreFromSnapshot_VolatileSizeMismatch_WarnsNotFails proves #5581's
+// restore-side policy: a Volatile manifest entry (the source kept changing
+// while it was backed up) whose restored size disagrees with the manifest
+// is restored anyway, with an advisory warning, not counted as a failure.
+// An ordinary (non-Volatile) mismatch must still fail exactly as before —
+// covered in the same test to prove the fix didn't loosen the check
+// generally, only for entries explicitly marked Volatile.
+func TestRestoreFromSnapshot_VolatileSizeMismatch_WarnsNotFails(t *testing.T) {
+	provider := newMockProvider()
+	snapshotID := "test-snap-volatile"
+	prefix := path.Join(snapshotRootDir, snapshotID)
+
+	// The manifest declares 5 bytes (its last pre-upload measurement) but
+	// the stored object is actually 10 bytes (the file kept growing) —
+	// exactly the drift #5581 makes self-consistent at backup time and
+	// advisory at restore time via Volatile.
+	volatileBackupPath := path.Join(prefix, "files", "volatile.log.gz")
+	provider.files[volatileBackupPath] = []byte("0123456789")
+
+	// A same-shaped mismatch on a NON-volatile entry must still fail —
+	// proves this change didn't loosen size checking generally.
+	staleBackupPath := path.Join(prefix, "files", "stale.txt.gz")
+	provider.files[staleBackupPath] = []byte("0123456789")
+
+	snapshot := &Snapshot{
+		ID:        snapshotID,
+		Timestamp: time.Now().UTC(),
+		Files: []SnapshotFile{
+			{
+				SourcePath: "/data/volatile.log",
+				BackupPath: volatileBackupPath,
+				Size:       5,
+				ModTime:    time.Now().UTC(),
+				Volatile:   true,
+			},
+			{
+				SourcePath: "/data/stale.txt",
+				BackupPath: staleBackupPath,
+				Size:       5,
+				ModTime:    time.Now().UTC(),
+				// Volatile: false (default) — an ordinary manifest entry.
+			},
+		},
+	}
+	snapshot.Size = totalSize(snapshot.Files)
+	storeManifest(t, provider, snapshot)
+
+	cfg := RestoreConfig{
+		SnapshotID: snapshotID,
+		TargetPath: t.TempDir(),
+		WorkRoot:   t.TempDir(),
+	}
+	result, err := RestoreFromSnapshot(provider, cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.FilesFailed != 1 {
+		t.Errorf("FilesFailed = %d, want 1 (only the non-volatile mismatch)", result.FilesFailed)
+	}
+	if result.FilesRestored != 1 {
+		t.Errorf("FilesRestored = %d, want 1 (the volatile entry restores despite the mismatch)", result.FilesRestored)
+	}
+	if len(result.FailedFiles) != 1 || result.FailedFiles[0] != "/data/stale.txt" {
+		t.Errorf("FailedFiles = %v, want only /data/stale.txt", result.FailedFiles)
+	}
+
+	foundVolatileWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "/data/volatile.log") && strings.Contains(w, "volatile") {
+			foundVolatileWarning = true
+		}
+	}
+	if !foundVolatileWarning {
+		t.Errorf("expected an advisory warning mentioning the volatile file, got %v", result.Warnings)
+	}
+
+	// The volatile file's bytes on disk must be the ACTUAL restored bytes
+	// (10 bytes), not silently dropped.
+	restoredPath := filepath.Join(cfg.TargetPath, "data", "volatile.log")
+	data, err := os.ReadFile(restoredPath)
+	if err != nil {
+		t.Fatalf("expected the volatile file to be restored to disk: %v", err)
+	}
+	if len(data) != 10 {
+		t.Errorf("restored volatile file is %d bytes, want 10", len(data))
 	}
 }
 
@@ -1121,6 +1211,105 @@ func TestRestore_RecreatesSymlinksDirsAndModes(t *testing.T) {
 				t.Errorf("warnings = %v", res.Warnings)
 			}
 		}
+	}
+}
+
+// Review fix (#5493): a Placeholder dir entry — the backup walker's force-
+// recorded manifest entry for a directory that matched an exclude pattern
+// (e.g. /tmp under the whole-machine preset) — must NOT have its mode/owner
+// reapplied over an ALREADY-EXISTING directory. A customer may have
+// deliberately tightened permissions on an excluded directory (or simply
+// has real, live data under it) since the backup ran; an ordinary
+// backup_restore silently reverting that would be a real regression. A
+// non-placeholder dir entry (an ordinary empty directory whose mode really
+// was captured because it mattered) keeps the existing behavior: its mode
+// is always (re)applied, even over a pre-existing directory.
+func TestRestore_PlaceholderDirLeavesExistingDirectoryUntouched(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits and ownership")
+	}
+	provider, snapshotID := setupRestoreTestSnapshot(t, map[string]string{"keep.txt": "keep"})
+
+	manifestKey := filepath.ToSlash(filepath.Join("snapshots", snapshotID, "manifest.json"))
+	tmp := filepath.Join(t.TempDir(), "m.json")
+	if err := provider.Download(manifestKey, tmp); err != nil {
+		t.Fatal(err)
+	}
+	var snap Snapshot
+	data, _ := os.ReadFile(tmp)
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	const sticky1777 = os.ModeSticky | 0o777
+	snap.Files = append(snap.Files,
+		SnapshotFile{SourcePath: "/original/tmp", Kind: KindDir, ModeBits: uint32(sticky1777), Placeholder: true, ModTime: time.Now().UTC()},
+		SnapshotFile{SourcePath: "/original/var/empty", Kind: KindDir, ModeBits: 0o700, ModTime: time.Now().UTC()},
+	)
+	snap.FormatVersion = manifestFormatFidelity
+	out, _ := json.Marshal(snap)
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Upload(tmp, manifestKey); err != nil {
+		t.Fatal(err)
+	}
+
+	target := t.TempDir()
+	// Pre-create the placeholder's target directory with a mode the
+	// manifest does NOT carry, and a file inside it — simulating a
+	// customer who tightened /tmp's permissions (or just has real data
+	// there) since the backup ran.
+	existingTmp := filepath.Join(target, "original", "tmp")
+	if err := os.MkdirAll(existingTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(existingTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existingFile := filepath.Join(existingTmp, "existing.txt")
+	if err := os.WriteFile(existingFile, []byte("do not touch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create the NON-placeholder empty-dir target too, with a
+	// different mode than the manifest carries, to prove the fix is
+	// scoped to Placeholder entries only.
+	existingEmpty := filepath.Join(target, "original", "var", "empty")
+	if err := os.MkdirAll(existingEmpty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "completed" || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	// keep.txt (1) + tmp (1, placeholder, metadata skipped but still
+	// counted as restored) + var/empty (1) = 3.
+	if res.FilesRestored != 3 {
+		t.Errorf("FilesRestored = %d, want 3 (the placeholder dir still counts as restored)", res.FilesRestored)
+	}
+
+	fi, err := os.Stat(existingTmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm() != 0o700 {
+		t.Errorf("placeholder dir mode = %v, want unchanged 0700 (no sticky bit applied)", fi.Mode())
+	}
+	if data, err := os.ReadFile(existingFile); err != nil || string(data) != "do not touch" {
+		t.Errorf("existing file inside the placeholder dir was touched: data=%q err=%v", data, err)
+	}
+
+	// The non-placeholder empty-dir entry DOES get its mode (re)applied —
+	// existing behavior, unaffected by this fix.
+	fi, err = os.Stat(existingEmpty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		t.Errorf("non-placeholder empty dir mode = %v, want 0700 applied from the manifest", fi.Mode())
 	}
 }
 

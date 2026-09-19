@@ -5,18 +5,31 @@ const OTHER_ORG_ID = '99999999-9999-4999-8999-999999999999';
 const PARTNER_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
 const h = vi.hoisted(() => ({
-  inserts: [] as Array<Record<string, unknown>>
+  inserts: [] as Array<Record<string, unknown>>,
+  cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>
 }));
 
-vi.mock('../db', () => ({
-  db: {
-    insert: vi.fn(() => ({
-      values: vi.fn((values: Record<string, unknown>) => {
-        h.inserts.push(values);
-        return { returning: vi.fn(() => Promise.resolve([{ id: 'new-script', ...values }])) };
-      })
-    }))
-  }
+vi.mock('../db', () => {
+  const insert = vi.fn(() => ({
+    values: vi.fn((values: Record<string, unknown>) => {
+      h.inserts.push(values);
+      return { returning: vi.fn(() => Promise.resolve([{ id: 'new-script', ...values }])) };
+    })
+  }));
+  const tx = { insert };
+  return {
+    db: {
+      insert,
+      transaction: vi.fn((fn: (t: typeof tx) => unknown) => fn(tx))
+    }
+  };
+});
+
+vi.mock('./scriptVersions', () => ({
+  cutScriptVersion: vi.fn((_tx: unknown, args: { scriptId: string; provenance: Record<string, unknown> }) => {
+    h.cuts.push(args);
+    return Promise.resolve({ id: 'version-row', scriptId: args.scriptId, version: 1 });
+  })
 }));
 
 import {
@@ -51,6 +64,7 @@ const input = {
 beforeEach(() => {
   vi.clearAllMocks();
   h.inserts = [];
+  h.cuts = [];
 });
 
 describe('resolveScriptCreateScope', () => {
@@ -131,5 +145,64 @@ describe('insertScriptRow', () => {
     );
     expect(h.inserts[0]!.isSystem).toBe(false);
     expect(h.inserts[0]!.orgId).toBe(ORG_ID);
+  });
+});
+
+describe('insertScriptRow cuts version 1', () => {
+  const USER = '55555555-5555-4555-8555-555555555555';
+  const orgAuth = { scope: 'organization', user: { id: USER } } as Parameters<typeof insertScriptRow>[0];
+
+  it('inserts the script at version 0 so cutScriptVersion moves it to 1', async () => {
+    await insertScriptRow(orgAuth, { orgId: ORG_ID, partnerId: PARTNER_ID }, input);
+    expect(h.inserts[0]).toMatchObject({ version: 0 });
+  });
+
+  it('cuts exactly one version for the new script', async () => {
+    const created = await insertScriptRow(orgAuth, { orgId: ORG_ID, partnerId: PARTNER_ID }, input);
+    expect(h.cuts).toHaveLength(1);
+    expect(h.cuts[0]!.scriptId).toBe(created.id);
+    expect(h.cuts[0]!.provenance).toMatchObject({ origin: 'human', createdBy: USER });
+  });
+
+  it('returns the script at version 1, not the raw version-0 insert', async () => {
+    const created = await insertScriptRow(orgAuth, { orgId: ORG_ID, partnerId: PARTNER_ID }, input);
+    expect(created.version).toBe(1);
+  });
+
+  it('stamps origin=system for a system-scope isSystem insert', async () => {
+    await insertScriptRow(
+      { scope: 'system', user: { id: USER } } as Parameters<typeof insertScriptRow>[0],
+      { orgId: null, partnerId: null },
+      input,
+      { requestedIsSystem: true }
+    );
+    expect(h.cuts[0]!.provenance).toMatchObject({ origin: 'system' });
+  });
+
+  it('honours an explicit origin override from the bundle importer', async () => {
+    await insertScriptRow(orgAuth, { orgId: ORG_ID, partnerId: PARTNER_ID }, input, { origin: 'imported' });
+    expect(h.cuts[0]!.provenance).toMatchObject({ origin: 'imported' });
+  });
+
+  // Roadmap amendment: W03's promote passes full proposal provenance here
+  // instead of cutting a second version on top of the create.
+  it('forwards an explicit provenance object verbatim', async () => {
+    const reviewedAt = new Date('2026-09-11T10:00:00Z');
+    await insertScriptRow(orgAuth, { orgId: ORG_ID, partnerId: PARTNER_ID }, input, {
+      provenance: {
+        origin: 'ai_proposal',
+        proposalId: '33333333-3333-4333-8333-333333333333',
+        reviewedAt,
+        approvalMethod: 'four_eyes',
+        createdBy: USER
+      }
+    });
+    expect(h.cuts[0]!.provenance).toMatchObject({
+      origin: 'ai_proposal',
+      proposalId: '33333333-3333-4333-8333-333333333333',
+      reviewedAt,
+      approvalMethod: 'four_eyes',
+      createdBy: USER
+    });
   });
 });

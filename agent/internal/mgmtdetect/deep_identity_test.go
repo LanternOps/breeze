@@ -115,3 +115,32 @@ NoSpace:AtAll
 		t.Errorf("expected azure_ad, got %s", id.JoinType)
 	}
 }
+
+func TestIdentityStatusDetectionSupported(t *testing.T) {
+	tests := []struct {
+		name   string
+		status IdentityStatus
+		want   bool
+	}{
+		{"windows dsregcmd", IdentityStatus{Source: "dsregcmd", JoinType: JoinTypeAzureAD}, true},
+		{"windows registry fallback", IdentityStatus{Source: "registry", JoinType: JoinTypeNone}, true},
+		{"darwin", IdentityStatus{Source: "darwin", JoinType: JoinTypeOnPremAD}, true},
+		{"genuine not joined", IdentityStatus{Source: "dsregcmd", JoinType: JoinTypeNone}, true},
+		{"unsupported platform stub", IdentityStatus{Source: IdentitySourceUnsupported, JoinType: JoinTypeNone}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.status.DetectionSupported(); got != tt.want {
+				t.Errorf("DetectionSupported() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// The stub must keep reporting the unsupported sentinel: the UI relies on it to
+// avoid presenting never-checked join flags as a real "Not Joined" result (#5626).
+func TestCollectIdentityStatusUnsupportedSentinel(t *testing.T) {
+	if IdentitySourceUnsupported != "unsupported" {
+		t.Fatalf("wire value changed: got %q, want %q", IdentitySourceUnsupported, "unsupported")
+	}
+}

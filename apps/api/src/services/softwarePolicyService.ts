@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { captureException } from './sentry';
 import {
@@ -27,13 +27,45 @@ export type SoftwareInventoryRow = {
 export type SoftwarePolicyComplianceStatus = 'compliant' | 'violation' | 'unknown';
 export type SoftwarePolicyRemediationStatus = 'none' | 'pending' | 'in_progress' | 'completed' | 'failed';
 
+/**
+ * Feature #5505 (contract D1): the install verb's own status axis. It is a
+ * SUPERSET of SoftwarePolicyRemediationStatus, adding two install-specific
+ * terminal states:
+ *  - 'gave_up'  — the consecutive-attempt counter hit
+ *                 SOFTWARE_INSTALL_REMEDIATION_MAX_ATTEMPTS. This is the
+ *                 install-loop terminator (spec Risks §1); a policy whose rule
+ *                 never matches what the installer registers would otherwise
+ *                 reinstall every 15 minutes forever.
+ *  - 'skipped'  — nothing was attempted and nothing is wrong with the device:
+ *                 the rule carries no catalogId (so there is nothing to
+ *                 install), the per-pass cap was reached, or (W03) the
+ *                 catalog item has no install method for this device's OS.
+ * Deliberately NOT a DB enum — remediation_status is a bare varchar(20) too.
+ */
+export type SoftwarePolicyInstallRemediationStatus =
+  | 'none'
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'gave_up'
+  | 'skipped';
+
 export type SoftwareComplianceUpsertInput = {
   deviceId: string;
   policyId: string;
   status: SoftwarePolicyComplianceStatus;
   violations: SoftwarePolicyViolation[];
   checkedAt?: Date;
+  /**
+   * OPTIONAL ON PURPOSE, for all three of these. `undefined` means "this pass
+   * has nothing to say about that column" and the generated statement must not
+   * name it at all — see upsertSoftwareComplianceStatuses. Passing a value when
+   * you mean "leave it alone" silently overwrites a live status.
+   */
   remediationStatus?: SoftwarePolicyRemediationStatus;
+  installRemediationStatus?: SoftwarePolicyInstallRemediationStatus;
+  installRemediationAttempts?: number;
 };
 
 type DeviceSoftwareInventoryRow = SoftwareInventoryRow & {
@@ -146,17 +178,31 @@ export function withStableViolationTimestamps(
 }
 
 /**
- * Uninstall-arming gate (#3543, incident #3381).
+ * Remediation-arming gate (#3543, incident #3381; verb-aware since #5505).
  *
- * A policy only authorises uninstall commands when all three are true:
- * `mode !== 'audit'`, `enforceMode`, and `remediationOptions.autoUninstall`.
+ * A policy only authorises remediation commands for a given verb when all three
+ * are true: `mode !== 'audit'`, `enforceMode`, and that verb's own flag —
+ * `remediationOptions.autoUninstall` for `'uninstall'`,
+ * `remediationOptions.autoInstall` for `'install'`. The two flags are
+ * deliberately independent: a policy armed to REMOVE unauthorised software is
+ * not thereby armed to INSTALL anything.
+ *
  * Until #3543 the gate lived ONLY inline in softwareComplianceWorker.ts, so
  * every other path that reached `scheduleSoftwareRemediation` (the AI tool, the
  * manual route, a replayed BullMQ job) could queue mass uninstalls against a
  * policy whose owner had deliberately left enforcement off. This is the single
  * shared definition — callers must use it rather than re-deriving the check.
+ *
+ * `verb` is REQUIRED and has no default: an unarmed policy must never be
+ * mistaken for an armed one because a caller forgot an argument.
  */
-export type SoftwarePolicyUnarmedReason = 'audit_mode' | 'enforce_mode_off' | 'auto_uninstall_off';
+export type PolicyRemediationVerb = 'uninstall' | 'install';
+
+export type SoftwarePolicyUnarmedReason =
+  | 'audit_mode'
+  | 'enforce_mode_off'
+  | 'auto_uninstall_off'
+  | 'auto_install_off';
 
 export type SoftwarePolicyArmingState =
   | { armed: true }
@@ -174,14 +220,21 @@ export function readSoftwarePolicyAutoUninstall(raw: unknown): boolean {
   return (raw as Record<string, unknown>).autoUninstall === true;
 }
 
+/** `autoInstall` is opt-in: absent or non-object options mean NOT armed. */
+export function readSoftwarePolicyAutoInstall(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  return (raw as Record<string, unknown>).autoInstall === true;
+}
+
 export function evaluateSoftwarePolicyArming(
-  policy: SoftwarePolicyArmingInput
+  policy: SoftwarePolicyArmingInput,
+  verb: PolicyRemediationVerb
 ): SoftwarePolicyArmingState {
   if (policy.mode === 'audit') {
     return {
       armed: false,
       reason: 'audit_mode',
-      message: 'Policy is audit-only (mode="audit"); it cannot uninstall software.',
+      message: `Policy is audit-only (mode="audit"); it cannot ${verb} software.`,
     };
   }
   if (policy.enforceMode !== true) {
@@ -189,9 +242,21 @@ export function evaluateSoftwarePolicyArming(
       armed: false,
       reason: 'enforce_mode_off',
       message:
-        'Policy enforcement is off (enforceMode=false), so it is detect-only and must not uninstall software. '
+        `Policy enforcement is off (enforceMode=false), so it is detect-only and must not ${verb} software. `
         + 'An administrator has to enable enforcement on the policy first.',
     };
+  }
+  if (verb === 'install') {
+    if (!readSoftwarePolicyAutoInstall(policy.remediationOptions)) {
+      return {
+        armed: false,
+        reason: 'auto_install_off',
+        message:
+          'Policy remediation is not armed (remediationOptions.autoInstall is not true), so it must not install software. '
+          + 'An administrator has to enable automatic install on the policy first.',
+      };
+    }
+    return { armed: true };
   }
   if (!readSoftwarePolicyAutoUninstall(policy.remediationOptions)) {
     return {
@@ -204,6 +269,47 @@ export function evaluateSoftwarePolicyArming(
   }
   return { armed: true };
 }
+
+/**
+ * Install-remediation audit actions (#5505 D6).
+ *
+ * `software_policy_audit.action` is a bare `varchar(50)`
+ * (`db/schema/softwarePolicies.ts:142`) written as `action: string` — no enum,
+ * no pre-existing const set — so this object IS the registry. Every emitter
+ * imports it; no install emit site writes a string literal.
+ *
+ * Install actions never reuse an uninstall action value: an audit reader must
+ * never have to infer which verb an event describes. The existing uninstall
+ * action strings are deliberately NOT refactored into a matching object here —
+ * that is a separate, unrelated change.
+ */
+export const SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS = {
+  /** An install was queued for a (policy, device). */
+  queued: 'install_queued',
+  /** The queued install reported success. */
+  succeeded: 'install_succeeded',
+  /** The queued install reported failure (one attempt). */
+  failed: 'install_failed',
+  /** Consecutive attempts exhausted; the install loop guard stopped retrying. */
+  gaveUp: 'install_gave_up',
+  /**
+   * The pass ran to completion and created NO deployment, with nothing having
+   * errored — every candidate was skipped (unreachable catalog item, no
+   * install target for the device's OS, or a payload id the policy no longer
+   * reports missing).
+   *
+   * Added by #5505 W03. Without it the emit site had to fall back to `queued`
+   * for this outcome, which put "an install was queued for this device" in the
+   * durable audit trail when nothing was: `action` is the dimension a
+   * technician filters on, and the contradiction was visible only by reading
+   * details.deploymentsCreated. The reason for each skip travels in
+   * details.skipped.
+   */
+  skipped: 'install_skipped',
+} as const;
+
+export type SoftwarePolicyInstallAuditAction =
+  (typeof SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS)[keyof typeof SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS];
 
 export function normalizeSoftwarePolicyRules(rules: unknown): SoftwarePolicyRulesDefinition {
   if (!rules || typeof rules !== 'object') {
@@ -339,6 +445,11 @@ export function evaluateSoftwareInventory(
             name: rule.name,
             minVersion: rule.minVersion,
             maxVersion: rule.maxVersion,
+            // #5505 D9: the install path resolves the catalog item from here.
+            // `reason` mirrors the audit-mode branch below, which has always
+            // carried it — a `missing` violation dropping it was an oversight.
+            catalogId: rule.catalogId,
+            reason: rule.reason,
           },
           severity: 'high',
           detectedAt,
@@ -452,6 +563,24 @@ export async function evaluateSoftwarePolicyForDevice(
   return evaluateSoftwarePolicyAgainstInventory(policy, inventory);
 }
 
+/**
+ * Optional columns of software_compliance_status, keyed by their
+ * SoftwareComplianceUpsertInput field name. Values are FACTORIES, not shared
+ * SQL objects, so each generated statement gets its own fragment.
+ */
+type ComplianceUpsertOptionalKey = keyof SoftwareComplianceUpsertInput
+  & ('remediationStatus' | 'installRemediationStatus' | 'installRemediationAttempts');
+
+const COMPLIANCE_UPSERT_OPTIONAL_COLUMNS: Record<ComplianceUpsertOptionalKey, () => SQL> = {
+  remediationStatus: () => sql`excluded.remediation_status`,
+  installRemediationStatus: () => sql`excluded.install_remediation_status`,
+  installRemediationAttempts: () => sql`excluded.install_remediation_attempts`,
+};
+
+const COMPLIANCE_UPSERT_OPTIONAL_KEYS = Object.keys(
+  COMPLIANCE_UPSERT_OPTIONAL_COLUMNS
+) as ComplianceUpsertOptionalKey[];
+
 export async function upsertSoftwareComplianceStatuses(
   inputs: SoftwareComplianceUpsertInput[]
 ): Promise<void> {
@@ -465,51 +594,63 @@ export async function upsertSoftwareComplianceStatuses(
   ));
   if (normalized.length === 0) return;
 
-  const withRemediationStatus = normalized.filter((input) => input.remediationStatus !== undefined);
-  const withoutRemediationStatus = normalized.filter((input) => input.remediationStatus === undefined);
-
-  for (const chunk of chunkArray(withoutRemediationStatus)) {
-    if (chunk.length === 0) continue;
-    await db
-      .insert(softwareComplianceStatus)
-      .values(chunk.map((input) => ({
-        deviceId: input.deviceId,
-        policyId: input.policyId,
-        status: input.status,
-        violations: input.violations,
-        lastChecked: input.checkedAt ?? new Date(),
-      })))
-      .onConflictDoUpdate({
-        target: [softwareComplianceStatus.deviceId, softwareComplianceStatus.policyId],
-        set: {
-          status: sql`excluded.status`,
-          violations: sql`excluded.violations`,
-          lastChecked: sql`excluded.last_checked`,
-        },
-      });
+  // Group by WHICH optional columns each input actually carries.
+  //
+  // A bulk onConflictDoUpdate shares ONE `set` clause across its whole chunk,
+  // and `excluded.<col>` reads the value of the row this statement tried to
+  // insert. So an input that says nothing about a column must not travel in the
+  // same statement as one that does — otherwise the silent input's insert-time
+  // DEFAULT ('none' / 0) is written over a live value. That is exactly why the
+  // original implementation split on "was remediationStatus provided"; this
+  // generalises the same split to every optional column and is byte-equivalent
+  // for callers that pass only remediationStatus (they still produce the same
+  // two groups, with the same set clauses, as before).
+  //
+  // The membership test is `!== undefined`, NOT truthiness:
+  // installRemediationAttempts: 0 is the counter RESET and must be written.
+  const byShape = new Map<string, SoftwareComplianceUpsertInput[]>();
+  for (const input of normalized) {
+    const presentKeys = COMPLIANCE_UPSERT_OPTIONAL_KEYS.filter((key) => input[key] !== undefined);
+    const shapeKey = presentKeys.join('|');
+    const bucket = byShape.get(shapeKey);
+    if (bucket) bucket.push(input);
+    else byShape.set(shapeKey, [input]);
   }
 
-  for (const chunk of chunkArray(withRemediationStatus)) {
-    if (chunk.length === 0) continue;
-    await db
-      .insert(softwareComplianceStatus)
-      .values(chunk.map((input) => ({
-        deviceId: input.deviceId,
-        policyId: input.policyId,
-        status: input.status,
-        violations: input.violations,
-        lastChecked: input.checkedAt ?? new Date(),
-        remediationStatus: input.remediationStatus,
-      })))
-      .onConflictDoUpdate({
-        target: [softwareComplianceStatus.deviceId, softwareComplianceStatus.policyId],
-        set: {
-          status: sql`excluded.status`,
-          violations: sql`excluded.violations`,
-          lastChecked: sql`excluded.last_checked`,
-          remediationStatus: sql`excluded.remediation_status`,
-        },
-      });
+  for (const [shapeKey, group] of byShape) {
+    const optionalKeys = shapeKey.length > 0
+      ? (shapeKey.split('|') as ComplianceUpsertOptionalKey[])
+      : [];
+
+    for (const chunk of chunkArray(group)) {
+      if (chunk.length === 0) continue;
+      await db
+        .insert(softwareComplianceStatus)
+        .values(chunk.map((input) => {
+          const row: Record<string, unknown> = {
+            deviceId: input.deviceId,
+            policyId: input.policyId,
+            status: input.status,
+            violations: input.violations,
+            lastChecked: input.checkedAt ?? new Date(),
+          };
+          for (const key of optionalKeys) {
+            row[key] = input[key];
+          }
+          return row as typeof softwareComplianceStatus.$inferInsert;
+        }))
+        .onConflictDoUpdate({
+          target: [softwareComplianceStatus.deviceId, softwareComplianceStatus.policyId],
+          set: {
+            status: sql`excluded.status`,
+            violations: sql`excluded.violations`,
+            lastChecked: sql`excluded.last_checked`,
+            ...Object.fromEntries(
+              optionalKeys.map((key) => [key, COMPLIANCE_UPSERT_OPTIONAL_COLUMNS[key]()])
+            ),
+          },
+        });
+    }
   }
 }
 

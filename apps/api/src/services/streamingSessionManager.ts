@@ -16,11 +16,15 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
-import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
+import { aiSessions, aiMessages } from '../db/schema';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
+// TYPE-ONLY, and it must stay that way: chatRunBridge.ts imports this module at
+// runtime for `streamingSessionManager.get`, so a value import back would be a
+// real runtime cycle. TypeScript erases this one.
+import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import {
   recordUsageFromSdkResult,
@@ -40,6 +44,10 @@ import { isRecognizedSelfHostSignal } from '../config/env';
 import { resolveWireModel, type ResolvedLlmEndpoint, type UsableLlmConfig } from './llm/llmConfigResolver';
 import { getLlmEgressProxy } from './llm/llmEgressProxy';
 import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
+import { markAiBudgetReservationIndeterminate } from './aiBudgetReservations';
+import { getEffectiveAiBudget } from './effectiveSettings';
+import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
+import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -482,6 +490,8 @@ export interface ActiveSession {
    * partner is actually charged and must be ignored (#3922 W2 Task 2.4).
    */
   readonly catalogPricing?: CatalogPricingSnapshot;
+  /** Durable org-budget reservation for the current provider turn. */
+  budgetReservationId?: string;
   /**
    * Releases this session's CONNECT-proxy grant. Set for catalog sessions only;
    * invoked by `remove()` so a torn-down, rotated or evicted session stops
@@ -562,7 +572,7 @@ export interface ActiveSession {
   approvalWaitAbort: AbortController | null;
   /** Count of approval waits currently blocked inside preToolUse. */
   pendingApprovalWaits: number;
-  /** Approval mode for this session (loaded from org's aiBudgets) */
+  /** Approval mode for this session (effective: partner override -> org row -> per_step) */
   approvalMode: AiApprovalMode;
   /** Optional MCP allowlist for restricted sessions such as helper chat. */
   allowedTools?: string[];
@@ -576,6 +586,17 @@ export interface ActiveSession {
   currentPlanStepIndex: number;
   /** Resolver for the plan approval promise (in-memory, no DB polling) */
   planApprovalResolver: ((approved: boolean) => void) | null;
+  /**
+   * Results of `analysis` runs associated with this session that have
+   * finished but whose summary has not yet been shown to the model
+   * (execution-plane spec §5.5). Chat-initiated launch is currently disabled
+   * (#6086), so nothing populates this from a live chat turn today; the field
+   * is retained for when delegated authorization lands. Filled by
+   * `services/workspace/chatRunBridge.ts` out of band; drained by
+   * `POST /ai/sessions/:id/messages` and prepended to the next user message.
+   * Optional so existing `ActiveSession` fixtures compile unchanged.
+   */
+  pendingRunResults?: PendingRunResult[];
   // ── AI for Office (client sessions) — set by routes/clientAi/sessions.ts ──
   /** Client org policy writeMode, refreshed on every client message; the
    *  client tool handler rejects mutating tools when 'readonly'. */
@@ -586,6 +607,15 @@ export interface ActiveSession {
   /** Extra per-turn usage recorder invoked in the result case alongside
    *  recordUsageFromSdkResult (client sessions: per-user client_ai_usage buckets). */
   recordExtraUsage?: (usage: { inputTokens: number; outputTokens: number; costCents: number }) => Promise<void>;
+  /**
+   * Tenant (BYO MCP) tools this session's `toolAuth` could see at session
+   * CREATION time, keyed by qualified name (e.g. `hudu__get_asset`) — Task
+   * A10. `createSessionPreToolUse` (aiAgentSdk.ts) consults this to gate a
+   * tenant tool call the same way `TOOL_TIERS` gates a core one. Empty for
+   * every session a `mcpServerFactory` builds its own MCP server for
+   * (script builder, client AI) — those surfaces don't resolve tenant tools.
+   */
+  tenantTools: ReadonlyMap<string, TenantToolDescriptor>;
 }
 
 /**
@@ -615,6 +645,21 @@ export interface ActiveSession {
  * in practice (`getSession` pre-filters by `auth.orgCondition`), but if auth
  * ever regresses we must fail loudly rather than run tools cross-org.
  */
+/**
+ * Stamp the interactive-chat AI origin onto a request AuthContext (#5022 W01).
+ *
+ * `breezeSessionId` is the persisted `ai_sessions.id` — not an MCP transport
+ * session id — so the resulting pointer is resolvable by the device-page chip.
+ * Returns the same reference when the origin is already correct, so a caller
+ * that identity-compares is not surprised.
+ */
+export function withChatAiOrigin(auth: AuthContext, breezeSessionId: string): AuthContext {
+  if (auth.aiOrigin?.kind === 'ai_assistant' && auth.aiOrigin.sessionId === breezeSessionId) {
+    return auth;
+  }
+  return { ...auth, aiOrigin: { kind: 'ai_assistant', sessionId: breezeSessionId } };
+}
+
 export function buildDeviceBoundSessionAuth(auth: AuthContext, sessionOrgId: string): AuthContext {
   if (!auth.canAccessOrg(sessionOrgId)) {
     throw new Error('Device-bound AI session org is not accessible to the caller');
@@ -636,6 +681,34 @@ export function buildDeviceBoundSessionAuth(auth: AuthContext, sessionOrgId: str
 // ============================================
 // StreamingSessionManager (singleton)
 // ============================================
+
+const APPROVAL_MODES: readonly AiApprovalMode[] = ['per_step', 'action_plan', 'auto_approve', 'hybrid_plan'];
+
+/**
+ * Effective approval mode for a session's org (#5593).
+ *
+ * Resolves through `getEffectiveAiBudget` — partner JSONB `aiBudgets`
+ * override, then the org's `ai_budgets` row, then `per_step` — instead of
+ * reading the org row directly, which silently ignored a partner-wide default.
+ * The partner override is free-form JSON, so an unrecognized value is rejected
+ * rather than handed to the approval gate. Any failure keeps the previous
+ * fail-safe behaviour: the strictest mode, `per_step`.
+ */
+async function loadApprovalMode(orgId: string): Promise<AiApprovalMode> {
+  try {
+    const budget = await getEffectiveAiBudget(orgId);
+    const mode = budget.approvalMode as AiApprovalMode;
+    if (APPROVAL_MODES.includes(mode)) return mode;
+    console.warn(
+      '[StreamingSessionManager] Unrecognized approval mode, defaulting to per_step:',
+      budget.approvalMode,
+    );
+  } catch (err) {
+    captureException(err);
+    console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
+  }
+  return 'per_step';
+}
 
 export class StreamingSessionManager {
   private sessions = new Map<string, ActiveSession>();
@@ -709,7 +782,7 @@ export class StreamingSessionManager {
       onPostToolUse: ReturnType<typeof createSessionPostToolUse>,
       getSession: () => ActiveSession,
     ) => { server: McpSdkServerConfigWithInstance; name: string },
-    options?: { injectApprovalModeInstructions?: boolean },
+    options?: { injectApprovalModeInstructions?: boolean; budgetReservationId?: string },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
       ip: requestContext ? getTrustedClientIpOrUndefined(requestContext) : undefined,
@@ -753,12 +826,34 @@ export class StreamingSessionManager {
         // `existing.orgId` snapshot captured at session creation — this is the
         // current DB value, so it survives the device being moved to a
         // different org mid-session.
-        reusable.auth = auth;
+        // #5022 W01: re-mint the chat origin on the REFRESHED auth. Stamping
+        // only at creation loses the origin on every follow-up message, since
+        // the request auth handed in here is built fresh per request.
+        const refreshedAuthWithOrigin = withChatAiOrigin(auth, breezeSessionId);
+        reusable.auth = refreshedAuthWithOrigin;
         reusable.toolAuth = reusable.deviceId
-          ? buildDeviceBoundSessionAuth(auth, dbSession.orgId)
-          : auth;
+          ? buildDeviceBoundSessionAuth(refreshedAuthWithOrigin, dbSession.orgId)
+          : refreshedAuthWithOrigin;
         reusable.auditSnapshot = snapshot;
         reusable.allowedTools = allowedTools;
+        // Re-resolve the approval mode so a settings change applies to the NEXT
+        // message rather than only to a brand-new in-memory session (#5593).
+        // Skipped while a turn is in flight: the route answers a concurrent
+        // message with 409, and swapping the mode mid-turn would change the
+        // gate the running turn already started under. The state is re-checked
+        // AFTER the await as well — a concurrent request can transition the
+        // session to `processing` while this lookup is outstanding, and the
+        // assignment must not land behind a turn that already started.
+        if (reusable.state !== 'processing') {
+          const refreshedApprovalMode = await loadApprovalMode(dbSession.orgId);
+          // Re-read through the map rather than the narrowed `reusable` alias:
+          // a concurrent request may have started a turn — or evicted the
+          // session entirely — while this lookup was outstanding.
+          const stateAfterLookup = this.sessions.get(breezeSessionId)?.state;
+          if (stateAfterLookup && stateAfterLookup !== 'processing') {
+            reusable.approvalMode = refreshedApprovalMode;
+          }
+        }
         reusable.lastActivityAt = Date.now();
         return reusable;
       }
@@ -773,21 +868,7 @@ export class StreamingSessionManager {
       inputController.setSdkSessionId(dbSession.sdkSessionId);
     }
 
-    // Load org's approval mode from aiBudgets
-    let approvalMode: AiApprovalMode = 'per_step';
-    try {
-      const [budget] = await db
-        .select({ approvalMode: aiBudgets.approvalMode })
-        .from(aiBudgets)
-        .where(eq(aiBudgets.orgId, dbSession.orgId))
-        .limit(1);
-      if (budget?.approvalMode) {
-        approvalMode = budget.approvalMode as AiApprovalMode;
-      }
-    } catch (err) {
-      captureException(err);
-      console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
-    }
+    const approvalMode = await loadApprovalMode(dbSession.orgId);
 
     const catalogEndpoint = catalogEndpointOf(resolved);
 
@@ -796,7 +877,41 @@ export class StreamingSessionManager {
     // is narrowed to the session org; `auth` stays raw so RBAC, rate limits,
     // and audit attribution keep resolving the login identity/role.
     const deviceId = dbSession.deviceId ?? null;
-    const toolAuth = deviceId ? buildDeviceBoundSessionAuth(auth, dbSession.orgId) : auth;
+    // #5022 W01: the AI-surface mint site for interactive chat. `breezeSessionId`
+    // IS the persisted `ai_sessions.id`, so it is the id a device-page chip can
+    // resolve back to a conversation. Applied to BOTH `auth` and `toolAuth`:
+    // the act/verify bypass lanes read the carrier off `auth`, while every
+    // MCP tool handler reads `toolAuth`.
+    const authWithOrigin = withChatAiOrigin(auth, breezeSessionId);
+    const toolAuth = deviceId
+      ? buildDeviceBoundSessionAuth(authWithOrigin, dbSession.orgId)
+      : authWithOrigin;
+
+    // Tenant (BYO MCP) tools — Task A10. Script-builder / client-AI sessions
+    // supply their own `mcpServerFactory` and keep their own (non-Breeze)
+    // server, so they never resolve tenant tools.
+    //
+    // A throw here (a source unreachable, a decrypt failure, a Redis blip in
+    // the resolver's own guardrail checks) must not fail the WHOLE chat turn
+    // — the MCP surface deliberately degrades per-source (see
+    // toolSources/discovery.ts), so a session simply loses its tenant tools
+    // for this turn rather than erroring out entirely. Mirrors
+    // `loadApprovalMode`'s degrade-on-failure shape above.
+    let tenantDescriptors: TenantToolDescriptor[] = [];
+    if (!mcpServerFactory) {
+      try {
+        // `dbSession.orgId` is this session's pinned, already-access-checked
+        // org (see the device-bound comment above) — passed as `targetOrgId`
+        // so a partner-scoped tech's session can resolve that org's own tool
+        // sources too, not just partner-wide ones (#6023). A no-op for
+        // org-scoped `toolAuth`, which ignores `targetOrgId`.
+        tenantDescriptors = await resolveTenantTools(toolAuth, dbSession.orgId);
+      } catch (err) {
+        captureException(err);
+        console.error('[StreamingSessionManager] Failed to resolve tenant tools, degrading to none:', err);
+      }
+    }
+    const tenantToolsByName = new Map(tenantDescriptors.map((d) => [d.qualifiedName, d]));
 
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
@@ -818,6 +933,7 @@ export class StreamingSessionManager {
       llmConfigSnapshot: llmConfigSnapshot(resolved),
       // The pricing for the model THIS session runs, not the partner default's.
       catalogPricing: wire.catalogPricing,
+      budgetReservationId: options?.budgetReservationId,
       revokeEgressGrant: undefined,
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
@@ -827,7 +943,7 @@ export class StreamingSessionManager {
       state: 'initializing',
       lastActivityAt: now,
       createdAt: now,
-      auth,
+      auth: authWithOrigin,
       toolAuth,
       auditSnapshot: snapshot,
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
@@ -848,6 +964,8 @@ export class StreamingSessionManager {
       approvedPlanSteps: new Map(),
       currentPlanStepIndex: 0,
       planApprovalResolver: null,
+      pendingRunResults: [],
+      tenantTools: tenantToolsByName,
     };
 
     // Create session-scoped callbacks (close over session object)
@@ -863,7 +981,23 @@ export class StreamingSessionManager {
       mcpServer = custom.server;
       mcpServerName = custom.name;
     } else {
-      mcpServer = createBreezeMcpServer(() => session.toolAuth, preToolUse, postToolUse, () => session);
+      mcpServer = createBreezeMcpServer(
+        () => session.toolAuth,
+        preToolUse,
+        postToolUse,
+        () => session,
+        // `session.orgId` is set ONCE at session creation and never refreshed
+        // on reuse (unlike `session.toolAuth`, which the reuse branch above
+        // re-narrows to the CURRENT device org every turn, #3087). Since
+        // `execute.ts` now threads this org through the dispatch-time
+        // OWNER-predicate reload (#6023), a stale `session.orgId` would let a
+        // device-bound session keep dispatching a tool under its OLD org's
+        // credentials after the device moved — read `session.toolAuth.orgId`
+        // (fresh every turn for a device-bound session) and fall back to
+        // `session.orgId` only when `toolAuth` carries none (non-device
+        // sessions, whose org doesn't drift the same way).
+        buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
+      );
     }
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
@@ -1004,7 +1138,7 @@ export class StreamingSessionManager {
             maxTurns,
             maxBudgetUsd,
             tools: [],
-            allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
+            allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors)],
             mcpServers: { [mcpServerName]: mcpServer },
             includePartialMessages: true,
             abortController,
@@ -1483,8 +1617,10 @@ export class StreamingSessionManager {
                     // SDK's own total_cost_usd reflects Anthropic list pricing
                     // for a request that never went to Anthropic.
                     session.catalogPricing,
+                    session.budgetReservationId,
                   ),
                 );
+                session.budgetReservationId = undefined;
               } catch (err) {
                 captureException(err);
                 console.error('[StreamingSessionManager] Failed to record SDK usage:', err);
@@ -1513,8 +1649,10 @@ export class StreamingSessionManager {
                     // SDK's own total_cost_usd reflects Anthropic list pricing
                     // for a request that never went to Anthropic.
                     session.catalogPricing,
+                    session.budgetReservationId,
                   ),
                 );
+                session.budgetReservationId = undefined;
               } catch (err) {
                 captureException(err);
                 console.error('[StreamingSessionManager] Failed to record SDK usage on error:', err);
@@ -1615,8 +1753,10 @@ export class StreamingSessionManager {
               },
               session.llmConfigSnapshot.source === 'partner' ? 'partner_key' : 'platform',
               session.catalogPricing,
+              session.budgetReservationId,
             ),
           );
+          session.budgetReservationId = undefined;
         } catch (err) {
           captureException(err);
           console.error('[StreamingSessionManager] Failed to record abandoned-turn usage:', err);
@@ -1649,6 +1789,22 @@ export class StreamingSessionManager {
             captureException(err);
             console.error('[StreamingSessionManager] recordExtraUsage failed for abandoned turn:', err);
           }
+        }
+      }
+
+      if (session.budgetReservationId) {
+        try {
+          // N12: no context wrap. markAiBudgetReservationIndeterminate opens its
+          // own short SYSTEM transaction (runOutsideDbContext +
+          // withSystemDbAccessContext), so an org context opened here is exited
+          // immediately and only costs a pooled connection for the round trip.
+          await markAiBudgetReservationIndeterminate({
+            orgId: session.orgId,
+            reservationId: session.budgetReservationId,
+          });
+        } catch (err) {
+          captureException(err);
+          console.error('[StreamingSessionManager] Failed to retain indeterminate budget reservation:', err);
         }
       }
 

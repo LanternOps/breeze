@@ -285,11 +285,13 @@ var serviceInstallCmd = &cobra.Command{
 			if started {
 				agentStateLine = "The agent service is installed and running."
 			}
+			serverURL := persistedServerURLForInstall()
 			err := bootstrapWatchdog(bootstrapOptions{
 				agentPath: exePath,
 				version:   version,
 				goos:      runtime.GOOS,
 				goarch:    runtime.GOARCH,
+				serverURL: serverURL,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr,
@@ -300,7 +302,7 @@ var serviceInstallCmd = &cobra.Command{
 						"  2. Download %s manually, place it next to breeze-agent,\n"+
 						"     then run `sudo breeze-watchdog service install`.\n"+
 						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
-					err, agentStateLine, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
+					err, agentStateLine, watchdogManualDownloadURL(version, runtime.GOOS, runtime.GOARCH, serverURL))
 			}
 		}
 

@@ -17,8 +17,11 @@ import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
 import TicketPartsCard from './TicketPartsCard';
+import TicketChecklistCard from './TicketChecklistCard';
+import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
+import type { AiAgentRunTicketProposalDto } from '@breeze/shared';
 
 /** Mirrors the API's BlockedCurrencySummary (invoiceService.ts, #3776). */
 interface BlockedCurrencyGroup { currencyCode: string; count: number; amount: string }
@@ -163,6 +166,15 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // When the user picks a custom-status row (config path), its id is stashed so
   // the gated resolve/pending POST sends {statusId}; null means the core path.
   const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
+  // Checklist soft-confirm on resolve/close (#5808 W01 Task 12): a client-side
+  // nudge only — never a server-side refusal. `checklistCounts` is fed by
+  // TicketChecklistCard's onCountsChange; `checklistConfirm` holds the deferred
+  // status-change action while the confirm prompt is shown, or null when none
+  // is pending.
+  const [checklistCounts, setChecklistCounts] = useState<
+    { done: number; total: number; known: boolean } | null
+  >(null);
+  const [checklistConfirm, setChecklistConfirm] = useState<(() => void) | null>(null);
   const [railOpen] = useState(true);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
   // Multi-currency (#3776): 409 ALL_BLOCKED_BY_CURRENCY groups from the last
@@ -371,6 +383,44 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     void refetchAiDrafts(ticketId);
   }, [ticket, ticketId, refetchAiDrafts]);
 
+  // #4211 (W01) — the newest triage run's ticketProposal, fetched alongside
+  // the AI drafts above. Cleared to null after a successful post (the note
+  // is now on the feed; there's nothing left to "post as me").
+  const [aiProposal, setAiProposal] = useState<{ runId: string; proposal: AiAgentRunTicketProposalDto } | null>(null);
+  const [postingProposal, setPostingProposal] = useState(false);
+
+  const refetchAiProposal = useCallback(async (forTicketId: string) => {
+    // #4211 review: same "best-effort, never clear on failure" contract as
+    // refetchAiDrafts above — the guard against a stale response applies to
+    // EVERY exit path (not just the success one), and a failed fetch/parse
+    // leaves the existing (possibly stale) card rather than nulling it out.
+    // The earlier version nulled aiProposal on !res.ok and on any thrown
+    // error with NO staleness guard on either branch: a slow failing
+    // request for ticket A landing after the technician had already
+    // switched to ticket B would silently wipe B's correctly-loaded,
+    // postable card off the screen.
+    try {
+      const res = await fetchWithAuth(`/tickets/${forTicketId}/ai-proposal`);
+      if (ticketIdRef.current !== forTicketId) return; // ticket switched mid-flight
+      if (!res.ok) return;
+      const body = await res.json();
+      if (ticketIdRef.current !== forTicketId) return; // switched while awaiting .json()
+      setAiProposal(body?.data ?? null);
+    } catch {
+      // Best-effort — leave the existing (possibly stale) card rather than
+      // clearing it out from under an in-progress "post as note" action on
+      // a network blip.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!ticket) {
+      setAiProposal(null);
+      return;
+    }
+    void refetchAiProposal(ticketId);
+  }, [ticket, ticketId, refetchAiProposal]);
+
   // Bulk actions in the queue mutate tickets behind the pane's back; the parent
   // bumps refreshToken after a bulk apply so the detail can't go stale. The ref
   // guard makes the effect fire only on an actual token bump — without it, a
@@ -398,6 +448,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setPendingStatusId(null);
     setResolveDraftId(null);
     setDeleteOpen(false);
+    setChecklistCounts(null);
+    setChecklistConfirm(null);
     // I2 (#4191 final review): without this, ticket A's AI-draft cards (and
     // any in-progress per-draft edits) stayed visible until the new
     // ticket's `refetchAiDrafts` call resolved — a stale card could even be
@@ -405,6 +457,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     // rather than waiting on the `[ticket, ticketId]` refetch effect.
     setAiDrafts([]);
     setDraftContent({});
+    // #4211 (W01) — same stale-card class the comment above describes: clear
+    // eagerly rather than waiting on the `[ticket, ticketId]` refetch effect.
+    setAiProposal(null);
   }, [ticketId]);
 
   // Opens the resolve form and, when an active `resolution_note` AI draft
@@ -509,6 +564,32 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     void load({ background: true });
     onChanged?.();
   }, [ticketId, load, onChanged, onTicketPatched]);
+
+  // #4211 (W01) — "Post as private note": posts aiProposal's summary as an
+  // internal note under the calling technician's own identity, then clears
+  // the card (the note is now on the feed; nothing left to post).
+  const postAiProposalNote = useCallback(async (content: string) => {
+    if (!aiProposal || postingProposal) return;
+    setPostingProposal(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/ai-proposal/post-note`, {
+          method: 'POST',
+          body: JSON.stringify({ runId: aiProposal.runId, content })
+        }),
+        errorFallback: t('ticketWorkbench.aiProposal.postFailed'),
+        successMessage: t('ticketWorkbench.aiProposal.posted'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setAiProposal(null);
+      // The post created a new private note — refresh the feed.
+      afterMutation();
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+    } finally {
+      setPostingProposal(false);
+    }
+  }, [afterMutation, aiProposal, postingProposal, ticketId, t]);
 
   // Returns true on success, false on a swallowed ActionError — callers with
   // form state (resolve/pending) must only close/clear when the POST landed.
@@ -754,8 +835,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     }
   }, [discardingDraftId, refetchAiDrafts, resolveDraftId, sendingDraftId, ticketId, t]);
 
+  // Checklist soft-confirm (#5808 W01 Task 12): a client-side NUDGE only — no
+  // server-side refusal, and completion never triggers anything on its own.
+  // Gated on the counts TicketChecklistCard reports via onCountsChange, so a
+  // ticket the card hasn't loaded yet (`checklistCounts === null`) never blocks.
+  const needsChecklistConfirm = useCallback((coreStatus: TicketStatus): boolean => {
+    if (coreStatus !== 'resolved' && coreStatus !== 'closed') return false;
+    if (!checklistCounts) return false;
+    // Fail CLOSED when the card could not load the checklist: 0/0 from a failed
+    // fetch is byte-identical to "this ticket has no checklist", so treating
+    // unknown as empty would skip the prompt on a network blip — precisely when
+    // the technician most needs to be asked.
+    if (!checklistCounts.known) return true;
+    return checklistCounts.total > 0 && checklistCounts.total - checklistCounts.done > 0;
+  }, [checklistCounts]);
+
   // Fallback path: option values are the six core enums; POST {status}.
-  const onStatusChange = useCallback(async (status: TicketStatus) => {
+  const proceedStatusChange = useCallback(async (status: TicketStatus) => {
     setPendingStatusId(null);
     if (status === 'resolved') { openResolveForm(); return; }
     if (status === 'pending' || status === 'on_hold') { setPendingOpen(status); return; }
@@ -763,10 +859,18 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     await mutate('/status', { status }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status, statusName: null, statusColor: null });
   }, [mutate, openResolveForm, t]);
 
+  const onStatusChange = useCallback((status: TicketStatus) => {
+    if (needsChecklistConfirm(status)) {
+      setChecklistConfirm(() => () => void proceedStatusChange(status));
+      return;
+    }
+    void proceedStatusChange(status);
+  }, [needsChecklistConfirm, proceedStatusChange]);
+
   // Config path: option values are custom-status row ids; the chosen row's
   // coreStatus drives the same resolve/pending forms, and the POST sends
   // {statusId} so resolved/pending custom statuses behave like their core peers.
-  const onCustomStatusChange = useCallback(async (statusId: string) => {
+  const proceedCustomStatusChange = useCallback(async (statusId: string) => {
     const row = config?.statuses.find((s) => s.id === statusId);
     if (!row) return;
     if (row.coreStatus === 'resolved') { setPendingStatusId(statusId); openResolveForm(); return; }
@@ -778,6 +882,15 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setPendingStatusId(null);
     await mutate('/status', { statusId }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status: row.coreStatus, statusName: row.name, statusColor: row.color ?? null });
   }, [config, mutate, openResolveForm, t]);
+
+  const onCustomStatusChange = useCallback((statusId: string) => {
+    const row = config?.statuses.find((s) => s.id === statusId);
+    if (row && needsChecklistConfirm(row.coreStatus)) {
+      setChecklistConfirm(() => () => void proceedCustomStatusChange(statusId));
+      return;
+    }
+    void proceedCustomStatusChange(statusId);
+  }, [config, needsChecklistConfirm, proceedCustomStatusChange]);
 
   // Not routed through the shared `mutate` helper (unlike onStatusChange/
   // onCustomStatusChange/submitPending) because it needs the thrown
@@ -1330,6 +1443,16 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </div>
           </div>
         )}
+        {aiProposal && (
+          <div className="mt-2">
+            <TicketProposalCard
+              proposal={aiProposal.proposal}
+              t={t}
+              onPostNote={postAiProposalNote}
+              posting={postingProposal}
+            />
+          </div>
+        )}
         {aiDrafts.map((draft) => (
           // At most one `reply` + one `resolution_note` draft can be active
           // at once (ticket_drafts_active_uq) — testids are keyed per kind
@@ -1420,6 +1543,39 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </div>
           </div>
         )}
+        {checklistConfirm && checklistCounts && (
+          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2" data-testid="ticket-checklist-resolve-confirm">
+            <p className="text-xs font-medium">{t('checklists:resolveConfirm.title')}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {checklistCounts.known
+                ? t('checklists:resolveConfirm.body', {
+                    count: checklistCounts.total - checklistCounts.done,
+                    total: checklistCounts.total,
+                  })
+                : /* The counts are unknown because the checklist failed to load —
+                     say that rather than claiming "0 of 0 steps are unticked". */
+                  t('checklists:errors.loadFailed')}
+            </p>
+            <div className="mt-1.5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setChecklistConfirm(null)}
+                className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+                data-testid="ticket-checklist-resolve-confirm-cancel"
+              >
+                {t('checklists:resolveConfirm.cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { const run = checklistConfirm; setChecklistConfirm(null); run(); }}
+                className="rounded-md bg-warning px-2 py-1 text-xs font-medium text-warning-foreground"
+                data-testid="ticket-checklist-resolve-confirm-accept"
+              >
+                {t('checklists:resolveConfirm.confirm')}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Body: feed + rail */}
@@ -1478,6 +1634,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 </div>
               )}
             </div>
+            <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} />
             <TicketFeed
               ticketId={ticket.id}
               comments={ticket.comments}

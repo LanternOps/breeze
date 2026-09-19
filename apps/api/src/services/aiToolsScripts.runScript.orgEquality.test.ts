@@ -142,6 +142,7 @@ function makeAuth(): AuthContext {
     orgCondition: () => undefined,
     canAccessOrg: () => true,
     canAccessSite: () => true,
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 

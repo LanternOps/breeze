@@ -24,6 +24,7 @@ import {
 } from './tenantExportPolicy';
 import {
   CORE_TENANT_EXPORT_POLICY,
+  getTenantExportPolicyRegistry,
   tablePolicy,
 } from './tenantExportPolicyRegistry';
 
@@ -448,5 +449,70 @@ describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
     ).toEqual([
       'device_event_logs.future_derived_projection: unclassified',
     ]);
+  });
+});
+describe('m365 tenant sync export classifications', () => {
+  const registry = getTenantExportPolicyRegistry();
+
+  it('classifies every m365 sync table', () => {
+    for (const table of [
+      'm365_sync_state', 'm365_users', 'm365_intune_devices', 'm365_ca_policies',
+      'm365_license_skus', 'm365_secure_score_snapshots', 'm365_posture_rollups',
+    ]) {
+      expect(registry[table], `${table} unclassified`).toBeDefined();
+      expect(registry[table]!.organizationKey).toBe('org_id');
+    }
+  });
+
+  it('excludes every open container and the executor continuation', () => {
+    const excluded = (table: string, column: string) =>
+      registry[table]!.columns[column]?.decision;
+    expect(excluded('m365_sync_state', 'sources')).toBe('exclude');
+    expect(excluded('m365_sync_state', 'last_counts')).toBe('exclude');
+    expect(excluded('m365_sync_state', 'continuation')).toBe('exclude');
+    expect(excluded('m365_users', 'assigned_sku_ids')).toBe('exclude');
+    expect(excluded('m365_users', 'admin_roles')).toBe('exclude');
+    expect(excluded('m365_ca_policies', 'conditions')).toBe('exclude');
+    expect(excluded('m365_ca_policies', 'grant_controls')).toBe('exclude');
+    expect(excluded('m365_ca_policies', 'session_controls')).toBe('exclude');
+    expect(excluded('m365_secure_score_snapshots', 'control_scores')).toBe('exclude');
+    expect(excluded('m365_posture_rollups', 'domains_fresh')).toBe('exclude');
+  });
+
+  it('marks every mfa/hash column reviewed rather than plain-included', () => {
+    for (const [table, column] of [
+      ['m365_users', 'core_hash'],
+      ['m365_users', 'mfa_registered'],
+      ['m365_users', 'mfa_capable'],
+      ['m365_users', 'default_mfa_method'],
+      ['m365_ca_policies', 'definition_hash'],
+      ['m365_posture_rollups', 'users_mfa_registered'],
+      ['m365_posture_rollups', 'users_mfa_unknown'],
+      ['m365_posture_rollups', 'admins_without_mfa'],
+      ['m365_posture_rollups', 'admins_mfa_unknown'],
+    ] as const) {
+      const decision = registry[table]!.columns[column];
+      expect(decision, `${table}.${column} unclassified`).toBeDefined();
+      expect(decision!.decision).toBe('include');
+      expect(decision!.reviewedSensitiveName, `${table}.${column} needs review`).toBe(true);
+    }
+  });
+});
+
+describe('AI origin columns are classified (#5022 W01)', () => {
+  it('classifies the three script_executions AI columns as included', () => {
+    const cols = CORE_TENANT_EXPORT_POLICY['script_executions']!.columns;
+    for (const name of ['ai_initiator_kind', 'ai_session_id', 'ai_agent_run_id']) {
+      expect(cols[name], `script_executions.${name} unclassified`).toBeDefined();
+      expect(cols[name]!.decision).toBe('include');
+    }
+  });
+
+  it('classifies the three action_intents AI origin columns as included', () => {
+    const cols = CORE_TENANT_EXPORT_POLICY['action_intents']!.columns;
+    for (const name of ['ai_origin_kind', 'ai_origin_session_id', 'ai_origin_agent_run_id']) {
+      expect(cols[name], `action_intents.${name} unclassified`).toBeDefined();
+      expect(cols[name]!.decision).toBe('include');
+    }
   });
 });

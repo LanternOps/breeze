@@ -497,4 +497,20 @@ describe('PAM device organization-move database guard', () => {
 
     expect(await readPamGrants()).toEqual(before);
   });
+
+  it('replaying this file leaves breeze_cascade_device_org_id() at its newest shipped body', async () => {
+    // Second-order trap (#5788, CI shard 4): re-applying
+    // 2026-10-14-100000-ai-operator-thin-slice.sql (a later definer of
+    // breeze_device_child_orgid_tables) ALSO redefines
+    // breeze_cascade_device_org_id(), which 2026-10-16-182100 later extends
+    // with the script_executions AI-pointer detach. replayMigration must
+    // chase that name transitively, or the detach silently disappears for
+    // every suite that runs after this one in the same process.
+    await replayMigration('2026-09-17-pam-device-move-guard.sql');
+
+    const [row] = await getTestDb().execute<{ def: string }>(sql`
+      SELECT pg_get_functiondef('public.breeze_cascade_device_org_id'::regproc) AS def
+    `);
+    expect(row?.def ?? '').toContain('SET ai_session_id = NULL, ai_agent_run_id = NULL');
+  });
 });

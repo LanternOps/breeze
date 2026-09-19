@@ -10,6 +10,14 @@ export type Site = {
   deviceCount: number;
 };
 
+/**
+ * Below this many sites the list needs neither a count nor a search box: the
+ * eye takes in the rows faster than it could type a filter, and the chrome
+ * ("1 of 1 sites", an empty search field) read as an unfinished page. Mirrors
+ * `OrgSwitcher`'s `SEARCH_THRESHOLD`. Exported for the test.
+ */
+export const SITE_SEARCH_THRESHOLD = 6;
+
 type SiteListProps = {
   sites: Site[];
   onAddSite?: () => void;
@@ -51,14 +59,16 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
       <button
         type="button"
         onClick={() => onSiteClick ? onSiteClick(site) : onEdit?.(site)}
-        className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+        aria-label={t('siteList.actions.editSite', { name: site.name })}
+        className="inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium hover:bg-muted"
       >
         {t('common:actions.edit')}
       </button>
       <button
         type="button"
         onClick={() => onDelete?.(site)}
-        className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+        aria-label={t('siteList.actions.deleteSite', { name: site.name })}
+        className="inline-flex h-8 items-center rounded-md border border-destructive/40 px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10"
       >
         {t('common:actions.delete')}
       </button>
@@ -67,9 +77,11 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{t('siteList.title')}</h2>
+          <h2 className="text-lg font-semibold">
+            {t('siteList.title')}
+          </h2>
           <p className="text-sm text-muted-foreground">
             {t('siteList.count', { filtered: filteredSites.length, total: sites.length })}
           </p>
@@ -78,14 +90,15 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
           <input
             type="search"
             placeholder={t('siteList.searchPlaceholder')}
+            aria-label={t('siteList.searchPlaceholder')}
             value={query}
             onChange={event => setQuery(event.target.value)}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
+            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
           <button
             type="button"
             onClick={onAddSite}
-            className="flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 sm:w-auto"
+            className="flex h-9 w-full items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 sm:w-auto"
           >
             {t('siteList.actions.add')}
           </button>
@@ -116,7 +129,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
                   <tr key={site.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3 text-sm font-medium">{renderSiteName(site)}</td>
                     <td className="px-4 py-3 text-sm">{site.timezone}</td>
-                    <td className="px-4 py-3 text-sm">{site.deviceCount}</td>
+                    <td className="px-4 py-3 text-sm tabular-nums">{site.deviceCount}</td>
                     <td className="px-4 py-3 text-right">{renderActions(site)}</td>
                   </tr>
                 ))

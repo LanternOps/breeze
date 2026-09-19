@@ -10,11 +10,15 @@ type PortalSettings = {
   enableAssetCheckout: boolean;
   enableSelfService: boolean;
   enablePasswordReset: boolean;
+  enableDevices: boolean;
   enableDashboard: boolean;
   enableSecurity: boolean;
   enableBackups: boolean;
   enableReports: boolean;
   enableSupportUsage: boolean;
+  enableService: boolean;
+  enableDocuments: boolean;
+  enableLifecycle: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -47,17 +51,26 @@ const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string 
 ];
 
 type VisibilityToggleKey =
+  | 'enableDevices'
   | 'enableDashboard'
   | 'enableSecurity'
   | 'enableBackups'
   | 'enableReports'
-  | 'enableSupportUsage';
+  | 'enableSupportUsage'
+  | 'enableService'
+  | 'enableDocuments'
+  | 'enableLifecycle';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
   labelKey: string;
   descriptionKey: string;
 }> = [
+  {
+    key: 'enableDevices',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDevices.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableDevices.description',
+  },
   {
     key: 'enableDashboard',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDashboard.label',
@@ -82,6 +95,21 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableSupportUsage',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableSupportUsage.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableSupportUsage.description',
+  },
+  {
+    key: 'enableService',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableService.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableService.description',
+  },
+  {
+    key: 'enableDocuments',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDocuments.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableDocuments.description',
+  },
+  {
+    key: 'enableLifecycle',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableLifecycle.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableLifecycle.description',
   },
 ];
 
@@ -125,11 +153,15 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
   };
 
   const enableAllVisibility = () => update({
+    enableDevices: true,
     enableDashboard: true,
     enableSecurity: true,
     enableBackups: true,
     enableReports: true,
     enableSupportUsage: true,
+    enableService: true,
+    enableDocuments: true,
+    enableLifecycle: true,
   });
 
   const save = useCallback(async () => {
@@ -144,11 +176,15 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableAssetCheckout: draft.enableAssetCheckout,
             enableSelfService: draft.enableSelfService,
             enablePasswordReset: draft.enablePasswordReset,
+            enableDevices: draft.enableDevices,
             enableDashboard: draft.enableDashboard,
             enableSecurity: draft.enableSecurity,
             enableBackups: draft.enableBackups,
             enableReports: draft.enableReports,
             enableSupportUsage: draft.enableSupportUsage,
+            enableService: draft.enableService,
+            enableDocuments: draft.enableDocuments,
+            enableLifecycle: draft.enableLifecycle,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,

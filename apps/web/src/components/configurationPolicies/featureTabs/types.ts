@@ -59,6 +59,7 @@ export const FEATURE_META: Record<FeatureType, {
 }> = {
   patch:        { label: 'Patches',      fetchUrl: '/update-rings',        description: 'Patch management settings' },
   alert_rule:   { label: 'Alerts',       fetchUrl: '/alerts/rules',        description: 'Server-evaluated alert rules: CPU/RAM/disk thresholds, offline detection, event log alerts' },
+  monitors:     { label: 'Monitors',     fetchUrl: '/monitor-definitions', description: 'Monitors attached to this policy: condition, response, delivery and escalation in one object' },
   backup:       { label: 'Backup',       fetchUrl: '/backup/configs',      description: 'Backup schedule and retention' },
   security:     { label: 'Security',     fetchUrl: '/security/policies',   description: 'Security policy settings' },
   monitoring:   { label: 'Service & Process Monitoring', fetchUrl: '/monitoring', description: 'Agent-side watches: service/process stop detection, auto-restart, resource limits per process' },

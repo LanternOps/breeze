@@ -9,6 +9,8 @@ export default defineConfig({
     },
   },
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),
@@ -121,6 +123,8 @@ export default defineConfig({
       // `src/__tests__/integration/**` glob, so the no-DB unit runner would fail
       // it on connect. Belongs to vitest.integration.config.ts (in its include).
       'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
+      // #5612 W04: live-DB race proving the lane hourly cap reserves under the advisory lock.
+      'src/services/actionIntents/scriptLaneHourlyCap.integration.test.ts',
       // Headless Google Tier-3 dispatch real-DB test (Phase 2): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
       // lives in src/jobs/ outside the `src/__tests__/integration/**` glob, so

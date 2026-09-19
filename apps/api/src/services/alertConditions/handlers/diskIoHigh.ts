@@ -12,7 +12,7 @@ export const diskIoHighHandler: ConditionHandler = {
     const metrics = await getRecentMetrics(deviceId, durationMinutes);
 
     if (metrics.length === 0) {
-      return { passed: false, description: 'No metrics available for disk I/O' };
+      return { passed: false, description: 'No metrics available for disk I/O', dataAvailable: false };
     }
 
     // cond.value is in MB/s (user-friendly); convert to Bps for DB comparison

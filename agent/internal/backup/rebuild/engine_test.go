@@ -360,6 +360,56 @@ func TestRun_FullLinuxFlowOnFakeSystem(t *testing.T) {
 	}
 }
 
+// #5493: found live on the bare-metal boot proof. The whole-machine backup
+// preset excludes /proc, /sys, /dev, /run, /tmp, /var/tmp, /mnt, /media, so
+// a snapshot taken before the backup-side fix (collectBackupFilesFromPaths
+// force-recording an excluded directory's own manifest entry) never
+// contains them at all — restore alone leaves the staging root without
+// them. boot()'s pseudoMounts/BindMount calls normally paper over this on a
+// real system (a bind mount creates its target), but a SkipBoot run (or any
+// run where boot() is skipped/fails before reaching them) must not depend on
+// that: restoreTree's ensureMountpoints call is the belt-and-braces fix.
+//
+// This proves it in isolation: SkipBoot means boot() never executes (and
+// fakeSystem's own BindMount, which happens to os.MkdirAll its target, never
+// fires either), and the seeded snapshot's content map (seedSnapshot) has no
+// proc/sys/dev/run/tmp entries — so these directories can only exist
+// afterward because ensureMountpoints created them.
+func TestRun_EnsureMountpointsSurvivesSkipBoot(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	p := seedSnapshot(t, "snap-1", testLayout())
+	staging := filepath.Join(dir, "mnt")
+	res, err := Run(context.Background(), Options{
+		SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetImage, Path: filepath.Join(dir, "t.img"), ImageSizeBytes: 100 * GiB},
+		Identity: IdentityOriginal, StateDir: dir, StagingRoot: staging, System: sys, SkipBoot: true,
+	})
+	if err != nil {
+		t.Fatalf("err=%v\n%s", err, sys.dump())
+	}
+	if res.Status != "completed" {
+		t.Fatalf("res = %+v\n%s", res, sys.dump())
+	}
+	if sys.has("mount --bind") {
+		t.Fatalf("SkipBoot run must never bind-mount (that would mask the defect this test checks): %s", sys.dump())
+	}
+	for _, name := range []string{"proc", "sys", "dev", "run"} {
+		fi, statErr := os.Stat(filepath.Join(staging, name))
+		if statErr != nil || !fi.IsDir() {
+			t.Errorf("%s missing after a SkipBoot run: %v", name, statErr)
+		}
+	}
+	fi, statErr := os.Stat(filepath.Join(staging, "tmp"))
+	if statErr != nil || !fi.IsDir() {
+		t.Fatalf("tmp missing after a SkipBoot run: %v", statErr)
+	}
+	if fi.Mode()&os.ModeSticky == 0 || fi.Mode().Perm() != 0o777 {
+		t.Errorf("tmp mode = %v, want sticky 1777", fi.Mode())
+	}
+}
+
 func TestRun_ResumeSkipsProvisionAndReusesPlan(t *testing.T) {
 	skipUnlessLinuxSystemState(t)
 	resetBmrCalls()
@@ -471,5 +521,48 @@ func TestRun_StrictRestoreFailsOnMissingObject(t *testing.T) {
 	res, err := Run(context.Background(), Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys})
 	if err == nil || res.Status != "failed" || res.PhaseReached != PhaseRestore || !strings.Contains(res.Error, "/usr/bin/tool") {
 		t.Fatalf("res = %+v err=%v", res, err)
+	}
+}
+
+// TestRun_ResumeReusesRestoreProgress proves the restore phase resumes from
+// the persistent work root instead of re-downloading every file: run 1 hits a
+// missing object (strict restore fails after every other file landed), run 2
+// with AllowPartialRestore must report the landed files as skipped.
+func TestRun_ResumeReusesRestoreProgress(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	p := seedSnapshot(t, "snap-1", testLayout())
+	delete(p.files, "snapshots/snap-1/files/path_0/usr/bin/tool")
+	opts := Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys}
+	if res, err := Run(context.Background(), opts); err == nil || res == nil || res.PhaseReached != PhaseRestore {
+		t.Fatalf("first run = %+v err=%v", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "work", "restore-work", "staging", "snap-1")); err != nil {
+		t.Fatalf("restore work root must survive a failed run: %v", err)
+	}
+	var skipped, restored int
+	opts.System = newFakeSystem(dir, 100*GiB)
+	opts.AllowPartialRestore = true
+	opts.Progress = func(ph Phase, msg string, _, _ int64) {
+		if ph != PhaseRestore {
+			return
+		}
+		if strings.Contains(msg, "skipped (resumed)") {
+			skipped++
+		} else if strings.HasPrefix(msg, "restored:") {
+			restored++
+		}
+	}
+	res2, err := Run(context.Background(), opts)
+	if err != nil || res2.Status != "completed" || !res2.Resumed {
+		t.Fatalf("second run = %+v err=%v", res2, err)
+	}
+	if skipped == 0 || restored != 0 {
+		t.Fatalf("resume must skip already-restored files: skipped=%d restored=%d", skipped, restored)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "work")); !os.IsNotExist(err) {
+		t.Fatalf("work root must be removed after a completed run (err=%v)", err)
 	}
 }

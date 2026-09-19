@@ -108,6 +108,371 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### v0.114.0 — evidence reports, network device page, account board
+
+**Navigation moved, nothing removed.** The Fleet Management entry **Monitoring** is
+now **Network Monitor** and holds only network assets, checks and SNMP templates.
+Device monitors (CPU, memory, disk, service, process, custom) moved to
+**Alerts → Monitors** (`/alerts/monitors`). Old `/monitoring/monitors` links
+redirect. If a technician reports that "Monitors disappeared", this is where they
+went.
+
+**`catalog_items.unit_price` is dropped.** Catalog sell prices have lived in
+`catalog_item_prices` (per-organization price book) since the multi-currency
+work landed; `unit_price` on `catalog_items` was a write-only leftover column
+that nothing read. The API and catalog UI are unaffected — the `unitPrice`
+field on create/update requests is still accepted as an input alias mapped
+into the price book. If you have custom SQL, a BI tool, or a script reading
+`catalog_items.unit_price` directly, it will break; point it at
+`catalog_item_prices` (via `catalog_item_org_pricing`) instead.
+
+<Aside type="caution">
+  Rolling back to a pre-v0.114.0 image after upgrading is not clean — the
+  dropped column does not come back on its own. **Back up your database before
+  upgrading** if you might need to roll back.
+</Aside>
+
+### v0.113.0 — remote desktop stability, AI-authored scripts, service deliverables
+
+**No breaking API changes.** Two settings deserve a decision before you pull:
+`APP_ENCRYPTION_KEY_ID` (now a boot refusal for split-role deployments and a
+`503` on integration credential saves everywhere else) and
+`BREEZE_AI_SCRIPT_AUTHORING_ENABLED`, which is now **on by default**. Read
+[Action required](#action-required-in-v01130) before you pull.
+
+<Aside type="tip" title="If remote desktop has been dropping every 30–90 seconds since early August, take this release">
+  Since late July the orphan-session sweeper was ending healthy peer-to-peer
+  viewer sessions because it only recognised a WebSocket-owned session as
+  alive — and the default P2P transport never opens that socket. The fix is
+  entirely server-side; **no agent update is needed** for it. The separate
+  secondary-monitor fix (input and cursor landing on the wrong monitor on
+  Windows hosts with mixed DPI scaling) does need the updated agent and
+  helper.
+</Aside>
+
+**Pull `api`, `web` and `portal` together, in one pass** (plus `worker` if you
+run the [worker split](/deploy/worker-split/)). The customer portal gains two
+new sections and the web dashboard gains new navigation, so a mixed set of
+images shows menu entries that 404. Afterwards assert version parity on every
+`ghcr.io/lanternops/breeze/*` container rather than trusting the service list.
+
+#### Action required in v0.113.0
+
+1. **Set `APP_ENCRYPTION_KEY_ID` if you have not already.** The API **refuses
+   to boot** without it when `BREEZE_ROLE` is `api` or `worker` or when
+   `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true`. Every other deployment boots with a
+   warning, but **saving integration credentials returns `503`** — Discord,
+   Teams, Grafana, OpsGenie, PagerDuty, monitoring webhooks, ticketing and
+   PSA settings — until the key id is set, because those credentials are now
+   sealed at rest with key-bound ciphertext and no longer fall back to unbound
+   ciphertext. Add any `[A-Za-z0-9._-]+` identifier to `.env` **and** map it in
+   the `api` (and `worker`) service's `environment:` block; installs whose
+   `guided-setup.sh` run predates the key never had it generated. Setting it
+   does not rotate `APP_ENCRYPTION_KEY`. See
+   [Environment Variables](/deploy/environment/#authentication--security).
+2. **AI script authoring is on by default.** The chat assistant and background
+   AI agents can now write a script as a reviewed proposal and, once a human
+   approves it on a card, run it. Set `BREEZE_AI_SCRIPT_AUTHORING_ENABLED=false`
+   to keep the feature dark. Two related permission changes: approving a
+   proposal that matched a **Strict** danger pattern requires the approver to
+   hold `scripts:write` **in the proposal's organization** and to have
+   completed MFA (the same bar the script library already applies), and
+   four-eyes requests for such proposals fan out only to approvers who hold
+   `scripts:write` — grant it to whoever decides AI script runs. The
+   **unattended lane ships off**: it needs a partner to open the ceiling and
+   each organization to opt in, and no environment variable controls it. See
+   [AI Script Authoring](/features/ai-script-authoring/).
+3. **Two new permissions, `documents:read` and `documents:write`,** gate the
+   new organization document library and the **Documents** tab. The migration
+   grants both to the built-in **Partner Technician**, **Org Admin** and **Org
+   Technician** roles; **custom roles get nothing** until you add them under
+   **Settings → Roles**. Service deliverables themselves use the existing
+   `contracts:read` / `contracts:write`.
+4. **If you take online payments through Stripe**, resetting a payment link,
+   recording a manual payment, voiding an invoice or replacing the Stripe key
+   now **refuses with `503 STRIPE_REVOCATION_PENDING`** when Breeze cannot
+   prove the customer's open Checkout session is dead. A 60-second sweep
+   retries, so the refusal is brief; if it ever blocks invoice work during an
+   incident, set `STRIPE_SESSION_REVOCATION_MODE=observe` rather than rolling
+   back.
+5. **Customers with Microsoft 365 Graph-read consent see a re-consent prompt.**
+   The `customer-graph-read` manifest moves to v3 with four additional Graph
+   permissions for the upcoming posture program. The prompt is
+   non-interrupting — existing connections keep working until the customer
+   administrator re-consents.
+
+#### Database migrations in v0.113.0
+
+**22 migrations (`2026-10-15-170300` through `2026-10-16-170700`). Take a
+database backup first.** All are idempotent, apply automatically on API startup
+unless `AUTO_MIGRATE=false`, and have been dry-run as a non-superuser role.
+None rewrites a large table. The ones with operator-visible effects:
+
+| Migration | Effect |
+|---|---|
+| `2026-10-15-170400-documents-permissions.sql` | Seeds `documents:read` / `documents:write` and grants them to the built-in Partner Technician, Org Admin and Org Technician roles (counts logged as Postgres `WARNING`s). |
+| `2026-10-16-100000-script-versions-immutable.sql` | Creates one head-version row per existing script and makes script versions append-only — every save now cuts a new immutable version. |
+| `2026-10-16-100300-scripts-origin.sql` | Adds `origin` (`human` / `ai` / `system`) to scripts and backfills `system` on the built-in ones. |
+| `2026-10-16-160200-checkout-session-revocation.sql` | Marks aged-out pending Stripe Checkout session mappings revoked and pre-existing ones `legacy_unbounded`; adds the revocation-intent bookkeeping. |
+| `2026-10-16-170100-mfa-enrollment-grace.sql` | Adds the enrolment-deadline columns on `users`. No rows written. |
+| `2026-10-16-110000-portal-branding-service-documents-flags.sql` | Adds the portal **Service** and **Documents** visibility flags, both `false`. |
+
+The rest — organization documents, script proposals and policies, monitor
+definitions, the remote-session start generation, M365 tenant-sync foundation,
+Fleet Designer and device-function tables — are DDL-only additions with no
+backfill.
+
+#### New settings in v0.113.0
+
+Only `APP_ENCRYPTION_KEY_ID` (item 1 above) is required, and only for the
+configurations listed there. Full descriptions are in
+[Environment Variables](/deploy/environment/).
+
+| Variable | Default | Why you might set it |
+|---|---|---|
+| `BREEZE_AI_SCRIPT_AUTHORING_ENABLED` | **`true`** | Set `false` to keep AI script authoring dark. |
+| `BREEZE_AI_SCRIPT_REVIEWER_MODEL` | — | Platform-default model for the independent script reviewer; a partner or organization policy can override it. |
+| `STRIPE_SESSION_REVOCATION_MODE` | `enforce` | `observe` is the incident de-escalation lever for item 4 above. |
+| `M365_SYNC_CONTINUATION_KEY`, `M365_SYNC_MAX_IN_FLIGHT`, `M365_MAX_IN_FLIGHT` | — / `4` / `32` | Read by the separate `m365-graph-read-executor` sidecar only. Without a continuation key the executor mints one per process and a sync resumes from page 1 after a restart — self-healing, so existing executors need nothing. |
+| `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS`, `BACKUP_BASE_LEASE_MS`, `BACKUP_RESTORE_PIN_LINGER_MS`, `BACKUP_PUBLISH_MARGIN_MS` | 9 d / 7 d / 7 d / 1 h | Lab/test knobs for the backup storage sweep. Production enforces floors and logs when a lower value is ignored. Leave unset. |
+
+**New infrastructure:** one new queue, `script-verify`, consumed by the API
+replica that owns the agent socket. No new service, no new port.
+
+#### Rolling back v0.113.0
+
+Prefer roll-forward. Every schema change is additive, so rolling the images
+back needs no schema rollback; scripts saved on v0.113.0 keep their version
+rows. Do **not** revert the Checkout-session migration to escape a revocation
+refusal — flip `STRIPE_SESSION_REVOCATION_MODE=observe` instead, otherwise
+the older code ignores the pending intents and re-opens the duplicate-charge
+window.
+
+#### Behaviour changes in v0.113.0
+
+- **Navigation.** Automations now live under a top-level **Jobs** entry
+  (bookmarked `/automations/*` links redirect); the sidebar's **Network
+  Monitor** entry is now **Monitoring**, a hub with **Monitors**, **Network**,
+  **Delivery** and **Legacy rules** tabs; **Devices** is now **Devices &
+  Assets**, with your last five devices under it and a Cmd+K palette that
+  opens on recent devices and pages. See [Automations](/features/automations/)
+  and [Monitors](/features/monitors/).
+- **Monitors** are the new single object a technician authors — condition,
+  severity, delivery and responses in one place — compiled into the alert
+  templates, alert rules and automations that already run. Existing alert
+  rules keep working; **Legacy rules** offers one-click conversion.
+- **Service deliverables and the organization document library** ship with
+  two new customer-portal sections, **Service** and **Documents**, both off per
+  organization until you turn them on. A daily sweep opens tickets for
+  deliverables that come due and for key-date reminders. See
+  [Service deliverables](/features/contracts/#service-deliverables) and
+  [Customer Portal](/features/portal/).
+- **AI Fleet Designer** is a fourth AI-agent kind, `designer`, that reads the
+  fleet and writes a **Fleet Design** report. It is inert until an
+  administrator creates one for an organization, and nothing in its design is
+  applied automatically. It also assesses a **Function** for each device
+  (domain controller, kiosk, …), shown next to the billable Device Role. See
+  [AI Agents](/features/ai-agents/#fleet-designer).
+- **Consecutive supervised Tier-3 approvals need one step-up ceremony** —
+  a 120-second grant bound to the approver's session — instead of one per
+  decision. Four-eyes approvals still take a fresh ceremony each time.
+- **MFA enrolment grace window.** A user who lands in a Force MFA role and has
+  never held a factor gets a nonrenewable 14-day window (banner plus email
+  notices) before the `428` enrolment wall applies. Inert unless
+  `MFA_FORCE_FOR_PARTNER_ADMIN=true`, whose default is unchanged (`false`).
+  See [Users & Roles](/reference/users-and-roles/).
+- **Backup storage usage starts to drop.** The reclamation sweep now deletes
+  retired restore points' exclusive data and orphaned upload prefixes, on top
+  of the loose-object grace rules. See [Storage](/backup/storage/).
+- **Integration credentials are sealed and masked.** Discord, Teams, Grafana,
+  OpsGenie, PagerDuty and monitoring-webhook secrets are encrypted at rest and
+  never echoed back to the settings form; re-enter a secret to change it.
+- **Alert-correlation views honour the site ceiling and `alerts:read`.** A
+  site-restricted or permission-stripped reader no longer sees the whole
+  organization's correlation graph.
+- **Approver devices** now distinguish **Hardware-attested** from **Not
+  attested** platform-bound mobile devices. See
+  [Approval Security](/features/approval-security/).
+- **M365 tenant-sync foundation** lands schema and executor plumbing only —
+  nothing new in the dashboard this release.
+- **Remote desktop start and stop commands** are now strictly ordered per
+  session on both server and agent. No operator action; a late start can no
+  longer win against a terminal decision.
+
+### v0.112.0 — Windows MSI fix, security remediations, bare-metal recovery
+
+**No breaking API changes and no new *required* environment variables**, but
+this release **removes implicit access and pauses some scheduled work** the
+moment the migrations run. Read [Action required](#action-required-in-v01120)
+before you pull.
+
+<Aside type="danger" title="If you enroll Windows devices with the MSI, take this release now">
+  The agent MSI published with v0.110.0 through v0.111.1 refused **every fresh
+  install** on Windows 10, 11 and Server 2016+ with "Breeze Agent requires
+  Windows 10 or Windows Server 2016 or later". Already-enrolled agents were
+  unaffected (self-update never runs the MSI); only new MSI enrollments were
+  blocked. v0.112.0 reads the Windows version from the registry instead of the
+  value Windows Installer reports. Replace any installer links or MSIs you handed
+  out from those releases. See [Supported Windows versions](/agents/installation/#supported-windows-versions).
+</Aside>
+
+**Pull `api`, `web` and `portal` together, in one pass** (plus `worker` if you
+run the [worker split](/deploy/worker-split/)). Two changes in this release have
+no flag-level rollback: session-binding enforcement (below) and the remote
+desktop lease, which expects every replica on the new protocol. **Sequence the
+API restart as stop-then-start rather than rolling:** stop the old API
+replicas, let the migrations apply, then start only the new ones — an older
+API must not resume serving after the installer-token cutover (item 6 below).
+Afterwards assert version parity on every `ghcr.io/lanternops/breeze/*`
+container rather than trusting the service list.
+
+#### Action required in v0.112.0
+
+1. **PAM auto-approve rules are suspended.** Every rule with verdict
+   **Auto-approve** is switched to **Require approval** and badged
+   "Auto-approve suspended". Matching elevations wait for a human
+   until an admin holding the new `pam:manage_policy` permission clicks
+   **Re-approve** on the rule (MFA). See [PAM → Rules](/features/pam/#rules).
+2. **New permissions replace implicit access.** `pam:approve`,
+   `pam:manage_policy`, `accounting:read`, `accounting:manage`,
+   `workspace:read|write|credentials|execute` and
+   `connected_apps:read|manage` are granted to the built-in **Org Admin** only
+   (Partner Admin holds `*:*`). **Every other built-in role and every custom
+   role loses** QuickBooks, Workspace, connected-apps and PAM-approval access
+   until you grant the keys in **Settings → Roles**. A Partner Technician or
+   Partner Billing user who could browse or sync QuickBooks yesterday gets a
+   403 today. See [Built-in permissions](/reference/users-and-roles/#built-in-permissions).
+3. **Recurring sensitive-data scan policies are switched off** and any queued
+   or running scheduled scan is failed. There is no badge: each affected policy
+   simply shows as inactive on the **Scan Policies** tab. A user who holds
+   `devices:write` **and** `devices:execute`, with MFA satisfied, re-approves it
+   by turning **Active** back on (or re-saving it), which binds the schedule to
+   that user's authority. Manual scans are unaffected. See
+   [Sensitive Data](/features/sensitive-data/#recurring-scans-need-re-approval-after-upgrade).
+4. **Recurring network-baseline scans are paused** with the banner "Recurring
+   scan paused: re-approval required". Re-saving the schedule arms it under the
+   saving user; **Scan Now** still works. Newly auto-created baselines now start
+   with recurrence **off**. See [Network Baselines](/features/network-baselines/#recurring-scans-need-re-approval-after-upgrade).
+5. **Office add-in technician bindings are revoked.** Every technician who
+   uses the Outlook/Office add-in technician pane repeats the one-time sign-in;
+   the account must now have an authenticator-app (TOTP) factor. See
+   [AI for Office](/features/ai-for-office/).
+6. **Outstanding installer bootstrap tokens are invalidated.** Unused
+   bootstrap-derived enrollment keys are deleted. Regenerate any installer
+   links or copies you handed out before the upgrade.
+7. **Remote desktop needs an updated agent and is capped at 12 hours.** Only
+   an agent that reports lease support can start a desktop session; older
+   agents show "Remote desktop needs an agent update on this device" (HTTP
+   `503 agent_upgrade_required`). Expect up to one heartbeat interval (about a
+   minute) per device while agents self-update; **if you pin agent versions,
+   desktop sessions are unavailable until you move the pin.** `Max session
+   duration` is clamped to 1–12 hours (`0` no longer means unlimited), a
+   membership/role/site-scope/MFA change ends a live session within about 25 s,
+   and a Redis outage longer than 90 s ends live desktop sessions. Terminal,
+   Files and VNC are unaffected. See [Session lease and revocation](/features/remote-access/#session-lease-and-revocation).
+8. **`AUTH_BROWSER_TRANSITIONS_ENFORCED` is removed.** Session binding is
+   enforced on every issuance path (password, SSO, Cloudflare Access, MFA,
+   passkey, refresh, registration, invitation) with no opt-out. Delete the line
+   from `.env`; the safety net is an image rollback, not a flag. Existing browser
+   sessions self-heal on their next refresh. **Mobile app builds older than
+   v0.109.0 cannot sign in** until updated.
+9. **Legacy policy execution routes are gone.** `POST /policies/:id/evaluate`,
+   `/remediate` and `/activate` are retired; use `POST /automations/:id/trigger`.
+   `/deactivate` is unchanged.
+10. **Site-restricted technicians** can no longer create or edit organization-wide
+    governance objects (webhooks, notification channels, software and peripheral
+    policies, configuration policies, PAM config, backup destinations and
+    profiles) or manage PSA and DNS-security connections. They can still assign
+    an existing policy to their own site.
+11. **Check `TRUSTED_PROXY_CIDRS`.** With proxy trust unset, client-IP
+    attribution now records the raw socket peer instead of `unknown`. Behind a
+    real proxy that peer is the proxy, so make sure the variable is set on every
+    deployment that fronts Breeze with one.
+
+#### Database migrations in v0.112.0
+
+**20 migrations. Take a database backup first.** All are idempotent, none abort
+on pre-existing data, and all apply automatically on API startup unless you
+have set `AUTO_MIGRATE=false`. The ones with operator-visible effects:
+
+| Migration | Effect |
+|---|---|
+| `2026-10-15-150200-pam-dedicated-permissions.sql` | Suspends every `auto_approve` PAM rule (original verdict kept for re-approval); seeds `pam:approve` / `pam:manage_policy` and grants them to each built-in Org Admin. |
+| `2026-10-15-150051-office-addin-binding-mfa-epoch.sql` | Revokes every existing Office add-in technician binding. |
+| `2026-10-15-140001` / `140002` / `140003-sensitive-data-*.sql` | Deactivate every recurring sensitive-data policy and fail queued/running scheduled scans. |
+| `2026-10-15-141001-installer-bootstrap-credential-generation.sql` | Deletes unused bootstrap-derived enrollment keys and bumps the generation on their parents. |
+| `2026-10-15-150030` / `150031` / `150032` and `150500-accounting-dedicated-permissions.sql` | Seed `workspace:*`, `connected_apps:*`, `accounting:read`, `accounting:manage`; grant them to the built-in Org Admin only. |
+| `2026-10-15-140004-backup-snapshot-lineage-fk-set-null.sql` | Makes `restore_jobs.snapshot_id` and `recovery_tokens.snapshot_id` nullable and moves five foreign keys onto `backup_snapshots` to `ON DELETE SET NULL`, so retention can finally delete a snapshot that was ever restored, verified or tokened. |
+| `2026-10-15-150600-network-baseline-recurring-authority.sql` | Pauses every enabled recurring baseline scan (`reapproval_required`) until an authorized user re-saves the schedule. |
+| `2026-10-15-150001-bound-webhook-retries.sql` | Normalizes legacy webhook `retryCount` values into 0–2; the count is logged as a Postgres `WARNING`. |
+| `2026-10-15-150050-mobile-refresh-family-binding.sql` | Adds a partial index on `refresh_token_families` **in-transaction** (not `CONCURRENTLY`). Instant at typical sizes; run off-peak if yours is very large. |
+
+The rest (`150010`, `150020`, `150040`, `150100`, `150300`, `160010`) are
+additive column adds with no data change. A non-superuser migrating role is
+sufficient, as before.
+
+#### New optional settings in v0.112.0
+
+None are required. Full descriptions are in [Environment Variables](/deploy/environment/).
+
+| Variable | Why you might set it |
+|---|---|
+| `LENOVO_WARRANTY_ENABLED=true` and/or `LENOVO_API_KEY` | Lenovo warranty lookup works for the first time — credential-free via Lenovo's public lookup endpoint, or through the official Warranty API. `DELL_CLIENT_ID` / `DELL_CLIENT_SECRET` and both Lenovo knobs are now mapped through every shipped Compose file, so a value in `.env` is enough. See [Warranty lookups](/deploy/environment/#warranty-lookups). |
+| `RECOVERY_MEDIA_WORK_DIR` | Already defaulted to `/data/recovery-work` by the shipped Compose files; moves bare-metal recovery media builds off the container's 64 MB `/tmp`. Override only to relocate it. |
+| `BACKUP_GC_GRACE_MS` | Lab/test only. Production enforces a one-hour floor; the 48 h default is unchanged. |
+
+**Removed:** `AUTH_BROWSER_TRANSITIONS_ENFORCED` (see item 8 above).
+
+#### Fresh installs and image pinning in v0.112.0
+
+`.env.example` and `deploy/docker-compose.prod.yml` now expect **signed,
+digest-pinned image references** (`ghcr.io/lanternops/breeze/api@sha256:…`)
+resolved from the release's signed image inventory. The guided installer
+resolves and verifies them itself for 0.112.0 and later (fail-closed), and
+falls back to tag-tracking refs for older releases. **Existing installs whose
+`.env` still carries `…/api:${BREEZE_VERSION}` refs keep working with the
+upgrade steps at the top of this page.** If you have already switched to digest
+pins, update the four `BREEZE_*_IMAGE_REF` lines from the new release's
+inventory on every upgrade — bumping `BREEZE_VERSION` alone changes nothing.
+See [Signed, digest-pinned image references](/deploy/production/#signed-digest-pinned-image-references-v01120-and-later).
+
+Rotating `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is a fleet re-enrollment:
+agents pin the key they enrolled under and there is no remote revocation. See
+[Binary Distribution](/deploy/binaries/).
+
+#### Rolling back v0.112.0
+
+Prefer roll-forward. If you must roll back, **downgrade agents before the
+API**: a v0.112.0 agent talking to an older API gets no lease answer and ends
+its desktop session after about 150 s. The added columns are additive and need
+no schema rollback. Rolling back the network-baseline change resumes every
+paused recurring baseline **under no authority** — clear each affected
+baseline's schedule first.
+
+#### Other behaviour changes in v0.112.0
+
+- **Bare-metal recovery now restores system state on Linux**, every
+  `system_image` backup records a disk-layout manifest with a restorability
+  verdict, and a `breeze-backup rebuild` command can provision a disk from a
+  snapshot. See [Bare Metal Recovery](/backup/bare-metal-recovery/).
+- **Backup exclude patterns with a leading `/` are root-anchored** (gitignore
+  semantics) instead of matching at any depth. File backups now capture
+  symlinks, directories, ownership and setuid/setgid/sticky bits; manifests
+  carrying them use a new format that **older agents cannot read**, so restore
+  with a v0.112.0 agent. See [Backup Policies](/backup/policies/#file-backup).
+- **Retention GC no longer stops** on the first snapshot that was ever
+  restored, verified or tokened. Bucket usage still does not shrink — storage
+  reclamation lands in a later release.
+- **Webhooks make one HTTP attempt per invocation**; the queue owns retries,
+  `retryCount` is capped at 2, and permanent failures (bad configuration,
+  SSRF-blocked URL, ordinary 4xx) dead-letter immediately. `/test` and `/retry`
+  on a paused webhook return `409`.
+- **Org-scoped sessions are now evaluated against the partner IP allowlist.**
+- **MCP tool `get_fleet_status` is renamed `get_invite_funnel`.** The old name
+  dispatches for one more release but no longer appears in `tools/list`.
+- **HP warranty lookup is de-registered** — HP's API is not available to RMM
+  vendors, so HP devices stay at `unknown`.
+
 ### v0.111.1 — hotfix for a v0.111.0 upgrade-blocking migration
 
 <Aside type="danger" title="Install v0.111.1, not v0.111.0">
@@ -279,7 +644,7 @@ which is validated when set. Full descriptions are in
 
 | Variable | Why you might set it |
 |---|---|
-| `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` | Already **on**. Set `false` only to restore the old hard-failure behaviour while you adjust your automations — this escape hatch is removed in a later release. |
+| Offline work queue | Queueing is always enabled for queueable actions. The former opt-out has been removed; use action-specific offline policies where available. |
 | `DEVICE_COMMAND_QUEUE_TTL_HOURS`, `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS`, `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | Shorten or lengthen how long queued work waits for an offline device (7 days / 24 hours / 24 hours). |
 | `MFA_FORCE_FOR_PARTNER_ADMIN` | **Now defaults to `false`.** Set `true` to enforce forced MFA for Partner Admins immediately. |
 | `AI_OPERATOR_TASKS_ENABLED`, `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` | Turn on the opt-in [AI Operator](/features/ai-agents/#ai-operator-preview) preview. Both ship off. |

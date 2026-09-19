@@ -322,3 +322,34 @@ describe('DashboardUnavailable', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 });
+
+describe('DashboardTiles — service delivery row (W04)', () => {
+  const withService = (service: NonNullable<DashboardDto['service']>): DashboardDto =>
+    ({ ...dashboard, service });
+
+  it('omits the service row entirely when the org has no service tile', () => {
+    const without = { ...dashboard };
+    delete (without as { service?: unknown }).service;
+    render(<DashboardTiles dashboard={without} />);
+    expect(screen.queryByTestId('portal-dashboard-tile-service')).toBeNull();
+  });
+
+  it('states the 90-day record and the next due item', () => {
+    render(<DashboardTiles dashboard={withService({
+      status: 'ok', windowDays: 90, deliveredOnTime: 5, deliveredLate: 1,
+      missed: 0, nextDue: { name: 'Monthly sign-in log review', dueAt: '2026-10-31' },
+      asOf: '2026-10-15T12:00:00.000Z',
+    })} />);
+    const row = screen.getByTestId('portal-dashboard-tile-service');
+    expect(row).toHaveTextContent('5 of 6 on time');
+    expect(row).toHaveTextContent('Monthly sign-in log review');
+  });
+
+  it('says not yet available rather than 0 of 0 when nothing is scheduled', () => {
+    render(<DashboardTiles dashboard={withService({
+      status: 'no_data', windowDays: 90, deliveredOnTime: null, deliveredLate: null,
+      missed: null, nextDue: null, asOf: '2026-10-15T12:00:00.000Z',
+    })} />);
+    expect(screen.getByTestId('portal-dashboard-tile-service')).toHaveTextContent('Not yet available');
+  });
+});

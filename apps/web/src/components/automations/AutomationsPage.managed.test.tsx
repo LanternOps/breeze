@@ -56,4 +56,52 @@ describe('AutomationsPage managed automation mapping', () => {
     await screen.findByText('Triage critical alerts');
     expect(screen.queryByTestId('automation-managed-by-agent-badge')).toBeNull();
   });
+
+  it('links "new" and row edit to /jobs, not /automations (#5288)', async () => {
+    fetchMock.mockResolvedValue(json({ data: [automation] }));
+
+    render(<AutomationsPage />);
+
+    const newLink = await screen.findByRole('link', { name: /new/i });
+    expect(newLink).toHaveAttribute('href', '/jobs/new');
+  });
+});
+
+describe('AutomationsPage monitor-managed filtering (#5287)', () => {
+  it('hides a row compiled from a monitor from the Jobs list', async () => {
+    fetchMock.mockResolvedValue(
+      json({
+        data: [
+          { ...automation, id: 'automation-2', name: 'Compiled from monitor', managedByMonitorId: 'monitor-1' },
+          automation,
+        ],
+      }),
+    );
+
+    render(<AutomationsPage />);
+
+    await screen.findByText('Triage critical alerts');
+    expect(screen.queryByText('Compiled from monitor')).toBeNull();
+  });
+
+  it('still shows a row that omits managedByMonitorId', async () => {
+    fetchMock.mockResolvedValue(json({ data: [automation] }));
+
+    render(<AutomationsPage />);
+
+    expect(await screen.findByText('Triage critical alerts')).toBeInTheDocument();
+  });
+});
+
+describe('AutomationsPage elevated action mapping', () => {
+  it('carries stored actions from the API response to the elevated badge', async () => {
+    fetchMock.mockResolvedValue(json({ data: [{
+      ...automation,
+      actions: [{ type: 'run_script', scriptId: 'script-1', runAs: 'elevated' }],
+    }] }));
+
+    render(<AutomationsPage />);
+
+    expect(await screen.findByTestId('automation-elevated-badge')).toHaveTextContent('Elevated');
+  });
 });

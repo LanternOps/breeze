@@ -15,6 +15,7 @@ import {
   canManagePartnerWidePolicies,
 } from '../../services/partnerWideAccess';
 import { canAccessTemplateDependents } from './siteScope';
+import { managedByMonitorResponse } from '../../services/monitors/managedRowGuard';
 
 export const templateRoutes = new Hono();
 
@@ -371,6 +372,13 @@ templateRoutes.patch(
         return c.json({ error: 'Template not found' }, 404);
       }
 
+      // #5289 — a template compiled from a monitor definition must be edited
+      // only by the compiler; a side edit here would silently drift from the
+      // definition until the next compile pass overwrote it.
+      if (existing.managedByMonitorId) {
+        return managedByMonitorResponse(c, 'alert_templates', existing.managedByMonitorId);
+      }
+
       const writable = canWriteTemplate(auth, existing);
       if (!writable.ok) {
         return c.json({ error: writable.error }, writable.status);
@@ -440,6 +448,11 @@ templateRoutes.delete(
 
       if (!existing) {
         return c.json({ error: 'Template not found' }, 404);
+      }
+
+      // #5289 — see the guard in PATCH above.
+      if (existing.managedByMonitorId) {
+        return managedByMonitorResponse(c, 'alert_templates', existing.managedByMonitorId);
       }
 
       const writable = canWriteTemplate(auth, existing);

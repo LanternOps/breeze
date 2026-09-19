@@ -55,6 +55,7 @@ import {
 } from '../../db';
 import {
   stripeConnectAccounts,
+  stripeFinancialEvents,
   invoiceStripePayments,
   invoices,
 } from '../../db/schema';
@@ -230,6 +231,74 @@ describe('invoice_stripe_payments RLS (breeze_app)', () => {
     await expect(insertOnce()).resolves.toBeDefined();
     // Second insert of the SAME stripe_object_id is rejected by the unique index.
     await expect(insertOnce()).rejects.toMatchObject({ cause: { code: '23505' } });
+  });
+});
+
+describe('stripe_financial_events RLS (breeze_app)', () => {
+  runDb('partner A can read its event but cannot insert provider-authoritative state', async () => {
+    const { partnerA, acctA } = await seed();
+    const [event] = await withSystemDbAccessContext(() => db.insert(stripeFinancialEvents).values({
+      partnerId: partnerA.id, stripeConnectionId: acctA.id, stripeAccountId: acctA.stripeAccountId,
+      stripeEventId: 'evt_rls_allowed', eventType: 'charge.refunded', livemode: false,
+      providerCreated: 1, paymentIntentId: 'pi_allowed', currency: 'USD',
+      chargeAmountMinor: '1000', refundedAmountMinor: '100', payloadDigest: 'a'.repeat(64),
+    }).returning());
+    const visible = await withDbAccessContext(partnerCtx(partnerA.id), () => db.select()
+      .from(stripeFinancialEvents).where(eq(stripeFinancialEvents.id, event!.id)));
+    expect(visible).toHaveLength(1);
+
+    await expect(withDbAccessContext(partnerCtx(partnerA.id), () => db.insert(stripeFinancialEvents).values({
+      partnerId: partnerA.id, stripeConnectionId: acctA.id, stripeAccountId: acctA.stripeAccountId,
+      stripeEventId: 'evt_rls_partner_write', eventType: 'charge.refunded', livemode: false,
+      providerCreated: 2, paymentIntentId: 'pi_write', currency: 'USD',
+      chargeAmountMinor: '1000', refundedAmountMinor: '100', payloadDigest: 'b'.repeat(64),
+    }))).rejects.toMatchObject({ cause: { code: '42501' } });
+
+    const changed = await withDbAccessContext(partnerCtx(partnerA.id), () => db.update(stripeFinancialEvents)
+      .set({ refundedAmountMinor: '999' }).where(eq(stripeFinancialEvents.id, event!.id)).returning());
+    expect(changed).toHaveLength(0);
+    const [unchanged] = await withSystemDbAccessContext(() => db.select()
+      .from(stripeFinancialEvents).where(eq(stripeFinancialEvents.id, event!.id)));
+    expect(unchanged!.refundedAmountMinor).toBe('100');
+  });
+
+  runDb('partner B cannot forge an event on partner A', async () => {
+    const { partnerA, partnerB, acctA } = await seed();
+    await expect(withDbAccessContext(partnerCtx(partnerB.id), () => db.insert(stripeFinancialEvents).values({
+      partnerId: partnerA.id, stripeConnectionId: acctA.id, stripeAccountId: acctA.stripeAccountId,
+      stripeEventId: 'evt_rls_forged', eventType: 'charge.refunded', livemode: false,
+      providerCreated: 1, paymentIntentId: 'pi_forged', currency: 'USD',
+      chargeAmountMinor: '1000', refundedAmountMinor: '100', payloadDigest: 'b'.repeat(64),
+    }))).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  runDb('the composite connection FK rejects cross-partner provenance', async () => {
+    const { partnerA, partnerB, acctA } = await seed();
+    await expect(withSystemDbAccessContext(() => db.insert(stripeFinancialEvents).values({
+      partnerId: partnerB.id, stripeConnectionId: acctA.id, stripeAccountId: acctA.stripeAccountId,
+      stripeEventId: 'evt_cross_partner_connection', eventType: 'charge.refunded', livemode: false,
+      providerCreated: 2, paymentIntentId: 'pi_cross_pair', currency: 'USD',
+      chargeAmountMinor: '1000', refundedAmountMinor: '100', payloadDigest: 'd'.repeat(64),
+    }))).rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
+  runDb('account replacement preserves immutable event provenance', async () => {
+    const { partnerA, acctA } = await seed();
+    await withSystemDbAccessContext(() => db.insert(stripeFinancialEvents).values({
+      partnerId: partnerA.id, stripeConnectionId: acctA.id, stripeAccountId: acctA.stripeAccountId,
+      stripeEventId: 'evt_before_account_replace', eventType: 'charge.refunded', livemode: false,
+      providerCreated: 3, paymentIntentId: 'pi_old', currency: 'USD',
+      chargeAmountMinor: '1000', refundedAmountMinor: '100', payloadDigest: 'c'.repeat(64),
+    }));
+    await expect(withSystemDbAccessContext(() => db.update(stripeConnectAccounts)
+      .set({ stripeAccountId: 'acct_replacement' }).where(eq(stripeConnectAccounts.id, acctA.id))))
+      .resolves.toBeDefined();
+    const [event] = await withSystemDbAccessContext(() => db.select().from(stripeFinancialEvents)
+      .where(eq(stripeFinancialEvents.stripeEventId, 'evt_before_account_replace')));
+    expect(event).toMatchObject({
+      stripeConnectionId: acctA.id,
+      stripeAccountId: acctA.stripeAccountId,
+    });
   });
 });
 

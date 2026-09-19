@@ -142,6 +142,20 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/quotes/abc-123/resend'],
     ['POST', '/api/v1/quotes/abc-123/resend/'],
     ['post', '/api/v1/quotes/abc-123/resend'], // method is case-insensitive
+    // Task A9 — the tool test-call route dispatches a real outbound MCP call.
+    ['POST', '/api/v1/tool-sources'],
+    ['PATCH', '/api/v1/tool-sources/src-1'],
+    ['POST', '/api/v1/tool-sources/src-1/discover'],
+    ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test'],
+    ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test/'],
+    ['post', '/api/v1/tool-sources/src-1/tools/tool-1/test'], // method is case-insensitive
+    // #6098 — POST /agent-versions/sync-github fetches the GitHub release +
+    // manifest (RELEASE_FETCH_TIMEOUT_MS=30s) inside the handler; binarySync's
+    // writes now manage their own short withSystemDbAccessContext blocks, so
+    // the ambient request transaction must not be held across the fetch.
+    ['POST', '/api/v1/agent-versions/sync-github'],
+    ['POST', '/api/v1/agent-versions/sync-github/'],
+    ['post', '/api/v1/agent-versions/sync-github'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -171,6 +185,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
     ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
+    ['GET', '/api/v1/tool-sources/src-1/tools/tool-1/test', 'test-call is POST-only'],
+    ['POST', '/api/v1/tool-sources/src-1/tools/tool-1', 'PATCH tool route has no outbound call and keeps the ambient tx'],
+    ['POST', '/api/v1/tool-sources/src-1/tools/tool-1/test/extra', 'extra path segment must not match'],
+    ['POST', '/api/v1/tool-sources//tools/tool-1/test', 'empty source id segment must not match'],
+    ['POST', '/api/v1/tool-sources/src-1/tools//test', 'empty tool id segment must not match'],
     ['GET', '/api/v1/accounting/quickbooks', 'accounting status route does only DB work — keep ambient tx'],
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],
@@ -285,6 +304,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify', 'verify is POST-only'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions//verify', 'empty revision id must not match'],
     ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/extra', 'extra segment must not match'],
+    // #6098 — the other agent-versions routes are DB-only (or, for /pinnable,
+    // the whole point is a cheap tenant-scoped read) and must keep the
+    // ambient RLS transaction.
+    ['GET', '/api/v1/agent-versions/sync-github', 'sync-github is POST-only'],
+    ['POST', '/api/v1/agent-versions/sync-github/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/agent-versions', 'plain upload route is DB-only'],
+    ['GET', '/api/v1/agent-versions/pinnable', 'pinnable listing is DB-only'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

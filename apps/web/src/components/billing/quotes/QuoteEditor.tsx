@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { Eye, EyeOff, GripVertical, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
@@ -2344,7 +2344,23 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   </select>
                   {contractTemplatesLoaded && contractTemplates.length === 0 && (
                     <p className="mt-1 text-xs text-muted-foreground" data-testid="quote-block-contract-no-templates">
-                      {t('quotes.editor.contract.noTemplates')}
+                      {/* The href is a literal, never a locale value: a translated
+                          route breaks the feature in one language only, at runtime,
+                          with no test or type error (#3426, localeParity's
+                          routePathValueErrors). Retargeted to /agreements/templates
+                          by W03's IA split. */}
+                      <Trans
+                        i18nKey="quotes.editor.contract.noTemplates"
+                        t={t}
+                        components={{
+                          templatesLink: (
+                            <a
+                              href="/agreements/templates"
+                              className="font-medium underline hover:text-foreground"
+                            />
+                          ),
+                        }}
+                      />
                     </p>
                   )}
                 </div>
@@ -3049,6 +3065,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 <UnsavedBadge show={termsDirty} />
               </span>
             </div>
+            <p className="mb-2 text-xs text-muted-foreground">
+              {t('quotes.editor.terms.helper')}
+            </p>
             <textarea
               value={terms}
               onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}

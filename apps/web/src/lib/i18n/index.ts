@@ -44,6 +44,7 @@ const reportedMissingKeys = new Set<string>();
 const localizedDocumentTitleKeys: Record<string, string> = {
   '/': 'documentTitles.dashboard',
   '/devices': 'nav.devices',
+  '/organizations': 'nav.organizations',
   '/alerts': 'nav.alerts',
   '/approvals': 'nav.approvals',
   '/tickets': 'nav.tickets',

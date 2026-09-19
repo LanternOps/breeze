@@ -277,7 +277,15 @@ export const patchJobResults = pgTable('patch_job_results', {
   // which was re-pointed to devices.pending_reboot in 2026-06-11-j.
   rebootPendingIdx: index('idx_patch_job_results_reboot_pending')
     .on(table.deviceId)
-    .where(sql`reboot_required = true AND rebooted_at IS NULL`)
+    .where(sql`reboot_required = true AND rebooted_at IS NULL`),
+  // AI patch agent W03 (#5749): the failedWork / queued-offline evidence reads
+  // (`status = 'failed'|'queued' AND created_at >= now() - 30d`). Partial on
+  // status rather than a (status, created_at) composite: under forced RLS as
+  // breeze_app only leakproof operators become index conditions, and enum_eq
+  // is not — the predicate is proven statically instead. See the migration.
+  statusCreatedIdx: index('idx_patch_job_results_status_created')
+    .on(table.createdAt)
+    .where(sql`status IN ('failed', 'queued')`)
 }));
 
 export const patchRollbacks = pgTable('patch_rollbacks', {
@@ -320,6 +328,14 @@ export const patchComplianceReports = pgTable('patch_compliance_reports', {
   format: patchComplianceReportFormatEnum('format').notNull().default('csv'),
   source: patchSourceEnum('source'),
   severity: patchSeverityEnum('severity'),
+  executionScopeVersion: integer('execution_scope_version'),
+  executionScopeKind: varchar('execution_scope_kind', { length: 32 }),
+  executionScopeSiteIds: uuid('execution_scope_site_ids').array(),
+  executionScopeUserId: uuid('execution_scope_user_id'),
+  executionScopeFingerprint: varchar('execution_scope_fingerprint', { length: 64 }),
+  executionScopeCapturedAt: timestamp('execution_scope_captured_at', { withTimezone: true }),
+  executionScopePrincipalKind: text('execution_scope_principal_kind')
+    .$type<'user' | 'system' | 'portal_user'>(),
   summary: jsonb('summary'),
   rowCount: integer('row_count'),
   outputPath: text('output_path'),

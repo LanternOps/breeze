@@ -7,6 +7,7 @@ const tiles = vi.hoisted(() => ({
   backupTile: vi.fn(),
   supportTile: vi.fn(),
   actionItemsTile: vi.fn(),
+  serviceTile: vi.fn(),
 }));
 
 const dbState = vi.hoisted(() => ({
@@ -43,8 +44,10 @@ vi.mock('./ticketReadModel', () => ({ supportTile: tiles.supportTile }));
 vi.mock('./actionItemsReadModel', () => ({
   actionItemsTile: tiles.actionItemsTile,
 }));
+vi.mock('./serviceReadModel', () => ({ serviceTile: tiles.serviceTile }));
 
-import type { SQL } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
+const ticketOwnership = sql`ownership_predicate`;
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { awaitingYouTile, dashboardForOrg } from './dashboard';
 
@@ -115,7 +118,7 @@ describe('portal dashboard read model', () => {
     const dto = await dashboardForOrg('org-1', {
       timezone: 'America/Denver',
       now,
-    });
+    }, ticketOwnership);
 
     expect(dto).toEqual({
       asOf: now.toISOString(),
@@ -148,6 +151,9 @@ describe('portal dashboard read model', () => {
         status: 'ok', proposals: 1, invoices: 2, asOf: now.toISOString(),
       },
     });
+    // enable_service off => serviceTile resolves null => the key is ABSENT, so
+    // an org that never turns the flag on keeps its pre-W04 payload and ETag.
+    expect('service' in dto).toBe(false);
     expect(tiles.securityScoreTile).toHaveBeenCalledWith('org-1', now);
     expect(tiles.devicesProtectedTile).toHaveBeenCalledWith('org-1', now);
     expect(tiles.patchesAppliedTile).toHaveBeenCalledWith('org-1', {
@@ -158,7 +164,43 @@ describe('portal dashboard read model', () => {
     expect(tiles.supportTile).toHaveBeenCalledWith('org-1', {
       timezone: 'America/Denver',
       now,
-    });
+    }, ticketOwnership);
     expect(tiles.actionItemsTile).toHaveBeenCalledWith('org-1', now);
+  });
+});
+
+describe('dashboardForOrg service tile (W04)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+    dbState.wheres = [];
+  });
+
+  async function run(serviceResult: unknown) {
+    dbState.rows.push([{ count: 0 }], [{ count: 0 }]);
+    for (const tile of [
+      tiles.securityScoreTile, tiles.devicesProtectedTile, tiles.patchesAppliedTile,
+      tiles.backupTile, tiles.supportTile, tiles.actionItemsTile,
+    ]) tile.mockResolvedValue({ status: 'no_data' });
+    tiles.serviceTile.mockResolvedValue(serviceResult);
+    return dashboardForOrg('org-1', { timezone: 'UTC', now: new Date('2026-10-15T12:00:00Z') }, ticketOwnership);
+  }
+
+  it('carries the tile when the read model returns one', async () => {
+    const tile = {
+      status: 'ok', windowDays: 90, deliveredOnTime: 5, deliveredLate: 1, missed: 0,
+      nextDue: { name: 'Monthly sign-in log review', dueAt: '2026-10-31' },
+      asOf: '2026-10-15T12:00:00.000Z',
+    };
+    const dto = await run(tile);
+    expect(dto.service).toEqual(tile);
+    expect(tiles.serviceTile).toHaveBeenCalledWith('org-1', {
+      timezone: 'UTC', now: new Date('2026-10-15T12:00:00Z'),
+    });
+  });
+
+  it('omits the key entirely when the flag is off', async () => {
+    const dto = await run(null);
+    expect('service' in dto).toBe(false);
   });
 });

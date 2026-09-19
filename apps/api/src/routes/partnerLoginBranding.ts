@@ -4,7 +4,14 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { partnerLoginBranding } from '../db/schema';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import {
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  type AuthContext
+} from '../middleware/auth';
+import { PERMISSIONS } from '../services/permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -51,6 +58,8 @@ partnerLoginBrandingRoutes.put(
   '/me/login-branding',
   authMiddleware,
   requireScope('partner'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
   zValidator('json', brandingSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

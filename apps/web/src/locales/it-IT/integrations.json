@@ -42,6 +42,9 @@
       "unknownPermission": "Autorizzazione sconosciuta (ruolo {{appRoleId}})",
       "grantsVerifiedAt": "Autorizzazioni verificate"
     },
+    "upgrade": {
+      "banner": "Sono necessarie nuove autorizzazioni Microsoft 365 per l'accesso condizionale, il punteggio di sicurezza e la visibilità dei ruoli di amministratore. Un amministratore globale deve approvarle."
+    },
     "actions": {
       "connect": "Connetti",
       "reconsent": "Rinnova consenso",
@@ -53,7 +56,32 @@
       "retestSucceeded": "Nuovo test della connessione completato.",
       "disconnectWarning": "La disconnessione impedisce a Breeze di usare questa connessione. Il consenso Microsoft a livello tenant resta attivo finché un amministratore del cliente non lo rimuove in Microsoft Entra.",
       "disconnectFailed": "Impossibile disconnettere la connessione.",
-      "disconnectSucceeded": "Connessione Breeze disconnessa."
+      "disconnectSucceeded": "Connessione Breeze disconnessa.",
+      "approveNewPermissions": "Approva le nuove autorizzazioni",
+      "upgradeFailed": "Non è stato possibile avviare l'approvazione delle nuove autorizzazioni.",
+      "syncNow": "Sincronizza ora",
+      "syncFailed": "Non è stato possibile richiedere la sincronizzazione del tenant.",
+      "syncSucceeded": "Sincronizzazione del tenant richiesta."
+    },
+    "sync": {
+      "lastSynced": "Ultima sincronizzazione {{relative}}",
+      "counts": "{{users}} utenti · {{devices}} dispositivi",
+      "never": "Non ancora sincronizzato",
+      "chips": {
+        "partial": "{{domain}}: parziale",
+        "needsConsent": "{{domain}}: consenso richiesto",
+        "throttled": "{{domain}}: limitato",
+        "error": "{{domain}}: errore",
+        "unlicensed": "L'attività di accesso richiede Entra ID P1"
+      },
+      "domains": {
+        "users": "Utenti",
+        "signin_activity": "Attività di accesso",
+        "intune_devices": "Dispositivi Intune",
+        "ca_policies": "Accesso condizionale",
+        "skus": "Licenze",
+        "secure_score": "Punteggio sicuro"
+      }
     },
     "errors": {
       "consent_expired": "La sessione di consenso è scaduta. Avvia di nuovo il consenso.",
@@ -746,6 +774,15 @@
     "syncedWithTaxVariance": "Sincronizzato con differenza d'imposta"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Operazioni QuickBooks in sospeso",
+    "owedLoadError": "Impossibile caricare le operazioni in sospeso. Ricarica la pagina per riprovare.",
+    "owedCount": "Operazioni in sospeso: {{total}}",
+    "owedEmpty": "Nessuna operazione in sospeso",
+    "owedDelete": "Elimina pagamento",
+    "owedPush": "Invia pagamento",
+    "owedViewInvoice": "Visualizza fattura",
+    "owedInvoiceUnavailable": "Fattura non disponibile",
+    "owedAge": "In attesa da {{minutes}} min",
     "quickbooksConnected": "QuickBooks connesso.",
     "quickbooksConnectionFailedPleaseTryAgain": "Connessione QuickBooks non riuscita. Riprova.",
     "failedToStartTheQuickBooksConnection": "Impossibile avviare la connessione QuickBooks.",
@@ -874,7 +911,11 @@
     "couldNotRefresh": "Impossibile aggiornare i dettagli dell'account Stripe.",
     "notCached": "Valuta non ancora in cache — aggiorna per recuperarla da Stripe.",
     "staleCache": "Impossibile raggiungere Stripe — vengono mostrati gli ultimi dettagli dell'account in cache.",
-    "reconnectRequired": "La chiave Stripe salvata (•••• {{last4}}) non funziona più: {{reason}} Incolla una nuova chiave per riconnetterti; i pagamenti online falliranno fino ad allora."
+    "reconnectRequired": "La chiave Stripe salvata (•••• {{last4}}) non funziona più: {{reason}} Incolla una nuova chiave per riconnetterti; i pagamenti online falliranno fino ad allora.",
+    "reconciliationError": "La riconciliazione degli storni di pagamento non è in esecuzione: {{reason}} Sostituisci la chiave Stripe con una che possa leggere gli Eventi.",
+    "revocationCredentialUnavailable": "Non è stato possibile annullare {{count}} link di pagamento online perché la chiave Stripe che li ha creati non è più disponibile. Quei link potrebbero essere ancora pagabili su Stripe: annullali dalla dashboard di Stripe e riemetti le fatture.",
+    "revocationChargedRepair": "{{count}} link di pagamento online sono stati pagati dopo che Breeze aveva chiesto a Stripe di annullarli. Il denaro è reale: riconcilia quei pagamenti (e rimborsa se la fattura era già stata saldata in altro modo).",
+    "revocationBlocked": "Non è stato possibile annullare {{count}} link di pagamento online: Stripe ha rifiutato la richiesta con la chiave salvata. Salva una chiave Stripe funzionante per riprovare, oppure annulla i link dalla dashboard di Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossibile salvare le mappature siti.",

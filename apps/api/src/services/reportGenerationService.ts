@@ -14,7 +14,21 @@ import {
   reportRuns
 } from '../db/schema';
 import type { ExecutiveSummary } from '@breeze/shared';
-import type { ReportExecutionAuthority } from './siteScope';
+import { emptyVulnerabilityManagementSummary } from '@breeze/shared';
+import {
+  ENDPOINT_MANAGEMENT_NO_SITES_GAP,
+  emptyEndpointManagementSummary,
+} from '@breeze/shared';
+import {
+  systemReportAuthorityFor,
+  type ReportExecutionAuthority,
+  type ReportGenerationAuthority,
+} from './siteScope';
+import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEvidenceRegistry';
+
+/** Mirrors `endpointManagementConfigSchema`'s default. Duplicated rather than
+ *  imported because routes/reports/schemas.ts imports back from this module. */
+const ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS = 14;
 
 export type ReportType =
   | 'device_inventory'
@@ -33,7 +47,36 @@ export type ReportType =
   // reporting "Invalid report type" for a type that is perfectly valid
   // everywhere except here. `reportGenerationService.test.ts` pins the union
   // against `reportTypeEnum` so the two can never drift.
-  | 'ai_org_narrative';
+  | 'ai_org_narrative'
+  // Fleet Designer W01 (#5651). Same "stored, never generated" shape as
+  // `ai_org_narrative` above: the Fleet Design's `report_runs` row is written
+  // once inside the design run's own transaction
+  // (`persistFleetDesignReport`, services/aiAgents/fleetDesignReport.ts) from
+  // a model-authored design no query could reproduce.
+  | 'ai_fleet_design'
+  // Hardware Lifecycle: generated on demand from devices/manual assets +
+  // warranty; see services/hardwareLifecycleReport.ts.
+  | 'hardware_lifecycle'
+  // #5784 W02. Service-plan evidence: Huntress incidents for the occurrence's
+  // period, with an explicit coverage window. Generated on demand and by the
+  // managed-evidence system path; see services/threatDetectionReport.ts.
+  | 'threat_detection_review'
+  // #5784 W03. Service-plan evidence: Intune enrolment, compliance and licence
+  // posture from the #5327 sync tables, with the freshness of each domain
+  // printed. Current inventory plus rollup trend only — entity-level history is
+  // not reconstructible (see services/endpointManagementReport.ts).
+  | 'endpoint_management_review'
+  // #5784 W04. Service-plan evidence: the vulnerability DETAIL artifact.
+  // security_compliance_posture keeps its single control line; this is the
+  // findings, exceptions and remediation ranking a vulnerability-management
+  // deliverable needs. See services/vulnerabilityManagementReport.ts.
+  | 'vulnerability_management'
+  // #5784 W06. Service-plan evidence: interactive sign-in review, identity
+  // inventory, conditional access posture and remote-access client presence.
+  // Org-wide by construction — M365 identity has no site dimension — so a
+  // restricted authority gets the zero-safe shape, never a silently org-wide
+  // view. See services/identityAccessReport.ts.
+  | 'identity_access_review';
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
@@ -148,7 +191,7 @@ function emptyRowsReport() {
  */
 function addAllowedSiteCondition(
   conditions: SQL[],
-  authority: ReportExecutionAuthority,
+  authority: ReportGenerationAuthority,
   siteColumn: AnyPgColumn = devices.siteId,
 ): boolean {
   if (authority.scope.kind === 'unrestricted') return false;
@@ -169,8 +212,8 @@ export class UnexecutableReportScopeError extends Error {
 
 function assertExecutableAuthority(
   orgId: string,
-  authority: ReportExecutionAuthority | null | undefined,
-): asserts authority is ReportExecutionAuthority {
+  authority: ReportGenerationAuthority | null | undefined,
+): asserts authority is ReportGenerationAuthority {
   if (!authority || !authority.scope) {
     throw new UnexecutableReportScopeError('Report execution authority is required');
   }
@@ -196,6 +239,15 @@ function assertExecutableAuthority(
         && authority.principalUserId !== undefined
       ) {
         throw new UnexecutableReportScopeError('Portal-user report execution authority cannot carry a staff principal');
+      }
+      break;
+    case 'system':
+      // #5784 OD-5 = B. A system authority is org-wide by construction; a
+      // restricted one would stamp a scoped fingerprint on an org-wide result.
+      if (authority.scope.kind !== 'unrestricted') {
+        throw new UnexecutableReportScopeError(
+          'System report execution authority must be org-wide unrestricted',
+        );
       }
       break;
     default: {
@@ -232,15 +284,16 @@ function assertRequestedScopeWithinAuthority(
 export function assertReportExecutionPreflight(
   orgId: string,
   config: Record<string, unknown>,
-  authority: ReportExecutionAuthority | null | undefined,
+  authority: ReportGenerationAuthority | null | undefined,
   reportType?: ReportType,
-): asserts authority is ReportExecutionAuthority {
+): asserts authority is ReportGenerationAuthority {
   assertExecutableAuthority(orgId, authority);
   if (
     reportType
     && authority.principalKind === 'portal_user'
     && reportType !== 'executive_summary'
     && reportType !== 'security_compliance_posture'
+    && reportType !== 'hardware_lifecycle'
   ) {
     throw new UnexecutableReportScopeError(
       `Portal-user authority cannot generate report type ${reportType}`,
@@ -251,6 +304,15 @@ export function assertReportExecutionPreflight(
       assertRequestedScopeWithinAuthority(config, authority);
       return;
     case 'portal_user':
+      return;
+    case 'system':
+      // The type gate lives in dispatchReportGeneration, which sees the type on
+      // every call; here we only re-assert the scope invariant.
+      if (authority.scope.kind !== 'unrestricted') {
+        throw new UnexecutableReportScopeError(
+          'System report execution authority must be org-wide unrestricted',
+        );
+      }
       return;
     default: {
       const exhaustive: never = authority;
@@ -263,10 +325,17 @@ export function assertReportExecutionPreflight(
 
 /**
  * One `device_inventory` row. Both branches (#4622: agent devices and manual
- * assets) project onto exactly these twelve columns — a report consumer reads
- * one header row, so a second shape would silently truncate.
+ * assets) project onto exactly these thirteen columns — a report consumer
+ * reads one header row, so a second shape would silently truncate.
+ *
+ * `deviceId` is null on manual-asset rows: they live in `manualAssets`, not
+ * `devices`, and have no device id to give. #5776 — this column (plus the
+ * `filters.deviceIds` branch below) replaces the hostname-based post-filter
+ * `export_dataset`'s device_inventory adapter used to enforce run-target
+ * restriction with, since hostnames are not unique within an org.
  */
 type DeviceInventoryRow = {
+  deviceId: string | null;
   hostname: string | null;
   displayName: string | null;
   osType: string | null;
@@ -281,35 +350,11 @@ type DeviceInventoryRow = {
   serialNumber: string | null;
 };
 
-export async function generateDeviceInventoryReport(
-  orgId: string,
-  config: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
-) {
-  assertReportExecutionPreflight(orgId, config, authority, 'device_inventory');
-  // `isEphemeral = false` on every device predicate in this file: Quick Support
-  // devices live in the partner's hidden 'quick_support' org, which deliberately
-  // stays inside accessibleOrgIds so RLS lets a tech reach their own session.
-  // Nothing filters them out for us — reports must exclude them explicitly.
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
-
-  const filters = config.filters as Record<string, unknown> | undefined;
-  if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
-    conditions.push(inArray(devices.siteId, filters.siteIds));
-  }
-
-  if (addAllowedSiteCondition(conditions, authority)) {
-    return emptyRowsReport();
-  }
-
-  if (filters?.osTypes && Array.isArray(filters.osTypes) && filters.osTypes.length > 0) {
-    conditions.push(inArray(devices.osType, filters.osTypes));
-  }
-
-  const whereCondition = and(...conditions);
-
-  const data = await db
+/** Shared row query; callers retain their own authority checks and narrowing. */
+export async function readDeviceInventoryRows(orgId: string, conditions: SQL[]) {
+  return db
     .select({
+      deviceId: devices.id,
       hostname: devices.hostname,
       displayName: devices.displayName,
       osType: devices.osType,
@@ -325,8 +370,47 @@ export async function generateDeviceInventoryReport(
     })
     .from(devices)
     .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
-    .where(whereCondition)
+    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), ...conditions))
     .orderBy(devices.hostname);
+}
+
+export async function generateDeviceInventoryReport(
+  orgId: string,
+  config: Record<string, unknown>,
+  // `ReportGenerationAuthority`, not the request-path union: this generator
+  // reads only `authority.scope`, so it is the one existing type that can run
+  // under a system authority — which is what lets
+  // managedEvidenceFoundations.integration.test.ts prove the #5784 system path
+  // end to end on real Postgres before W02 ships the first registry type.
+  // Reaching it with a system authority still requires the closed registry to
+  // name 'device_inventory', which production never does.
+  authority: ReportGenerationAuthority,
+) {
+  assertReportExecutionPreflight(orgId, config, authority, 'device_inventory');
+  // `isEphemeral = false` on every device predicate in this file: Quick Support
+  // devices live in the partner's hidden 'quick_support' org, which deliberately
+  // stays inside accessibleOrgIds so RLS lets a tech reach their own session.
+  // Nothing filters them out for us — reports must exclude them explicitly.
+  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
+
+  const filters = config.filters as Record<string, unknown> | undefined;
+  if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
+    conditions.push(inArray(devices.id, filters.deviceIds));
+  }
+
+  if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
+    conditions.push(inArray(devices.siteId, filters.siteIds));
+  }
+
+  if (addAllowedSiteCondition(conditions, authority)) {
+    return emptyRowsReport();
+  }
+
+  if (filters?.osTypes && Array.isArray(filters.osTypes) && filters.osTypes.length > 0) {
+    conditions.push(inArray(devices.osType, filters.osTypes));
+  }
+
+  const data = await readDeviceInventoryRows(orgId, conditions);
 
   const rows: DeviceInventoryRow[] = [...data];
 
@@ -335,11 +419,12 @@ export async function generateDeviceInventoryReport(
   // than given columns of their own: a report consumer (CSV, PDF, the portal
   // table) reads one header row, and a second shape would silently truncate.
   //
-  // An OS-type filter drops the branch entirely: a hand-entered asset has no OS
-  // to match, so keeping it would widen a report the requester explicitly
-  // narrowed.
+  // An OS-type or device-id filter drops the branch entirely: a hand-entered
+  // asset has no OS and no device id to match, so keeping it would widen a
+  // report the requester explicitly narrowed.
   const includeManualAssets = filters?.includeManualAssets !== false
-    && !(Array.isArray(filters?.osTypes) && filters.osTypes.length > 0);
+    && !(Array.isArray(filters?.osTypes) && filters.osTypes.length > 0)
+    && !(Array.isArray(filters?.deviceIds) && filters.deviceIds.length > 0);
 
   if (includeManualAssets) {
     const manualConditions: SQL[] = [
@@ -369,6 +454,7 @@ export async function generateDeviceInventoryReport(
 
     for (const asset of manualData) {
       rows.push({
+        deviceId: null,
         hostname: asset.name,
         displayName: asset.name,
         osType: null,
@@ -392,6 +478,22 @@ export async function generateDeviceInventoryReport(
   return { rows, rowCount: rows.length };
 }
 
+/** Shared row query; the org/non-ephemeral predicates are mandatory. */
+export async function readSoftwareInventoryRows(orgId: string, conditions: SQL[]) {
+  return db
+    .select({
+      softwareName: deviceSoftware.name,
+      version: deviceSoftware.version,
+      publisher: deviceSoftware.publisher,
+      installDate: deviceSoftware.installDate,
+      deviceHostname: devices.hostname
+    })
+    .from(deviceSoftware)
+    .innerJoin(devices, eq(deviceSoftware.deviceId, devices.id))
+    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), ...conditions))
+    .orderBy(deviceSoftware.name, devices.hostname);
+}
+
 export async function generateSoftwareInventoryReport(
   orgId: string,
   config: Record<string, unknown>,
@@ -409,20 +511,7 @@ export async function generateSoftwareInventoryReport(
     return emptyRowsReport();
   }
 
-  const whereCondition = and(...conditions);
-
-  const data = await db
-    .select({
-      softwareName: deviceSoftware.name,
-      version: deviceSoftware.version,
-      publisher: deviceSoftware.publisher,
-      installDate: deviceSoftware.installDate,
-      deviceHostname: devices.hostname
-    })
-    .from(deviceSoftware)
-    .innerJoin(devices, eq(deviceSoftware.deviceId, devices.id))
-    .where(whereCondition)
-    .orderBy(deviceSoftware.name, devices.hostname);
+  const data = await readSoftwareInventoryRows(orgId, conditions);
 
   return { rows: data, rowCount: data.length };
 }
@@ -739,18 +828,52 @@ export async function generateExecutiveSummaryReport(
   };
 }
 
-/** Dispatch to the matching report generator by type. */
-export async function generateReport(
+/**
+ * The occurrence-derived window an evidence run covers, passed in rather than
+ * derived from `now()` (#5784, OD-11 = A). Absent for an ordinary staff-initiated
+ * run, in which case the generator falls back to its config's date range.
+ */
+export type EvidenceRunContext = {
+  /** Occurrence `period_start` (ISO date, inclusive). */
+  periodStart: string;
+  /** Occurrence `period_end` (ISO date, inclusive) — equals the due date. */
+  periodEnd: string;
+  /** When generation actually ran. Generation stays on the DUE DAY, so this is
+   *  normally EARLIER than `periodEnd` ends; the artifact must say so. */
+  generatedAt: string;
+  /** The deliverable this run is evidence for; the baseline selector's key. */
+  deliverableId: string;
+};
+
+/**
+ * ONE dispatcher for both execution paths. The switch below and
+ * `zeroSafeReport` end in a `never` default, which is the only thing stopping a
+ * new type from silently falling through; duplicating the switch for the
+ * system path would let the copies drift. A system authority is refused here
+ * for any type the closed registry does not name (#5784 OD-5 = B).
+ *
+ * `evidence` is threaded to generators that accept it (the #5784 types, added
+ * by W02/W03/W04/W06); the existing generators do not take it and their call
+ * sites are unchanged.
+ */
+async function dispatchReportGeneration(
   type: ReportType,
   orgId: string,
   config: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  authority: ReportGenerationAuthority,
+  evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
+  if (authority?.principalKind === 'system' && !isManagedEvidenceType(type)) {
+    throw new UnexecutableReportScopeError(
+      `${type} is not a managed evidence type and cannot run under system authority`,
+    );
+  }
   assertReportExecutionPreflight(orgId, config, authority, type);
   if (
     authority.principalKind === 'portal_user'
     && type !== 'executive_summary'
     && type !== 'security_compliance_posture'
+    && type !== 'hardware_lifecycle'
   ) {
     throw new UnexecutableReportScopeError(
       `Portal-user authority cannot generate report type ${type}`,
@@ -760,31 +883,109 @@ export async function generateReport(
     return zeroSafeReport(type, orgId);
   }
 
+  // The generators below predate #5784 and take the request-path authority
+  // only. A system authority can only reach this switch for a registry type,
+  // and every registry type gets its own arm that accepts `authority` as-is —
+  // so this narrowing is unreachable in practice and a loud refusal if a later
+  // wave adds a registry entry without adding its arm.
+  const requestAuthority = (): ReportExecutionAuthority => {
+    if (authority.principalKind === 'system') {
+      throw new UnexecutableReportScopeError(
+        `${type} has no managed evidence generator and cannot run under system authority`,
+      );
+    }
+    return authority;
+  };
+
   switch (type) {
     case 'device_inventory':
       return generateDeviceInventoryReport(orgId, config, authority);
     case 'software_inventory':
-      return generateSoftwareInventoryReport(orgId, config, authority);
+      return generateSoftwareInventoryReport(orgId, config, requestAuthority());
     case 'alert_summary':
-      return generateAlertSummaryReport(orgId, config, authority);
+      return generateAlertSummaryReport(orgId, config, requestAuthority());
     case 'compliance':
-      return generateComplianceReport(orgId, config, authority);
+      return generateComplianceReport(orgId, config, requestAuthority());
     case 'performance':
-      return generatePerformanceReport(orgId, config, authority);
+      return generatePerformanceReport(orgId, config, requestAuthority());
     case 'executive_summary':
-      return generateExecutiveSummaryReport(orgId, config, authority);
+      return generateExecutiveSummaryReport(orgId, config, requestAuthority());
     case 'security_compliance_posture': {
       const { generateSecurityCompliancePostureReport } = await import('./securityComplianceReport');
-      return generateSecurityCompliancePostureReport(orgId, config, authority);
+      return generateSecurityCompliancePostureReport(orgId, config, requestAuthority());
     }
     // P2-3 (#4190) — stored, never generated. See `StoredArtifactOnlyReportError`.
     case 'ai_org_narrative':
       throw new StoredArtifactOnlyReportError(type);
+    // Fleet Designer W01 (#5651) — stored, never generated, same as above.
+    case 'ai_fleet_design':
+      throw new StoredArtifactOnlyReportError(type);
+    case 'hardware_lifecycle': {
+      const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
+      return generateHardwareLifecycleReport(orgId, config, requestAuthority());
+    }
+    // #5784 W02. Accepts `authority` as-is: it is a managed evidence type, so a
+    // system authority legitimately reaches this arm. The dynamic import keeps
+    // the generator off the hot path and avoids the module cycle back to
+    // `assertReportExecutionPreflight`.
+    case 'threat_detection_review': {
+      const { generateThreatDetectionReport } = await import('./threatDetectionReport');
+      return generateThreatDetectionReport(orgId, config, authority, evidence);
+    }
+    case 'endpoint_management_review': {
+      // `await import` keeps a heavy generator off the hot path and avoids the
+      // module cycle back to `assertReportExecutionPreflight`.
+      const { generateEndpointManagementReport } = await import('./endpointManagementReport');
+      return generateEndpointManagementReport(orgId, config, authority, evidence);
+    }
+    // #5784 W04. The dynamic import keeps a heavy generator out of the hot path
+    // and avoids the module cycle back to `assertReportExecutionPreflight`.
+    case 'vulnerability_management': {
+      const { generateVulnerabilityManagementReport } = await import('./vulnerabilityManagementReport');
+      return generateVulnerabilityManagementReport(orgId, config, authority, evidence);
+    }
+    // #5784 W06. Same managed-evidence shape as W02 above: `authority` is passed
+    // as-is because a system authority legitimately reaches this arm, and the
+    // generator itself decides what a RESTRICTED authority gets (nothing —
+    // M365 identity has no site dimension, OD-8 = A).
+    case 'identity_access_review': {
+      const { generateIdentityAccessReport } = await import('./identityAccessReport');
+      return generateIdentityAccessReport(orgId, config, authority, evidence);
+    }
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);
     }
   }
+}
+
+/** Dispatch to the matching report generator by type (request path). */
+export async function generateReport(
+  type: ReportType,
+  orgId: string,
+  config: Record<string, unknown>,
+  authority: ReportExecutionAuthority,
+): Promise<ReportResult> {
+  return dispatchReportGeneration(type, orgId, config, authority);
+}
+
+/**
+ * The managed-evidence execution path (#5784, OD-5 = B). The ONLY entry point
+ * that accepts a `SystemReportExecutionAuthority`, and it accepts one only for a
+ * type the closed `MANAGED_EVIDENCE_REGISTRY` names. An org-owned recurring
+ * obligation must not stop producing evidence because one technician changed
+ * jobs, which is what the user-principal path did.
+ */
+export async function generateManagedEvidenceReport(
+  type: ManagedEvidenceType,
+  orgId: string,
+  config: Record<string, unknown>,
+  evidence: EvidenceRunContext | undefined,
+): Promise<ReportResult> {
+  if (!isManagedEvidenceType(type)) {
+    throw new UnexecutableReportScopeError(`${type} is not a managed evidence type`);
+  }
+  return dispatchReportGeneration(type, orgId, config, systemReportAuthorityFor(orgId), evidence);
 }
 
 function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
@@ -817,12 +1018,64 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'software_inventory':
     case 'performance':
     case 'security_compliance_posture':
+    case 'hardware_lifecycle':
+    // #5784 W02 — NOT stored-artifact-only: a restricted authority with zero
+    // sites gets an empty-but-shaped result rather than a throw.
+    case 'threat_detection_review':
+    // #5784 W06 — NOT stored-artifact-only either. This arm is load-bearing for
+    // identity_access_review in a way it is not for the types above: the
+    // generator routes EVERY restricted authority into the same empty-but-shaped
+    // result, not only the zero-sites case.
+    case 'identity_access_review':
       return emptyRowsReport();
+    // #5784 W03 — generated on demand, so a restricted-empty authority gets a
+    // zero-safe shape rather than a stored-artifact refusal. It needs its OWN
+    // case, not `emptyRowsReport()`: that returns no `summary` at all, and
+    // `buildReportPdf`'s endpoint-management arm is guarded on the summary
+    // being present, so the artifact would fall through to renderGenericReport
+    // and print one line — "No data available for the selected filters" — which
+    // reads as "nothing to report" to a technician whose real situation is
+    // "your access scope contains no sites". This short-circuit runs BEFORE the
+    // dispatch switch, so the generator's own empty branch never sees it.
+    case 'endpoint_management_review':
+      return {
+        rows: [],
+        rowCount: 0,
+        summary: emptyEndpointManagementSummary({
+          orgId,
+          generatedAt: new Date().toISOString(),
+          thresholdDays: ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS,
+          dataGap: ENDPOINT_MANAGEMENT_NO_SITES_GAP,
+        }) as unknown as Record<string, unknown>,
+      };
+    // #5784 W04. NOT `emptyRowsReport()`: that returns no `summary`, and
+    // `buildReportPdf`'s vulnerability_management arm requires one — a
+    // summary-less result falls through to `renderGenericReport`, which prints
+    // "No data available for the selected filters.", phrasing indistinguishable
+    // from "we checked every device and found none". A site-restricted
+    // authority with zero sites queried nothing, so the counts are NOT
+    // MEASURED and the artifact says which of the two happened.
+    case 'vulnerability_management': {
+      const generatedAt = new Date().toISOString();
+      return {
+        rows: [],
+        rowCount: 0,
+        generatedAt,
+        summary: emptyVulnerabilityManagementSummary(
+          orgId,
+          generatedAt,
+          'This report ran under a site-restricted authority with no sites in scope, so no device was queried. The counts below are not measured — they are not zero.',
+        ) as unknown as Record<string, unknown>,
+      };
+    }
     // P2-3 (#4190) — refused HERE too, not only in the dispatch switch above.
     // A restricted-empty authority short-circuits into this function before
     // dispatch ever runs, and an empty zero-safe shape would read as "the
     // narrative is empty" for a document that exists and is downloadable.
     case 'ai_org_narrative':
+      throw new StoredArtifactOnlyReportError(type);
+    // Fleet Designer W01 (#5651) — refused HERE too, same reason as above.
+    case 'ai_fleet_design':
       throw new StoredArtifactOnlyReportError(type);
     default: {
       const exhaustive: never = type;

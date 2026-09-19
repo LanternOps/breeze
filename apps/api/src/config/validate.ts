@@ -625,6 +625,53 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // Task A7 (tool-catalog W1). Platform kill switch for tool sources, read
+    // at runtime by toolSourcesEnabled() in env.ts. Validated here for
+    // boolean format only, same class as AGENT_AUTO_PROMOTE above.
+    TOOL_SOURCES_ENABLED: z.string().optional(),
+
+    // Task A7. Sub-flag allowing a tool source to target private/loopback
+    // egress — an SSRF vector on the hosted platform, so it's refused there
+    // outright in the superRefine below. Read at runtime by
+    // toolSourcesAllowPrivateEgress() in env.ts.
+    TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: z.string().optional(),
+
+    // AI execution plane (spec §8). Sub-flag of BREEZE_AI_AGENTS_ENABLED, read
+    // at runtime by aiWorkspaceEnabled() in env.ts. Validated here for boolean
+    // format only — the production coupling rule is in the superRefine below.
+    BREEZE_AI_WORKSPACE_ENABLED: z.string().optional(),
+    // 'vercel' | 'fake'. Resolved at runtime by resolveSandboxBackendName()
+    // (services/workspace/sandboxBackend.ts), which refuses an unset value in
+    // production; the superRefine below additionally refuses 'fake' there.
+    AI_WORKSPACE_BACKEND: z.string().optional(),
+    VERCEL_SANDBOX_TOKEN: z.string().optional(),
+    VERCEL_TEAM_ID: z.string().optional(),
+    VERCEL_PROJECT_ID: z.string().optional(),
+    VERCEL_SANDBOX_REGION_EU: z.string().optional(),
+    VERCEL_SANDBOX_REGION_US: z.string().optional(),
+    // Margin/regional-rate multiplier on COMPUTE_PRICING (services/
+    // aiComputePricing.ts). Default 1; a malformed value falls back to 1 there
+    // rather than zeroing billing.
+    AI_COMPUTE_PRICE_MULTIPLIER: z.string().optional(),
+
+    // AI script authoring (W01b). Read at runtime by aiScriptAuthoringEnabled()
+    // in env.ts. Validated here for boolean format only.
+    BREEZE_AI_SCRIPT_AUTHORING_ENABLED: z.string().optional(),
+
+    // Execution plane W01 (spec 2026-09-13 §8). Validated for SHAPE here so a
+    // typo boot-refuses instead of silently reading as off / 'us'.
+    BREEZE_REGION: z.string().optional(),
+    ARTIFACT_BLOB_BACKEND: z.string().optional(),
+    ARTIFACT_S3_ENDPOINT_EU: z.string().optional(),
+    ARTIFACT_S3_ENDPOINT_US: z.string().optional(),
+    ARTIFACT_S3_BUCKET_EU: z.string().optional(),
+    ARTIFACT_S3_BUCKET_US: z.string().optional(),
+    ARTIFACT_S3_REGION_EU: z.string().optional(),
+    ARTIFACT_S3_REGION_US: z.string().optional(),
+    ARTIFACT_S3_ACCESS_KEY: z.string().optional(),
+    ARTIFACT_S3_SECRET_KEY: z.string().optional(),
+    ARTIFACT_S3_SSE: z.string().optional(),
+
     // #1374 — L4 (critical-tier) platform-attestation gate. Defaults TRUE; read
     // at runtime by authenticatorAttestationEnforced() in env.ts. Validated here
     // for boolean format only, same class as AGENT_AUTO_PROMOTE above — and for
@@ -670,6 +717,18 @@ const envObjectSchema = z
     // silently disabling the tools an operator believed they had enabled) and so
     // the APP_ENCRYPTION_KEY_ID pairing rule below is schema-derived.
     M365_GRAPH_ACTIONS_TOOLS_ENABLED: z.string().optional(),
+
+    // M365 tenant sync (wave 04). Dark by default; read at runtime by
+    // isM365TenantSyncEnabled() in env.ts. Declared here so the format is
+    // guarded — a typo reads as OFF at the runtime flag parser, silently
+    // leaving the scheduler dark for an operator who believed they enabled it.
+    M365_TENANT_SYNC_ENABLED: z.string().optional(),
+    // Capacity dials for the sync worker/ticker. Format-guarded only: the
+    // runtime accessors clamp, so a valid-but-silly value is an operator
+    // choice, but a non-numeric value is a typo and must fail boot.
+    M365_SYNC_CONCURRENCY: z.string().optional(),
+    M365_SYNC_MAX_BACKLOG: z.string().optional(),
+    M365_SYNC_TICK_BATCH: z.string().optional(),
 
     // MFA feature flag. When false, ALL requireMfa() gates become no-ops.
     // Warning is emitted in collectWarnings; we do NOT refuse boot (a
@@ -748,6 +807,30 @@ const envObjectSchema = z
     SMTP_HOST: z.string().optional(),
     MAILGUN_API_KEY: z.string().optional(),
     MAILGUN_DOMAIN: z.string().optional(),
+
+    // -- Partner sending domains (spec 2026-09-17) ---------------------------
+    // ALL optional, and none is ever required by an upgrade. Declared as plain
+    // strings (not z.enum): compose maps optional vars as ${VAR:-}, so an unset
+    // variable arrives as "" and a bare enum would refuse boot on every
+    // deployment that upgrades. Value checks live in the superRefine, where ""
+    // and unset both mean "the feature is off".
+    EMAIL_DOMAINS_PROVIDER: z.string().optional(),
+    EMAIL_DOMAINS_STATIC_ALLOWED: z.string().optional(),
+    EMAIL_DOMAINS_RESEND_API_KEY: z.string().optional(),
+    EMAIL_DOMAINS_RESEND_SENDING_KEY: z.string().optional(),
+    EMAIL_DOMAINS_REGION: z.string().optional(),
+    EMAIL_DOMAINS_MAX_PER_PARTNER: z.string().optional(),
+    EMAIL_DOMAINS_DAILY_SEND_CAP: z.string().optional(),
+    EMAIL_DOMAINS_PARTNER_ALLOWLIST: z.string().optional(),
+    EMAIL_DOMAINS_DENYLIST: z.string().optional(),
+    EMAIL_DOMAINS_WEBHOOK_SECRET: z.string().optional(),
+    // Automatic suspension thresholds (spec §9.3). Optional strings like every
+    // other EMAIL_DOMAINS_* key, and deliberately with NO requireIf: hosted
+    // falls back to 0.08 / 50 / 3, self-hosted falls back to "off". Parsing and
+    // range-checking live in services/emailDomains/config.ts.
+    EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE: z.string().optional(),
+    EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES: z.string().optional(),
+    EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: z.string().optional(),
 
     // Cloudflare mTLS — when CLOUDFLARE_API_TOKEN is set, zone id is required.
     CLOUDFLARE_API_TOKEN: z.string().optional(),
@@ -1282,6 +1365,72 @@ const envSchema = envObjectSchema
         });
       }
 
+      // AI execution plane (spec §8, §2.2 D-I). Modelled on the manifest-key
+      // rule above: a feature whose misconfiguration is SILENT at boot and
+      // expensive at runtime gets a boot-time refusal, not a console.error.
+      //
+      // Three couplings, each a real failure mode:
+      //  - IS_HOSTED: the sandbox vendor account and its bill are LanternOps';
+      //    a self-hoster enabling this spends our money in our tenant.
+      //  - backend must be 'vercel': 'fake' runs model-authored code IN the API
+      //    process with the API process's filesystem and network — not a
+      //    sandbox at all — and an unset value would have
+      //    resolveSandboxBackendName() throw on the first analysis run instead
+      //    of here.
+      //  - all three Vercel credentials: readVercelCredentials() deliberately
+      //    never falls back to the SDK's ambient-env discovery, so a
+      //    half-configured deploy fails every run rather than quietly using
+      //    whatever token the host carries.
+      const workspaceFlag = (data.BREEZE_AI_WORKSPACE_ENABLED ?? '').trim().toLowerCase();
+      if (workspaceFlag === 'true' || workspaceFlag === '1' || workspaceFlag === 'yes') {
+        if ((data.IS_HOSTED ?? '').trim().toLowerCase() !== 'true') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['IS_HOSTED'],
+            message:
+              'BREEZE_AI_WORKSPACE_ENABLED=true requires IS_HOSTED=true — the AI execution plane runs on a third-party sandbox vendor under the LanternOps account and is hosted-only (execution-plane design §8).',
+          });
+        }
+        const backend = (data.AI_WORKSPACE_BACKEND ?? '').trim().toLowerCase();
+        if (backend !== 'vercel') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AI_WORKSPACE_BACKEND'],
+            message:
+              'BREEZE_AI_WORKSPACE_ENABLED=true requires AI_WORKSPACE_BACKEND=vercel in production. "fake" executes model-authored code inside the API process with the API process\'s filesystem and network — it is a test double, not an isolation boundary.',
+          });
+        }
+        for (const key of ['VERCEL_SANDBOX_TOKEN', 'VERCEL_TEAM_ID', 'VERCEL_PROJECT_ID'] as const) {
+          if (!data[key]?.trim()) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [key],
+              message:
+                `${key} must be set when BREEZE_AI_WORKSPACE_ENABLED=true — the Vercel SDK's ambient-credential fallback is deliberately not used, so a missing value fails every analysis run instead of booting cleanly.`,
+            });
+          }
+        }
+      }
+
+      // The multiplier is the only knob between vendor list price and what an
+      // org is charged. computePriceMultiplier() falls back to 1 for anything
+      // unparseable — the right instinct, since zeroing billing is worse — but
+      // that fallback is silent, so a typo (`1.5x`, a stray comma) would run at
+      // 1x forever and only surface as a margin discrepancy nobody traces back.
+      // Refuse at boot instead. Unset is fine and means 1.
+      const multiplierRaw = data.AI_COMPUTE_PRICE_MULTIPLIER?.trim();
+      if (multiplierRaw) {
+        const multiplier = Number(multiplierRaw);
+        if (!Number.isFinite(multiplier) || multiplier <= 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AI_COMPUTE_PRICE_MULTIPLIER'],
+            message:
+              `AI_COMPUTE_PRICE_MULTIPLIER must be a finite positive number when set (got "${multiplierRaw}"). Leave it unset for 1x — an unparseable value would silently price every run at 1x.`,
+          });
+        }
+      }
+
       // BYO signing (spec 3a): pointing the deployment at a NON-official
       // release repository only makes sense with a manifest trust root that is
       // the OVERRIDING repository's release key — without one, github-mode
@@ -1586,6 +1735,27 @@ const envSchema = envObjectSchema
         ctx,
       );
 
+      // Partner sending domains. KEYED ON EMAIL_DOMAINS_PROVIDER ONLY — never
+      // on EMAIL_PROVIDER. A requireIf(EMAIL_PROVIDER === 'resend', …) here
+      // would refuse boot on every Resend self-host that upgrades, which is the
+      // exact promise spec §11 makes.
+      const emailDomainsProviderProd = (data.EMAIL_DOMAINS_PROVIDER ?? '').trim().toLowerCase();
+      requireIf(
+        emailDomainsProviderProd === 'resend',
+        'EMAIL_DOMAINS_RESEND_API_KEY',
+        data.EMAIL_DOMAINS_RESEND_API_KEY,
+        'EMAIL_DOMAINS_PROVIDER=resend (a full_access key; a sending-only key cannot manage domains)',
+        ctx,
+      );
+      if (emailDomainsProviderProd === 'fake') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message:
+            'EMAIL_DOMAINS_PROVIDER=fake is refused in production. The fake provider verifies domains deterministically and sends nothing real; it exists for unit, integration, E2E and wt-stack runs only. Use `resend`, `static`, or leave it unset.',
+        });
+      }
+
       // Cloudflare mTLS (CLOUDFLARE_API_TOKEN as indicator)
       const cfMtlsEnabled = Boolean(data.CLOUDFLARE_API_TOKEN?.trim());
       requireIf(
@@ -1821,6 +1991,103 @@ const envSchema = envObjectSchema
       });
     }
 
+    // TOOL_SOURCES_ENABLED (Task A7, tool-catalog W1). Same treatment as
+    // BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED above: a typo must be caught at
+    // boot rather than silently reading as off. Mirrors toolSourcesEnabled()
+    // in env.ts.
+    const toolSourcesRaw = (data.TOOL_SOURCES_ENABLED ?? '').trim().toLowerCase();
+    if (toolSourcesRaw && !boolValues.has(toolSourcesRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['TOOL_SOURCES_ENABLED'],
+        message:
+          'TOOL_SOURCES_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the tool-catalog / tool-sources feature is dark).',
+      });
+    }
+
+    // TOOL_SOURCES_ALLOW_PRIVATE_EGRESS (Task A7). Same boolean-format check,
+    // plus a hosted refusal: a tool source that can reach a private/
+    // loopback/link-local address from the shared hosted egress path is an
+    // SSRF vector against other partners, so this is self-hosted-only.
+    const toolSourcesPrivateEgressRaw = (data.TOOL_SOURCES_ALLOW_PRIVATE_EGRESS ?? '').trim().toLowerCase();
+    if (toolSourcesPrivateEgressRaw && !boolValues.has(toolSourcesPrivateEgressRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['TOOL_SOURCES_ALLOW_PRIVATE_EGRESS'],
+        message:
+          'TOOL_SOURCES_ALLOW_PRIVATE_EGRESS must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
+      });
+    } else if (
+      ['true', '1', 'yes', 'on'].includes(toolSourcesPrivateEgressRaw)
+      && ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase())
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['TOOL_SOURCES_ALLOW_PRIVATE_EGRESS'],
+        message:
+          'TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true is refused on a hosted deployment (IS_HOSTED=true) — private/loopback egress from a shared hosted tool source is an SSRF vector against other partners. Self-hosted deployments only.',
+      });
+    }
+
+    // Execution plane W01 (spec §8). Same class as the two flags above.
+    const regionRaw = (data.BREEZE_REGION ?? '').trim().toLowerCase();
+    if (regionRaw && regionRaw !== 'eu' && regionRaw !== 'us') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_REGION'],
+        message: 'BREEZE_REGION must be "eu" or "us" when set (hosted regions are single-region deployments). Defaults to "us".',
+      });
+    }
+    const workspaceRaw = (data.BREEZE_AI_WORKSPACE_ENABLED ?? '').trim().toLowerCase();
+    if (workspaceRaw && !boolValues.has(workspaceRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_WORKSPACE_ENABLED'],
+        message: 'BREEZE_AI_WORKSPACE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the workspace lane and artifact capture are dark).',
+      });
+    }
+    const blobBackendRaw = (data.ARTIFACT_BLOB_BACKEND ?? '').trim().toLowerCase();
+    if (blobBackendRaw && blobBackendRaw !== 's3') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ARTIFACT_BLOB_BACKEND'],
+        message: blobBackendRaw === 'db'
+          ? 'ARTIFACT_BLOB_BACKEND=db is not available in v1 — there is no generic blob table. Use "s3" (MinIO works locally through S3_ENDPOINT).'
+          : 'ARTIFACT_BLOB_BACKEND must be "s3" when set.',
+      });
+    }
+    // With the lane switched on for a hosted region, the blob store for THAT
+    // region must be reachable, or the first oversized tool result becomes an
+    // `artifact_store_unavailable` error for every technician (spec §9).
+    const workspaceOn = boolValues.has(workspaceRaw) && ['true', '1', 'yes', 'on'].includes(workspaceRaw);
+    const hostedOn = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+    if (workspaceOn && hostedOn) {
+      const region = regionRaw === 'eu' ? 'EU' : 'US';
+      const bucket = (data[`ARTIFACT_S3_BUCKET_${region}` as 'ARTIFACT_S3_BUCKET_EU' | 'ARTIFACT_S3_BUCKET_US'] ?? '').trim() || (data.S3_BUCKET ?? '').trim();
+      const accessKey = (data.ARTIFACT_S3_ACCESS_KEY ?? '').trim() || (data.S3_ACCESS_KEY ?? '').trim();
+      const secretKey = (data.ARTIFACT_S3_SECRET_KEY ?? '').trim() || (data.S3_SECRET_KEY ?? '').trim();
+      if (!bucket || !accessKey || !secretKey) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [`ARTIFACT_S3_BUCKET_${region}`],
+          message: `BREEZE_AI_WORKSPACE_ENABLED=true on a hosted deployment requires an artifact blob store for region ${region.toLowerCase()}: set ARTIFACT_S3_BUCKET_${region} (or S3_BUCKET) plus ARTIFACT_S3_ACCESS_KEY/ARTIFACT_S3_SECRET_KEY (or S3_ACCESS_KEY/S3_SECRET_KEY).`,
+        });
+      }
+    }
+
+    // BREEZE_AI_SCRIPT_AUTHORING_ENABLED (AI script authoring W01b). Same
+    // treatment: a typo must be caught at boot rather than silently reading as
+    // off. Mirrors aiScriptAuthoringEnabled() in env.ts.
+    const scriptAuthoringRaw = (data.BREEZE_AI_SCRIPT_AUTHORING_ENABLED ?? '').trim().toLowerCase();
+    if (scriptAuthoringRaw && !boolValues.has(scriptAuthoringRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_SCRIPT_AUTHORING_ENABLED'],
+        message:
+          'BREEZE_AI_SCRIPT_AUTHORING_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (W03 #5612); set false to keep AI script authoring dark.',
+      });
+    }
+
     // TRUST_CF_CONNECTING_IP. Same class as the two flags above: the runtime
     // reader (services/clientIp.ts) treats any unrecognized value as OFF, so a
     // typo on a Cloudflare-fronted deploy silently resolves every client IP from
@@ -1867,6 +2134,26 @@ const envSchema = envObjectSchema
       });
     }
 
+    const tenantSyncRaw = (data.M365_TENANT_SYNC_ENABLED ?? '').trim().toLowerCase();
+    if (tenantSyncRaw && !boolValues.has(tenantSyncRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['M365_TENANT_SYNC_ENABLED'],
+        message:
+          'M365_TENANT_SYNC_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the M365 tenant sync ticker and worker are dark).',
+      });
+    }
+    for (const knob of ['M365_SYNC_CONCURRENCY', 'M365_SYNC_MAX_BACKLOG', 'M365_SYNC_TICK_BATCH'] as const) {
+      const raw = (data[knob] ?? '').trim();
+      if (raw && !/^\d+$/.test(raw)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [knob],
+          message: `${knob} must be a positive integer when set.`,
+        });
+      }
+    }
+
     // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a
     // process is split into 'api' or 'worker', cross-process agent command
     // dispatch goes through agentCommandRelay.ts, which seals every relay job
@@ -1889,6 +2176,7 @@ const envSchema = envObjectSchema
           'APP_ENCRYPTION_KEY_ID is required when BREEZE_ROLE is "api" or "worker" (the cross-process agent command relay envelope requires AAD-bound v3 ciphertext).',
       });
     }
+
 
     // --- Native APNs push (all-or-none) ---
     // Push is optional, so an empty APNS_* set is fine. But a partial set
@@ -1920,6 +2208,62 @@ const envSchema = envObjectSchema
             message:
               `${key} is required when any APNS_* variable is set. Native APNs push needs APNS_AUTH_KEY (the .p8 PEM), APNS_KEY_ID, APNS_TEAM_ID and APNS_BUNDLE_ID together; APNS_ENVIRONMENT is optional (defaults to production).`,
           });
+        }
+      }
+    }
+
+    // --- Partner sending domains: deployment-mode rules (spec §2.1, §11) ----
+    // Outside the isProduction block on purpose: a hosted staging instance must
+    // refuse `static` and identical keys exactly as production does, and an
+    // unrecognised provider value is a misconfiguration in any NODE_ENV.
+    const emailDomainsProvider = (data.EMAIL_DOMAINS_PROVIDER ?? '').trim().toLowerCase();
+    if (emailDomainsProvider !== '') {
+      const hostedInstance = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+      if (!['resend', 'static', 'fake'].includes(emailDomainsProvider)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message: `EMAIL_DOMAINS_PROVIDER must be one of resend, static, fake — got ${JSON.stringify(emailDomainsProvider)}. Leave it unset to keep custom sending domains off (the default).`,
+        });
+      }
+      if (emailDomainsProvider === 'static' && hostedInstance) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message:
+            'EMAIL_DOMAINS_PROVIDER=static is refused when IS_HOSTED=true. The static adapter is an OPERATOR ATTESTATION that the instance mail relay may send as the listed domains; on hosted there is no such operator and no DNS proof, so a partner could claim a domain it does not own. Use `resend` on hosted.',
+        });
+      }
+      if (emailDomainsProvider === 'resend') {
+        // Resend only has these four. An unrecognised value would sail past boot
+        // and then throw from resolveRegion() on the partner's first domain
+        // create — a runtime failure for a typo we can catch here. Empty means
+        // "use the default" (us-east-1), so it is not an error.
+        const region = (data.EMAIL_DOMAINS_REGION ?? '').trim().toLowerCase();
+        const RESEND_REGIONS = ['us-east-1', 'eu-west-1', 'sa-east-1', 'ap-northeast-1'];
+        if (region !== '' && !RESEND_REGIONS.includes(region)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['EMAIL_DOMAINS_REGION'],
+            message: `EMAIL_DOMAINS_REGION must be one of ${RESEND_REGIONS.join(', ')} when EMAIL_DOMAINS_PROVIDER=resend — got ${JSON.stringify(region)}. Leave it unset to use us-east-1.`,
+          });
+        }
+
+        const platformKey = (data.RESEND_API_KEY ?? '').trim();
+        const partnerKey = (data.EMAIL_DOMAINS_RESEND_API_KEY ?? '').trim();
+        if (platformKey && partnerKey && platformKey === partnerKey) {
+          if (hostedInstance) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['EMAIL_DOMAINS_RESEND_API_KEY'],
+              message:
+                'EMAIL_DOMAINS_RESEND_API_KEY must differ from RESEND_API_KEY when IS_HOSTED=true. Resend enforces bounce and spam limits ACCOUNT-WIDE, so a partner domain sharing the platform account can pause password-reset and security mail for every tenant. Create a second Resend team for the partner lane.',
+            });
+          } else {
+            console.info(
+              '[config] EMAIL_DOMAINS_RESEND_API_KEY matches RESEND_API_KEY — partner-domain mail will share this account\'s sending reputation with platform mail (password resets, security notices). That is supported self-hosted; a second Resend account isolates them.',
+            );
+          }
         }
       }
     }
@@ -2037,6 +2381,40 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     // (AGENT_ENROLLMENT_SECRET is now a hard error in production — see the
     // schema superRefine. No warning needed here; the validator throws if
     // it's missing or weak.)
+
+    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID (SEC-065).
+    //
+    // /integrations/{communication,monitoring,ticketing,psa} seal every
+    // credential-shaped provider field with AAD-bound enc:v3 ciphertext and
+    // REFUSE to seal without a key id: encryptSecret silently drops the `aad`
+    // option and writes non-AAD enc:v1 when none is configured, which would
+    // leave the family/organization/path binding absent with nothing to signal
+    // it. sealIntegrationSettings therefore throws and the routes return 503.
+    //
+    // This is a WARNING, not a boot refusal, for the same reason as the
+    // TRUST_CF_CONNECTING_IP rule above: hard-failing would break every
+    // existing self-hosted upgrade and every fresh guided install.
+    // scripts/guided-setup.sh generates APP_ENCRYPTION_KEY but has never
+    // generated APP_ENCRYPTION_KEY_ID, so a refusal here would brick installs
+    // that are otherwise healthy — the integration compatibility routes are a
+    // small, optional surface and are not worth taking the whole API down for.
+    // The hosted droplets set the key id; self-hosts generally do not.
+    //
+    // The failure is therefore deferred and loud at the point of use rather
+    // than at boot. Note this is a warning only about the INTEGRATION seal —
+    // BREEZE_ROLE api|worker and M365_GRAPH_ACTIONS_TOOLS_ENABLED=true still
+    // refuse boot without the key id (see the schema superRefine).
+    if (!(env.APP_ENCRYPTION_KEY_ID ?? '').trim()) {
+      warnings.push({
+        key: 'APP_ENCRYPTION_KEY_ID',
+        message:
+          'APP_ENCRYPTION_KEY_ID is not set. It is required for integration credential sealing: '
+          + 'saving provider credentials on /integrations/{communication,monitoring,ticketing,psa} '
+          + 'will return 503 until it is set, because those credentials are sealed with AAD-bound '
+          + 'enc:v3 ciphertext and fail closed rather than degrade to unbound enc:v1. Set it '
+          + 'alongside APP_ENCRYPTION_KEY and map it through the api service environment block.',
+      });
+    }
 
     // SR2-16: a prod deploy that trusts proxy headers but leaves
     // TRUST_CF_CONNECTING_IP off resolves client IPs from X-Forwarded-For only.

@@ -134,6 +134,13 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // `satisfies` target links it to that union so a value here can never be one
 // that matches no grant type.
 //
+// #5601: `approval_decide` is excluded for the same structural reason. It is
+// the credential that clears the four_eyes sole-operator L3 passkey gate; it
+// may be minted ONLY by `decideApprovalRequest`, after a real approver-device
+// ceremony it verified itself. Letting a client request one here would turn an
+// ordinary TOTP/SMS step-up into a bypass of that gate — i.e. the L3 passkey
+// requirement could be satisfied without a passkey.
+//
 // #4018: `enroll_first_factor` is excluded BY THE COMPILER, not by convention.
 // That grant is the sole output of the SSO re-auth callback, which mints it
 // only after a forced IdP round-trip proves identity for a PASSWORDLESS
@@ -152,7 +159,11 @@ const STEP_UP_OPERATIONS = [
   'register_approver_device',
   'agent_rollback',
   'device_maintenance',
-] as const satisfies readonly Exclude<StepUpOperation, 'enroll_first_factor'>[];
+  'ai_script_lane_grant',
+] as const satisfies readonly Exclude<
+  StepUpOperation,
+  'enroll_first_factor' | 'approval_decide'
+>[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)
   .default('add_factor');
@@ -176,7 +187,14 @@ export const maintenanceStepUpResource = z.object({
 // operation" is RESOURCE_BOUND_OPERATIONS in routes/auth/mfa.ts, which
 // re-parses under the operation's own schema — a union member alone would
 // happily accept a rollback-shaped body under operation:'device_maintenance'.
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource]);
+// AI script authoring W04 (#5612): the unattended-lane grant / reset binding.
+// One org, one value — mirrors scriptLanePolicyResourceDigest exactly.
+export const scriptLaneStepUpResource = z.object({
+  orgId: z.string().uuid(),
+  unattendedEnabled: z.boolean(),
+  reset: z.boolean().optional(),
+});
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, scriptLaneStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

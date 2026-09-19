@@ -27,17 +27,20 @@ import {
   ChevronsDownUp,
   ShieldCheck,
   KeyRound,
+  LayoutTemplate,
   Package,
   Plug,
   Network,
   HardDrive,
   BarChart3,
   BrainCircuit,
+  DraftingCompass,
   Bot,
   History,
   Activity,
   Layers,
   ScrollText,
+  CalendarClock,
   Download,
   ClipboardCheck,
   ScanSearch,
@@ -64,9 +67,12 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
+import { useRecentsStore } from '../../stores/recentsStore';
+import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
+import { useToolSourcesGate } from '../../stores/featuresStore';
 import { hasPermission } from '../../lib/permissions';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
@@ -162,6 +168,8 @@ type NavItem = {
   // Shown only when the current partner has AI for Office enabled (runtime flag
   // from /orgs/partners/me). Undefined means not gated on the partner flag.
   requiresAiForOffice?: boolean;
+  /** #5216 W01: gated on the SERVER's TOOL_SOURCES_ENABLED via /config. */
+  requiresToolSources?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
   // the permission set is still loading, the item stays hidden. Typed as the
@@ -193,13 +201,18 @@ export const topLevelNav: NavItem[] = [
   // #5075 W04 — the customer record is the MSP's primary object, so it is
   // top-level rather than buried under Settings (where it used to live, and no
   // longer does: exactly one Organizations entry exists in the nav).
-  { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
-  { name: 'Devices', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
+  { name: 'Organizations', labelKey: 'nav.organizations', href: '/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
+  // Unified list: agent devices + manual assets + network assets (#4622, #5228),
+  // hence the label. Recently opened devices render under this row — see
+  // `renderNavItem` and Sidebar.recents.test.tsx.
+  { name: 'Devices & Assets', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
   { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
+  // #5288 — Automations finally get a nav home, as Jobs. /automations redirects here.
+  { name: 'Jobs', labelKey: 'nav.jobs', href: '/jobs', icon: CalendarClock, requiredPermission: { resource: 'automations', action: 'read' } },
   { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
@@ -237,7 +250,12 @@ export const navSections: NavSection[] = [
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
       { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
+      // Fleet Designer W03 (#5653) — apply/rollback surface for a Fleet
+      // Design report, so it sits beside the other AI-report reads.
+      { name: 'Fleet Design', labelKey: 'nav.fleetDesign', href: '/ai-agents/fleet-design', icon: DraftingCompass, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      { name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
+      { name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      { name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
       { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
@@ -253,6 +271,7 @@ export const navSections: NavSection[] = [
       // One page with Inventory + Policies tabs; /software-inventory and
       // /software-policies are aliases (see pathAliases).
       { name: 'Software', labelKey: 'nav.software', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      // #5288 — the Monitoring hub: Network today, Monitors (W02) and Delivery tabs.
       { name: 'Network Monitor', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
@@ -321,7 +340,11 @@ export const navSections: NavSection[] = [
       { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
       { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
       { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
+      // ScrollText, not FileText: Quotes three rows up already uses FileText, and
+      // two identical icons in one section is the confusion this wave removes.
+      { name: 'Agreements', labelKey: 'nav.agreements', href: '/agreements/templates', icon: ScrollText, partnerScopeOnly: true, requiredPermission: { resource: 'agreements', action: 'read' } },
       { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
+      { name: 'Deliverable Templates', labelKey: 'nav.deliverableTemplates', href: '/settings/deliverable-templates', icon: LayoutTemplate, partnerScopeOnly: true },
     ],
   },
   {
@@ -347,6 +370,7 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
       { name: 'Billing', labelKey: 'nav.billing', href: '/settings/billing', icon: CreditCard, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
+      { name: 'Ticketing', labelKey: 'nav.ticketing', href: '/settings/ticketing', icon: Ticket, partnerScopeOnly: true },
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
       { name: 'Roles', labelKey: 'nav.roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
@@ -418,6 +442,21 @@ function saveExpandedSections(state: Record<string, boolean>) {
   try { localStorage.setItem('sidebar-sections', JSON.stringify(state)); } catch { /* Storage unavailable */ }
 }
 
+// Whether the "recent devices" rows under Devices & Assets are shown. Default
+// open; a user who wants a fully static nav collapses it once and it stays
+// collapsed. Safe to read in a useState initializer: the list itself is empty
+// on the server, so the flag cannot cause a hydration mismatch.
+export const RECENT_DEVICES_EXPANDED_KEY = 'sidebar-recent-devices';
+const RECENT_DEVICES_HREF = '/devices';
+
+function readRecentDevicesExpanded(): boolean {
+  try {
+    return localStorage.getItem(RECENT_DEVICES_EXPANDED_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Collect all nav items for active-href matching
 // ---------------------------------------------------------------------------
@@ -430,6 +469,10 @@ const allNavItems: NavItem[] = [
 const pathAliases: Record<string, string> = {
   '/software-inventory': '/software',
   '/software-policies': '/software',
+  // The Agreements nav item points at the Templates tab; the Signed tab is a
+  // sibling route, not a child, so prefix matching would leave the item
+  // unhighlighted there.
+  '/agreements/signed': '/agreements/templates',
 };
 
 // Determine which section a given href belongs to (for auto-expand)
@@ -522,7 +565,18 @@ function usePendingApprovalsBadge(): number | undefined {
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const [hovered, setHovered] = useState(false);
+  const recentDevices = useRecentsStore((s) => s.devices);
+  const [recentDevicesExpanded, setRecentDevicesExpanded] = useState<boolean>(readRecentDevicesExpanded);
+  const toggleRecentDevices = useCallback(() => {
+    setRecentDevicesExpanded((prev) => {
+      const next = !prev;
+      try { localStorage.setItem(RECENT_DEVICES_EXPANDED_KEY, String(next)); } catch { /* Storage unavailable */ }
+      return next;
+    });
+  }, []);
   const currentPath = useCurrentPath(initialPath);
   const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
@@ -553,6 +607,9 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
+  // #5216 W01 — the server kill switch, read from /config through the shared
+  // features store (the same one registration/aiOperatorTasks use).
+  const { enabled: toolSourcesEnabled } = useToolSourcesGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
   // right sections; the /orgs/partners/me effect below refreshes it.
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
@@ -723,11 +780,19 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   }, [activeSectionId, extensionsSection]);
 
   // --- Sidebar mode cycling ------------------------------------------------
-  const cycleMode = () => {
-    const next: SidebarMode = mode === 'open' ? 'hover' : mode === 'hover' ? 'collapsed' : 'open';
+  // Reads the ref (not `mode`) so the one-time window listener below never
+  // goes stale — the `[` shortcut dispatches SIDEBAR_CYCLE_MODE_EVENT.
+  const cycleMode = useCallback(() => {
+    const current = modeRef.current;
+    const next: SidebarMode = current === 'open' ? 'hover' : current === 'hover' ? 'collapsed' : 'open';
     setMode(next);
     try { localStorage.setItem('sidebar-mode', next); } catch { /* Storage unavailable */ }
-  };
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener(SIDEBAR_CYCLE_MODE_EVENT, cycleMode);
+    return () => window.removeEventListener(SIDEBAR_CYCLE_MODE_EVENT, cycleMode);
+  }, [cycleMode]);
 
   // Determine if a section is expanded (explicit toggle OR auto-expand)
   const isSectionExpanded = useCallback((sectionId: string): boolean => {
@@ -749,6 +814,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const isNavItemVisible = (item: NavItem): boolean => {
     if (item.requiresModule === 'service_management' && serviceManagementMode !== 'native') return false;
     if (item.requiresAiForOffice && !aiForOfficeEnabled) return false;
+    if (item.requiresToolSources && !toolSourcesEnabled) return false;
     if (item.platformAdminOnly && !isPlatformAdmin) return false;
     if (item.partnerScopeOnly) {
       const { scope } = getJwtClaims();
@@ -775,14 +841,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
     const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
-    return (
+    const withRecents = item.href === RECENT_DEVICES_HREF && labels && recentDevices.length > 0;
+    const anchor = (
       <a
-        key={item.name}
+        key={withRecents ? undefined : item.name}
         href={item.href}
         title={narrow && !hovered ? label : undefined}
         onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
         className={cn(
           'flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-colors',
+          withRecents && 'min-w-0 flex-1',
           // Icon rail: no horizontal padding, center the icon in the full row so
           // the highlight box and icon share the rail's centre line regardless
           // of the available width.
@@ -807,6 +875,67 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </span>
         )}
       </a>
+    );
+    if (!withRecents) return anchor;
+
+    // Recently opened devices (recentsStore), newest first. The chevron sits
+    // beside the row rather than inside the <a> — nested interactive content
+    // is invalid HTML and breaks keyboard focus order.
+    const toggleLabel = recentDevicesExpanded
+      ? t('layout.sidebar.hideRecentDevices')
+      : t('layout.sidebar.showRecentDevices');
+    return (
+      <div key={item.name}>
+        <div className="flex items-center gap-1">
+          {anchor}
+          <button
+            type="button"
+            onClick={toggleRecentDevices}
+            aria-expanded={recentDevicesExpanded}
+            aria-label={toggleLabel}
+            title={toggleLabel}
+            className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <ChevronDown
+              className={cn(
+                'h-3.5 w-3.5 transition-transform duration-200',
+                recentDevicesExpanded ? 'rotate-0' : '-rotate-90'
+              )}
+            />
+          </button>
+        </div>
+        {recentDevicesExpanded && (
+          <ul
+            data-testid="sidebar-recent-devices"
+            aria-label={t('layout.sidebar.recentDevices')}
+            className="mt-0.5 space-y-0.5"
+          >
+            {recentDevices.map((device) => {
+              const href = `${RECENT_DEVICES_HREF}/${device.id}`;
+              const current = resolvedPath === href;
+              return (
+                <li key={device.id}>
+                  <a
+                    href={href}
+                    aria-current={current ? 'page' : undefined}
+                    title={device.name}
+                    onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
+                    className={cn(
+                      'flex items-center gap-2 rounded-md py-1.5 pl-9 pr-3 text-sm transition-colors',
+                      current
+                        ? 'bg-muted text-foreground'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    )}
+                  >
+                    <Clock className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden="true" />
+                    <span className="truncate">{device.name}</span>
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     );
   };
 

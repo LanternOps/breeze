@@ -52,6 +52,8 @@ export interface LogSearchInput {
    * unrestricted caller, no narrowing. RLS does NOT enforce the site axis.
    */
   allowedDeviceIds?: string[] | null;
+  /** Current site ceiling used by the statement-local device authorization predicate. */
+  allowedSiteIds?: string[] | null;
   limit?: number;
   offset?: number;
   cursor?: string;
@@ -72,6 +74,7 @@ export interface LogAggregationInput {
   siteIds?: string[];
   /** Site-axis app-layer authz narrowing (see LogSearchInput.allowedDeviceIds). */
   allowedDeviceIds?: string[] | null;
+  allowedSiteIds?: string[] | null;
   limit?: number;
 }
 
@@ -84,6 +87,7 @@ export interface LogTrendsInput {
   siteIds?: string[];
   /** Site-axis app-layer authz narrowing (see LogSearchInput.allowedDeviceIds). */
   allowedDeviceIds?: string[] | null;
+  allowedSiteIds?: string[] | null;
   limit?: number;
 }
 
@@ -102,6 +106,7 @@ export interface PatternDetectionInput {
    * RLS does NOT enforce the site axis.
    */
   allowedDeviceIds?: string[] | null;
+  allowedSiteIds?: string[] | null;
 }
 
 export interface PatternDetectionResult {
@@ -123,6 +128,33 @@ export interface PersistedCorrelationResult {
 }
 
 type CorrelationRuleRecord = typeof logCorrelationRulesTable.$inferSelect;
+
+/**
+ * Statement-local device authorization predicate for the *site* axis.
+ *
+ * Returns null for an unrestricted caller (`null`/`undefined` ceiling). The
+ * subquery would be tautological for them — `device_event_logs.device_id` is a
+ * NOT NULL FK into `devices` and `org_id` is the moveOrg-maintained denormalized
+ * copy — but it is not free: `devices` carries a non-LEAKPROOF
+ * `breeze_has_org_access` RLS policy, so Postgres cannot fold the probe into an
+ * index condition and pays it per candidate row of the largest table in the
+ * fleet, unbounded on aggregation/trends/pattern detection. Emit it only when it
+ * can actually exclude something.
+ */
+function currentDeviceAuthorizationCondition(
+  allowedSiteIds: string[] | null | undefined,
+): SQL | null {
+  if (allowedSiteIds === null || allowedSiteIds === undefined) return null;
+  const siteCondition = allowedSiteIds.length > 0
+    ? sql`and authorized_log_device.site_id in (${sql.join(allowedSiteIds.map((id) => sql`${id}`), sql`, `)})`
+    : sql`and false`;
+  return sql`exists (
+    select 1 from ${devices} as authorized_log_device
+    where authorized_log_device.id = ${deviceEventLogs.deviceId}
+      and authorized_log_device.org_id = ${deviceEventLogs.orgId}
+      ${siteCondition}
+  )`;
+}
 
 const DEFAULT_TIME_RANGE_MS = 24 * 60 * 60 * 1000;
 const ESTIMATED_COUNT_SAMPLE_RANGE_MS = 60 * 60 * 1000;
@@ -247,7 +279,8 @@ export function mergeSavedLogSearchFilters(
   };
 }
 
-function buildSearchConditions(
+/** Exported for unit tests only — see logSearch.test.ts. */
+export function buildSearchConditions(
   auth: AuthContext,
   filters: LogSearchInput,
   timeRange: { start: Date; end: Date },
@@ -289,12 +322,14 @@ function buildSearchConditions(
     conditions.push(ilike(deviceEventLogs.source, `%${escapeLike(filters.source.trim())}%`));
   }
 
-  if (filters.deviceIds && filters.deviceIds.length > 0) {
-    conditions.push(inArray(deviceEventLogs.deviceId, filters.deviceIds));
+  if (filters.deviceIds !== undefined) {
+    conditions.push(filters.deviceIds.length > 0
+      ? inArray(deviceEventLogs.deviceId, filters.deviceIds)
+      : sql`false`);
   }
 
-  if (filters.siteIds && filters.siteIds.length > 0) {
-    conditions.push(inArray(devices.siteId, filters.siteIds));
+  if (filters.siteIds !== undefined) {
+    conditions.push(filters.siteIds.length > 0 ? inArray(devices.siteId, filters.siteIds) : sql`false`);
   }
 
   // Site-axis app-layer authz narrowing (most-restrictive wins; intersects with
@@ -307,6 +342,8 @@ function buildSearchConditions(
         : sql`false`,
     );
   }
+  const currentDeviceAuthz = currentDeviceAuthorizationCondition(filters.allowedSiteIds);
+  if (currentDeviceAuthz) conditions.push(currentDeviceAuthz);
 
   return conditions;
 }
@@ -549,6 +586,8 @@ export async function getLogAggregation(auth: AuthContext, input: LogAggregation
         : sql`false`,
     );
   }
+  const currentDeviceAuthz = currentDeviceAuthorizationCondition(input.allowedSiteIds);
+  if (currentDeviceAuthz) conditions.push(currentDeviceAuthz);
 
   const bucketExpr = bucket === 'day'
     ? sql`date_trunc('day', ${deviceEventLogs.timestamp})`
@@ -659,6 +698,8 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
         : sql`false`,
     );
   }
+  const currentDeviceAuthz = currentDeviceAuthorizationCondition(input.allowedSiteIds);
+  if (currentDeviceAuthz) conditions.push(currentDeviceAuthz);
 
   const whereCondition = and(...conditions);
 
@@ -837,6 +878,7 @@ async function runPatternDetection(
   sampleLimit: number,
   forceLike = false,
   allowedDeviceIds?: string[] | null,
+  allowedSiteIds?: string[] | null,
 ): Promise<{
   summary: { firstSeen: Date | null; lastSeen: Date | null; occurrences: number };
   affectedDevices: LogCorrelationAffectedDevice[];
@@ -856,11 +898,14 @@ async function runPatternDetection(
         ? inArray(deviceEventLogs.deviceId, allowedDeviceIds)
         : sql`false`;
 
+  const currentDeviceAuthz = currentDeviceAuthorizationCondition(allowedSiteIds);
+
   const whereCondition = and(
     eq(deviceEventLogs.orgId, orgId),
     gte(deviceEventLogs.timestamp, since),
     condition,
     ...(siteScopeCondition ? [siteScopeCondition] : []),
+    ...(currentDeviceAuthz ? [currentDeviceAuthz] : []),
   );
 
   const [summaryRows, affectedDeviceRows, sampleRows] = await Promise.all([
@@ -898,10 +943,16 @@ async function runPatternDetection(
       .limit(sampleLimit)
   ]);
 
+  // postgres.js returns values selected through raw aggregate expressions as
+  // strings even when the TypeScript annotation says Date. Normalize at the
+  // service boundary before these timestamps flow into Drizzle date columns.
+  const firstSeen = normalizeCorrelationTimestamp(summaryRows[0]?.firstSeen, 'firstSeen');
+  const lastSeen = normalizeCorrelationTimestamp(summaryRows[0]?.lastSeen, 'lastSeen');
+
   return {
     summary: {
-      firstSeen: summaryRows[0]?.firstSeen ?? null,
-      lastSeen: summaryRows[0]?.lastSeen ?? null,
+      firstSeen,
+      lastSeen,
       occurrences: Number(summaryRows[0]?.occurrences ?? 0),
     },
     affectedDevices: affectedDeviceRows.map((row) => ({
@@ -912,12 +963,28 @@ async function runPatternDetection(
     sampleLogs: sampleRows.map((row) => ({
       id: row.id,
       deviceId: row.deviceId,
-      timestamp: row.timestamp.toISOString(),
+      timestamp: normalizeCorrelationTimestamp(row.timestamp, 'sample log')!.toISOString(),
       level: row.level,
       source: row.source,
       message: row.message,
     }))
   };
+}
+
+export function normalizeCorrelationTimestamp(value: unknown, field: string): Date | null {
+  if (value == null) return null;
+
+  const timestamp = value instanceof Date
+    ? new Date(value.getTime())
+    : typeof value === 'string'
+      ? new Date(value)
+      : null;
+
+  if (!timestamp || !Number.isFinite(timestamp.getTime())) {
+    throw new Error(`Invalid correlation ${field} timestamp`);
+  }
+
+  return timestamp;
 }
 
 export async function detectPatternCorrelation(input: PatternDetectionInput): Promise<PatternDetectionResult | null> {
@@ -940,14 +1007,18 @@ export async function detectPatternCorrelation(input: PatternDetectionInput): Pr
 
   let detected;
   try {
-    detected = await runPatternDetection(input.orgId, pattern, isRegex, since, sampleLimit, false, allowedDeviceIds);
+    detected = await runPatternDetection(
+      input.orgId, pattern, isRegex, since, sampleLimit, false, allowedDeviceIds, input.allowedSiteIds,
+    );
   } catch (error) {
     // PostgreSQL regex engine errors should gracefully fall back to plain ILIKE.
     if (!isRegex || !(error instanceof Error) || !error.message.toLowerCase().includes('regular expression')) {
       throw error;
     }
     console.warn('[logSearch] Regex pattern detection failed, falling back to ILIKE:', error.message);
-    detected = await runPatternDetection(input.orgId, pattern, false, since, sampleLimit, true, allowedDeviceIds);
+    detected = await runPatternDetection(
+      input.orgId, pattern, false, since, sampleLimit, true, allowedDeviceIds, input.allowedSiteIds,
+    );
   }
 
   if (detected.summary.occurrences === 0) {

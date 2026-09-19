@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Only `../db` is mocked — NOT `../db/schema`. The tenancy conditions are
@@ -16,7 +18,7 @@ vi.mock('../db', () => {
 
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
-import { tenantVariables, type TenantVariableRow } from '../db/schema';
+import { organizations, tenantVariables, type TenantVariableRow } from '../db/schema';
 import {
   createTenantVariable,
   decryptTenantVariableValue,
@@ -118,7 +120,7 @@ function boundParams(node: unknown, out: unknown[] = []): unknown[] {
 
 /** Chainable select stub: awaitable, and also exposes .limit()/.orderBy(). */
 function stubSelect(rows: unknown[]) {
-  const captured: { where?: unknown } = {};
+  const captured: { where?: unknown; join?: unknown } = {};
   const terminal = {
     limit: () => Promise.resolve(rows),
     orderBy: () => Promise.resolve(rows),
@@ -126,6 +128,7 @@ function stubSelect(rows: unknown[]) {
   };
   dbMock.select.mockReturnValue({
     from: () => ({
+      leftJoin(_table: unknown, condition: unknown) { captured.join = condition; return this; },
       where: (condition: unknown) => {
         captured.where = condition;
         return terminal;
@@ -478,5 +481,71 @@ describe('deleteTenantVariable', () => {
       status: 403
     });
     expect(dbMock.delete).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('list scopes', () => {
+  it.each(['partner', 'org', 'all'] as const)('keeps the outer access guard for %s scope', async (scope) => {
+    const captured = stubSelect([]);
+    await listTenantVariables(auth(), { scope, orgId: ORG_B });
+    const query = new PgDialect().sqlToQuery(captured.where as SQL);
+    expect(query.params).toContain(ORG_A);
+    expect(query.params).toContain(PARTNER);
+    if (scope === 'partner') {
+      expect(query.sql).toMatch(/and "tenant_variables"\."org_id" is null and "tenant_variables"\."partner_id" = \$\d+/i);
+      expect(query.params.filter((p) => p === PARTNER)).toHaveLength(2);
+    } else {
+      expect(query.params).toContain(ORG_B);
+      expect(query.sql).toMatch(/"org_id" = \$\d+ OR "tenant_variables"\."org_id" IS NULL/);
+    }
+  });
+
+  it('preserves the unfiltered all default without adding org narrowing', async () => {
+    const defaultQuery = stubSelect([]);
+    await listTenantVariables(auth());
+    const explicitQuery = stubSelect([]);
+    await listTenantVariables(auth(), { scope: 'all' });
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(explicitQuery.where as SQL)).toEqual(dialect.sqlToQuery(defaultQuery.where as SQL));
+    expect(dialect.sqlToQuery(explicitQuery.where as SQL).params).toEqual([ORG_A, PARTNER]);
+  });
+
+  it('rejects partner scope without a caller partner id', async () => {
+    stubSelect([]);
+    await expect(listTenantVariables(auth({ partnerId: null }), { scope: 'partner' })).rejects.toMatchObject({
+      status: 400, code: 'PARTNER_SCOPE_REQUIRED'
+    });
+    expect(dbMock.select).not.toHaveBeenCalled();
+  });
+
+  it.each(['organization', 'system'] as const)('rejects partner scope for a %s caller before querying', async (scope) => {
+    stubSelect([]);
+    await expect(listTenantVariables(auth({ scope }), { scope: 'partner' })).rejects.toMatchObject({
+      status: 400, code: 'PARTNER_SCOPE_REQUIRED'
+    });
+    expect(dbMock.select).not.toHaveBeenCalled();
+  });
+
+  it('requires orgId for org scope', async () => {
+    stubSelect([]);
+    await expect(listTenantVariables(auth(), { scope: 'org' })).rejects.toMatchObject({
+      status: 400, code: 'ORG_ID_REQUIRED'
+    });
+    expect(dbMock.select).not.toHaveBeenCalled();
+  });
+
+  it('defaults to all and returns names for distinct owning organizations', async () => {
+    const captured = stubSelect([
+      { ...makeRow(), orgName: 'Org A' },
+      { ...makeRow({ id: ROW_B, orgId: ORG_B }), orgName: 'Org B' },
+      { ...makeRow({ orgId: null, partnerId: PARTNER }), orgName: null }
+    ]);
+    const rows = await listTenantVariables(auth({ accessibleOrgIds: [ORG_A, ORG_B] }));
+    expect(dbMock.select).toHaveBeenCalledWith(expect.objectContaining({ orgName: organizations.name }));
+    expect(new PgDialect().sqlToQuery(captured.join as SQL).sql).toBe('"tenant_variables"."org_id" = "organizations"."id"');
+    expect(rows.map(({ orgId, orgName }) => ({ orgId, orgName }))).toEqual([
+      { orgId: ORG_A, orgName: 'Org A' }, { orgId: ORG_B, orgName: 'Org B' }, { orgId: null, orgName: null }
+    ]);
   });
 });

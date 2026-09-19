@@ -1,0 +1,12 @@
+{
+  "NOT_FOUND": "Not found",
+  "ACCESS_DENIED": "Access denied",
+  "VALIDATION_FAILED": "Check the highlighted fields",
+  "RATE_LIMITED": "Too many requests — try again shortly",
+  "CONFLICT": "There's a conflict with the current state",
+  "LIMIT_REACHED": "You've reached the limit for this action",
+  "MFA_REQUIRED": "Multi-factor authentication is required",
+  "INVALID_CREDENTIALS": "Invalid credentials",
+  "EXPIRED": "Expired",
+  "tool_source_unavailable": "This tool's source is currently unavailable"
+}

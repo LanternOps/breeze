@@ -8,7 +8,8 @@ import { navigateTo } from './navigation';
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
-import type { PortalRunDto, PortalRunsDto } from '@breeze/shared';
+import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
+import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -310,6 +311,19 @@ export interface PortalRunsResult extends PaginatedResult<PortalRunDto> {
   timezone?: string;
 }
 
+/** GET /portal/reports/lifecycle/latest response shape. Not exported from
+ *  @breeze/shared (it is declared API-side only), so the portal mirrors it
+ *  locally; the summary payload itself (`HardwareLifecycleSummary`) is shared. */
+export interface HardwareLifecyclePortalLatestDto {
+  run: { id: string; generatedAt: string };
+  summary: HardwareLifecycleSummary | null;
+  contact: { name: string | null; email: string } | null;
+  // The org's `enable_self_service` flag (#5880) — governs whether a device
+  // row's Computer cell may link to /portal/devices, which itself redirects
+  // home when self-service is off.
+  enableSelfService: boolean;
+}
+
 export type Device = EnrichedPortalDevice;
 
 /** Mirrors the API's ticket_status enum. A freshly submitted ticket is 'new'
@@ -351,8 +365,15 @@ export interface TicketCommentAttachment {
 export interface TicketComment {
   id: string;
   authorName: string;
-  /** 'portal' is the customer's own reply; anything else came from the IT team. */
+  /** 'portal' is the customer's own reply; 'email' is any email-authored comment. */
   authorType: string | null;
+  /**
+   * The portal login the inbound email resolved to, or null. `authorType` alone
+   * cannot tell a customer's emailed reply from a technician's own reply linked
+   * through the Outlook add-in — both are stored as 'email'. A non-null sender
+   * on an 'email' comment is the only signal that the CUSTOMER wrote it.
+   */
+  senderPortalUserId?: string | null;
   content: string;
   createdAt: string;
   /** Absent on a reply the customer just posted locally. */
@@ -712,12 +733,16 @@ export interface BrandingConfig {
   enableTickets?: boolean;
   enableAssetCheckout?: boolean;
   enableSelfService?: boolean;
+  enableDevices?: boolean;
   enablePasswordReset?: boolean;
   enableDashboard?: boolean;
   enableSecurity?: boolean;
   enableBackups?: boolean;
   enableReports?: boolean;
   enableSupportUsage?: boolean;
+  enableService?: boolean;
+  enableDocuments?: boolean;
+  enableLifecycle?: boolean;
 }
 
 export interface ListParams {
@@ -1209,7 +1234,10 @@ export const portalApi = {
   },
 
   generateReport: async (
-    type: 'security_compliance_posture' | 'executive_summary',
+    type:
+      | 'security_compliance_posture'
+      | 'executive_summary'
+      | 'hardware_lifecycle',
     config: ApiRequestConfig = {},
   ): Promise<ApiResponse<PortalRunDto>> => {
     const response = await apiPost<{ data: PortalRunDto }>(
@@ -1238,4 +1266,38 @@ export const portalApi = {
     format: 'pdf' | 'csv',
   ): PublicApiPath =>
     publicApiPath(`/portal/reports/runs/${runId}/${format}`),
+
+  getHardwareLifecycleLatest: (
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<HardwareLifecyclePortalLatestDto>> =>
+    apiGet<HardwareLifecyclePortalLatestDto>(
+      '/portal/reports/lifecycle/latest',
+      config,
+    ),
+
+  // W04 — service deliverables
+  getService: (
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<PortalServiceOverviewDto>> =>
+    apiGet<PortalServiceOverviewDto>('/portal/service', config),
+
+  getServiceOccurrences: (
+    deliverableId: string,
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<PortalOccurrencesDto>> =>
+    apiGet<PortalOccurrencesDto>(
+      `/portal/service/${encodeURIComponent(deliverableId)}/occurrences`,
+      config,
+    ),
+
+  getDocuments: (
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<PortalDocumentsDto>> =>
+    apiGet<PortalDocumentsDto>('/portal/documents', config),
+
+  // A browser-navigable path, not a fetch: the session cookie authenticates the
+  // download and the API streams the bytes. Never a signed object-store URL
+  // (spec §8).
+  documentContentUrl: (documentId: string): PublicApiPath =>
+    publicApiPath(`/portal/documents/${documentId}/content`),
 };

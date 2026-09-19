@@ -14,7 +14,8 @@ import {
 import { eq, and, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { deviceSiteDenied, deviceIdSiteDenied } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 
@@ -123,7 +124,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
-      if (deviceSiteDenied(auth, targetDevice.siteId)) return JSON.stringify({ error: 'Target device not found or access denied' });
+      if (deviceSiteDenied(auth, targetDevice.siteId, targetDevice.id)) return JSON.stringify({ error: 'Target device not found or access denied' });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'
@@ -150,7 +151,9 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: restoreJobs.id, status: restoreJobs.status, createdAt: restoreJobs.createdAt });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'restore_as_vm',
         targetDeviceId,
         CommandTypes.VM_RESTORE_FROM_BACKUP,
         {
@@ -250,7 +253,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!targetDevice) return JSON.stringify({ error: 'Target device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
-      if (deviceSiteDenied(auth, targetDevice.siteId)) return JSON.stringify({ error: 'Target device not found or access denied' });
+      if (deviceSiteDenied(auth, targetDevice.siteId, targetDevice.id)) return JSON.stringify({ error: 'Target device not found or access denied' });
 
       const vmSpecs =
         input.vmSpecs && typeof input.vmSpecs === 'object'
@@ -276,7 +279,9 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: restoreJobs.id, status: restoreJobs.status, createdAt: restoreJobs.createdAt });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'instant_boot_vm',
         targetDeviceId,
         CommandTypes.VM_INSTANT_BOOT,
         {

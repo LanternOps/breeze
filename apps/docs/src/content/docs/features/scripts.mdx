@@ -88,6 +88,8 @@ Bundle format (v1):
 }
 ```
 
+Moving a component library from Datto RMM? [Migrating scripts from Datto RMM](/migration/scripts-from-datto/) maps input variables, site variables and UDF reads/writes onto parameters, variables and custom fields before you import.
+
 Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, `parameters` at 64&nbsp;KB (with a nesting depth of 8), and 20 tags per script.
 
 ### Creating a script
@@ -121,6 +123,8 @@ This is the way to adapt a script from the system library without waiting for pe
 ### Version history and rollback
 
 When you edit a script's content, the version number increments automatically. From the script editor, click **Execution History** to navigate to the script's execution page, or view the **Version History** panel to compare changes between versions using a side-by-side diff view. You can roll back to a previous version by clicking the **Rollback** button next to any earlier version.
+
+Each script's detail page also shows a **Provenance panel**: whether it was written by a person, by the AI assistant (as a reviewed proposal), imported, or shipped as a system script, plus — for AI-authored scripts — the reviewer's summary, risk tier, and who approved it. The scripts list has a matching **Origin** column and filter, with a "Reviewed" / "Edited since review" badge; editing an AI-authored script by hand clears the review badge, since what was reviewed is no longer exactly what would run. See [AI Script Authoring & Review](/features/ai-script-authoring/).
 
 ---
 
@@ -429,6 +433,8 @@ Each variable has:
 | **Secret** | Store the value write-once and masked. See [Secret variables](#secret-variables). |
 
 An organization-scoped variable overrides a partner-wide one with the same key, so you can set a sensible default for everyone and special-case individual customers.
+
+Switching the variables list to **All Organizations** lists partner-wide variables only, with a column naming the organization each row belongs to — org-scoped variables aren't shown there; open a specific organization to see or manage those.
 
 ### Using variables in a script
 

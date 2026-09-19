@@ -201,7 +201,15 @@ vi.mock('./alertVerdicts', async (importOriginal) => {
 // / rendered into which prompt.
 const loadSweepEvidence = vi.hoisted(() =>
   vi.fn<(orgId: string, kinds: string[]) => Promise<unknown>>());
-vi.mock('./sweepEvidence', () => ({ loadSweepEvidence }));
+// Only the LOADER is stubbed. The pure subject helpers (`evidenceRowSubject`,
+// `indexEvidenceSubjects`, `sweepSubjectIndexKey` — #4442 W04) come from the
+// real module: `finalizeSweep` indexes the evidence it was handed with them,
+// and stubbing them away would make this suite assert against a subject index
+// that does not exist in production.
+vi.mock('./sweepEvidence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./sweepEvidence')>()),
+  loadSweepEvidence,
+}));
 
 const resolveRecipientUserIds = vi.hoisted(() =>
   vi.fn<(agent: unknown, orgId: string) => Promise<string[]>>(async () => []));
@@ -228,6 +236,9 @@ vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 const recordSessionlessSdkUsage = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
 const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
 vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCents }));
+const reserveAiBudget = vi.hoisted(() => vi.fn());
+const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
+vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget, markAiBudgetReservationIndeterminate }));
 
 import { createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
@@ -397,6 +408,13 @@ const VALID_VERDICT = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited', reservationId: '00000000-0000-4000-8000-0000000000e1',
+    dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({
+    kind: 'indeterminate', reservationId: '00000000-0000-4000-8000-0000000000e1',
+  });
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.rowQueues = {};
   dbMockState.lastRow = {};
@@ -473,7 +491,7 @@ describe('sweep profile outcome-tool gating (P2-2)', () => {
   it('pre-hook allows submit_sweep_findings on a sweep run and denies it on full and verdict runs', async () => {
     const sweepOutcome = emptyOutcome();
     const pre = createAgentRunPreToolUse(preArgs('sweep', sweepOutcome) as never);
-    expect(await pre('submit_sweep_findings', VALID_FINDINGS)).toEqual({ allowed: true });
+    expect(await pre('submit_sweep_findings', VALID_FINDINGS)).toMatchObject({ allowed: true });
 
     for (const profile of ['full', 'verdict'] as const) {
       const outcome = emptyOutcome();
@@ -596,7 +614,7 @@ describe('sweep profile exposure and context in the run loop (P2-2)', () => {
   });
 
   it('drops sweepKinds the catalog does not know and tolerates a missing triggerRef entirely', async () => {
-    seedRows({ profile: 'sweep', triggerRef: { sweepKinds: ['disk_pressure', 'expiring_certs', 7] } });
+    seedRows({ profile: 'sweep', triggerRef: { sweepKinds: ['disk_pressure', 'not_a_sweep_kind', 7] } });
     await executeAgentRun(RUN_ID);
     expect(loadSweepEvidence).toHaveBeenCalledWith(ORG_ID, ['disk_pressure']);
 
@@ -678,6 +696,25 @@ describe('sweep findings persistence at finish (P2-2, Task A7)', () => {
     // FLOOR is read-only and never admits it) — and its `maxActionsPerRun`,
     // not `sweepLimits`' hard 0, is the cap that applies.
     seedRows({ profile: 'sweep', effective: policy({ toolAllowlist: ['manage_services'] }) });
+    // #4442 W04 gate 1b: the SYSTEM must actually have loaded a service_down
+    // row for (DEVICE_ID, 'Spooler'), or the proposal is refused as
+    // `subject_not_in_evidence` — evidence about one subject may not authorize
+    // acting on another. The default fixture only carries disk_pressure.
+    loadSweepEvidence.mockResolvedValue({
+      kinds: {
+        ...SWEEP_EVIDENCE.kinds,
+        service_down: {
+          rows: [{
+            deviceId: DEVICE_ID,
+            hostname: 'WS-ACCT-04',
+            fields: { name: 'Spooler', status: 'stopped', checkedAt: '2026-08-29T05:55:00.000Z' },
+          }],
+          total: 1,
+          truncated: false,
+        },
+      },
+      truncated: false,
+    });
     // The gate-2 device existence read (org-pinned, non-ephemeral).
     dbMockState.rowQueues.devices = [[{ id: DEVICE_ID }]];
     createActionIntent.mockResolvedValue({ id: 'intent-sweep-1', status: 'pending_approval' });
@@ -712,6 +749,9 @@ describe('sweep findings persistence at finish (P2-2, Task A7)', () => {
       deviceId: DEVICE_ID,
       disposition: 'intent_created',
       intentId: 'intent-sweep-1',
+      // The SYSTEM's own subject for the evidence row this proposal matched,
+      // carried through from `indexEvidenceSubjects` (#4442 W04).
+      subject: { kind: 'service_down', key: 'Spooler', observedAt: '2026-08-29T05:55:00.000Z' },
     }]);
     expect(outcome.sweepEvidenceTruncated).toBe(false);
   });

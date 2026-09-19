@@ -18,6 +18,7 @@ import {
   devices,
   deviceGroupMemberships,
   deviceGroups,
+  monitorDeviceState,
   organizations,
 } from '../db/schema';
 import { type BreezeEvent } from '../services/eventBus';
@@ -44,6 +45,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { automationQueueJobDataSchema, type AutomationAssignmentLevel, type AutomationQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { recordEpisodeResponse } from '../services/monitors/episodeService';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -519,22 +521,52 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
   // `typeof === 'string'` rather than `!== null`: an absent property (a
   // partially-selected row) would read as MANAGED under `!== null` and start
   // binding/skipping every ordinary customer automation. Fail toward unmanaged.
-  const isManaged = typeof automation.managedByAgentId === 'string';
+  const isAgentManaged = typeof automation.managedByAgentId === 'string';
+  // #5289 — a compiled MONITOR automation binds the same way. It is an ordinary
+  // `alert.triggered` event automation with no conditions and no trigger
+  // deviceIds, so without this it falls through to "every device in the owning
+  // org" (every org under the partner, for a partner-wide monitor): one disk
+  // alert on one workstation would run the monitor's response fleet-wide.
+  const isMonitorManaged = typeof automation.managedByMonitorId === 'string';
+  const isManaged = isAgentManaged || isMonitorManaged;
   let boundDeviceIds: string[] | undefined;
   let triggerContext: AutomationTriggerContext | undefined;
   if (isManaged) {
     const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : null;
     if (!deviceId) {
       // A managed automation binds to the triggering device — an event with no
-      // device has nothing to triage. Skip loudly, never fan out.
+      // device has nothing to act on. Skip loudly, never fan out.
       return { skipped: 'managed_automation_event_has_no_device' };
     }
-    if (typeof payload.automationId === 'string') {
+    if (isAgentManaged && typeof payload.automationId === 'string') {
       // Alert was CREATED by an automation (create_alert publishes automationId).
       // Triaging automation output invites feedback loops; deliberate default
       // until wave 6 revisits it.
       return { skipped: 'managed_automation_skips_automation_created_alerts' };
     }
+    // #5290 — a monitor whose recurrence latch fired pauses its own compiled
+    // response for THIS device only. The latch and the pause are written under
+    // the state row lock before the alert is ever published, so this read can
+    // never observe a half-latched pair.
+    if (isMonitorManaged) {
+      const monitorId = automation.managedByMonitorId as string;
+      const [state] = await db
+        .select({ paused: monitorDeviceState.responsesPaused })
+        .from(monitorDeviceState)
+        .where(
+          and(
+            eq(monitorDeviceState.monitorId, monitorId),
+            eq(monitorDeviceState.deviceId, deviceId),
+          ),
+        )
+        .limit(1);
+
+      if (state?.paused) {
+        await recordEpisodeResponse({ monitorId, deviceId, outcome: 'skipped_paused' });
+        return { skipped: 'monitor_responses_paused' };
+      }
+    }
+
     boundDeviceIds = [deviceId];
     triggerContext = {
       alertId: typeof payload.alertId === 'string' ? payload.alertId : null,
@@ -542,6 +574,23 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
       severity: normalizeTriggerSeverity(payload.severity),
       ruleId: typeof payload.ruleId === 'string' ? payload.ruleId : null,
     };
+  } else if (typeof payload.deviceId === 'string') {
+    // Event targets must not fall back to the static fleet-wide conditions.
+    // Recheck current ownership: the device/org may have moved since publication.
+    const [device] = await db
+      .select({ orgId: devices.orgId, partnerId: organizations.partnerId })
+      .from(devices)
+      .innerJoin(organizations, eq(devices.orgId, organizations.id))
+      .where(eq(devices.id, payload.deviceId))
+      .limit(1);
+    const belongsToOwner = device && (automation.orgId
+      ? device.orgId === automation.orgId
+      : automation.partnerId && device.partnerId === automation.partnerId);
+    if (!belongsToOwner) {
+      console.warn(`[AutomationWorker] Skipping automation ${automation.id}: event_device_outside_automation_scope (device ${payload.deviceId})`);
+      return { skipped: 'event_device_outside_automation_scope' };
+    }
+    boundDeviceIds = [payload.deviceId];
   }
 
   const { run, targetDeviceIds } = await createAutomationRunRecord({
@@ -559,6 +608,19 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
     await enqueueAutomationRun(run.id, targetDeviceIds, triggerContext);
   } else {
     await enqueueAutomationRun(run.id, targetDeviceIds);
+  }
+
+  // #5290 — record the response attempt on the OPEN episode for the pair. The
+  // outcome walks forward only: automationActionResults terminalises it to
+  // completed/failed when the run finishes.
+  if (isMonitorManaged && boundDeviceIds?.[0]) {
+    const actions = Array.isArray(automation.actions) ? automation.actions : [];
+    await recordEpisodeResponse({
+      monitorId: automation.managedByMonitorId as string,
+      deviceId: boundDeviceIds[0],
+      runId: run.id,
+      outcome: actions.length === 0 ? 'skipped_no_response' : 'queued',
+    });
   }
 
   return { runId: run.id };

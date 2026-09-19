@@ -2,15 +2,17 @@ import { db } from '../db';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
-import type { AuthContext } from '../middleware/auth';
+import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
   alertRuleInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
+  warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import {
   resolveEffectiveConfig,
@@ -23,6 +25,8 @@ import {
   deleteConfigPolicy,
   addFeatureLink,
   updateFeatureLink,
+  WarrantyConsentError,
+  policyEffectivelyEnablesHpCmslCollection,
   removeFeatureLink,
   listFeatureLinks,
   listAssignments,
@@ -41,6 +45,32 @@ import {
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+const MFA_REQUIRED_ERROR = JSON.stringify({ error: 'MFA required' });
+
+/**
+ * Match the HTTP `requireMfa()` boundary for config-policy mutations reached
+ * through AI or MCP instead of a Hono route: a human session must carry the
+ * live MFA claim before it can change what takes effect across a fleet.
+ *
+ * `ai_agent` principals are EXEMPT, deliberately. `requireMfa()` rejects them
+ * (middleware/auth.ts) because HTTP is not an agent's channel at all — not
+ * because an agent failed an MFA check. An agent never has, and never could
+ * have, a session MFA claim, so deriving its authorization from one would
+ * permanently disable the grantable `config_policies` agent capability
+ * (agentToolCatalog.ts) rather than gate it. An approved agent run's
+ * authorization is the UPSTREAM Tier-3 approval enforced in aiGuardrails; the
+ * maintenance-link machine-principal check below exempts `ai_agent` for exactly
+ * the same reason (RMM-QA-176 D9.3).
+ *
+ * API-key and OAuth MCP callers carry `token: {}` (mcpServer.ts) and so are
+ * denied while `ENABLE_2FA` is on, and retain the product-wide
+ * `ENABLE_2FA=false` behavior through `hasSatisfiedMfa`.
+ */
+function configPolicyMutationMfaError(auth: AuthContext): string | null {
+  if (auth.principal?.kind === 'ai_agent') return null;
+  return hasSatisfiedMfa(auth) ? null : MFA_REQUIRED_ERROR;
 }
 
 /**
@@ -72,6 +102,11 @@ const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unk
   onedrive_helper: { schema: onedriveHelperInlineSettingsSchema, normalize: true },
   alert_rule: { schema: alertRuleInlineSettingsSchema, normalize: true },
   monitoring: { schema: monitoringInlineSettingsSchema, normalize: false },
+  // #5511 W02: the CLIENT schema, so an assistant that invents an hpCmsl
+  // consent object is told which field is wrong. It still cannot ENABLE
+  // collection — addFeatureLink refuses without an authenticated actor, and
+  // this Tier-2 tool has none.
+  warranty: { schema: warrantyInlineSettingsSchema, normalize: false },
 };
 
 /**
@@ -119,6 +154,22 @@ function rejectElevatedAutomationActions(raw: unknown): string | null {
     }
   }
   return null;
+}
+
+/**
+ * #5511 W02: enabling HP CMSL warranty collection records an acceptance of
+ * HP's licence, which the service will only stamp for an authenticated user —
+ * and this tool never passes one. Map that refusal to a readable tool result:
+ * left to safeHandler it would be scrubbed to the generic "the tool failed",
+ * which tells the assistant neither why nor that a human must do it in the UI.
+ * The message is a fixed literal authored in configurationPolicy.ts, so it
+ * carries no driver or schema detail.
+ */
+function warrantyConsentRefusal(err: unknown): string | null {
+  if (!(err instanceof WarrantyConsentError)) return null;
+  return JSON.stringify({
+    error: `${err.message} Ask a user to switch it on from the policy's Warranty tab, where they accept HP's licence themselves.`,
+  });
 }
 
 function validateInlineSettingsForFeature(
@@ -327,6 +378,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('apply_configuration_policy', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
       // Dual-axis reader so a partner-scoped caller can reach a partner-OWNED
       // policy (org_id NULL) to assign it — auth.orgCondition alone hid these.
       const conditions: SQL[] = [eq(configurationPolicies.id, input.configPolicyId as string)];
@@ -381,6 +435,18 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: siteAuth.error });
       }
 
+      // #5511 W02 (contract D4): assigning a policy whose effective warranty
+      // link collects is how HP CMSL collection REACHES devices — the HTTP
+      // route gates that on devices:execute + MFA, because it installs HP
+      // software on every HP endpoint the assignment covers. This tool is
+      // Tier 2 (auto-executes, no approval), so it refuses rather than widen
+      // collection: an assistant can no more spread it than switch it on.
+      if (await policyEffectivelyEnablesHpCmslCollection(policy.id)) {
+        return JSON.stringify({
+          error: `Policy "${policy.name}" has HP warranty collection switched on, which installs HP software on the devices it reaches. Assigning it requires a user with the devices:execute permission — ask them to assign it from the Configuration Policies page.`,
+        });
+      }
+
       // assignPolicy returns null (instead of throwing) on a duplicate — see
       // the comment on its onConflictDoNothing insert in configurationPolicy.ts
       // for why the raised-violation catch pattern doesn't work inside this
@@ -422,6 +488,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('remove_configuration_policy_assignment', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
       // Verify the assignment belongs to a policy the caller can see. The
       // dual-axis reader keeps partner-OWNED policies (org_id NULL) reachable
       // for partner-scoped callers; policyOrgId is selected so the partner-wide
@@ -524,9 +593,13 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('manage_configuration_policy', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
       if (!canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
       }
+
       const action = input.action as string;
 
       if (action === 'create') {
@@ -703,9 +776,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
         const featureLinkIds = links.map((l) => l.id);
 
-        // Get compliance stats per feature link
+        // Get compliance stats per feature link, narrowed to the devices this
+        // caller may see. Without the exact-device axis a device-bound (or
+        // device-LESS analysis) AI run read fleet-wide compliance counts here
+        // (#6096) — the `status` branch below already narrows, `summary` did not.
         const { byFeatureLink } = featureLinkIds.length > 0
-          ? await getConfigPolicyComplianceStats(featureLinkIds)
+          ? await getConfigPolicyComplianceStats(featureLinkIds, auth.allowedSiteIds, auth.allowedDeviceIds)
           : { byFeatureLink: new Map() };
 
         // Aggregate stats per config policy
@@ -769,7 +845,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
             and(
               isNull(automationPolicyCompliance.policyId),
               isNotNull(automationPolicyCompliance.configPolicyId),
-              inArray(automationPolicyCompliance.configPolicyId, featureLinkIds)
+              inArray(automationPolicyCompliance.configPolicyId, featureLinkIds),
+              // Exact-device axis (#6096 #11): these rows are device-attributable
+              // (status + `details`) and the tool takes no deviceId, so the
+              // declarative gate never runs. `undefined` for an unrestricted
+              // caller — no narrowing.
+              deviceScopeCondition(auth, automationPolicyCompliance.deviceId)
             )
           )
           .limit(limit);
@@ -843,6 +924,11 @@ For link-only types, set featurePolicyId instead of inlineSettings:
     handler: safeHandler('manage_policy_feature_link', async (input, auth) => {
       const action = input.action as string;
       const configPolicyId = input.configPolicyId as string;
+
+      if (action === 'add' || action === 'update' || action === 'remove') {
+        const mfaError = configPolicyMutationMfaError(auth);
+        if (mfaError) return mfaError;
+      }
 
       // Reads (list) are not gated by the site-ceiling — only add/update/remove.
       if (action !== 'list' && !canMutateOrgWideGovernance(auth)) {
@@ -933,12 +1019,19 @@ For link-only types, set featurePolicyId instead of inlineSettings:
         // see the comment on its onConflictDoNothing insert in
         // configurationPolicy.ts for why the raised-violation catch pattern
         // doesn't work inside this tool call's withDbAccessContext transaction.
-        const link = await addFeatureLink(
-          configPolicyId,
-          featureType as any,
-          (input.featurePolicyId as string) ?? null,
-          inlineSettings ?? null
-        );
+        let link;
+        try {
+          link = await addFeatureLink(
+            configPolicyId,
+            featureType as any,
+            (input.featurePolicyId as string) ?? null,
+            inlineSettings ?? null
+          );
+        } catch (err) {
+          const refusal = warrantyConsentRefusal(err);
+          if (refusal) return refusal;
+          throw err;
+        }
         if (!link) {
           return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
         }
@@ -965,7 +1058,14 @@ For link-only types, set featurePolicyId instead of inlineSettings:
           updates.inlineSettings = inlineSettings;
         }
 
-        const updated = await updateFeatureLink(featureLinkId, updates, configPolicyId);
+        let updated;
+        try {
+          updated = await updateFeatureLink(featureLinkId, updates, configPolicyId);
+        } catch (err) {
+          const refusal = warrantyConsentRefusal(err);
+          if (refusal) return refusal;
+          throw err;
+        }
         if (!updated) return JSON.stringify({ error: 'Feature link not found' });
         return JSON.stringify({ success: true, featureLink: updated });
       }

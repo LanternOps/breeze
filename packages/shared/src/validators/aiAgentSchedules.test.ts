@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema, isWeeklyLiteralCron } from './aiAgentSchedules';
+import { AI_SWEEP_KINDS } from '../types/aiAgentSchedules';
+import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema, isWeeklyLiteralCron, isMonthlyOrRarerLiteralCron, isDailyOrRarerLiteralCron } from './aiAgentSchedules';
 
 const uuid = '11111111-1111-4111-8111-111111111111';
 describe('createAiAgentScheduleSchema', () => {
@@ -10,9 +11,51 @@ describe('createAiAgentScheduleSchema', () => {
     const base = { ownerScope: 'partner', agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC', sweepKinds: ['disk_pressure'], enabled: true };
     expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 0 6 * * *' }).success).toBe(false);
     expect(createAiAgentScheduleSchema.safeParse({ ...base, timezone: 'Mars/Olympus' }).success).toBe(false);
-    expect(createAiAgentScheduleSchema.safeParse({ ...base, sweepKinds: ['expiring_certs'] }).success).toBe(false);
+    // #5754 promoted `expiring_certs` into the catalog, so the unknown-kind
+    // case needs a value that is genuinely not a kind.
+    expect(createAiAgentScheduleSchema.safeParse({ ...base, sweepKinds: ['not_a_sweep_kind'] }).success).toBe(false);
     expect(createAiAgentScheduleSchema.safeParse({ ...base, sweepKinds: [] }).success).toBe(false);
   });
+  // #5751 W03 (#5754): the seventh kind. The cap is the value that silently
+  // drifts — a hardcoded literal accepts one fewer kind than the catalog
+  // offers, and the failure is a 400 on a perfectly valid "select all".
+  it('accepts every kind in AI_SWEEP_KINDS on a partner baseline', () => {
+    const result = createAiAgentScheduleSchema.safeParse({
+      ownerScope: 'partner', agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC',
+      sweepKinds: [...AI_SWEEP_KINDS], enabled: true,
+    });
+    expect(JSON.stringify(result.error?.issues ?? null)).toBe('null');
+    expect(result.success).toBe(true);
+  });
+  it('rejects a list longer than AI_SWEEP_KINDS — the cap tracks the catalog', () => {
+    expect(createAiAgentScheduleSchema.safeParse({
+      ownerScope: 'partner', agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC',
+      sweepKinds: [...AI_SWEEP_KINDS, AI_SWEEP_KINDS[0]], enabled: true,
+    }).success).toBe(false);
+  });
+  it('accepts expiring_certs, which is finding-only and proposes no action', () => {
+    expect(createAiAgentScheduleSchema.safeParse({
+      ownerScope: 'partner', agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC',
+      sweepKinds: ['expiring_certs'], enabled: true,
+    }).success).toBe(true);
+  });
+  // All THREE schemas carry the cap. Only the partner one was covered above,
+  // so a revert of either of the other two to a hardcoded literal — exactly
+  // the drift .max(AI_SWEEP_KINDS.length) exists to prevent — would ship.
+  it('the org-override and update schemas accept every kind and reject one more', () => {
+    const org = (kinds: readonly string[]) => createAiAgentScheduleSchema.safeParse({
+      ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, enabled: true,
+      sweepKinds: [...kinds],
+    });
+    expect(org(AI_SWEEP_KINDS).success).toBe(true);
+    expect(org([...AI_SWEEP_KINDS, AI_SWEEP_KINDS[0]!]).success).toBe(false);
+
+    const patch = (kinds: readonly string[]) =>
+      updateAiAgentScheduleSchema.safeParse({ sweepKinds: [...kinds] });
+    expect(patch(AI_SWEEP_KINDS).success).toBe(true);
+    expect(patch([...AI_SWEEP_KINDS, AI_SWEEP_KINDS[0]!]).success).toBe(false);
+  });
+
   it('an org override carries baselineScheduleId and no cron', () => {
     expect(createAiAgentScheduleSchema.safeParse({ ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, enabled: false, sweepKinds: [] }).success).toBe(true);
     expect(createAiAgentScheduleSchema.safeParse({ ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, cron: '0 6 * * *', enabled: true, sweepKinds: [] }).success).toBe(false);
@@ -214,5 +257,45 @@ describe('isWeeklyLiteralCron (phase 2 P2-3)', () => {
     ]) {
       expect(isWeeklyLiteralCron(cron)).toBe(false);
     }
+  });
+});
+
+describe('design schedule kind', () => {
+  it('accepts a quarterly literal cron and rejects weekly/daily ones', () => {
+    expect(isMonthlyOrRarerLiteralCron('0 6 1 1,4,7,10 *')).toBe(true);
+    expect(isMonthlyOrRarerLiteralCron('0 6 1 * *')).toBe(true);
+    expect(isMonthlyOrRarerLiteralCron('0 6 1 */3 *')).toBe(true);
+    expect(isMonthlyOrRarerLiteralCron('0 7 * * 1')).toBe(false);
+    expect(isMonthlyOrRarerLiteralCron('0 6 29 * *')).toBe(false);
+    expect(isMonthlyOrRarerLiteralCron('*/5 6 1 * *')).toBe(false);
+  });
+  it('a design baseline sweeps nothing and must be monthly or rarer', () => {
+    const base = { ownerScope: 'partner', kind: 'design', agentId: '11111111-1111-4111-8111-111111111111', timezone: 'UTC', enabled: true };
+    expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 6 1 1,4,7,10 *' }).success).toBe(true);
+    expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 7 * * 1' }).success).toBe(false);
+    expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 6 1 * *', sweepKinds: ['disk_pressure'] }).success).toBe(false);
+  });
+});
+
+describe('patch schedules (AI patch agent W01)', () => {
+  it('accepts a daily-or-rarer literal cron and rejects a sub-daily one', () => {
+    expect(isDailyOrRarerLiteralCron('0 2 * * *')).toBe(true);
+    expect(isDailyOrRarerLiteralCron('30 2 * * 1')).toBe(true);
+    expect(isDailyOrRarerLiteralCron('0 2 1 * *')).toBe(true);
+    expect(isDailyOrRarerLiteralCron('0 2 * * *  ')).toBe(true);
+    expect(isDailyOrRarerLiteralCron('0 * * * *')).toBe(false);    // every hour
+    expect(isDailyOrRarerLiteralCron('0 2,14 * * *')).toBe(false); // twice a day
+    expect(isDailyOrRarerLiteralCron('0 */12 * * *')).toBe(false); // step
+    expect(isDailyOrRarerLiteralCron('0 2-4 * * *')).toBe(false);  // range
+    expect(isDailyOrRarerLiteralCron('0,30 2 * * *')).toBe(false); // minute list
+    expect(isDailyOrRarerLiteralCron('0 24 * * *')).toBe(false);
+    expect(isDailyOrRarerLiteralCron('0 0 2 * * *')).toBe(false);  // 6-field
+  });
+
+  it('accepts a patch baseline and rejects sweep kinds or a sub-daily cron on it', () => {
+    const p = { ownerScope: 'partner', kind: 'patch', agentId: uuid, cron: '0 2 * * *', timezone: 'UTC', enabled: true };
+    expect(createAiAgentScheduleSchema.safeParse(p).success).toBe(true);
+    expect(createAiAgentScheduleSchema.safeParse({ ...p, sweepKinds: ['disk_pressure'] }).success).toBe(false);
+    expect(createAiAgentScheduleSchema.safeParse({ ...p, cron: '0 * * * *' }).success).toBe(false);
   });
 });

@@ -11,6 +11,13 @@ export interface WarrantyLookupResult {
   entitlements: WarrantyEntitlement[];
   warrantyStartDate: string | null;
   warrantyEndDate: string | null;
+  /**
+   * Vendor ship date (YYYY-MM-DD) when the provider reports one — Dell
+   * `shipDate`, Lenovo `machineInfo.shipDate`. Feeds the device's
+   * vendor-sourced purchase date for the Hardware Lifecycle report; never
+   * overwrites an operator-entered ('manual') purchase date.
+   */
+  shipDate?: string | null;
   error?: string;
 }
 

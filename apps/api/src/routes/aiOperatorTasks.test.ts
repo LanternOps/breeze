@@ -328,6 +328,38 @@ describe('GET /ai/operator/tasks/:id (detail)', () => {
       .request(`/ai/operator/tasks/${TASK_ID}`);
     expect(sqlText(capturedPredicate)).toContain('site_id');
   });
+
+  // A DEVICE-LESS task is visible to a site-restricted caller by design
+  // (`siteVisibilityCondition` short-circuits on a null `deviceId`), but the
+  // runs linked to it carry their own device target. Without the run-scope
+  // predicate this projection discloses status, attempt ordinal, prompt
+  // version and model for runs against devices outside the caller's sites.
+  it('scopes the linked-run projection by site even when the task itself is device-less', async () => {
+    const siteId = '99999999-9999-4999-8999-999999999999';
+    let runPredicate: unknown;
+    selectMock.mockReturnValueOnce(selectChain([taskRow({ deviceId: null })]));
+    selectMock.mockReturnValueOnce(selectChain([]));
+    selectMock.mockReturnValueOnce(selectChain([], (p) => { runPredicate = p; }));
+
+    await buildApp({ allowedSiteIds: [siteId], canAccessSite: (id: string | null) => id === siteId })
+      .request(`/ai/operator/tasks/${TASK_ID}`);
+
+    const rendered = dialect.sqlToQuery(runPredicate as SQL);
+    expect(rendered.sql).toContain('run_scope_device');
+    expect(rendered.params).toContain(siteId);
+  });
+
+  it('denies every linked run when the caller has zero authorized sites', async () => {
+    let runPredicate: unknown;
+    selectMock.mockReturnValueOnce(selectChain([taskRow({ deviceId: null })]));
+    selectMock.mockReturnValueOnce(selectChain([]));
+    selectMock.mockReturnValueOnce(selectChain([], (p) => { runPredicate = p; }));
+
+    await buildApp({ allowedSiteIds: [], canAccessSite: () => false })
+      .request(`/ai/operator/tasks/${TASK_ID}`);
+
+    expect(sqlText(runPredicate)).toContain('false');
+  });
 });
 
 /**

@@ -2,10 +2,12 @@ import { defineConfig } from 'vitest/config';
 import { config } from 'dotenv';
 
 // Load test environment variables
-config({ path: '../../.env.test' });
+config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     environment: 'node',
     include: [
@@ -162,6 +164,8 @@ export default defineConfig({
       // roll back as ONE system-scoped transaction, and probes that an org-B
       // context still cannot read org A's system-scoped intent (RLS unchanged).
       'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
+      // #5612 W04: live-DB race proving the lane hourly cap reserves under the advisory lock.
+      'src/services/actionIntents/scriptLaneHourlyCap.integration.test.ts',
       // Co-located real-DB integration test for headless Google Tier-3 dispatch
       // (Phase 2): drives an approved google_suspend_user intent through the real
       // release worker with only the Google SDK client mocked, proving it
@@ -324,6 +328,13 @@ export default defineConfig({
       // see vitest.config.integration-suite-coverage.ts for its
       // dedicated runner.
       'src/__tests__/integration/integration-suite-coverage.integration.test.ts',
+      // workspace.vercel.e2e.test.ts is the NIGHTLY real-Vercel suite: it needs
+      // live VERCEL_* credentials, spends real sandbox-minutes, and every case
+      // waits out a deliberate deny-all network failure. It must never run in
+      // the PR-blocking Integration Tests job, and it needs no Postgres/Redis
+      // setup at all — see vitest.config.workspace-e2e.ts
+      // (`pnpm test:workspace-e2e`) and .github/workflows/workspace-nightly.yml.
+      'src/__tests__/integration/workspace.vercel.e2e.test.ts',
     ],
     // Migrations run ONCE per invocation here (not in setup.ts's per-file
     // beforeAll): re-verifying 400+ migration checksums for every test file

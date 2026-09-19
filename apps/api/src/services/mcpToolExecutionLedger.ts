@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withDbAccessContext } from '../db';
 import { aiSessions, aiToolExecutions } from '../db/schema';
 import { summarizePayload, summarizeToolResult } from './auditPayloadSanitizer';
 import { redactAiToolOutputText } from './aiToolOutput';
+import type { AiOriginRef } from '@breeze/shared';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -14,6 +15,13 @@ export interface McpToolExecutionLedgerPrincipal {
 }
 
 export interface McpToolExecutionLedgerHandle {
+  /**
+   * #5022 W01: stamp the tool AuthContext with THIS, never with
+   * `transportSessionId`. The MCP *transport* session id is not an
+   * `ai_sessions.id`; `sessionId` below is the persisted row this ledger
+   * just created, which is what a device-page chip can resolve.
+   */
+  aiOrigin: AiOriginRef;
   executionId: string;
   sessionId: string;
   orgId: string;
@@ -122,7 +130,12 @@ export async function beginMcpToolExecutionLedger(
           throw new Error('Failed to create MCP tool execution ledger row');
         }
 
-        return { sessionId, executionId: execution.id, orgId: input.orgId };
+        return {
+          sessionId,
+          executionId: execution.id,
+          orgId: input.orgId,
+          aiOrigin: { kind: 'ai_assistant', sessionId },
+        };
       },
     )
   );

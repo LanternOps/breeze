@@ -13,12 +13,15 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools } from './aiTools';
+import { executeTool, aiTools, type ExecuteToolOptions } from './aiTools';
+import { WORKSPACE_MCP_SHAPES, WORKSPACE_TOOL_DESCRIPTIONS } from './workspace/workspaceTools';
+import type { CaptureScope } from './artifacts/toolResultCapture';
+import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
-import { buildToolHandoffResult, type ToolHandoffStatus } from './aiToolHandoff';
+import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
@@ -32,6 +35,7 @@ import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { aiScriptAuthoringEnabled } from '../config/env';
 import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -174,6 +178,9 @@ export const TOOL_TIERS = {
   sync_huntress_data: 2,
   execute_command: 3,
   run_script: 3,
+  // AI script authoring: a proposal is inert until run_script consumes it.
+  propose_script: 1,
+  get_script_proposal: 1,
   // #3525 — the de-escalation that undoes run_script; same tier, same gate.
   cancel_script_execution: 3,
   // Script library (read-only) — used by the script-builder assistant to
@@ -197,9 +204,6 @@ export const TOOL_TIERS = {
   analyze_fleet_metrics: 1,
   get_invite_funnel: 1,
   delete_tenant: 3,
-  get_backup_health: 1,
-  run_backup_verification: 2,
-  get_recovery_readiness: 1,
   file_operations: 1, // Base tier; write/delete/mkdir/rename escalated to 3 in guardrails
   analyze_disk_usage: 1,
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
@@ -238,6 +242,18 @@ export const TOOL_TIERS = {
   search_logs: 1,
   get_log_trends: 1,
   detect_log_correlations: 2,
+  // Execution plane (spec §5.7) — reads nothing the caller cannot already read;
+  // it just refuses to throw the result away. Tier 1 like its source tools.
+  export_dataset: 1,
+  // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
+  // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
+  // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
+  // this map is invisible to chat AND to every run profile even when it is
+  // registered in `aiTools`.
+  workspace_stage: 1,
+  workspace_run: 1,
+  workspace_collect: 1,
+  workspace_cancel: 1,
   // Configuration policy tools
   list_configuration_policies: 1,
   get_configuration_policy: 1,
@@ -262,6 +278,18 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // W01 (spec §4.4) — read-only reachability for a discovered network asset,
+  // with the source and age of the evidence. Wired here rather than added to
+  // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
+  // it as "Unknown tool" and the chat tells the user the capability does not
+  // exist.
+  get_network_asset_reachability: 1,
+  // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
+  // get_monitor / manage_monitor_definitions remain in the frozen
+  // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
+  // — these two are new and wired directly instead of widening that list.
+  get_monitor_activity: 2,
+  reset_monitor_escalation: 2,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
@@ -285,6 +313,12 @@ export const TOOL_TIERS = {
   list_contracts: 2,
   get_contract: 2,
   manage_contracts: 2,          // activate/pause/resume/cancel escalate to 3 in guardrails
+  list_deliverable_templates: 2,
+  list_deliverables: 2,
+  manage_deliverables: 2,       // apply_template escalates to 3 in guardrails (W05)
+  manage_key_dates: 2,
+  list_org_documents: 2,
+  manage_org_documents: 2,
   search_catalog: 2,
   get_catalog_item: 2,
   lookup_distributor_product: 2,
@@ -363,6 +397,12 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  * handoff payload carries `status` (machine-readable, what the clients switch
  * on) and never an `error` field, so nothing downstream can mistake it for a
  * failure by shape either.
+ *
+ * `isError` is derived from the handoff STATUS, not from "a handoff marker is
+ * present" (#6022). The read-back added there rides this same channel, and
+ * `approved_failed` — an action the worker ran and that did NOT take effect —
+ * is a genuine failure. Treating the marker itself as "not an error" would
+ * paint a guardrail refusal as "Approved · running", which is the bug.
  */
 function preToolUseDenialResult(
   toolName: string,
@@ -373,7 +413,7 @@ function preToolUseDenialResult(
     : { error: check.error };
   return {
     text: compactToolResultForChat(toolName, JSON.stringify(payload)),
-    isError: !check.handoff,
+    isError: check.handoff ? handoffIsError(check.handoff) : true,
   };
 }
 
@@ -431,9 +471,10 @@ function registryDescription(toolName: string): string {
   return description;
 }
 
-function makeHandler(
+function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
@@ -516,13 +557,25 @@ function makeHandler(
       // and `jobs/intentReleaseWorker.ts` use, so the re-entered context is
       // identical to the one authMiddleware opened — not wider.
       const dbContext: DbAccessContext = dbAccessContextFromAuth(auth);
+      // W01: attribute an oversized result to this session's org and session.
+      // `session.orgId` is the canonical org — `auth.orgId` is null for a
+      // partner-scope login — and `session.breezeSessionId` IS the
+      // ai_sessions.id the artifact row's session_id FK points at.
+      const captureSession = getActiveSession?.();
+      const capture: CaptureScope | undefined = captureSession
+        ? { orgId: captureSession.orgId, sessionId: captureSession.breezeSessionId }
+        : undefined;
+      // An absent member means no KEY at all, and an empty bag means no FOURTH
+      // ARGUMENT at all — both are behaviour changes for an ordinary chat tool
+      // call, and `aiAgentSdkTools.verifiedContext.test.ts` pins the arity.
+      const execOptions: ExecuteToolOptions = {
+        ...(verifiedContext ? { context: verifiedContext } : {}),
+        ...(capture ? { capture } : {}),
+      };
       const result = await withToolTimeout(
         withDbAccessContext(dbContext, () =>
-          // Three arguments unless something was actually verified — an
-          // options bag carrying `context: undefined` would be a behaviour
-          // change for every ordinary chat tool call.
-          verifiedContext
-            ? executeTool(toolName, args, auth, { context: verifiedContext })
+          Object.keys(execOptions).length > 0
+            ? executeTool(toolName, args, auth, execOptions)
             : executeTool(toolName, args, auth),
         ),
         toolTimeout,
@@ -790,6 +843,22 @@ function makeSessionAwareHandler(
 
 // Exported for unit tests that lock in the enforcement ordering, and (for
 // makeHandler) the preToolUse -> executeTool context hand-off (#3409 PR4c-1).
+/**
+ * Backwards-compatible four-argument shape of `makeToolHandler`, with NO active
+ * session — W01 artifact capture is therefore inert for a handler built through
+ * it. Every real declaration site shadows this with a local alias that closes
+ * over its own `getActiveSession` (see createBreezeMcpServer and
+ * scriptProposalToolDefinitions); this module-level binding exists only for
+ * `__test__` consumers that predate the session parameter. Do NOT build a new
+ * declaration site on it.
+ */
+const makeHandler = (
+  toolName: string,
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) => makeToolHandler(toolName, getAuth, undefined, onPreToolUse, onPostToolUse);
+
 export const __test__ = { makeSessionAwareHandler, makeHandler };
 
 // ============================================
@@ -806,6 +875,58 @@ export const __test__ = { makeSessionAwareHandler, makeHandler };
  * Read from process.env at call time so it tracks runtime config (mirrors
  * googleToolDefinitions).
  */
+/**
+ * AI script authoring tools — EXPOSURE gate for BREEZE_AI_SCRIPT_AUTHORING_ENABLED.
+ * Registration in aiTools and TOOL_TIERS stays unconditional so the
+ * registry-parity contract holds statically; without a tool() entry the model
+ * simply cannot call these. Same shape as m365ToolDefinitions below.
+ */
+export function scriptProposalToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  // Return type is inferred (like m365ToolDefinitions): the SDK's
+  // SdkMcpToolDefinition generic is invariant in its shape, so an explicit
+  // SdkTool[] annotation does not accept the concrete tool() results.
+  if (!aiScriptAuthoringEnabled()) return [];
+  // One alias so the tool() declarations below keep their four-argument shape
+  // while the underlying handler also receives the session (W01 capture).
+  const makeHandler = (
+    toolName: string,
+    auth: () => AuthContext,
+    pre?: PreToolUseCallback,
+    post?: PostToolUseCallback,
+  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  const uuid = z.string().guid();
+  return [
+    tool(
+      'propose_script',
+      'Author a script as an immutable proposal for independent review. Nothing runs until it is reviewed and approved through run_script with the returned proposalId. Use this only when no library script fits.',
+      {
+        language: z.enum(['powershell', 'bash', 'python', 'cmd']),
+        content: z.string().min(1).max(65536),
+        goal: z.string().min(1).max(2000),
+        expectedEffect: z.string().min(1).max(2000),
+        verification: z.record(z.string(), z.unknown()),
+        rollbackNote: z.string().max(2000).optional(),
+        deviceIds: z.array(uuid).min(1).max(10),
+        runAs: z.enum(['system', 'user']).optional(),
+        timeoutSeconds: z.number().int().min(1).max(3600).optional(),
+        supersedesProposalId: uuid.optional(),
+      },
+      makeHandler('propose_script', getAuth, onPreToolUse, onPostToolUse),
+    ),
+    tool(
+      'get_script_proposal',
+      'Read a script proposal: status, static scan, review verdict, decision, executions and verification.',
+      { proposalId: uuid },
+      makeHandler('get_script_proposal', getAuth, onPreToolUse, onPostToolUse),
+    ),
+  ];
+}
+
 export function m365ToolDefinitions(
   getAuth: () => AuthContext,
   getActiveSession: (() => ActiveSession | undefined) | undefined,
@@ -1215,8 +1336,19 @@ export function createBreezeMcpServer(
   extraTools: SdkTool[] = [],
   options?: { onlyTools?: ReadonlySet<string> },
 ) {
+  // One alias so the tool() declarations below keep their four-argument shape
+  // while the underlying handler also receives the session. W01 capture needs
+  // the session's org (auth.orgId is null for a partner-scope login) and its
+  // ai_sessions id. getActiveSession is undefined for the headless/agent
+  // server, where the ai_agent principal already carries the run and org.
+  const makeHandler = (
+    toolName: string,
+    auth: () => AuthContext,
+    pre?: PreToolUseCallback,
+    post?: PostToolUseCallback,
+  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+
   const uuid = z.string().guid();
-  const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
   const tools = [
     tool(
@@ -1420,9 +1552,13 @@ export function createBreezeMcpServer(
 
     tool(
       'run_script',
-      'Execute a script on one or more devices.',
+      'Execute a script on one or more devices. Give EITHER scriptId (a saved library script) OR proposalId (a reviewed, AI-authored proposal from propose_script) — never both.',
       {
-        scriptId: uuid,
+        // The tool() form takes a raw zod SHAPE, not a schema, so the XOR
+        // refinement can only live in toolInputSchemas.run_script — which
+        // validateToolInput enforces at dispatch. Deliberate asymmetry.
+        scriptId: uuid.optional(),
+        proposalId: uuid.optional(),
         deviceIds: z.array(uuid).min(1).max(10),
         parameters: z.record(z.string(), z.unknown()).optional(),
         // #4888 — mirrors toolInputSchemas.run_script; see scriptRunRequest.ts
@@ -1592,40 +1728,6 @@ export function createBreezeMcpServer(
     ),
 
     tool(
-      'get_backup_health',
-      'Get backup and verification health summary for an organization, with optional device focus.',
-      {
-        orgId: uuid.optional(),
-        deviceId: backupEntityId.optional(),
-      },
-      makeHandler('get_backup_health', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'run_backup_verification',
-      'Run integrity or restore verification for a device and return updated readiness data.',
-      {
-        orgId: uuid.optional(),
-        deviceId: backupEntityId,
-        backupJobId: backupEntityId.optional(),
-        snapshotId: backupEntityId.optional(),
-        verificationType: z.enum(['integrity', 'test_restore']).optional(),
-      },
-      makeHandler('run_backup_verification', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'get_recovery_readiness',
-      'Get per-device recovery readiness with estimated RTO/RPO and risk factors.',
-      {
-        orgId: uuid.optional(),
-        deviceId: backupEntityId.optional(),
-        includeRiskFactors: z.boolean().optional(),
-      },
-      makeHandler('get_recovery_readiness', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
       'file_operations',
       'Perform file operations on a device. All actions (read, list, write, delete, mkdir, rename) require approval because the agent reads/writes as root/LocalSystem.',
       {
@@ -1771,12 +1873,15 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_patches',
-      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies.',
+      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies. approve/decline/defer accept patchId or patchName (a title/KB lookup, for when the UUID is unknown), plus an optional ringId to scope to one update ring; decline also accepts allRings to revoke the approval in every ring at once, not just the current/blanket scope.',
       {
         action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
         patchId: uuid.optional(),
+        patchName: z.string().min(1).max(300).optional(),
         patchIds: z.array(uuid).max(50).optional(),
         deviceIds: z.array(uuid).max(50).optional(),
+        ringId: uuid.optional(),
+        allRings: z.boolean().optional(),
         source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
         severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
         status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
@@ -2073,6 +2178,48 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'export_dataset',
+      registryDescription('export_dataset'),
+      {
+        dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+        format: z.enum(['jsonl', 'csv']).optional(),
+        filters: z.record(z.string(), z.unknown()).optional(),
+        deviceIds: z.array(z.string()).optional(),
+        siteId: z.string().optional(),
+        maxRows: z.number().optional(),
+      },
+      makeHandler('export_dataset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_stage',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_stage,
+      WORKSPACE_MCP_SHAPES.workspace_stage,
+      makeHandler('workspace_stage', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_run',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_run,
+      WORKSPACE_MCP_SHAPES.workspace_run,
+      makeHandler('workspace_run', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_collect',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_collect,
+      WORKSPACE_MCP_SHAPES.workspace_collect,
+      makeHandler('workspace_collect', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_cancel',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_cancel,
+      WORKSPACE_MCP_SHAPES.workspace_cancel,
+      makeHandler('workspace_cancel', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'get_log_trends',
       'Analyze event log trends: level distribution, top sources/devices, error timeline, and spike detection.',
       {
@@ -2343,6 +2490,19 @@ export function createBreezeMcpServer(
       makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // W01 (spec §4.4) — the only read that answers "is this printer/switch up"
+    // with the SOURCE and AGE of the evidence. Declared here as well as in
+    // TOOL_TIERS: a tier without a tool() declaration is allowlisted but
+    // uncallable (#2605).
+    tool(
+      'get_network_asset_reachability',
+      'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, with the SOURCE of the evidence and how old it is. Always state the source and age when answering — "responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has checked the device recently; report it as unverified, not as down.',
+      {
+        asset_id: uuid,
+      },
+      makeHandler('get_network_asset_reachability', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'manage_monitors',
       'Get monitor details with recent check history, or create/update/delete network monitors.',
@@ -2359,6 +2519,28 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('manage_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Monitor definition episode activity / escalation reset (#5290 W03).
+    tool(
+      'get_monitor_activity',
+      'Get per-device breach state and recent breach episodes for a monitor definition: last evaluated state, open episode, episodes inside the recurrence window, whether the recurrence escalation has latched, and whether automatic responses are paused.',
+      {
+        monitorId: uuid,
+        deviceId: uuid.optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeHandler('get_monitor_activity', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'reset_monitor_escalation',
+      'Clear a monitor recurrence escalation for one device: resumes automatic responses and restarts the recurrence window. Does NOT close the open breach episode and does NOT resolve the requires-human alert.',
+      {
+        monitorId: uuid,
+        deviceId: uuid,
+      },
+      makeHandler('reset_monitor_escalation', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -2544,6 +2726,31 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'list_org_documents',
+      'List the current version of every document in an organization\'s library (runbooks, baselines, policies, exports, delivery evidence). Metadata only — never the file bytes. Read-only.',
+      {
+        orgId: uuid,
+        category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
+        includeSuperseded: z.boolean().optional(),
+      },
+      makeHandler('list_org_documents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_org_documents',
+      'Manage documents already in an organization\'s library: edit metadata, show or hide a document on the customer portal, or mark one document as the newer version of another. File content cannot be added here.',
+      {
+        action: z.enum(['update_metadata', 'set_portal_visibility', 'supersede']),
+        orgId: uuid,
+        documentId: uuid.optional(),
+        supersedesDocumentId: uuid.optional(),
+        portalVisible: z.boolean().optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+      },
+      makeHandler('manage_org_documents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'manage_contracts',
       'Create and manage recurring contracts for orgs the caller can access: draft edits, lines, and lifecycle actions. Activate, pause, resume, and cancel actions change contract lifecycle state and require approval.',
       {
@@ -2566,6 +2773,60 @@ export function createBreezeMcpServer(
         patch: z.record(z.string(), z.unknown()).optional(),
       },
       makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_deliverables',
+      LIST_DELIVERABLES_TOOL.definition.description ?? 'List service deliverables for one organization. Read-only.',
+      {
+        orgId: uuid,
+        contractId: uuid.optional(),
+        includeInactive: z.boolean().optional(),
+        occurrencesFor: uuid.optional(),
+      },
+      makeHandler('list_deliverables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_deliverable_templates',
+      LIST_DELIVERABLE_TEMPLATES_TOOL.definition.description ?? 'List deliverable template sets. Read-only.',
+      { orgId: uuid.optional() },
+      makeHandler('list_deliverable_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_deliverables',
+      MANAGE_DELIVERABLES_TOOL.definition.description ?? 'Create and manage service deliverables and their occurrences.',
+      {
+        action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),
+        orgId: uuid.optional(),
+        deliverableId: uuid.optional(),
+        occurrenceId: uuid.optional(),
+        setId: uuid.optional(),
+        contractId: uuid.optional(),
+        effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        ownerUserId: uuid.optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+        note: z.string().max(4000).optional(),
+        reason: z.string().max(2000).optional(),
+        dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        reportRunId: uuid.optional(),
+      },
+      makeHandler('manage_deliverables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_key_dates',
+      MANAGE_KEY_DATES_TOOL.definition.description ?? 'List, create, update or delete organization key dates.',
+      {
+        action: z.enum(['list', 'create', 'update', 'delete']),
+        orgId: uuid,
+        keyDateId: uuid.optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+      },
+      makeHandler('manage_key_dates', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -2814,9 +3075,15 @@ export function createBreezeMcpServer(
     // approval) and onPostToolUse (ai_tool_executions persistence +
     // delegant_tool_call_id correlation).
     ...m365ToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // AI script authoring — behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED (see the
+    // factory for why registration stays unconditional but exposure does not).
+    ...scriptProposalToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+
+    // Chat background launches are disabled pending delegated authorization design (#6086).
+
   ];
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are

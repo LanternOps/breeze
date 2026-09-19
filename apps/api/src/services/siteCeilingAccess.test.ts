@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canMutateOrgWideGovernance,
+  hasExactDeviceCeiling,
   hasSiteCeiling,
   SiteCeilingWriteDeniedError,
   SITE_CEILING_WRITE_DENIED_MESSAGE,
@@ -72,6 +73,44 @@ describe('siteCeilingAccess', () => {
     const orgWideAgentAuth = { scope: 'organization' as const, allowedSiteIds: undefined };
     expect(hasSiteCeiling(orgWideAgentAuth)).toBe(false);
     expect(canMutateOrgWideGovernance(orgWideAgentAuth)).toBe(true);
+  });
+
+  // #6096 residual 1 — the EXACT-DEVICE axis lives in this helper too.
+  // A device-LESS analysis run carries `allowedDeviceIds` with NO
+  // `allowedSiteIds`, so a site-only gate read it as unrestricted and let it
+  // rewrite org-wide governance objects.
+  describe('exact-device ceiling (#6096)', () => {
+    it.each([
+      // [allowedSiteIds, allowedDeviceIds, expectedCanMutate]
+      [undefined, undefined, true],
+      [undefined, ['dev-1'], false], // device-LESS analysis run: devices, no sites
+      [undefined, [], false],
+      [['site-A'], ['dev-1'], false],
+      [[], ['dev-1'], false],
+    ] as const)(
+      'organization scope, sites %j, devices %j -> canMutateOrgWideGovernance %s',
+      (allowedSiteIds, allowedDeviceIds, expected) => {
+        expect(
+          canMutateOrgWideGovernance({
+            scope: 'organization',
+            allowedSiteIds: allowedSiteIds as string[] | undefined,
+            allowedDeviceIds: allowedDeviceIds as string[] | undefined,
+          })
+        ).toBe(expected);
+      }
+    );
+
+    it('the device axis is not scope-gated — partner/system callers carrying it are denied too', () => {
+      expect(canMutateOrgWideGovernance({ scope: 'partner', allowedDeviceIds: ['dev-1'] })).toBe(false);
+      expect(canMutateOrgWideGovernance({ scope: 'system', allowedDeviceIds: ['dev-1'] })).toBe(false);
+      expect(canMutateOrgWideGovernance({ scope: 'partner', allowedDeviceIds: undefined })).toBe(true);
+    });
+
+    it('hasSiteCeiling still speaks ONLY for the site axis', () => {
+      expect(hasSiteCeiling({ scope: 'organization', allowedDeviceIds: ['dev-1'] })).toBe(false);
+      expect(hasExactDeviceCeiling({ scope: 'organization', allowedDeviceIds: ['dev-1'] })).toBe(true);
+      expect(hasExactDeviceCeiling({ scope: 'organization', allowedSiteIds: ['site-A'] })).toBe(false);
+    });
   });
 
   it('exposes a stable denial message and error class', () => {

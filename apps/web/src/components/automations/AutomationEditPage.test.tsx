@@ -96,6 +96,38 @@ describe('AutomationEditPage managed automations', () => {
   });
 });
 
+describe('AutomationEditPage monitor-managed automations (#5287)', () => {
+  it('renders a read-only banner with a link to the monitor instead of the editor', async () => {
+    mockEndpoints({
+      ...baseAutomation,
+      managedByMonitorId: 'monitor-1',
+      actions: [{ type: 'run_script', scriptId: 's1' }],
+    });
+
+    render(<AutomationEditPage automationId="automation-1" />);
+
+    expect(await screen.findByTestId('automation-managed-notice')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Save Changes/i })).toBeNull();
+
+    const link = screen.getByTestId('automation-managed-monitor-link');
+    expect(link).toHaveAttribute('href', '/alerts/monitors/monitor-1');
+  });
+
+  it('takes priority over the agent-managed banner when both are somehow set', async () => {
+    mockEndpoints({
+      ...baseAutomation,
+      managedByAgentId: 'agent-1',
+      managedByMonitorId: 'monitor-1',
+      actions: [{ type: 'ai_triage' }],
+    });
+
+    render(<AutomationEditPage automationId="automation-1" />);
+
+    expect(await screen.findByTestId('automation-managed-monitor-link')).toBeInTheDocument();
+    expect(screen.queryByText('Managed by AI agent')).toBeNull();
+  });
+});
+
 /**
  * #4888 — the run-context override has to survive the last hop.
  *

@@ -618,6 +618,7 @@
     "tabs": {
       "alerts": "Alertes",
       "correlations": "Corrélations",
+      "monitors": "Moniteurs",
       "rules": "Règles",
       "channels": "Chaînes"
     }

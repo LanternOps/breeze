@@ -1,0 +1,173 @@
+{
+  "page": {
+    "title": "Conception de flotte",
+    "description": "Une conception rédigée par l'IA pour la flotte de cette organisation : à quoi sert chaque appareil, quoi surveiller et ce qui a changé.",
+    "orgLabel": "Organisation",
+    "selectOrgPlaceholder": "Aucune organisation disponible",
+    "siteLabel": "Site (facultatif)",
+    "allSites": "Tous les sites",
+    "startButton": "Lancer une conception de flotte",
+    "startError": "Impossible de lancer l'exécution de la conception de flotte.",
+    "startSuccess": "Exécution de la conception de flotte lancée.",
+    "empty": "Aucune conception de flotte pour cette organisation pour le moment.",
+    "loadError": "Échec du chargement des conceptions de flotte.",
+    "detailLoadError": "Échec du chargement de cette conception de flotte.",
+    "loadingDesign": "Chargement de la conception…",
+    "downloadPdf": "Télécharger le PDF",
+    "downloadFailed": "Échec du téléchargement du PDF.",
+    "reviewApply": "Examiner et appliquer",
+    "listColumns": {
+      "generated": "Généré",
+      "functions": "Fonctions",
+      "watches": "Surveillances",
+      "rules": "Règles",
+      "applied": "Appliqué"
+    },
+    "startSkipped": {
+      "modeOff": "L'agent concepteur est désactivé pour cette organisation.",
+      "killSwitchOff": "Les agents IA sont actuellement désactivés pour toute la plateforme.",
+      "agentDisabled": "L'agent concepteur est désactivé pour cette organisation.",
+      "noEffectiveAgent": "Aucun agent concepteur n'est configuré pour cette organisation.",
+      "orgBudgetExceeded": "Le budget IA de cette organisation est épuisé pour cette période.",
+      "agentDailyBudgetExceeded": "Le budget quotidien de l'agent concepteur est épuisé.",
+      "maxConcurrentDesignRuns": "Une exécution de conception de flotte est déjà en cours pour cette organisation.",
+      "designRate": "Cette organisation a atteint sa limite d'exécutions de conception de flotte pour le moment.",
+      "duplicate": "Une exécution de conception de flotte équivalente a déjà été demandée.",
+      "generic": "L'exécution n'a pas été lancée ({{reason}}).",
+      "noDesignerAgent": "Aucun agent Fleet Designer n'existe encore pour le partenaire de cette organisation."
+    },
+    "fileAsDocument": "Classer comme document",
+    "fileAsDocumentSuccess": "Design classé dans la bibliothèque de documents.",
+    "fileAsDocumentError": "Impossible de classer le design comme document.",
+    "designerSetup": {
+      "status": {
+        "missing": "Aucun agent Fleet Designer n'existe encore.",
+        "off": "L'agent Fleet Designer est désactivé.",
+        "disabled": "L'agent Fleet Designer est désactivé au niveau du compte.",
+        "killSwitchOff": "Les agents IA sont actuellement désactivés sur toute la plateforme."
+      },
+      "enableHint": "Activez-le ici. Le designer ne fait que lire votre parc et rédiger un design ; il ne modifie jamais un appareil.",
+      "askPartnerAdmin": "Demandez à un administrateur partenaire d'activer l'agent Fleet Designer dans Paramètres → Agents IA.",
+      "killSwitchHint": "C'est un réglage de la plateforme ; rien sur cette page ne peut le changer.",
+      "enableButton": "Activer Fleet Designer",
+      "enableSuccess": "Fleet Designer activé.",
+      "enableError": "Impossible d'activer Fleet Designer.",
+      "errors": {
+        "partnerScopeRequired": "Seul un administrateur partenaire peut activer l'agent Fleet Designer.",
+        "partnerAdminRequired": "Seul un administrateur partenaire peut activer l'agent Fleet Designer.",
+        "killSwitchOff": "Les agents IA sont actuellement désactivés sur toute la plateforme.",
+        "agentKindExists": "Un agent designer existe déjà. Actualisez la page et réessayez.",
+        "actPrerequisitesNotMet": "L'agent designer a besoin d'un destinataire avant de pouvoir s'exécuter. Ajoutez-en un dans Paramètres → Agents IA.",
+        "invalidRecipients": "Votre compte n'a pas pu être défini comme destinataire du designer. Ajoutez-en un dans Paramètres → Agents IA."
+      }
+    }
+  },
+  "sections": {
+    "found": "Ce qui a été trouvé",
+    "functions": "À quoi sert chaque appareil",
+    "monitoring": "Quoi surveiller, et pourquoi",
+    "retired": "Ce qui n'est pas repris",
+    "automation": "Automatisation",
+    "legacy": "Inventaire des scripts existants",
+    "baseline": "Référence et précurseurs",
+    "unsure": "Ce dont le concepteur n'est pas certain"
+  },
+  "items": {
+    "none": "Rien ici.",
+    "applied": "Appliqué",
+    "findingCount": "{{title}} — {{count}} appareils",
+    "functionMeta": "{{count}} appareils · {{pct}}% de confiance",
+    "roleCorrectionLabel": "{{from}} → {{to}}"
+  },
+  "automation": {
+    "showContent": "Afficher le contenu du script"
+  },
+  "legacy": {
+    "columns": {
+      "script": "Script",
+      "bucket": "Catégorie",
+      "coveredBy": "Couvert par",
+      "intent": "Intention",
+      "notes": "Notes"
+    },
+    "bucket": {
+      "obsolete": "Obsolète",
+      "covered": "Couvert",
+      "needed": "Nécessaire"
+    }
+  },
+  "drawer": {
+    "title": "Appliquer la conception de flotte",
+    "loadingPreview": "Vérification de ce que cela va faire…",
+    "nothingSelected": "Sélectionnez au moins un élément à appliquer.",
+    "creates": "Crée",
+    "createsScripts": "Crée des scripts",
+    "scriptRenamed": "un script portant ce nom existe déjà — le nouveau recevra un suffixe numéroté",
+    "scriptsNote": "Créé dans la bibliothèque de scripts de cette organisation, étiqueté fleet-design. Rien ne s'exécute avant que quelqu'un le lance; l'annulation retire l'étiquette et conserve le script.",
+    "watchAndRuleCount": "{{watches}} surveillances, {{rules}} règles",
+    "retires": "Retire",
+    "displaces": "Déplace",
+    "displacesCount": "{{count}} appareils",
+    "acceptDisplacement": "Accepter le déplacement",
+    "roleCorrections": "Corrections de rôle",
+    "billingWarning": "Les changements de rôle peuvent affecter la facturation.",
+    "alreadyApplied": "Déjà appliqué",
+    "blockers": "Blocages",
+    "cancel": "Annuler",
+    "confirm": "Confirmer",
+    "applyingCloseBlocked": "Application en cours — veuillez attendre la fin de cette opération.",
+    "rollingBackCloseBlocked": "Annulation en cours — veuillez attendre la fin de cette opération."
+  },
+  "result": {
+    "applied": "{{count}} élément(s) appliqué(s).",
+    "skipped": "{{count}} élément(s) déjà appliqué(s) ignoré(s).",
+    "partial": "Partiellement appliqué — échec à l'étape {{step}} : {{reason}}",
+    "rollback": "Annuler ce qui a été appliqué",
+    "rollbackDone": "{{count}} élément(s) annulé(s).",
+    "rollbackRefused": "Certains éléments n'ont pas pu être annulés :",
+    "close": "Fermer"
+  },
+  "errors": {
+    "genericPreview": "Échec de l'aperçu de cette conception de flotte.",
+    "genericApply": "Échec de l'application de cette conception de flotte.",
+    "genericRollback": "Échec de l'annulation de cette conception de flotte.",
+    "blocked": "Cette conception ne peut pas encore être appliquée — résolvez les blocages et réessayez.",
+    "site_restricted": "Les comptes restreints à un site ne peuvent ni appliquer ni annuler une conception de flotte.",
+    "no_designer_agent": "Aucun agent concepteur n'est configuré pour cette organisation.",
+    "not_found": "Cette conception de flotte est introuvable.",
+    "scripts_write_required": "La création de scripts nécessite la permission d'écriture Scripts. Désélectionnez les scripts proposés ou demandez à un administrateur."
+  },
+  "drift": {
+    "banner": "Dérive depuis le design appliqué le {{date}} : {{missing}} manquants, {{extra}} en trop, {{changed}} modifiés.",
+    "deviceCount_one": "{{count}} appareil",
+    "deviceCount_other": "{{count}} appareils",
+    "rows": {
+      "missing": "Manquant",
+      "extra": "En trop",
+      "changed": "Modifié"
+    },
+    "columns": {
+      "drift": "Dérive",
+      "kind": "Type",
+      "item": "Élément",
+      "scope": "Fonction / politique",
+      "detail": "Détail"
+    }
+  },
+  "evidence": {
+    "notMeasured": "Non mesuré",
+    "org": "Organisation",
+    "devices": "Appareils",
+    "software": "Inventaire logiciel",
+    "services": "Services système",
+    "network": "Données réseau",
+    "posture": "Posture de sécurité",
+    "health": "État du parc",
+    "configuration": "Configuration du parc",
+    "automation": "Données d’automatisation",
+    "logs": "Journaux d’événements",
+    "counts": "Décomptes d’activité",
+    "precursors": "Indicateurs d’alerte précoce",
+    "drift": "Écarts par rapport à la conception approuvée"
+  }
+}

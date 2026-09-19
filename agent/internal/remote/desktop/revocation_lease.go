@@ -50,16 +50,24 @@ const (
 	StopReasonLeaseRevoked = "revoked"
 	StopReasonLeaseExpired = "lease_expired"
 	StopReasonHardDeadline = "max_session_duration_exceeded"
+	// StopReasonLeaseUnavailableAtStart — the control plane could not answer
+	// this session's FIRST renewal (SEC-038 owner decision 2). A session the
+	// control plane has never once confirmed has no standing to ride the 90 s
+	// grace window through an outage, so it stops immediately.
+	StopReasonLeaseUnavailableAtStart = "lease_unavailable_at_start"
 )
 
 // revocationLeaseState is the mutable half of a session's lease: what the last
 // renewal said, and whether the server has revoked it outright.
 type revocationLeaseState struct {
-	mu            sync.Mutex
-	expiresAt     time.Time
-	hardDeadline  time.Time
-	grace         time.Duration
-	renewEvery    time.Duration
+	mu           sync.Mutex
+	expiresAt    time.Time
+	hardDeadline time.Time
+	grace        time.Duration
+	renewEvery   time.Duration
+	// established is set by the first successful renewal. Until then an
+	// `unavailable` answer is fatal rather than graced (SEC-038 decision 2).
+	established   bool
 	revoked       bool
 	revokedReason string
 }
@@ -79,12 +87,33 @@ func newRevocationLeaseState(lease RevocationLease) *revocationLeaseState {
 func (s *revocationLeaseState) applyRenewal(expiresAt, hardDeadline time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.established = true
 	if expiresAt.After(s.expiresAt) {
 		s.expiresAt = expiresAt
 	}
 	if !hardDeadline.IsZero() && hardDeadline.Before(s.hardDeadline) {
 		s.hardDeadline = hardDeadline
 	}
+}
+
+// noteRenewalUnavailable records an `unavailable` answer. Before the session
+// is established that is terminal; afterwards it is silence, which is exactly
+// what the grace window budgets for.
+//
+// Ordering note: renewal answers reach the agent asynchronously and are not
+// sequenced, so an `unavailable` for renewal #1 can arrive after a success for
+// renewal #2. That is not a fail-open: a success means the control plane DID
+// authorize this session, so treating it as established is correct regardless
+// of which answer landed first. A revocation, in either order, always wins —
+// it is sticky and outranks everything in evaluateRevocationLease.
+func (s *revocationLeaseState) noteRenewalUnavailable() {
+	s.mu.Lock()
+	established := s.established
+	s.mu.Unlock()
+	if established {
+		return
+	}
+	s.revoke(StopReasonLeaseUnavailableAtStart)
 }
 
 func (s *revocationLeaseState) revoke(reason string) {
@@ -166,6 +195,20 @@ func (m *SessionManager) ApplyRevocationLease(sessionID string, expiresAt, hardD
 	session.leaseState.applyRenewal(expiresAt, hardDeadline)
 }
 
+// NoteLeaseUnavailable records that the control plane could not answer a
+// renewal for this session. Unknown session ids are ignored (the session
+// already ended). Before the first successful renewal this ends the session;
+// afterwards it is a no-op and the grace window governs.
+func (m *SessionManager) NoteLeaseUnavailable(sessionID string) {
+	m.mu.RLock()
+	session := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if session == nil || session.leaseState == nil {
+		return
+	}
+	session.leaseState.noteRenewalUnavailable()
+}
+
 // RevokeSession marks a session revoked by the control plane. The watchdog
 // stops it on its next tick — going through the shared decision path rather
 // than tearing down inline keeps every lease-driven stop identical.
@@ -218,9 +261,45 @@ func (m *SessionManager) ApplyLeaseUpdate(u ipc.DesktopLeaseUpdate) {
 		m.RevokeSession(u.SessionID, u.Reason)
 		return
 	}
+	// An unavailable answer is NOT a renewal: applying it as one would mark
+	// the session established and hand it a grace window it has not earned.
+	if u.Unavailable {
+		m.NoteLeaseUnavailable(u.SessionID)
+		return
+	}
 	m.ApplyRevocationLease(u.SessionID,
 		MonotonicDeadline(u.ExpiresAtUnixMs),
 		MonotonicDeadline(u.HardDeadlineUnixMs))
+}
+
+// watchdogClock is the time source watchSessionLifetime runs on. Production
+// leaves it nil and gets the real clock; tests install a virtual one so the
+// whole lease state machine (renew cadence, expiry, grace, hard deadline) can
+// be stepped deterministically instead of raced against wall-clock sleeps —
+// which is how the helper-lease tests flaked under -race on a loaded runner
+// (#5891).
+type watchdogClock struct {
+	// now replaces time.Now for every decision the watchdog makes.
+	now func() time.Time
+	// ticks replaces time.NewTicker: it returns the channel the watchdog wakes
+	// on and a stop func. Each value received is ignored — the watchdog reads
+	// `now` for the current time — so a test can send anything to fire a tick.
+	ticks func(tick time.Duration) (<-chan time.Time, func())
+}
+
+func (m *SessionManager) watchdogNow() time.Time {
+	if m.clock != nil && m.clock.now != nil {
+		return m.clock.now()
+	}
+	return time.Now()
+}
+
+func (m *SessionManager) watchdogTicks(tick time.Duration) (<-chan time.Time, func()) {
+	if m.clock != nil && m.clock.ticks != nil {
+		return m.clock.ticks(tick)
+	}
+	t := time.NewTicker(tick)
+	return t.C, t.Stop
 }
 
 // watchdogTickInterval is how often the lifetime + lease watchdog wakes up.
@@ -243,21 +322,21 @@ func (m *SessionManager) watchSessionLifetime(
 	policy SessionPolicy,
 	tick time.Duration,
 ) {
-	startWall := time.Now()
+	startWall := m.watchdogNow()
 	renewEvery := time.Duration(0)
 	if policy.RevocationLease != nil {
 		renewEvery = policy.RevocationLease.RenewEvery
 	}
 	var lastRenewRequest time.Time
 
-	ticker := time.NewTicker(tick)
-	defer ticker.Stop()
+	ticks, stopTicks := m.watchdogTicks(tick)
+	defer stopTicks()
 	for {
 		select {
 		case <-session.done:
 			return
-		case <-ticker.C:
-			now := time.Now()
+		case <-ticks:
+			now := m.watchdogNow()
 
 			// Ask for a renewal when due. Fire-and-forget: the answer arrives
 			// asynchronously on the command socket and lands via

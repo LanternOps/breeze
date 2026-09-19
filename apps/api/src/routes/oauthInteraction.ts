@@ -13,9 +13,6 @@ import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { writeRouteAudit } from '../services/auditEvents';
 
-// Grant TTL in seconds — must match `ttl.Grant` in oauth/provider.ts so the
-// breeze metadata side-table entry expires no later than the Grant itself.
-const GRANT_TTL_SECONDS = 14 * 24 * 60 * 60;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
@@ -366,20 +363,24 @@ if (MCP_OAUTH_ENABLED) {
       ...((promptDetails.missingOIDCScope as string[] | undefined) ?? []),
       ...Object.values(missingResourceScopes).flat(),
     ]);
-    // When the interaction is in the `login` prompt (the single-step
-    // login+consent flow this route handles, where the user has no prior
-    // OIDC session), oidc-provider hasn't generated consent metadata yet —
-    // `prompt.details` is empty. The consent UI in that state is rendered
-    // from `details.params.scope` itself (see the GET `/interaction/:uid`
-    // handler above, and `apps/web/src/components/oauth/ConsentForm.tsx`),
-    // so falling back to the request's scope param here matches what the
-    // user actually saw on screen. The H3 invariant — "don't grant a scope
-    // the consent UI didn't display" — still holds because the request
-    // scope passed through oidc-provider's `scopes` whitelist before this
-    // point. Without this fallback, the security check 400s on every
-    // first-visit consent (regression caught by the OAuth integration
-    // test in CI smoke).
-    if (displayedScopeSet.size === 0 && (details.prompt as any)?.name === 'login') {
+    // When `prompt.details` carries no scopes at all, oidc-provider has not
+    // generated consent metadata for this interaction. That happens in two
+    // states: the `login` prompt (single-step login+consent, no prior OIDC
+    // session), and a `consent` prompt whose only reason is `consent_prompt`
+    // — the client sent `prompt=consent` but an existing grant already
+    // covers every requested scope, so nothing is "new" or "missing"
+    // (an MCP client re-authorizing after losing its token, 2026-09-11).
+    // The consent UI in both states is rendered from `details.params.scope`
+    // itself (see the GET `/interaction/:uid` handler above, and
+    // `apps/web/src/components/oauth/ConsentForm.tsx`), so falling back to
+    // the request's scope param here matches what the user actually saw on
+    // screen. The H3 invariant — "don't grant a scope the consent UI didn't
+    // display" — still holds because the request scope passed through
+    // oidc-provider's `scopes` whitelist before this point. Without this
+    // fallback the security check 400s `invalid_scope` on every first-visit
+    // consent (regression caught by the OAuth integration test in CI smoke)
+    // and on every re-consent, leaving the user unable to re-authorize.
+    if (displayedScopeSet.size === 0) {
       for (const s of requestedScopes) displayedScopeSet.add(s);
     }
     const grantedScopes = requestedScopes.filter((s) => displayedScopeSet.has(s));
@@ -433,7 +434,7 @@ if (MCP_OAUTH_ENABLED) {
     // null` that bearer middleware rejects. The Grant.save() above is
     // recoverable on a retry click since the auth code is short-lived.
     try {
-      await setGrantBreezeMeta(grantId, { partner_id: body.partner_id, org_id: orgId }, GRANT_TTL_SECONDS);
+      await setGrantBreezeMeta(grantId, { partner_id: body.partner_id, org_id: orgId });
     } catch {
       // setGrantBreezeMeta already logs with errorId. Surface a generic 500
       // to the consent client; they can retry.

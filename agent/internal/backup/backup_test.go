@@ -239,6 +239,52 @@ func TestRunBackupContext_StopPreservesRemotePrefixAndJournal(t *testing.T) {
 	}
 }
 
+// TestRunBackupContext_ExcludesOwnCheckpointJournal proves #5581's third
+// fix directly through the full manager wiring: a run whose configured
+// backup path is an ANCESTOR of its own checkpoint-journal directory
+// (StagingDir) must never upload the journal file it is itself writing to
+// as ordinary backup content — that file grows across the run by
+// construction (Record appends an entry per uploaded file), which is
+// exactly the #5581 "manifest describes stale bytes" failure mode, and it
+// is the agent's own internal state, not anything the operator asked to
+// back up.
+func TestRunBackupContext_ExcludesOwnCheckpointJournal(t *testing.T) {
+	provider := newMockProvider()
+	dataDir := t.TempDir()
+	journalDir := pathpkg.Join(dataDir, "backup-journal")
+	if err := os.MkdirAll(journalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createTempFile(t, dataDir, "real.txt", "keep me")
+	// Seed a PRE-EXISTING journal file under journalDir (a different
+	// destination identity, so this run's own openSnapshotJournal call
+	// leaves it untouched) — this run's own journal file is created,
+	// written to, and then DELETED again by journal.Complete() on a
+	// successful run, so asserting against it would only prove "the file
+	// happened not to exist by the time we looked," not that the walker
+	// actually skips the directory. This seeded file survives the whole
+	// run and gives the test something durable to catch a regression with.
+	createTempFile(t, journalDir, "backup-journal-deadbeefdeadbeef.jsonl", "{\"snapshotId\":\"stale\"}\n")
+
+	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{dataDir}, StagingDir: journalDir})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext failed: %v", err)
+	}
+	if job.Snapshot == nil {
+		t.Fatal("expected a snapshot")
+	}
+	if len(job.Snapshot.Files) != 1 || job.Snapshot.Files[0].SourcePath != pathpkg.Join(dataDir, "real.txt") {
+		t.Fatalf("expected only real.txt in the snapshot, got %+v", job.Snapshot.Files)
+	}
+	for _, call := range provider.uploadCalls {
+		if strings.Contains(call.localPath, "backup-journal") {
+			t.Errorf("must never upload a file from the checkpoint-journal directory, got upload of %q", call.localPath)
+		}
+	}
+}
+
 // TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup proves the
 // D18 §3.5 fix directly: a journal older than journalMaxAge is discarded
 // and the run proceeds fresh with a brand new snapshot ID, but the STALE

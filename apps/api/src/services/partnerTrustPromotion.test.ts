@@ -3,7 +3,7 @@ import type { IpClass } from '../db/schema/orgs';
 
 const {
   readTrust, setTrustState, getSettledCardCharge, getSignupRiskHold,
-  hasFraudulentRefundMatch, select, execute, runOutside, withSystem,
+  hasFraudulentRefundMatch, select, execute, runOutside, withSystem, sendEvidenceCard,
 } = vi.hoisted(() => ({
   readTrust: vi.fn(),
   setTrustState: vi.fn(),
@@ -14,6 +14,7 @@ const {
   execute: vi.fn(),
   runOutside: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystem: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  sendEvidenceCard: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -34,9 +35,11 @@ vi.mock('./breezeBillingClient', () => ({
     getSettledCardCharge, getSignupRiskHold, hasFraudulentRefundMatch,
   }),
 }));
+vi.mock('./partnerTrustEvidenceCard', () => ({ sendEvidenceCard }));
 
 import {
-  evaluateHardDenies, promotionDecision, tryAutoPromote, type PromotionFacts,
+  evaluateHardDenies, gatherPromotionFacts, promotionDecision, restrictOnHardDeny,
+  tryAutoPromote, type PromotionFacts,
 } from './partnerTrustPromotion';
 
 const now = new Date('2026-09-02T12:00:00.000Z');
@@ -196,8 +199,11 @@ describe('tryAutoPromote', () => {
     });
     // A resolved "clear" status, not null — null now means "unknown" and
     // fails closed (see the billing-hold-unknown tests below).
-    getSignupRiskHold.mockResolvedValue({ status: 'clear' });
+    getSignupRiskHold.mockResolvedValue({ status: 'none' });
     setTrustState.mockResolvedValue(true);
+    execute.mockResolvedValue([hardDenyRow()]);
+    hasFraudulentRefundMatch.mockResolvedValue(false);
+    sendEvidenceCard.mockResolvedValue(undefined);
 
     select.mockImplementation((fields: Record<string, unknown>) => {
       if ('createdAt' in fields) {
@@ -218,8 +224,9 @@ describe('tryAutoPromote', () => {
       expect.objectContaining({ settledCard: { chargeId: 'ch_1', settledAt: hoursAgo(24) } }),
       { expectedFrom: 'probation' },
     );
-    expect(runOutside).toHaveBeenCalledTimes(1);
-    expect(withSystem).toHaveBeenCalledTimes(1);
+    // One system context for the hard-deny query, one for the local facts.
+    expect(runOutside).toHaveBeenCalledTimes(2);
+    expect(withSystem).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -256,6 +263,76 @@ describe('tryAutoPromote', () => {
     expect(setTrustState).not.toHaveBeenCalled();
   });
 
+  it.each(['none', 'pass'] as const)('treats a %s risk-hold status as no hold', async (status) => {
+    getSignupRiskHold.mockResolvedValue({ status });
+
+    await expect(tryAutoPromote('p1')).resolves.toBe(true);
+    expect(setTrustState).toHaveBeenCalledWith(
+      'p1', 'trusted', 'auto:settled_card_24h', null,
+      expect.objectContaining({ billingHold: false, billingHoldUnknown: false }),
+      { expectedFrom: 'probation' },
+    );
+  });
+
+  it.each(['hold', 'review_pending'] as const)('does not promote on a %s risk-hold status', async (status) => {
+    getSignupRiskHold.mockResolvedValue({ status });
+
+    await expect(tryAutoPromote('p1')).resolves.toBe(false);
+    expect(setTrustState).not.toHaveBeenCalled();
+  });
+
+  describe('hard-deny evaluation is inside tryAutoPromote', () => {
+    it('restricts instead of promoting when a hard deny matches', async () => {
+      execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+
+      await expect(tryAutoPromote('p1')).resolves.toBe(false);
+
+      expect(setTrustState).toHaveBeenCalledTimes(1);
+      expect(setTrustState).toHaveBeenCalledWith(
+        'p1', 'restricted', 'auto:tor_signup', null,
+        { matchedAxes: ['signup_ip_class'], signupIpClass: 'tor' },
+        { expectedFrom: 'probation' },
+      );
+      expect(sendEvidenceCard).toHaveBeenCalledWith('p1', 'restricted');
+      // Never falls through to the promotion path.
+      expect(getSettledCardCharge).not.toHaveBeenCalled();
+    });
+
+    it('does not send the evidence card when the restrict CAS loses', async () => {
+      execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+      setTrustState.mockResolvedValue(false);
+
+      await expect(tryAutoPromote('p1')).resolves.toBe(false);
+      expect(sendEvidenceCard).not.toHaveBeenCalled();
+    });
+
+    it('does not fail when the restricted evidence card throws (best effort)', async () => {
+      execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+      sendEvidenceCard.mockRejectedValue(new Error('smtp down'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await expect(tryAutoPromote('p1')).resolves.toBe(false);
+      warn.mockRestore();
+    });
+
+    it('propagates a hard-deny evaluation failure rather than promoting past it', async () => {
+      execute.mockRejectedValue(new Error('db exploded'));
+
+      await expect(tryAutoPromote('p1')).rejects.toThrow('db exploded');
+      expect(setTrustState).not.toHaveBeenCalled();
+    });
+
+    it('is exported for the ip-classify path, which restricts without promoting', async () => {
+      execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+
+      await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
+      expect(setTrustState).toHaveBeenCalledWith(
+        'p1', 'restricted', 'auto:tor_signup', null,
+        expect.anything(), { expectedFrom: 'probation' },
+      );
+    });
+  });
+
   it('treats a CAS miss on the underlying write as "not promoted" with no audit/event', async () => {
     // setTrustState itself performs the atomic compare-and-swap (writeTrust
     // with expectedFrom); when it reports the row already moved out of
@@ -270,4 +347,40 @@ describe('tryAutoPromote', () => {
       { expectedFrom: 'probation' },
     );
   });
+});
+
+describe('gatherPromotionFacts billing hold mapping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getSettledCardCharge.mockResolvedValue(null);
+    select.mockImplementation((fields: Record<string, unknown>) => {
+      if ('createdAt' in fields) {
+        return { from: () => ({ where: () => ({ limit: async () => [{ createdAt: hoursAgo(48), emailVerifiedAt: hoursAgo(47), signupIpClass: 'residential' }] }) }) };
+      }
+      if ('ipClass' in fields) {
+        return { from: () => ({ innerJoin: () => ({ where: async () => [] }) }) };
+      }
+      return { from: () => ({ where: async () => [{ count: 0 }] }) };
+    });
+  });
+
+  it.each([
+    ['none', false, false],
+    ['pass', false, false],
+    ['hold', true, false],
+    ['review_pending', true, false],
+  ] as const)('maps status %s to billingHold=%s', async (status, billingHold, billingHoldUnknown) => {
+    getSignupRiskHold.mockResolvedValue({ status });
+
+    await expect(gatherPromotionFacts('p1')).resolves.toMatchObject({ billingHold, billingHoldUnknown });
+  });
+
+  it('fails closed when the hold status is unknown', async () => {
+    getSignupRiskHold.mockResolvedValue(null);
+
+    await expect(gatherPromotionFacts('p1')).resolves.toMatchObject({
+      billingHold: true, billingHoldUnknown: true,
+    });
+  });
+
 });

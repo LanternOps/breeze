@@ -123,6 +123,12 @@ describe('lenovoProvider.lookup — pcsupport (no key, LENOVO_WARRANTY_ENABLED)'
     vi.stubEnv('LENOVO_WARRANTY_ENABLED', 'true');
   });
 
+  it('surfaces machineInfo.shipDate as the vendor ship date (feeds the purchase date)', async () => {
+    fetchMock().mockResolvedValue(jsonResponse(pcsupportFound));
+    const results = await lenovoProvider.lookup([SERIAL]);
+    expect(results.get(SERIAL)?.shipDate).toBe('2025-11-29');
+  });
+
   it('POSTs a JSON body keyed serialNumber, with a User-Agent, a timeout, and no ClientID', async () => {
     fetchMock().mockResolvedValue(jsonResponse(pcsupportFound));
     await lenovoProvider.lookup([SERIAL]);

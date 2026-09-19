@@ -27,10 +27,15 @@ import { buildOrgAccessClosures } from '../middleware/auth';
 // Real (unmocked): access.ts is the single source of truth for who may mutate
 // an agent row, and POST /:id/enable calls it directly.
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
+// Resolves to the MOCKED class (vi.mock('../services/aiAgents/agentService')
+// below) — needed so a PATCH test can construct the exact instance
+// `updateAgentMock` rejects with.
+import { ModeNotAllowedForKindError } from '../services/aiAgents/agentService';
 
 const {
   selectMock,
   hasPermMock,
+  loadMeasuredImpactMock,
   authOkMock,
   mfaOkMock,
   getAgentMock,
@@ -52,6 +57,10 @@ const {
   loadPartnerBaselineKindsMock,
   loadPartnerBaselineCeilingMock,
   buildAgentToolCatalogMock,
+  readAiKillStateMock,
+  readAgentRunSkipSummaryMock,
+  listArtifactsForAuthMock,
+  toArtifactDtoMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -83,6 +92,10 @@ const {
   // exercise only routing/auth/validation, the same convention as
   // createAndEnqueueAgentRun/getAgent/recordVerdictFeedback above.
   loadImpactSummaryMock: vi.fn(),
+  // W04 (#5761) — GET /impact/measured. Same convention as loadImpactSummary:
+  // the service has its own full unit coverage (impactMeasured.test.ts), so
+  // these route tests exercise only routing/auth/validation.
+  loadMeasuredImpactMock: vi.fn(),
   enqueueImpactRollupForOrgsMock: vi.fn(),
   saveImpactWeightsMock: vi.fn(),
   resolveImpactPartnerIdMock: vi.fn(),
@@ -110,6 +123,31 @@ const {
   // service-layer dependency in this file) so these route tests exercise only
   // routing/auth/the cache header, never the real registry closure.
   buildAgentToolCatalogMock: vi.fn(),
+  // #5380 — GET / 's `system` block. Both have their own unit coverage
+  // (aiKillState.test.ts / skipVisibility.test.ts); mocked here like every
+  // other service-layer dependency so these route tests exercise only how
+  // GET / composes them.
+  readAiKillStateMock: vi.fn(),
+  readAgentRunSkipSummaryMock: vi.fn(),
+  // Task 10 (execution-plane W01, reconciliation R6) — GET
+  // /runs/:runId/artifacts. Both functions have their own full unit coverage
+  // in artifactService.test.ts (Task 5); mocked here (like every other
+  // service-layer dependency in this file) so these route tests exercise only
+  // routing/auth/validation/precedence, never the real DTO projection.
+  listArtifactsForAuthMock: vi.fn(),
+  toArtifactDtoMock: vi.fn(),
+}));
+
+vi.mock('../services/aiKillState', () => ({
+  readAiKillState: readAiKillStateMock,
+}));
+
+// `services/aiAgents/subsystemState` is deliberately NOT mocked:
+// `aiAgentsEnvFlagEnabled` reads BREEZE_AI_AGENTS_ENABLED at call time, and
+// that read is the behaviour the `system` block's tests drive through
+// process.env.
+vi.mock('../services/aiAgents/skipVisibility', () => ({
+  readAgentRunSkipSummary: readAgentRunSkipSummaryMock,
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -171,11 +209,21 @@ vi.mock('../services/aiAgents/agentService', () => ({
     }
   },
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
+  // Fleet Designer (W01) — faithful to the real class: `mapError` reads
+  // `.code` off it (see the `AgentKindConflictError` comment above for why
+  // that matters).
+  ModeNotAllowedForKindError: class ModeNotAllowedForKindError extends Error {
+    readonly code = 'mode_not_allowed_for_kind';
+    constructor(mode: string, kind: string) {
+      super(`mode ${mode} is not available for a ${kind} agent`);
+      this.name = 'ModeNotAllowedForKindError';
+    }
+  },
   ActPrerequisitesNotMetError,
   InvalidSupervisedActionKeysError,
   SupervisedKeysGrantOnlyError,
   createAgent: vi.fn(),
-  updateAgent: vi.fn(),
+  updateAgent: updateAgentMock,
   disableAgent: vi.fn(),
   listAgents: listAgentsMock,
   getAgent: getAgentMock,
@@ -217,6 +265,14 @@ vi.mock('../services/aiTools', () => ({
   verifyDeviceAccess: verifyDeviceAccessMock,
 }));
 
+// Task 10 (execution-plane W01, reconciliation R6) — GET /runs/:runId/artifacts
+// reuses this module verbatim; own full unit coverage is artifactService.test.ts
+// (Task 5), so this file exercises only routing/auth/precedence.
+vi.mock('../services/artifacts/artifactService', () => ({
+  listArtifactsForAuth: listArtifactsForAuthMock,
+  toArtifactDto: toArtifactDtoMock,
+}));
+
 // Task 8 (#4193 A8): '../jobs/aiAgentImpactRollup' is mocked (the manual
 // rebuild producer, A5); '../services/aiAgents/impactRollup' (lastCompleteUtcDay/
 // shiftUtcDay, A4) is deliberately left REAL — those two functions are pure
@@ -228,6 +284,10 @@ vi.mock('../jobs/aiAgentImpactRollup', () => ({
 
 vi.mock('../services/aiAgents/impactQuery', () => ({
   loadImpactSummary: loadImpactSummaryMock,
+}));
+
+vi.mock('../services/aiAgents/impactMeasured', () => ({
+  loadMeasuredImpact: loadMeasuredImpactMock,
 }));
 
 const { ImpactPartnerUnresolvedError, ImpactPartnerNotFoundError } = vi.hoisted(() => ({
@@ -287,7 +347,7 @@ const dbCtxMock = vi.hoisted(() => ({
 // GET / 's batched last-run probe and POST /:id/enable 's UPDATE. Kept OUT of
 // the shared `selectMock` so an enable test's UPDATE can never be satisfied by
 // a stray SELECT chain queued by another test.
-const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock } = vi.hoisted(() => ({
+const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock, updateAgentMock } = vi.hoisted(() => ({
   selectDistinctOnMock: vi.fn(),
   updateMock: vi.fn(),
   withAgentRowLockedMock: vi.fn(),
@@ -295,6 +355,10 @@ const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMut
   // records. Its own coverage is agentService.test.ts; here it exists so
   // POST /:id/enable can be proven to record the SAME way disable does.
   recordAgentMutationMock: vi.fn(),
+  // Fleet Designer (W01): PATCH /:id's own route test needs to control what
+  // `updateAgent` throws — a bare inline `vi.fn()` in the factory below is
+  // not referenceable from a test body.
+  updateAgentMock: vi.fn(),
 }));
 vi.mock('../db', () => ({
   db: { select: selectMock, selectDistinctOn: selectDistinctOnMock, update: updateMock },
@@ -333,10 +397,32 @@ vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
   demoteSupervisedKey: demoteSupervisedKeyMock,
 }));
 
-const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
-vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
+// AI patch agent W01 (#5747): the list route's next-occurrence column reads
+// baseline cadences through the schedule service, which has its own full unit
+// suite (scheduleService.test.ts) covering the two-branch tenancy posture.
+// Mocked here so these tests exercise the projection, not that read.
+const loadEnabledBaselineCadencesMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/aiAgents/scheduleService', () => ({
+  loadEnabledBaselineCadences: loadEnabledBaselineCadencesMock,
+}));
 
-import { AI_AGENT_GRADUATION_BY_ORG_BATCH, aiAgentsRoutes, mapError } from './aiAgents';
+const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true), sweepActEnabled: vi.fn(() => false) }));
+vi.mock('../config/env', async (importOriginal) => ({
+  // #5380: `envFlag` stays REAL — `aiAgentsEnvFlagEnabled` reads
+  // BREEZE_AI_AGENTS_ENABLED through it at call time, and that read is the
+  // behaviour the `system` block's tests drive through process.env.
+  ...(await importOriginal<typeof import('../config/env')>()),
+  policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04 sub-flag, default OFF (dark-ship).
+  sweepActEnabled: envMock.sweepActEnabled,
+}));
+
+import {
+  AI_AGENT_GRADUATION_BY_ORG_BATCH,
+  aiAgentsRoutes,
+  mapError,
+  runSiteScopeCondition,
+} from './aiAgents';
 import { InvalidScriptIdsError } from '../services/aiAgents/scriptAuthorization';
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -347,6 +433,8 @@ const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
 const INTENT_ID = '88888888-8888-4888-8888-888888888888';
+const SITE_ID = '99999999-9999-4999-8999-999999999999';
+const ART_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 function agent(overrides: Record<string, unknown> = {}) {
   return {
@@ -361,7 +449,7 @@ function agent(overrides: Record<string, unknown> = {}) {
 
 const ZERO_COUNTERS = {
   alertsJudged: 0, noiseFlagged: 0, suppressionsApplied: 0, ticketsTriaged: 0, draftsSent: 0,
-  fixesProposed: 0, fixesExecuted: 0, fixWatchesHeld: 0, fixWatchesRecurred: 0, narrativesDelivered: 0,
+  fixesProposed: 0, fixesExecuted: 0, fixWatchesHeld: 0, fixWatchesRecurred: 0, narrativesDelivered: 0, fleetDesignsDelivered: 0,
 };
 
 /** Task 8 (#4193 A8): a structurally-valid AiAgentImpactDto for route tests — the DTO's own field-by-field correctness is A7's unit coverage, not this file's. */
@@ -407,7 +495,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         ],
       },
     ],
-    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
     unreachableTools: [],
     ...overrides,
   };
@@ -455,11 +543,17 @@ function trigger(app: Hono, body: unknown = { deviceId: DEVICE_ID }, id = AGENT_
 beforeEach(() => {
   vi.clearAllMocks();
   hasPermMock.mockReturnValue(true);
+  loadMeasuredImpactMock.mockResolvedValue({ schemaVersion: 1, window: 30 });
   authOkMock.mockReturnValue(true);
   mfaOkMock.mockReturnValue(true);
   getAgentMock.mockResolvedValue(agent());
   loadPartnerBaselineKindsMock.mockResolvedValue(new Set());
   buildAgentToolCatalogMock.mockReturnValue(minimalToolCatalogDto());
+  // #5380 — GET / reads both on every request. `readAiKillState` fails CLOSED
+  // in production (it can never resolve undefined), so the default here is a
+  // clear switch, not a stand-in for "unset".
+  readAiKillStateMock.mockResolvedValue({ killed: false, epoch: 1 });
+  readAgentRunSkipSummaryMock.mockResolvedValue(null);
   verifyDeviceAccessMock.mockResolvedValue({
     device: { id: DEVICE_ID, orgId: ORG_ID, siteId: null },
   });
@@ -481,6 +575,22 @@ beforeEach(() => {
 });
 
 describe('POST /ai-agents/:id/runs', () => {
+  it('refuses a designer agent outright — it has no device-bound lane (Fleet Designer W01)', async () => {
+    getAgentMock.mockResolvedValue({ ...agent(), kind: 'designer', name: 'Fleet Designer' });
+
+    const res = await trigger(buildApp());
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'kind_not_device_triggerable' });
+    // Never admitted: a designer admitted here would default to the FULL
+    // profile, where none of the read-only design machinery applies.
+    expect(createAndEnqueueAgentRunMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ result: 'failure', action: 'ai_agent.run.manual_trigger' }),
+    );
+  });
+
   it('queues a manual run and audits the accountable human actor', async () => {
     const res = await trigger(buildApp());
 
@@ -654,6 +764,17 @@ describe('POST /ai-agents/:id/runs', () => {
 // The route now projects through the same `mapRunListItem` mapper as the
 // org-wide `GET /runs` list.
 describe('GET /ai-agents/:id/runs (legacy per-agent list, review fix #3828)', () => {
+  it('pushes the organization user site ceiling into SQL before limiting history', async () => {
+    let where: unknown;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request(`/ai-agents/${AGENT_ID}/runs?limit=1`);
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+  });
+
   it('is gated on ai_agents:read', async () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
@@ -870,6 +991,27 @@ function sqlParams(predicate: unknown): unknown[] {
   return dialect.sqlToQuery(predicate as SQL).params;
 }
 
+describe('runSiteScopeCondition', () => {
+  it('keeps unrestricted callers unchanged', () => {
+    expect(runSiteScopeCondition({ allowedSiteIds: undefined })).toBeUndefined();
+  });
+
+  it('fails closed for an explicit empty ceiling', () => {
+    const query = dialect.sqlToQuery(runSiteScopeCondition({ allowedSiteIds: [] })!);
+    expect(query.sql).toContain('false');
+    expect(query.params).toEqual([]);
+  });
+
+  it('requires a same-org current device in an allowed site', () => {
+    const query = dialect.sqlToQuery(runSiteScopeCondition({ allowedSiteIds: [SITE_ID] })!);
+    expect(query.sql).toContain('EXISTS');
+    expect(query.sql).toContain('"run_scope_device"."id"');
+    expect(query.sql).toContain('"run_scope_device"."org_id"');
+    expect(query.sql).toContain('"run_scope_device"."site_id"');
+    expect(query.params).toContain(SITE_ID);
+  });
+});
+
 // Strict response-shape schemas (DTO rule, Global Constraints): a route that
 // starts spreading a raw row again — pulling in dedupeKey, policySnapshot,
 // the outcome column itself, sessionId, intentIds, or any tool-input field —
@@ -1006,6 +1148,13 @@ const runDetailResponseSchema = z.object({
     sweep: z.object({
       scheduleId: z.string().nullable(),
       occurrenceKey: z.string().nullable(),
+      // #4442 W05 — the act roll-up; null for a disarmed occurrence and for
+      // every pre-act-mode run.
+      actSummary: z.object({
+        devicesActed: z.number(),
+        devicesProposed: z.number(),
+        stoppedBy: z.string().nullable(),
+      }).strict().nullable(),
       kinds: z.array(z.string()),
       summary: z.string(),
       evidenceTruncated: z.boolean(),
@@ -1023,6 +1172,13 @@ const runDetailResponseSchema = z.object({
           disposition: z.enum(['intent_created', 'refused', 'cap_reached', 'error']),
           reason: z.string().nullable(),
           intentId: z.string().nullable(),
+          // #4442 W05 — the live per-intent outcome, cohort membership, and
+          // the cap that stopped the cohort walk.
+          outcome: z.enum([
+            'pending', 'auto_executing', 'executed', 'failed', 'declined', 'expired',
+          ]).nullable(),
+          cohort: z.boolean().nullable(),
+          stoppedBy: z.string().nullable(),
         }).strict().nullable(),
       }).strict()),
     }).strict().nullable(),
@@ -1045,6 +1201,151 @@ const runDetailResponseSchema = z.object({
       contextTruncated: z.boolean(),
     }).strict().nullable(),
     reportRunId: z.string().nullable(),
+    // Execution plane W03 (spec §5.8) — live progress beats off the capped
+    // Redis ring, always an array (never null): `[]` for a finished run
+    // whose one-hour window has expired and for a mocked db path like this
+    // suite's, which never calls the real `readRunProgress`.
+    progress: z.array(z.object({
+      step: z.string(),
+      label: z.string(),
+      ordinal: z.number(),
+      at: z.string(),
+    }).strict()),
+    // Fleet Designer W01 (#5651), Task 9: `null` for every non-design run
+    // and for a design run that produced nothing.
+    fleetDesign: z.object({
+      reportRunId: z.string().nullable(),
+      reportId: z.string().nullable(),
+      downloadPath: z.string().nullable(),
+      generatedAt: z.string().nullable(),
+      functionCount: z.number(),
+      watchCount: z.number(),
+      ruleCount: z.number(),
+      evidenceTruncated: z.boolean(),
+    }).strict().nullable(),
+    // AI patch agent W01 (#5747): `null` for every non-patch run. No raw
+    // patch-id / job-result-id lists — only a per-item count.
+    patch: z.object({
+      scheduleId: z.string().nullable(),
+      occurrenceKey: z.string().nullable(),
+      summary: z.string(),
+      posture: z.object({
+        compliancePct: z.number(), devicesAtRisk: z.number(), oldestOutstandingDays: z.number().nullable(),
+      }).strict().nullable(),
+      items: z.array(z.object({
+        index: z.number(),
+        class: z.string(),
+        severity: z.string(),
+        deviceId: z.string().nullable(),
+        deviceHostname: z.string().nullable(),
+        patchCount: z.number(),
+        title: z.string(),
+        detail: z.string(),
+        disposition: z.enum(['recorded', 'intent_created', 'refused', 'suppressed', 'cap_reached', 'error']).nullable(),
+        reason: z.string().nullable(),
+        // W02 (#5748): the approval card an install item minted, and the
+        // patch ids the eligibility resolver dropped from it — ids + a display
+        // reason only, never a patch title or the raw `patchIds` list.
+        intentId: z.string().nullable(),
+        droppedPatchIds: z.array(z.object({ patchId: z.string(), reason: z.string() }).strict()),
+        // W03 (#5749): the class/attempt count the item quoted from the evidence.
+        failureClass: z.string().nullable(),
+        attemptCount: z.number().nullable(),
+        // W04 (#5750): a reboot_plan's resolved window (id + bounds) and the
+        // device's redundancy group — display fields, never a time the model chose.
+        windowId: z.string().nullable(),
+        windowStartsAt: z.string().nullable(),
+        windowEndsAt: z.string().nullable(),
+        redundancyGroup: z.string().nullable(),
+      }).strict()),
+      recordedCount: z.number(),
+      refusedCount: z.number(),
+      intentCreatedCount: z.number(),
+      suppressedCount: z.number(),
+      escalationCount: z.number(),
+      evidenceTruncated: z.boolean(),
+    }).strict().nullable(),
+    // #4248 W03 (OD-7 B): per-run narrative email delivery counts. `null`
+    // for every run that produced no narrative artifact. COUNTS ONLY — never
+    // a recipient id, name or address.
+    narrativeDelivery: z.object({
+      total: z.number(),
+      sent: z.number(),
+      refused: z.number(),
+      pending: z.number(),
+      unknown: z.number(),
+      recipientsUnresolved: z.boolean(),
+    }).strict().nullable(),
+    // Execution plane W04 (#5715): `null` for every non-analysis run. Handles
+    // only — the resolved artifact list and the workspace step transcript are
+    // W05's surface, deliberately not here.
+    analysis: z.object({
+      summary: z.string(),
+      findings: z.array(z.object({
+        title: z.string(),
+        severity: z.enum(['info', 'low', 'medium', 'high']),
+        detail: z.string(),
+        artifactHandles: z.array(z.string()),
+      }).strict()),
+      artifactHandles: z.array(z.string()),
+      proposedActions: z.array(z.object({
+        tool: z.string(),
+        action: z.string().optional(),
+        deviceId: z.string().optional(),
+        args: z.record(z.string(), z.unknown()),
+        rationale: z.string(),
+      }).strict()),
+    }).strict().nullable(),
+    // Always present: 0 for every run that never built a sandbox.
+    computeCents: z.number(),
+    computeUsageEstimated: z.boolean(),
+    // Execution plane W05 (#5716, spec §5.8) — the RESOLVED artifact list and
+    // the workspace step transcript. `.strict()` on both is the leak tripwire:
+    // `blobKey` and the sandbox's `provider_ref` must never reach the wire, and
+    // an added projection line that shipped one would fail here rather than in
+    // production.
+    artifacts: z.array(z.object({
+      id: z.string(),
+      kind: z.string(),
+      name: z.string(),
+      contentType: z.string(),
+      bytes: z.number(),
+      sha256: z.string(),
+      headPreview: z.string(),
+      tailPreview: z.string(),
+      sourceDeviceId: z.string().nullable(),
+      createdByTool: z.string(),
+      runId: z.string().nullable(),
+      sessionId: z.string().nullable(),
+      expiresAt: z.string(),
+      createdAt: z.string(),
+      downloadPath: z.string(),
+    }).strict()),
+    workspace: z.object({
+      backend: z.string(),
+      region: z.enum(['eu', 'us']),
+      status: z.string(),
+      bootstrapHash: z.string().nullable(),
+      runtimeImage: z.string().nullable(),
+      createdAt: z.string(),
+      readyAt: z.string().nullable(),
+      destroyedAt: z.string().nullable(),
+      cpuMs: z.number().nullable(),
+      wallMs: z.number().nullable(),
+      memAllocatedMb: z.number().nullable(),
+      stagedBytes: z.number(),
+      artifactBytes: z.number(),
+      stepCount: z.number(),
+      steps: z.array(z.object({
+        ordinal: z.number(),
+        language: z.enum(['bash', 'python', 'node']),
+        scriptArtifactHandle: z.string().nullable(),
+        exitCode: z.number().nullable(),
+        timedOut: z.boolean(),
+        durationMs: z.number(),
+        stdoutArtifactHandle: z.string().nullable(),
+      }).strict()),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -1123,6 +1424,18 @@ function runRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
+  it('applies the site ceiling to the initial run lookup before any subsidiary trace read', async () => {
+    let where: unknown;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request(`/ai-agents/runs/${RUN_ID}`);
+
+    expect(res.status).toBe(404);
+    expect(sqlParams(where)).toContain(SITE_ID);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
   it('returns 404 for a run outside the caller\'s org (or that does not exist)', async () => {
     selectMock.mockReturnValueOnce(selectChain([]));
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
@@ -1239,16 +1552,179 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   it('skips the draft-rows read entirely for a non-ticket run', async () => {
     selectMock
       .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })])) // run + agent + device join
-    // No further selects expected — intentIds empty skips intents, sessionId
-    // null skips ledger, triggerKind !== 'ticket' skips draft rows.
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
+    // No further selects expected — sessionId null skips ledger,
+    // triggerKind !== 'ticket' skips draft rows.
     ;
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
+  it('resolves patch plan item hostnames through the same ONE batched, org-pinned read (AI patch agent W01)', async () => {
+    let hostnameWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null, intentIds: [], deviceId: null, deviceHostname: null,
+        triggerKind: 'schedule', profile: 'patch', scheduleId: null, triggerRef: {},
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          patchPlan: {
+            schemaVersion: 1, summary: 'One device behind.', posture: { compliancePct: 90, devicesAtRisk: 1, oldestOutstandingDays: 12 },
+            items: [{ class: 'install', severity: 'high', deviceId: DEVICE_ID, patchIds: ['p1'], title: 'Install KB1', detail: 'why', evidenceRef: 'e' }],
+            dispositions: [{ index: 0, class: 'install', deviceId: DEVICE_ID, disposition: 'recorded' }],
+            evidenceTruncated: false, generatedAt: '2026-09-14T02:00:00.000Z',
+          },
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
+      .mockReturnValueOnce(selectChain(
+        [{ id: DEVICE_ID, hostname: 'WKS-042' }],
+        (predicate) => { hostnameWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const params = sqlParams(hostnameWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(DEVICE_ID);
+    expect(runDetailResponseSchema.parse(body).data.patch!.items[0]).toMatchObject({ deviceHostname: 'WKS-042', disposition: 'recorded', patchCount: 1 });
+    expect(JSON.stringify(body)).not.toContain('"patchIds"');
+  });
+
+
+  it('reads intents by requesting_agent_run_id and reports a COMPLETED sweep intent that run.intentIds dropped', async () => {
+    // #4442 W05 — the exact regression act mode introduces. `run.intent_ids`
+    // is PENDING-only, so an intent that auto-executed and completed has
+    // already fallen out of it; reading by that column would silently drop
+    // the proposal this page most needs to report. The fixture therefore
+    // keeps `intentIds: []` while the intents read returns a real row.
+    const SWEEP_INTENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    let intentWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: {
+          scheduleId: '88888888-8888-4888-8888-888888888888',
+          occurrenceKey: '2026-08-29T06:00:00Z',
+          sweepKinds: ['service_down'],
+        },
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down.',
+            findings: [{
+              kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+              title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+              evidence: { state: 'stopped' },
+              proposedAction: {
+                tool: 'manage_services', action: 'restart',
+                deviceId: DEVICE_ID, serviceName: 'Spooler',
+              },
+            }],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: SWEEP_INTENT_ID, cohort: true, stoppedBy: null,
+          }],
+        },
+      })]))
+      // The intents read — captured so the PREDICATE is asserted, not just
+      // the rows it happens to return.
+      .mockReturnValueOnce(selectChain(
+        [{
+          id: SWEEP_INTENT_ID,
+          status: 'completed',
+          actionName: 'manage_services:restart',
+          approvalScope: 'supervised',
+          decidedVia: 'policy',
+        }],
+        (predicate) => { intentWhere = predicate; },
+      ))
+      .mockReturnValueOnce(selectChain([{ id: DEVICE_ID, hostname: 'WKS-042' }]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Binding the RUN id (not an intent-id list) is what makes this
+    // non-vacuous: the old `inArray(id, run.intentIds)` read would bind
+    // nothing at all for `intentIds: []`.
+    const intentParams = sqlParams(intentWhere);
+    expect(intentParams).toContain(RUN_ID);
+    expect(intentParams).toContain(ORG_ID);
+    expect(intentParams).not.toContain(SWEEP_INTENT_ID);
+
+    // A policy-decided COMPLETED intent reports `executed`, and the cohort
+    // verdict rides along.
+    expect(parsed.data.sweep!.findings[0]!.proposal).toMatchObject({
+      intentId: SWEEP_INTENT_ID,
+      outcome: 'executed',
+      cohort: true,
+    });
+    expect(parsed.data.sweep!.actSummary).toEqual({
+      devicesActed: 1, devicesProposed: 1, stoppedBy: null,
+    });
+  });
+
+  it('reports an auto-executing sweep intent as auto_executing, not as pending', async () => {
+    const SWEEP_INTENT_ID = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: { sweepKinds: ['service_down'] },
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down.',
+            findings: [{
+              kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+              title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+              evidence: { state: 'stopped' },
+              proposedAction: {
+                tool: 'manage_services', action: 'restart',
+                deviceId: DEVICE_ID, serviceName: 'Spooler',
+              },
+            }],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: SWEEP_INTENT_ID, cohort: true, stoppedBy: null,
+          }],
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([{
+        id: SWEEP_INTENT_ID,
+        status: 'approved',
+        actionName: 'manage_services:restart',
+        approvalScope: 'supervised',
+        // POLICY, not a human — this is the act-mode case.
+        decidedVia: 'policy',
+      }]))
+      .mockReturnValueOnce(selectChain([{ id: DEVICE_ID, hostname: 'WKS-042' }]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    expect(parsed.data.sweep!.findings[0]!.proposal!.outcome).toBe('auto_executing');
+  });
+
   it('resolves sweep finding hostnames with ONE batched org-pinned read and leaks no raw proposal args', async () => {
     const OTHER_DEVICE_ID = '99999999-9999-4999-8999-999999999999';
     let hostnameWhere: unknown;
@@ -1294,8 +1770,13 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           sweepEvidenceTruncated: true,
         },
       })]))
-      // The ONE batched hostname read (no session, no intent ids, so this is
-      // the only other query the route makes).
+      // Intents (now unconditional) — this run minted no intent for the
+      // second finding's disposition, so it comes back empty; the first
+      // finding's proposal intentId is a distinct id that the intents read
+      // does not have to resolve for the DTO's `proposal.outcome` to be null.
+      .mockReturnValueOnce(selectChain([]))
+      // The ONE batched hostname read (no session, so this is the only other
+      // query the route makes).
       .mockReturnValueOnce(selectChain(
         [{ id: DEVICE_ID, hostname: 'WKS-042' }],
         (predicate) => { hostnameWhere = predicate; },
@@ -1306,9 +1787,9 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const body = await res.json();
     const parsed = runDetailResponseSchema.parse(body);
 
-    // Two selects total: the run row and ONE batched device read for BOTH
-    // findings — never a lookup per finding.
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    // Three selects total: the run row, intents, and ONE batched device read
+    // for BOTH findings — never a lookup per finding.
+    expect(selectMock).toHaveBeenCalledTimes(3);
     // Review round 1, IMPORTANT 1: the hostname read is pinned to the RUN's
     // own org, not just the caller's accessible set — `sweepDeviceIds` come
     // out of MODEL-AUTHORED outcome jsonb, so a partner-scoped caller must
@@ -1323,6 +1804,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.sweep).toEqual({
       scheduleId: '88888888-8888-4888-8888-888888888888',
       occurrenceKey: '2026-08-29T06:00:00Z',
+      actSummary: null,
       kinds: ['service_down'],
       summary: 'One service is down on two machines.',
       evidenceTruncated: true,
@@ -1334,6 +1816,9 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           proposal: {
             tool: 'manage_services', action: 'restart', disposition: 'intent_created',
             reason: null, intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            // No matching row came back from the (empty) intents read, so
+            // the live outcome is unknown — never inferred from disposition.
+            outcome: null, cohort: null, stoppedBy: null,
           },
         },
         {
@@ -1393,6 +1878,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       .mockReturnValueOnce(selectChain(
         [{
           reportRunId: REPORT_RUN_ID,
@@ -1408,9 +1894,9 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(res.status).toBe(200);
     const parsed = runDetailResponseSchema.parse(await res.json());
 
-    // Two selects: the run row and the artifact. No session, no intent ids and
+    // Three selects: the run row, intents, and the artifact. No session and
     // no sweep findings, so nothing else is queried.
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).toHaveBeenCalledTimes(3);
     const params = sqlParams(artifactWhere);
     expect(params).toContain(ORG_ID);
     expect(params).toContain(REPORT_RUN_ID);
@@ -1429,15 +1915,218 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   });
 
   it('skips the artifact read entirely for a run that links none', async () => {
-    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]))
+      .mockReturnValueOnce(selectChain([])); // intents (now unconditional; none minted)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
 
     expect(res.status).toBe(200);
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(selectMock).toHaveBeenCalledTimes(2);
     const parsed = runDetailResponseSchema.parse(await res.json());
     expect(parsed.data.narrative).toBeNull();
     expect(parsed.data.reportRunId).toBeNull();
+    expect(parsed.data.narrativeDelivery).toBeNull();
+  });
+
+  // #4248 W03 (Task 10, OD-7 B) — the skipped count is a small authority
+  // oracle, acceptable only because it is COUNTS to someone who already holds
+  // ai_agents:read on the run, and because the alternative (a permanently
+  // invisible failure) is worse. Never who.
+  it('reports the narrative delivery outcome in separate buckets, as counts only', async () => {
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    let summaryWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        profile: 'narrative',
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          narrative: { version: 1, headline: 'A quiet week.', sections: [], markdown: '# A quiet week.' },
+          narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
+      .mockReturnValueOnce(selectChain([{
+        reportRunId: REPORT_RUN_ID, reportId: REPORT_ID, periodStart: null, periodEnd: null, contextTruncated: false,
+      }]))
+      // The delivery summary: 4 rows — sent, sent, failed, pending.
+      .mockReturnValueOnce(selectChain(
+        [{ total: 4, sent: 2, failed: 1, unknown: 0, pending: 1 }],
+        (predicate) => { summaryWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    expect(selectMock).toHaveBeenCalledTimes(4);
+    expect(sqlParams(summaryWhere)).toContain(REPORT_RUN_ID);
+    // Terminal `refused` and not-yet-delivered `pending` stay SEPARATE: they
+    // have different causes and different remedies, and folding them under one
+    // "skipped (insufficient authority)" label misdiagnoses both.
+    expect(parsed.data.narrativeDelivery).toEqual({
+      total: 4, sent: 2, refused: 1, pending: 1, unknown: 0, recipientsUnresolved: false,
+    });
+    expect(JSON.stringify(body)).not.toMatch(/recipient_user_id|recipientUserId|@/);
+  });
+
+  it('flags a failed recipient lookup, so zero delivery rows is not mistaken for zero recipients', async () => {
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null, intentIds: [], deviceId: null, deviceHostname: null,
+        triggerKind: 'schedule', profile: 'narrative', reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          narrative: { version: 1, headline: 'A quiet week.', sections: [], markdown: '# A quiet week.' },
+          narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+          narrativeRecipientsUnresolved: true,
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
+      .mockReturnValueOnce(selectChain([{
+        reportRunId: REPORT_RUN_ID, reportId: REPORT_ID, periodStart: null, periodEnd: null, contextTruncated: false,
+      }]))
+      .mockReturnValueOnce(selectChain([{ total: 0, sent: 0, failed: 0, unknown: 0, pending: 0 }]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    expect(parsed.data.narrativeDelivery).toEqual({
+      total: 0, sent: 0, refused: 0, pending: 0, unknown: 0, recipientsUnresolved: true,
+    });
+  });
+
+  it('is null for a narrative run whose artifact is not visible, without querying deliveries', async () => {
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null, intentIds: [], deviceId: null, deviceHostname: null,
+        triggerKind: 'schedule', profile: 'narrative', reportRunId: REPORT_RUN_ID,
+        outcome: { executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0 },
+      })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
+      .mockReturnValueOnce(selectChain([])); // artifact read finds nothing
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.narrativeDelivery).toBeNull();
+  });
+
+  /**
+   * Fleet Designer W01 (#5651), Task 9 — the design artifact read. Direct
+   * sibling of the narrative artifact test above: same org-pinned join
+   * shape, different projection (`fleetDesignArtifactProjection`), and
+   * gated on `run.profile === 'design'` rather than firing for every run
+   * that merely links a `report_runs` row (a design run's linked artifact
+   * carries `summary.fleetDesign`, not `summary.narrative`).
+   */
+  it('reads the linked fleet design artifact through an org-pinned join and projects downloadPath', async () => {
+    const DESIGN_SCHEDULE_ID = '88888888-8888-4888-8888-888888888888';
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    let artifactWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        profile: 'design',
+        scheduleId: DESIGN_SCHEDULE_ID,
+        triggerRef: { scheduleId: DESIGN_SCHEDULE_ID, occurrenceKey: '2026-09-12T07:00:00Z', kind: 'design' },
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          fleetDesign: {
+            schemaVersion: 1,
+            generatedAt: '2026-09-12T07:00:00.000Z',
+            markdown: '# Fleet Design',
+            thresholds: { confidence: 0.6, precursors: {} },
+            sections: {
+              found: { summary: [], findings: [] },
+              functions: [{ functionKey: 'file_server', deviceIds: ['dev-1'], confidence: 0.9, evidence: [] }],
+              monitoring: [],
+              retired: [],
+              automation: [],
+              legacy: [],
+              baseline: { notes: [], numbers: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] } },
+              unsure: { lowConfidenceFunctions: [], unreachableDevices: [], needsHuman: [], roleCorrections: [] },
+            },
+          },
+          fleetDesignReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
+      // The existing (narrative) artifact query still fires unconditionally
+      // on `reportRunId` alone (see the sibling "skips" test below) — it
+      // finds nothing for a design run's projection.
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain(
+        [{
+          reportRunId: REPORT_RUN_ID,
+          reportId: REPORT_ID,
+          generatedAt: '2026-09-12T07:00:00.000Z',
+          evidenceTruncated: false,
+        }],
+        (predicate) => { artifactWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Four selects: the run row, intents, the (empty) narrative-projection
+    // query and the fleet design artifact. No session and no sweep findings,
+    // so nothing else is queried.
+    expect(selectMock).toHaveBeenCalledTimes(4);
+    const params = sqlParams(artifactWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(REPORT_RUN_ID);
+
+    expect(parsed.data.reportRunId).toBe(REPORT_RUN_ID);
+    expect(parsed.data.fleetDesign).toMatchObject({
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+      functionCount: 1,
+      evidenceTruncated: false,
+    });
+  });
+
+  it('skips the fleet design artifact read for a non-design run, even with a reportRunId set', async () => {
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
+      // The existing (narrative) artifact query still fires — reportRunId
+      // alone gates it — but it finds nothing for this row's projection.
+      .mockReturnValueOnce(selectChain([]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.fleetDesign).toBeNull();
   });
 
   it('resolves a finding\'s hostname from its proposal device when the finding omitted deviceId', async () => {
@@ -1477,6 +2166,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           sweepEvidenceTruncated: false,
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       .mockReturnValueOnce(selectChain(
         [{ id: DEVICE_ID, hostname: 'WKS-042' }],
         (predicate) => { hostnameWhere = predicate; },
@@ -1495,16 +2185,24 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     });
   });
 
-  it('skips the ledger/intents queries when the run has no session and no intent ids', async () => {
-    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+  // #4442 W05 — the ledger read is still conditional on `run.sessionId`, but
+  // the intents read is now UNCONDITIONAL (it reads by
+  // `requesting_agent_run_id`, not the pending-only `run.intentIds`): even a
+  // run that minted no intents still issues the query, it just comes back
+  // empty. `run.intentIds` being empty no longer has any bearing on whether
+  // that second query runs.
+  it('skips the ledger query but still issues the (now unconditional) intents query when the run has no session', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]))
+      .mockReturnValueOnce(selectChain([])); // intents — unconditional, comes back empty
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.ledger).toEqual([]);
     expect(body.data.intents).toEqual([]);
-    // Only the run-row select ran — no second/third db.select for ledger/intents.
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    // Run row + intents — no third db.select for the ledger (sessionId null).
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
   // Review fix (#3828): ai_agents is dual-ownership (#2135) — a partner-wide
@@ -1512,9 +2210,11 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   // it produced (plain org-scoped) stays visible. Before this fix the route
   // innerJoin'd ai_agents, so this case 404'd instead of returning the run.
   it('returns the run (not 404) when its agent row is RLS-invisible, with agentName/agentKind null', async () => {
-    selectMock.mockReturnValueOnce(selectChain([
-      runRow({ sessionId: null, intentIds: [], agentName: null, agentKind: null }),
-    ]));
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        runRow({ sessionId: null, intentIds: [], agentName: null, agentKind: null }),
+      ]))
+      .mockReturnValueOnce(selectChain([])); // intents (now unconditional; none minted)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
@@ -1532,28 +2232,197 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   // implementation here (importOriginal, see this file's own mock comment
   // above `alertVerdicts`), so this exercises the actual projection, not a
   // stub — the schema parse below is the assertion that matters.
-  it('round-trips alertVerdict.suggestedAction.reason: superseded_concurrently through the strict wire schema', async () => {
+  // Execution plane W05 (#5716, spec §5.8).
+  it('returns the run artifacts newest first and the workspace transcript for an analysis run', async () => {
     selectMock.mockReturnValueOnce(selectChain([
-      runRow({
+      runRow({ profile: 'analysis', sessionId: null, intentIds: [] }),
+    ]));
+    // #4442 W05 — the intents read is unconditional (keyed on
+    // requesting_agent_run_id, not the pending-only run.intentIds); this run
+    // minted none, so it comes back empty. It runs BEFORE the two
+    // execution-plane reads below.
+    selectMock.mockReturnValueOnce(selectChain([]));
+    // Both new reads are gated on the `analysis` profile, and they run in this
+    // order: artifacts, then the workspace row.
+    const artifactRow = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', orgId: ORG_ID, runId: RUN_ID, sessionId: null,
+      kind: 'output', name: 'failed-logons.csv', contentType: 'text/csv', bytes: 40_112,
+      sha256: 'f'.repeat(64), headPreview: 'user,when\n', tailPreview: '\n',
+      sourceDeviceId: null, createdByTool: 'workspace_collect',
+      expiresAt: new Date('2026-10-13T00:00:00Z'), createdAt: new Date('2026-09-13T10:03:00Z'),
+      // Present on the ROW and required to be absent from the RESPONSE —
+      // `toArtifactDto` is what keeps it inside the API, and this suite mocks
+      // that projection (its own coverage is artifactService.test.ts), so the
+      // mock below is what enforces the omission here.
+      blobKey: 'eu/2026/09/aaaa',
+    };
+    selectMock.mockReturnValueOnce(selectChain([artifactRow]));
+    toArtifactDtoMock.mockImplementation((record: typeof artifactRow) => ({
+      id: record.id,
+      runId: record.runId,
+      sessionId: record.sessionId,
+      kind: record.kind,
+      name: record.name,
+      contentType: record.contentType,
+      bytes: record.bytes,
+      sha256: record.sha256,
+      headPreview: record.headPreview,
+      tailPreview: record.tailPreview,
+      sourceDeviceId: record.sourceDeviceId,
+      createdByTool: record.createdByTool,
+      expiresAt: record.expiresAt.toISOString(),
+      createdAt: record.createdAt.toISOString(),
+      downloadPath: `/api/v1/ai/artifacts/${record.id}`,
+    }));
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        backend: 'vercel', region: 'eu', status: 'destroyed', bootstrapHash: 'sha256:abc', runtimeImage: 'analysis@sha256:abc',
+        createdAt: new Date('2026-09-13T10:00:00Z'), readyAt: new Date('2026-09-13T10:00:04Z'),
+        destroyedAt: new Date('2026-09-13T10:03:00Z'),
+        cpuMs: 41_000, wallMs: 176_000, memAllocatedMb: 2048,
+        stagedBytes: 1_048_576, artifactBytes: 40_112, stepCount: 1,
+        steps: [{
+          ordinal: 1, language: 'python', scriptArtifactHandle: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          exitCode: 0, timedOut: false, durationMs: 1820, stdoutArtifactHandle: null,
+        }],
+      },
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const parsed = runDetailResponseSchema.parse(JSON.parse(raw));
+
+    expect(parsed.data.artifacts).toHaveLength(1);
+    expect(parsed.data.artifacts[0]!.name).toBe('failed-logons.csv');
+    expect(parsed.data.artifacts[0]!.downloadPath)
+      .toBe('/api/v1/ai/artifacts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(parsed.data.workspace?.steps[0]!.language).toBe('python');
+    expect(parsed.data.workspace?.runtimeImage).toBe('analysis@sha256:abc');
+    expect(parsed.data.computeCents).toBe(0);
+    // The blob key never leaves the API — asserted on the RAW body, because the
+    // strict schema above would have thrown on an extra key but says nothing
+    // about a value smuggled into an existing string field.
+    expect(raw).not.toContain('blobKey');
+    expect(raw).not.toContain('blob_key');
+    expect(raw).not.toContain('eu/2026/09/aaaa');
+  });
+
+  it('skips both execution-plane reads entirely for a non-analysis run', async () => {
+    // Every run outside the `analysis` profile is guaranteed to have neither a
+    // workspace nor artifacts, so the route must not spend two queries proving
+    // it — and the DTO must still carry the empty answers, never `undefined`.
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        runRow({ profile: 'triage', sessionId: null, intentIds: [], triggerKind: 'manual' }),
+      ]))
+      .mockReturnValueOnce(selectChain([])); // intents (now unconditional, #4442 W05; none minted)
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    // Run row + the unconditional intents read — and NOTHING for artifacts or
+    // the workspace (profile !== 'analysis'), ledger (sessionId null) or
+    // drafts (triggerKind !== 'ticket').
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.artifacts).toEqual([]);
+    expect(parsed.data.workspace).toBeNull();
+  });
+
+  // #4442 W05 × execution plane W05 (#5919) — the two waves' run-detail
+  // reads compose: a sweep-profile act run reads its intents by
+  // requesting_agent_run_id (surfacing an intent that auto-executed and so
+  // fell out of the pending-only run.intentIds) AND skips both
+  // execution-plane reads, because a sweep run can never own a workspace.
+  it('reads decided intents for a sweep run while still skipping both execution-plane reads', async () => {
+    const SWEEP_INTENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    let intentWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        profile: 'sweep',
         sessionId: null,
         intentIds: [],
-        outcome: {
-          findings: [],
-          executedActions: [],
-          proposedActions: [],
-          deniedActions: [],
-          toolExecutionCount: 0,
-          runVerdict: 'partial',
-          alertVerdict: {
-            classification: 'actionable',
-            confidence: 0.9,
-            rationale: 'Another run already recorded a verdict for this alert.',
-            suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
-          },
-          alertVerdictIntent: { disposition: 'not_created', reason: 'superseded_concurrently' },
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: {
+          scheduleId: '88888888-8888-4888-8888-888888888888',
+          occurrenceKey: '2026-08-29T06:00:00Z',
+          sweepKinds: ['service_down'],
         },
-      }),
-    ]));
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down.',
+            findings: [{
+              kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+              title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+              evidence: { state: 'stopped' },
+              proposedAction: {
+                tool: 'manage_services', action: 'restart',
+                deviceId: DEVICE_ID, serviceName: 'Spooler',
+              },
+            }],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: SWEEP_INTENT_ID, cohort: true, stoppedBy: null,
+          }],
+        },
+      })]))
+      .mockReturnValueOnce(selectChain(
+        [{
+          id: SWEEP_INTENT_ID, status: 'completed', actionName: 'manage_services:restart',
+          approvalScope: 'supervised', decidedVia: 'policy',
+        }],
+        (predicate) => { intentWhere = predicate; },
+      )) // intents — by run id, so the completed one is still reported
+      .mockReturnValueOnce(selectChain([{ id: DEVICE_ID, hostname: 'WKS-042' }])); // sweep hostnames
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Run row, intents, sweep hostnames — no artifacts, no workspace.
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    expect(sqlParams(intentWhere)).toContain(RUN_ID);
+    expect(parsed.data.intents).toEqual([{
+      id: SWEEP_INTENT_ID, status: 'completed', actionName: 'manage_services:restart',
+      approvalScope: 'supervised', decidedVia: 'policy',
+    }]);
+    expect(parsed.data.artifacts).toEqual([]);
+    expect(parsed.data.workspace).toBeNull();
+    expect(parsed.data.sweep!.actSummary).toEqual({
+      devicesActed: 1, devicesProposed: 1, stoppedBy: null,
+    });
+  });
+
+  it('round-trips alertVerdict.suggestedAction.reason: superseded_concurrently through the strict wire schema', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        runRow({
+          sessionId: null,
+          intentIds: [],
+          outcome: {
+            findings: [],
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            runVerdict: 'partial',
+            alertVerdict: {
+              classification: 'actionable',
+              confidence: 0.9,
+              rationale: 'Another run already recorded a verdict for this alert.',
+              suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+            },
+            alertVerdictIntent: { disposition: 'not_created', reason: 'superseded_concurrently' },
+          },
+        }),
+      ]))
+      .mockReturnValueOnce(selectChain([])); // intents (now unconditional; none minted)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
@@ -1654,6 +2523,20 @@ describe('POST /ai-agents/verdicts/:verdictId/feedback', () => {
 });
 
 describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
+  it('pushes the site ceiling into the keyset query before limit and cursor selection', async () => {
+    let where: unknown;
+    let limit: number | undefined;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }, (value) => { limit = value; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request('/ai-agents/runs?limit=1');
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+    expect(limit).toBe(2);
+    expect(await res.json()).toEqual({ data: [], nextCursor: null });
+  });
+
   it('is gated on ai_agents:read', async () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request('/ai-agents/runs');
@@ -2387,6 +3270,86 @@ describe('GET /ai-agents/impact', () => {
   });
 });
 
+// W04 (#5761, refs #4182) — the MEASURED band's own endpoint. Registered beside
+// GET /impact and ahead of GET /:id for the same reason: a literal path segment
+// must not fall into the `:id` param route.
+describe('GET /ai-agents/impact/measured', () => {
+  it('returns the measured DTO for a partner-scope caller', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ schemaVersion: 1, window: 30 });
+    // 2nd arg is the resolved permission set. The requirePermission mock in this
+    // file does not populate `c.get('permissions')`, so it arrives undefined
+    // here -- which the service treats as "no time-entry authority" and omits
+    // that arm, the fail-closed behaviour asserted in impactMeasured.test.ts.
+    expect(loadMeasuredImpactMock).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      { window: 30, orgId: undefined },
+    );
+  });
+
+  it('resolves the measured handler, not GET /:id', async () => {
+    const app = buildApp();
+
+    await app.request('/ai-agents/impact/measured?window=7');
+
+    expect(loadMeasuredImpactMock).toHaveBeenCalledTimes(1);
+    expect(getAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsupported window', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=180');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a client-supplied through -- the server owns the last complete UTC day', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=30&through=2026-01-01');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('requires an orgId for a system-scoped caller, like /impact does', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null });
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inaccessible orgId with 403', async () => {
+    const app = buildApp(false, { canAccessOrg: () => false });
+
+    const res = await app.request(`/ai-agents/impact/measured?window=30&orgId=${OTHER_ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('403s a caller without ai_agents:read', async () => {
+    hasPermMock.mockImplementation((resource: string, action: string) => (
+      !(resource === 'ai_agents' && action === 'read')
+    ));
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(403);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /ai-agents/impact/rebuild', () => {
   it('answers 409 too_many_orgs when the accessible set exceeds the cap', async () => {
     const orgIds = Array.from({ length: AI_AGENT_IMPACT_REBUILD_MAX_ORGS + 1 }, (_, i) => `org-${i}`);
@@ -2634,6 +3597,27 @@ describe('POST /ai-agents/graduation/promote', () => {
         },
       }),
     );
+  });
+
+  // Site ceiling (audit §1.1): this route raises the very same
+  // `manage_ai_agents:authorize_supervised_key` grant the AI tool does, and
+  // the tool's handler refuses a site-restricted raiser
+  // (`canMutateOrgWideGovernance`, services/aiToolsAiAgentGovernance.ts). The
+  // HTTP twin had only `canAccessOrg`, so the ceiling was bypassable by
+  // calling the route directly. The grant is org-wide by construction — there
+  // is no per-site slice of "this org may run this op unattended".
+  it('denies a SITE-RESTRICTED caller (403) without raising anything', async () => {
+    const res = await promote(buildApp(false, { allowedSiteIds: [SITE_ID] }));
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an exact-device-restricted caller (403) without raising anything', async () => {
+    const res = await promote(buildApp(false, { allowedDeviceIds: [DEVICE_ID] }));
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
   });
 
   it('409s while BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED is off, without raising anything', async () => {
@@ -3256,6 +4240,17 @@ describe('GET /ai-agents', () => {
   beforeEach(() => {
     listAgentsMock.mockResolvedValue([agentRow({ disabledAt: null })]);
     selectDistinctOnMock.mockReturnValue(distinctChain([]));
+    loadEnabledBaselineCadencesMock.mockResolvedValue([]);
+  });
+
+  it('selects the latest site-visible run rather than the latest org-visible run', async () => {
+    let where: unknown;
+    selectDistinctOnMock.mockReturnValueOnce(distinctChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] }).request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
   });
 
   it('projects the latest run per agent from ONE batched query', async () => {
@@ -3312,6 +4307,55 @@ describe('GET /ai-agents', () => {
     expect(selectDistinctOnMock).toHaveBeenCalledTimes(1);
   });
 
+  // AI patch agent W01 (#5747), Task 10 — the next-occurrence column. The
+  // cadence read is batched for the whole page, and the occurrence itself is
+  // computed by the SAME shared helper the schedules drawer uses, so the card
+  // and the drawer cannot disagree.
+  it('returns nextOccurrenceAt for an agent with an enabled baseline, from ONE batched read', async () => {
+    vi.setSystemTime(new Date('2026-09-14T12:00:00.000Z'));
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: '0 2 * * *', timezone: 'UTC' },
+    ]);
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].nextOccurrenceAt).toBe('2026-09-15T02:00:00.000Z');
+    expect(loadEnabledBaselineCadencesMock).toHaveBeenCalledTimes(1);
+    expect(loadEnabledBaselineCadencesMock.mock.calls[0]![1]).toEqual([AGENT_ID]);
+    vi.useRealTimers();
+  });
+
+  it('reports the SOONEST occurrence when an agent has several enabled baselines', async () => {
+    vi.setSystemTime(new Date('2026-09-14T12:00:00.000Z'));
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: '0 2 * * *', timezone: 'UTC' },
+      { agentId: AGENT_ID, cron: '0 20 * * *', timezone: 'UTC' },
+    ]);
+
+    const body = await (await buildApp().request('/ai-agents')).json();
+
+    expect(body.data[0].nextOccurrenceAt).toBe('2026-09-14T20:00:00.000Z');
+    vi.useRealTimers();
+  });
+
+  it('returns null when the agent has no enabled baseline', async () => {
+    const body = await (await buildApp().request('/ai-agents')).json();
+    expect(body.data[0].nextOccurrenceAt).toBeNull();
+  });
+
+  it('returns null — never throws — when the stored cron cannot be evaluated', async () => {
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: 'every night', timezone: 'UTC' },
+    ]);
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].nextOccurrenceAt).toBeNull();
+  });
+
   it('reports 0 — not null — for a last run that left nothing to review', async () => {
     selectDistinctOnMock.mockReturnValueOnce(distinctChain([
       {
@@ -3352,7 +4396,19 @@ describe('GET /ai-agents', () => {
     const res = await buildApp().request('/ai-agents');
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: [], partnerBaselineKinds: [] });
+    expect(await res.json()).toEqual({
+      data: [],
+      partnerBaselineKinds: [],
+      // #5380 — the subsystem block is reported even with zero agents: "no
+      // agents" and "agents can never run here" are different problems.
+      system: {
+        enabled: false,
+        envFlagEnabled: false,
+        envFlagName: 'BREEZE_AI_AGENTS_ENABLED',
+        killSwitchEngaged: false,
+        skips: null,
+      },
+    });
     expect(selectDistinctOnMock).not.toHaveBeenCalled();
   });
 
@@ -3449,6 +4505,31 @@ describe('GET /ai-agents — hasPartnerBaseline (#4170)', () => {
     const body = await res.json();
     expect(body.data.find((row: { id: string }) => row.id === AGENT_ID).hasPartnerBaseline).toBe(true);
     expect(body.data.find((row: { id: string }) => row.id === OTHER_ORG_ID).hasPartnerBaseline).toBe(false);
+  });
+});
+
+// Fleet Designer (W01) — `kind` cannot be patched, so `updateAgent`
+// (agentService.ts) is the only place that can catch a mode not allowed for
+// the row's EXISTING kind; this route test proves the service's rejection
+// reaches the client as a 400 with the stable `mode_not_allowed_for_kind`
+// code, distinct from the 422 `UnsupportedAgentModeError` case.
+describe('PATCH /ai-agents/:id — mode vs kind (Fleet Designer W01)', () => {
+  function patchAgent(app: Hono, body: unknown, id = AGENT_ID) {
+    return app.request(`/ai-agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s mode_not_allowed_for_kind when the service rejects a shadow mode for a designer agent', async () => {
+    updateAgentMock.mockRejectedValueOnce(new ModeNotAllowedForKindError('shadow', 'designer'));
+
+    const res = await patchAgent(buildApp(), { mode: 'shadow' });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'mode_not_allowed_for_kind' });
   });
 });
 
@@ -3728,6 +4809,28 @@ function previewRequest(app: Hono, body: Record<string, unknown>) {
   });
 }
 
+// Fleet Designer (W01) — `createAiAgentSchema`'s `superRefine` runs
+// `assertModeAllowedForKind` (packages/shared/validators/aiAgents.ts) BEFORE
+// the route handler ever sees the body, so this is a pure zValidator 400 —
+// `createAgent` is never called.
+describe('POST /ai-agents (create)', () => {
+  function createAgentRequest(app: Hono, body: Record<string, unknown>) {
+    return app.request('/ai-agents', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s a designer agent created with mode shadow (mode not allowed for kind)', async () => {
+    const res = await createAgentRequest(buildApp(), { kind: 'designer', mode: 'shadow', name: 'Fleet Designer' });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { details: { fieldErrors: Record<string, string[]> } };
+    expect(body.details.fieldErrors.mode?.[0]).toMatch(/not available for a designer agent/);
+  });
+});
+
 describe('POST /ai-agents/preview', () => {
   it('evaluates a draft policy against the mocked catalog', async () => {
     loadPartnerBaselineCeilingMock.mockResolvedValueOnce(null);
@@ -3883,5 +4986,192 @@ describe('mapError — org-row supervised keys are grant-only (spec §4.4, #5049
       }),
       422,
     );
+  });
+});
+
+// #5380 — Settings → AI Agents showed a "Running" badge for every enabled
+// agent while `BREEZE_AI_AGENTS_ENABLED` was unset on US prod, so every
+// trigger was a silent no-op and the page said nothing. The list response is
+// the page's only read, so the subsystem state rides along with it.
+describe('GET /ai-agents — system block (#5380)', () => {
+  beforeEach(() => {
+    listAgentsMock.mockResolvedValue([agentRow({ disabledAt: null })]);
+    selectDistinctOnMock.mockReturnValue(distinctChain([]));
+    loadPartnerBaselineKindsMock.mockResolvedValue(new Set());
+    readAiKillStateMock.mockResolvedValue({ killed: false, epoch: 1 });
+    readAgentRunSkipSummaryMock.mockResolvedValue(null);
+    delete process.env.BREEZE_AI_AGENTS_ENABLED;
+  });
+
+  it('reports the subsystem as disabled — and names the env var — when the flag is unset', async () => {
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.system).toMatchObject({
+      enabled: false,
+      envFlagEnabled: false,
+      envFlagName: 'BREEZE_AI_AGENTS_ENABLED',
+      killSwitchEngaged: false,
+    });
+  });
+
+  it('reports the subsystem as enabled when the flag is set and the DB kill switch is clear', async () => {
+    process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
+
+    const res = await buildApp().request('/ai-agents');
+
+    const body = await res.json();
+    expect(body.system).toMatchObject({ enabled: true, envFlagEnabled: true, killSwitchEngaged: false });
+  });
+
+  it('reports NOT enabled when the DB kill switch is engaged even with the env flag on', async () => {
+    process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
+    readAiKillStateMock.mockResolvedValue({ killed: true, epoch: 4 });
+
+    const res = await buildApp().request('/ai-agents');
+
+    const body = await res.json();
+    expect(body.system).toMatchObject({ enabled: false, envFlagEnabled: true, killSwitchEngaged: true });
+  });
+
+  it('passes the caller-visible orgs to the skip summary and returns it verbatim', async () => {
+    readAgentRunSkipSummaryMock.mockResolvedValue({
+      retentionHours: 48,
+      total: 12,
+      reasons: [{ reason: 'kill_switch_off', count: 12, firstAt: null, lastAt: null }],
+    });
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(readAgentRunSkipSummaryMock).toHaveBeenCalledWith([ORG_ID]);
+    const body = await res.json();
+    expect(body.system.skips).toMatchObject({ total: 12 });
+    expect(body.system.skips.reasons[0].reason).toBe('kill_switch_off');
+  });
+
+  it('scopes the skip summary to a partner caller\'s accessible orgs', async () => {
+    await buildApp(false, {
+      scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID, OTHER_ORG_ID],
+    }).request('/ai-agents');
+
+    expect(readAgentRunSkipSummaryMock).toHaveBeenCalledWith([ORG_ID, OTHER_ORG_ID]);
+  });
+
+  // Review finding (#5681): the route documents that a system-scoped caller
+  // (accessibleOrgIds === null) must NOT fan the summary out across every
+  // tenant on the platform. That contract had no test.
+  it('never fans the skip summary out for a system-scoped caller', async () => {
+    await buildApp(false, {
+      scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null,
+    }).request('/ai-agents');
+
+    expect(readAgentRunSkipSummaryMock).toHaveBeenCalledWith([]);
+  });
+
+  it('reports skips as null (unknown) rather than zero when the counter store is unreachable', async () => {
+    readAgentRunSkipSummaryMock.mockResolvedValue(null);
+
+    const res = await buildApp().request('/ai-agents');
+
+    const body = await res.json();
+    expect(body.system.skips).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 10 (execution-plane W01, spec §5.2/§8, reconciliation R6): the per-run
+// artifact list is registered INSIDE aiAgentsRoutes, immediately above
+// GET /runs/:runId, rather than as a second router mounted at the same
+// '/ai/agents' prefix in index.ts — see aiArtifacts.ts's header comment and
+// the plan's R6 note for why (the #4189 shape: precedence hidden in mount
+// order rather than local to the file that owns both paths).
+// ---------------------------------------------------------------------------
+
+function artifactDto(overrides: Record<string, unknown> = {}) {
+  return {
+    id: ART_ID,
+    runId: RUN_ID,
+    sessionId: null,
+    kind: 'input_capture',
+    name: 'search_logs.json',
+    contentType: 'application/json',
+    bytes: 7,
+    sha256: 'a'.repeat(64),
+    headPreview: '{"a":1}',
+    tailPreview: '{"a":1}',
+    sourceDeviceId: null,
+    createdByTool: 'search_logs',
+    expiresAt: '2026-11-15T00:00:00.000Z',
+    createdAt: '2026-10-16T00:00:00.000Z',
+    downloadPath: `/api/v1/ai/artifacts/${ART_ID}`,
+    ...overrides,
+  };
+}
+
+describe('GET /ai-agents/runs/:runId/artifacts (execution-plane W01, reconciliation R6)', () => {
+  it('returns DTOs with no blobKey and a download path each', async () => {
+    listArtifactsForAuthMock.mockResolvedValue([{ id: ART_ID }]);
+    toArtifactDtoMock.mockReturnValue(artifactDto());
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<Record<string, unknown>> };
+    expect(body.data).toHaveLength(1);
+    expect(Object.keys(body.data[0]!)).not.toContain('blobKey');
+    expect(body.data[0]!.downloadPath).toBe(`/api/v1/ai/artifacts/${ART_ID}`);
+    expect(listArtifactsForAuthMock).toHaveBeenCalledWith(RUN_ID, expect.anything());
+  });
+
+  it("returns an empty list — not a 404 — for a run with no artifacts or another org's run", async () => {
+    listArtifactsForAuthMock.mockResolvedValue([]);
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [] });
+  });
+
+  it('400s a non-uuid runId without querying', async () => {
+    const res = await buildApp().request('/ai-agents/runs/not-a-uuid/artifacts');
+    expect(res.status).toBe(400);
+    expect(listArtifactsForAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(res.status).toBe(403);
+    expect(listArtifactsForAuthMock).not.toHaveBeenCalled();
+  });
+
+  // THE PRECEDENCE ASSERTION. Both paths live in one router, so registration
+  // order inside this file is the only thing that separates them — and that
+  // order is what #4189 got wrong when a sibling path was owned by a
+  // different app.
+  //
+  // Deviation from the plan's draft (genuine bug, fixed minimally, property
+  // kept): the plan's version asserted the run-DETAIL body lacks a `data`
+  // key. It doesn't — `GET /runs/:runId` also wraps its payload as
+  // `{ data: <trace> }` (aiAgents.ts, the `buildRunTrace` return). The
+  // discriminating property is the SHAPE of `data` (array of artifact DTOs
+  // vs. a single run-trace object with no `downloadPath`), not the mere
+  // presence of the envelope key — so that is what this asserts instead.
+  it('routes /runs/<uuid>/artifacts to the LIST and /runs/<uuid> to the run DETAIL', async () => {
+    listArtifactsForAuthMock.mockResolvedValue([]);
+    const app = buildApp();
+
+    const list = await app.request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(list.status).toBe(200);
+    const listBody = await list.json() as { data: unknown };
+    expect(Array.isArray(listBody.data)).toBe(true);
+    expect(listArtifactsForAuthMock).toHaveBeenCalledTimes(1);
+
+    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+    const detail = await app.request(`/ai-agents/runs/${RUN_ID}`);
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as { data: Record<string, unknown> };
+    expect(Array.isArray(detailBody.data)).toBe(false);
+    expect(detailBody.data).not.toHaveProperty('downloadPath');
+    expect(listArtifactsForAuthMock).toHaveBeenCalledTimes(1);   // detail did not hit the list
   });
 });

@@ -26,5 +26,7 @@ if (isPortalPageDisabled(response)) {
 ---
 
 <PortalLayout title="Devices">
-  <DeviceList devices={response.data ?? []} error={response.error} />
+  {/* client:load so the scroll-and-highlight mount effect (a link landing here as
+      /devices#<deviceId> from the lifecycle plan table) actually runs. */}
+  <DeviceList devices={response.data ?? []} error={response.error} client:load />
 </PortalLayout>

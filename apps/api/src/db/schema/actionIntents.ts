@@ -1,3 +1,4 @@
+import type { RemediationTriggerKind } from '@breeze/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
@@ -15,9 +16,15 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import { AI_APPROVAL_SCOPES, type AiApprovalScope, type AssuranceLevel } from '@breeze/shared';
+import {
+  AI_APPROVAL_SCOPES,
+  type AiApprovalScope,
+  type AssuranceLevel,
+  type ScriptReviewerEvidence,
+} from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
+import { aiInitiatorKindEnum } from './aiInitiator';
 import { apiKeys } from './apiKeys';
 import { aiAgentRuns } from './aiAgents';
 import { devices } from './devices';
@@ -193,6 +200,14 @@ export const actionIntents = pgTable(
      * Immutable, covered by action_intents_immutable_trg.
      */
     requestingAgentRunId: uuid('requesting_agent_run_id'),
+    /** Creation-time cause, distinct from the initiator/execution lane.
+     * refId identifies the occurrence (sweep run, alert, monitor, fleet finding),
+     * deliberately without a FK. Build stable keys with @breeze/shared helpers.
+     * action_intents_block_content_update guards all three on action intents.
+     */
+    triggerKind: text('trigger_kind').$type<RemediationTriggerKind>(),
+    triggerRefId: uuid('trigger_ref_id'),
+    triggerKey: varchar('trigger_key', { length: 200 }),
     // P2-2 typed target scope. `scopeKind` is immutable; `scopeDeviceId` may
     // only tombstone (non-null -> NULL), never retarget — enforced by
     // action_intents_block_content_update() (migrations/2026-09-23-ai-agents-
@@ -264,6 +279,22 @@ export const actionIntents = pgTable(
     taskId: uuid('task_id'),
     taskStepKey: text('task_step_key'),
     operationKey: text('operation_key'),
+    /**
+     * Tool catalog W01 PR B (#5216): the external (BYO MCP) tool this Tier-3
+     * intent releases through, bound to the exact `tool_source_tools` row and
+     * `revision` the approver saw. Both set or both NULL
+     * (`action_intents_external_tool_chk`); immutable (deny-listed in
+     * action_intents_block_content_update(), migrations/
+     * 2026-10-16-193700-action-intents-external-tool.sql).
+     *
+     * Bare uuid, NO FK — deliberately, like aiOriginSessionId: the row is
+     * immutable evidence and must never be blocked or tombstoned by a deleted
+     * tool row. Release revalidation reloads the live row by this id and
+     * fails closed (`external_tool_disabled` / `external_tool_drift` /
+     * `external_tool_source_unavailable`, revalidateRelease.ts).
+     */
+    toolSourceToolId: uuid('tool_source_tool_id'),
+    toolRevision: text('tool_revision'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
@@ -289,6 +320,15 @@ export const actionIntents = pgTable(
       .$type<ActionIntentOriginPrincipalKind>(),
     /** Key/grant id when the origin was an api_key or oauth_grant. Immutable. */
     originPrincipalId: text('origin_principal_id'),
+    // --- AI origin attribution (#5022 W01) -------------------------------
+    // The serializable AiOriginRef, so a chat-minted origin survives
+    // intentReleaseWorker's from-scratch AuthContext rebuild. Distinct from
+    // originPrincipal*, which describes the REQUESTER, not the AI surface.
+    // Bare uuids: the row is immutable evidence and must never be blocked by a
+    // deleted session. Written at INSERT only.
+    aiOriginKind: aiInitiatorKindEnum('ai_origin_kind'),
+    aiOriginSessionId: uuid('ai_origin_session_id'),
+    aiOriginAgentRunId: uuid('ai_origin_agent_run_id'),
     requestingClientLabel: varchar('requesting_client_label', { length: 255 }),
 
     // Immutable action content (UPDATE-blocked by action_intents_immutable_trg
@@ -357,6 +397,14 @@ export const actionIntents = pgTable(
     // CHECK here; `.$type` keeps the inferred read type aligned.
     decidedAssuranceLevel: smallint('decided_assurance_level').$type<AssuranceLevel>(),
     decidedVia: text('decided_via'),
+    /**
+     * AI script authoring W04 (#5612): typed evidence for a
+     * decided_via = 'script_reviewer' intent (ScriptReviewerEvidence). Written
+     * once at INSERT and IMMUTABLE thereafter — named in
+     * action_intents_block_content_update()'s deny-list by
+     * migrations/2026-10-16-120300-action-intents-script-reviewer.sql.
+     */
+    scriptReviewerEvidence: jsonb('script_reviewer_evidence').$type<ScriptReviewerEvidence>(),
     // Stamped by the release worker when it CASes the intent
     // approved -> executing (Task 5). Stale-execution detection keys off
     // this (COALESCE'd to decidedAt for rows that predate the column or

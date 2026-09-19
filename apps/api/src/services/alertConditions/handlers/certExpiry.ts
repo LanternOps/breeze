@@ -10,12 +10,12 @@ export const certExpiryHandler: ConditionHandler = {
     const device = await getDevice(deviceId);
 
     if (!device) {
-      return { passed: false, description: 'Device not found' };
+      return { passed: false, description: 'Device not found', dataAvailable: false };
     }
 
     const expiresAt = (device as Record<string, unknown>).mtlsCertExpiresAt as Date | null;
     if (!expiresAt) {
-      return { passed: false, description: 'No mTLS certificate configured' };
+      return { passed: false, description: 'No mTLS certificate configured', dataAvailable: false };
     }
 
     const thresholdDate = new Date(Date.now() + cond.withinDays * 24 * 60 * 60 * 1000);

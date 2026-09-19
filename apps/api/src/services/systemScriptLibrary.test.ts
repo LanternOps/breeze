@@ -1,7 +1,27 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-vi.mock('../db', () => ({
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn() },
+const h = vi.hoisted(() => ({
+  cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>,
+}));
+
+vi.mock('../db', () => {
+  const db = {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+    // The sync runs its insert/update + version cut inside db.transaction; the
+    // `tx` handed to the callback is `db` itself, so the per-test
+    // mockReturnValue queues below work unchanged.
+    transaction: vi.fn((fn: (tx: unknown) => unknown) => fn(db)),
+  };
+  return { db };
+});
+
+vi.mock('./scriptVersions', () => ({
+  cutScriptVersion: vi.fn((_tx: unknown, args: { scriptId: string; provenance: Record<string, unknown> }) => {
+    h.cuts.push(args);
+    return Promise.resolve({ id: 'version-row', scriptId: args.scriptId, version: 1 });
+  }),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -20,6 +40,7 @@ vi.mock('../db/schema', () => ({
     version: 'version',
     updatedAt: 'updatedAt',
     deletedAt: 'deletedAt',
+    origin: 'origin',
   },
 }));
 
@@ -123,6 +144,7 @@ describe('ensureSystemLibraryScripts', () => {
     vi.mocked(db.select).mockReset();
     vi.mocked(db.insert).mockReset();
     vi.mocked(db.update).mockReset();
+    h.cuts = [];
   });
 
   function mockExisting(rows: Array<Record<string, unknown>>) {
@@ -133,7 +155,9 @@ describe('ensureSystemLibraryScripts', () => {
   }
 
   function mockInsert() {
-    const values = vi.fn().mockResolvedValue(undefined);
+    const values = vi.fn((vals: Record<string, unknown>) => ({
+      returning: vi.fn().mockResolvedValue([{ id: `created-${vals.name as string}` }]),
+    }));
     vi.mocked(db.insert).mockReturnValue({ values } as never);
     return values;
   }
@@ -158,6 +182,7 @@ describe('ensureSystemLibraryScripts', () => {
       runAs: def.runAs,
       version: 1,
       deletedAt: null,
+      origin: 'system',
     };
   }
 
@@ -174,6 +199,10 @@ describe('ensureSystemLibraryScripts', () => {
     expect(inserted.orgId).toBeNull();
     expect(inserted.partnerId).toBeNull();
     expect(inserted.name).toBe(SYSTEM_LIBRARY_SCRIPTS[0]!.name);
+    // #5671: the insert must not fall through to the schema default
+    // ('human') — it would contradict the origin='system' the very same
+    // transaction writes onto the version row via cutScriptVersion below.
+    expect(inserted.origin).toBe('system');
   });
 
   it('no-ops when the stored row already matches the definition', async () => {
@@ -202,7 +231,38 @@ describe('ensureSystemLibraryScripts', () => {
     expect(result.updated).toBeGreaterThan(0);
     const patch = set.mock.calls[0]![0];
     expect(patch.content).toBe(editionMigration!.content);
-    expect(patch.version).toBe(4);
+    // W01a: cutScriptVersion owns the bump — a second one here would skip a
+    // number and break UNIQUE-backed history.
+    expect(patch).not.toHaveProperty('version');
+    expect(h.cuts).toHaveLength(1);
+    expect(h.cuts[0]!.provenance).toMatchObject({ origin: 'system', createdBy: null });
+  });
+
+  it('cuts a system-origin version for a newly created library script', async () => {
+    mockExisting([]);
+    const values = mockInsert();
+
+    const result = await ensureSystemLibraryScripts();
+
+    expect(result.created).toBe(SYSTEM_LIBRARY_SCRIPTS.length);
+    expect(h.cuts).toHaveLength(SYSTEM_LIBRARY_SCRIPTS.length);
+    expect(h.cuts[0]!.provenance).toMatchObject({
+      origin: 'system',
+      changelog: 'Shipped system library definition',
+      createdBy: null,
+    });
+    // Inserted at 0 so the cut produces 1; 0 never escapes the transaction.
+    expect(values.mock.calls[0]![0]).toMatchObject({ version: 0, isSystem: true });
+  });
+
+  it('cuts nothing when every shipped definition is unchanged', async () => {
+    mockExisting([existingRowFor(editionMigration!)]);
+    mockInsert();
+    mockUpdate();
+
+    await ensureSystemLibraryScripts();
+
+    expect(h.cuts).toEqual([]);
   });
 
   it('revokes any security acknowledgement when it replaces the content (#5129)', async () => {
@@ -252,6 +312,49 @@ describe('ensureSystemLibraryScripts', () => {
     expect(patch).not.toHaveProperty('acknowledgedSecurityPatterns');
     expect(patch).not.toHaveProperty('securityAcknowledgedBy');
     expect(patch).not.toHaveProperty('securityAcknowledgedAt');
+  });
+
+  it('#5948: self-heals a stale origin="human" row whose definition is otherwise unchanged, without cutting a version', async () => {
+    // Pre-#5671 rows were inserted with the schema default ('human') and the
+    // insert-side fix (#5671/PR #5946) only corrects NEW inserts. The update
+    // branch must self-heal `origin` on next sync even when nothing else in
+    // the definition changed — but must NOT cut a spurious version, since
+    // cutScriptVersion bumps `version` for what is actually a no-op definition
+    // sync (that would skip a number and break UNIQUE-backed history).
+    const stale = existingRowFor(editionMigration!);
+    stale.origin = 'human';
+    mockExisting([stale]);
+    const values = mockInsert();
+    const { set } = mockUpdate();
+
+    const result = await ensureSystemLibraryScripts();
+
+    expect(set).toHaveBeenCalledTimes(1);
+    const patch = set.mock.calls[0]![0];
+    expect(patch.origin).toBe('system');
+    // The definition body itself did not change, so the self-heal patch is
+    // origin-only — it must not touch content/category/etc.
+    expect(patch).not.toHaveProperty('content');
+    expect(values).not.toHaveBeenCalled();
+    expect(h.cuts).toEqual([]);
+    expect(result.updated).toBeGreaterThan(0);
+    expect(result.unchanged).toBe(0);
+  });
+
+  it('#5948: corrects a stale origin="human" row AND cuts a version when the definition also changed', async () => {
+    const stale = existingRowFor(editionMigration!);
+    stale.origin = 'human';
+    stale.content = '# stale content';
+    mockExisting([stale]);
+    const { set } = mockUpdate();
+
+    await ensureSystemLibraryScripts();
+
+    const patch = set.mock.calls[0]![0];
+    expect(patch.origin).toBe('system');
+    expect(patch.content).toBe(editionMigration!.content);
+    expect(h.cuts).toHaveLength(1);
+    expect(h.cuts[0]!.provenance).toMatchObject({ origin: 'system' });
   });
 
   it('never resurrects or edits a soft-deleted system script', async () => {

@@ -16,8 +16,10 @@ import {
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
+import { computeInstallPreviewEligibleDeviceCount } from '../services/softwarePolicyInstallPreview';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { assertMayArmInstall } from '../services/softwarePolicyAuthorization';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { requestPamCleanup } from '../services/pamActuationLifecycle';
@@ -76,8 +78,13 @@ export const softwareRulesSchema = z.object({
   { message: 'rules must include at least one software[] or executable[] entry' }
 );
 
-const remediationOptionsSchema = z.object({
+// NOTE: a non-strict z.object STRIPS unknown keys silently rather than
+// rejecting them, so a field is invisible to the API until it is declared
+// here. Both createPolicySchema and updatePolicySchema reference this one
+// object, so a field added here covers the create and update surfaces alike.
+export const remediationOptionsSchema = z.object({
   autoUninstall: z.boolean().optional(),
+  autoInstall: z.boolean().optional(), // #5505 — see SoftwarePolicyRemediationOptions
   notifyUser: z.boolean().optional(),
   gracePeriod: z.number().int().min(0).max(24 * 90).optional(), // hours; max 90 days
   cooldownMinutes: z.number().int().min(1).max(24 * 90 * 60).optional(),
@@ -300,6 +307,18 @@ softwarePoliciesRoutes.post(
     }
     const payload = c.req.valid('json');
 
+    // #5505 D3: arming remediationOptions.autoInstall installs software on
+    // managed devices, so it needs deployment-grade authorization
+    // (devices.execute + MFA) on top of the devices:write + requireMfa() this
+    // route already carries. `stored` is null — nothing exists yet — so the
+    // merged state is the body alone.
+    const armDenied = await assertMayArmInstall(c, null, {
+      mode: payload.mode,
+      enforceMode: payload.enforceMode,
+      remediationOptions: payload.remediationOptions,
+    });
+    if (armDenied) return armDenied;
+
     // Ownership axis (#2126). Partner-wide templates push rules to devices in
     // ALL orgs under the partner (including orgs created later), so creation is
     // gated on the partner-wide capability — same gate as configuration
@@ -485,6 +504,9 @@ softwarePoliciesRoutes.get(
           violations: softwareComplianceStatus.violations,
           lastChecked: softwareComplianceStatus.lastChecked,
           remediationStatus: softwareComplianceStatus.remediationStatus,
+          installRemediationStatus: softwareComplianceStatus.installRemediationStatus,
+          lastInstallRemediationAttempt: softwareComplianceStatus.lastInstallRemediationAttempt,
+          installRemediationAttempts: softwareComplianceStatus.installRemediationAttempts,
         },
       })
       .from(softwareComplianceStatus)
@@ -514,6 +536,71 @@ softwarePoliciesRoutes.get(
   }
 );
 
+// #5505 W06 — the pre-arm dry run behind PolicyForm's "this will install
+// missing software on ~N device(s)" warning (spec Risks §2, "Fleet-wide first
+// run"). Read-only: same auth gate and site-ceiling narrowing as its GET
+// siblings, arms nothing, needs no MFA and no canMutateOrgWideGovernance
+// (those gates exist only on writes).
+//
+// Response contract is exactly `{ eligibleDeviceCount: number }` and must stay
+// that way: W04 (#5509) is specified to consume that shape and degrade any
+// non-2xx to "unavailable". That UI has NOT landed — as of this wave nothing
+// under apps/web references install-preview — so the contract is owed to W04's
+// plan, not to shipped code.
+//
+// Known limitation the bare number cannot express: the count reflects
+// violations the compliance worker recorded on its last pass, and policy
+// create/update only ENQUEUE a recheck. A never-evaluated policy therefore
+// previews as 0. The service logs that case rather than returning a
+// distinguishable value; giving the operator an explicit "not measured yet"
+// state is W04's call, because it would change this contract.
+softwarePoliciesRoutes.get(
+  '/:id/install-preview',
+  requireSoftwarePolicyRead,
+  zValidator('param', policyIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const { id } = c.req.valid('param');
+
+    // Tenancy is the existing getPolicyWithAccess 404, unchanged: a
+    // nonexistent id and a cross-tenant id both match zero rows and produce
+    // the byte-identical body, so this route leaks neither case.
+    const policy = await getPolicyWithAccess(id, auth);
+    if (!policy) {
+      return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    // `missing` violations — the only kind autoInstall ever acts on — are only
+    // ever emitted for allowlist policies (evaluateSoftwareInventory's
+    // blocklist/audit branches only ever emit `unauthorized`). Short-circuit
+    // before resolving a single device.
+    if (policy.mode !== 'allowlist') {
+      return c.json({ eligibleDeviceCount: 0 });
+    }
+
+    // Site-ceiling gate (app-layer only — Postgres RLS does not defend it),
+    // mirroring GET /violations, so a site-restricted caller previews the same
+    // device set they are actually allowed to act on.
+    let siteAllowedDeviceIds: string[] | null = null;
+    if (perms?.allowedSiteIds && auth.orgId) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ eligibleDeviceCount: 0 });
+      }
+      siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+    }
+
+    const rules = normalizeSoftwarePolicyRules(policy.rules);
+    const eligibleDeviceCount = await computeInstallPreviewEligibleDeviceCount({
+      policyId: policy.id,
+      rules,
+      siteAllowedDeviceIds,
+    });
+
+    return c.json({ eligibleDeviceCount });
+  }
+);
+
 softwarePoliciesRoutes.patch(
   '/:id',
   requireSoftwarePolicyWrite,
@@ -539,6 +626,17 @@ softwarePoliciesRoutes.patch(
     if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
+
+    // #5505 D3: evaluated over the POST-WRITE merged state — the stored row
+    // overlaid with this body — so editing an ALREADY-armed policy is gated
+    // too. Adding a catalogId to an armed policy installs new software, and
+    // that must not be reachable with a weaker credential than arming was.
+    const armDenied = await assertMayArmInstall(c, policy, {
+      mode: payload.mode,
+      enforceMode: payload.enforceMode,
+      remediationOptions: payload.remediationOptions,
+    });
+    if (armDenied) return armDenied;
 
     const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
       updatedAt: new Date(),

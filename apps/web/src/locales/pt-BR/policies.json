@@ -835,6 +835,17 @@
         "openAlertsFeature": "Abrir Alertas",
         "legacyAlertRulesMovedToAlerts": "{{count}} regra(s) de alerta legada(s) salvas nesta aba foram movidas para o recurso Alertas desta política. O monitoramento não as armazena mais."
       },
+      "monitorsTab": {
+        "attachMonitor": "Anexar um monitor",
+        "loadingMonitors": "Carregando monitores…",
+        "noMoreMonitorsToAttach": "Não há mais monitores disponíveis para anexar",
+        "selectAMonitorToAttach": "Selecione um monitor para anexar…",
+        "noMonitorsAttached": "Ainda não há monitores anexados a esta política.",
+        "inherited": "Herdado",
+        "overrideValue": "Valor de substituição",
+        "overridesLabel": "Substituições:",
+        "failedToLoadMonitors": "Falha ao carregar os monitores"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capturar solicitações de elevação do UAC do Windows",
         "theAgentObservesUACConsentPromptsAnd": "O agente observa as solicitações de consentimento do UAC e as registra como solicitações de elevação para análise no PAM. A captura fica desativada por padrão — ative-a aqui para incluir o escopo de um dispositivo no PAM.",
@@ -1175,7 +1186,21 @@
         "generateACriticalAlertWhenWarrantyExpires": "Gerar um alerta crítico quando a garantia vencer dentro deste número de dias.",
         "enabled": "enabled",
         "warnDays": "warnDays",
-        "criticalDays": "criticalDays"
+        "criticalDays": "criticalDays",
+        "collectHpWarrantyFromTheDevice": "Coletar a garantia HP do dispositivo",
+        "hpCmslConsentExplainer": "Os dados de garantia da HP são lidos no dispositivo com a Client Management Script Library da HP. Marcar esta caixa aceita a licença da HP em nome deste cliente, e a HP pode coletar informações técnicas do dispositivo, incluindo o endereço IP. Se ficar desmarcada, os dispositivos HP mantêm o status de garantia que já possuem.",
+        "hpCmslNoAcceptanceRecordedYet": "Nenhuma aceitação registrada até agora. Ao salvar com esta caixa marcada, seu usuário e o horário do servidor são registrados.",
+        "hpCmslAcceptedByOn": "Aceito por {{user}} em {{date}}",
+        "hpCmslTermsChangedSaveAgain": "A HP alterou os termos de licença desde esta aceitação. Salve novamente para aceitar de novo.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Esta política substitui por completo as configurações de garantia herdadas, sem mesclagem campo a campo. Salvá-la com a coleta no dispositivo desativada interrompe a coleta de garantia HP em todos os dispositivos que ela alcança."
+      },
+      "rationale": {
+        "label": "Justificativa",
+        "edit": "Editar justificativa",
+        "placeholder": "Por que este item existe…",
+        "save": "Salvar",
+        "cancel": "Cancelar",
+        "none": "Nenhuma justificativa registrada."
       }
     }
   },
@@ -1310,6 +1335,8 @@
       "readyToDeployStandalone": "Pronto para implantar."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Instalação automática ativada",
+      "complianceCheckQueued": "Verificação de conformidade na fila",
       "failedToLoadSoftwarePolicyData": "Falha ao carregar dados da política de software",
       "couldNotLoadLatestPolicyDetailsShowing": "Não foi possível carregar os detalhes mais recentes da política. Exibindo dados em cache.",
       "couldNotLoadPolicyDetailsShowingCached": "Não foi possível carregar os detalhes da política. Exibindo dados em cache.",
@@ -1349,7 +1376,19 @@
       "failedToUpdatePolicy": "Falha ao atualizar a política",
       "failedToCreatePolicy": "Falha ao criar a política",
       "policyUpdated": "Política atualizada com sucesso",
-      "policyCreated": "Política criada com sucesso"
+      "policyCreated": "Política criada com sucesso",
+      "armInstallRequiresMfa": "Ativar a instalação automática requer autenticação multifator. Conclua o MFA e tente novamente.",
+      "armInstallRequiresPermission": "Ativar a instalação automática requer a permissão devices.execute. Peça a um administrador para concedê-la e tente novamente.",
+      "installStatusPending": "Instalação na fila",
+      "installStatusInProgress": "Instalando…",
+      "installStatusCompleted": "Instalado",
+      "installStatusFailed": "Falha na instalação",
+      "installStatusGaveUp": "Desistiu após falhas repetidas",
+      "installStatusSkipped": "Ignorado nesta passagem",
+      "installSkippedNoCatalog": "Uma regra obrigatória não tem um item de catálogo vinculado, então não há nada para instalar. Adicione um vínculo de catálogo no editor de políticas para corrigir isso.",
+      "installSkippedCapOrPlatform": "Não é uma falha — o limite de instalações por passagem foi atingido ou a plataforma deste dispositivo não tem um método de instalação para o software. Pode ser tentado novamente na próxima passagem.",
+      "installAttempts": "{{count}} tentativa(s)",
+      "installLastAttempt": "Última tentativa de instalação: "
     },
     "deploymentList": {
       "running": "Em execução",
@@ -1387,7 +1426,9 @@
       "noDeploymentsYet": "Nenhuma implantação foi criada ainda.",
       "failedToCancelDeployment": "Falha ao cancelar a implantação",
       "deploymentCancelled": "Implantação cancelada",
-      "pageOf": "Página {{page}} de {{pages}}"
+      "pageOf": "Página {{page}} de {{pages}}",
+      "policyOwned": "Gerenciado por política",
+      "policyOwnedTooltip": "Criado automaticamente pela remediação de instalação automática de uma política de software"
     },
     "deploymentProgress": {
       "queued": "Na fila",
@@ -1571,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 dispositivos — geralmente porque esta política ainda não foi atribuída a nenhum dispositivo, mas uma frota totalmente conforme ou uma lista de sites vazia também resulta em 0",
+      "manageAssignments": "Gerenciar atribuições de políticas de configuração",
+      "gracePeriodHelp": "Aplicado na próxima verificação de conformidade",
       "scope": "Escopo",
       "allOrganizations": "Todas as organizações",
       "partnerWideTemplate": "(modelo para todo o parceiro)",
@@ -1615,7 +1659,16 @@
       "autoUninstall2": "autoUninstall",
       "gracePeriod": "grace-period",
       "gracePeriod2": "gracePeriod",
-      "saving": "Salvando..."
+      "saving": "Salvando...",
+      "catalogLink": "Item de catálogo vinculado",
+      "catalogLinkNone": "Nenhum — não vinculado",
+      "autoInstall": "Instalar automaticamente o software ausente",
+      "autoInstallCatalogWarning": "{{count}} de {{total}} regra(s) não têm um item de catálogo vinculado e serão detectadas como ausentes, mas nunca instaladas.",
+      "dryRunLoading": "Verificando quantos dispositivos serão afetados...",
+      "dryRunResult": "Isso instalará o software ausente em aproximadamente {{count}} dispositivo(s).",
+      "dryRunUnavailable": "A prévia da contagem de dispositivos ainda não está disponível. A ativação ainda terá efeito na próxima verificação de conformidade.",
+      "dryRunNewPolicy": "Esta é uma política nova — o impacto nos dispositivos só será conhecido após a primeira verificação de conformidade depois de salvar.",
+      "catalogUnavailable": "Não foi possível carregar o catálogo de software, por isso os seletores de vínculo de catálogo abaixo estão vazios. Isso não é o mesmo que não haver itens no catálogo — recarregue a página antes de supor que uma regra não pode ser vinculada."
     },
     "softwareCatalog": {
       "ready": "Pronto",

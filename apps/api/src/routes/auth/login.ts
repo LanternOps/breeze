@@ -550,6 +550,20 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       await floorPromise;
       return c.json(genericAuthError(), 401);
     }
+    // #6177: the pending MFA record lives only in Redis, and the top-of-handler
+    // Redis check can be stale by now (DB lookup + password compare sit in
+    // between, and E2E mode skips it entirely). Fail CLOSED with the same
+    // retryable 503 as the rate-limit branch — never skip MFA, never crash —
+    // and release the admitted capability rather than finishing it.
+    const pendingRedis = getRedis();
+    if (!pendingRedis) {
+      // Log so this 503 is distinguishable in monitoring from the sibling
+      // write-rejection 503 below (both report the same generic body).
+      console.error('[auth] Redis unavailable at the MFA branch — failing closed');
+      await cancelAuthIssuance(capability).catch(() => undefined);
+      await floorPromise;
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
     const guardedCapability = capability;
     let pendingTransition: { transitionId: string; browserGeneration: number };
     try {
@@ -584,7 +598,17 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       ...pendingTransition,
       expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
     };
-    await getRedis()!.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
+    try {
+      await pendingRedis.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
+    } catch (err) {
+      // A rejected write (connection drop, or OOM under the compose files'
+      // `noeviction` policy) means no pending record exists, so the tempToken
+      // would be unredeemable. Don't hand it out; answer with a retryable 503.
+      console.error('[auth] failed to write pending MFA record:', err);
+      captureException(err, c);
+      await floorPromise;
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
 
     // Task 10: the password was verified correctly — clear the per-account
     // failure counter even though MFA still has to succeed. This keeps the
@@ -735,6 +759,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     mfaRequired: false,
     requiresSetup,
     mfaEnrollmentRequired,
+    // #5306 — non-null while this user's role-forced enrolment is inside its
+    // grace window: they are let in, but the clock is running.
+    mfaGraceEndsAt: policy.pendingEnrollment?.deadline ?? null,
     enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
     ...(authenticatorRegisterGrantId ? { authenticatorRegisterGrantId } : {})
   });
@@ -856,12 +883,21 @@ loginRoutes.post('/refresh', async (c) => {
 
   // Refresh is pre-auth and therefore does not pass through authMiddleware.
   // Enforce the signed installation binding before rate limiting, replay
-  // checks, rotation or issuance, and durably revoke the presented family so
-  // the block remains terminal even if a later code path misses the live row.
+  // checks, rotation or issuance, and attempt to durably revoke the presented
+  // family so the block survives this request. The block itself is terminal
+  // here regardless of the stores — but an unacknowledged durable write means
+  // the family may still be live for a later code path that reads the row, so
+  // surface it rather than treating the revocation as completed.
   if (payload.mdid) {
     const block = await getBoundMobileDeviceBlock(payload.sub, payload.mdid);
     if (block) {
-      await revokeFamily(payload.fam, 'mobile-device-blocked');
+      const familyRevocation = await revokeFamily(payload.fam, 'mobile-device-blocked');
+      if (familyRevocation.database !== 'confirmed') {
+        console.error('[auth] Mobile-device block could not durably revoke the refresh family', {
+          familyId: payload.fam,
+          ...familyRevocation,
+        });
+      }
       clearRefreshTokenCookie(c);
       return mobileDeviceBlockedResponse(c, block);
     }
@@ -917,11 +953,10 @@ loginRoutes.post('/refresh', async (c) => {
   // carries a family and the Redis jti→family fallback is no longer needed.
   const familyId: string = payload.fam;
 
-  // Reuse detection: if this jti has already been revoked AND we have a
-  // family id, this is a replay of an old (rotated) refresh token. Kill the
-  // whole family + write an audit row + return 401. Without this check the
-  // attacker's later jti would still be valid even after the legitimate
-  // user's next rotation.
+  // Reuse detection also fails closed when the JTI lookup is unavailable.
+  // Outside rotation grace, attempt family revocation, audit the per-store
+  // acknowledgements, and deny this refresh. Do not equate denial of this
+  // request with durable family containment after failed writes.
   const jtiAlreadyRevoked = await isRefreshTokenJtiRevoked(payload.jti);
   if (jtiAlreadyRevoked) {
     // Distinguish a benign concurrent/double-fired refresh from a true
@@ -933,11 +968,11 @@ loginRoutes.post('/refresh', async (c) => {
     // clear the cookie — clearing it would wipe the winner's valid token and
     // log the user out (issue #1107). The loser just retries and picks up the
     // winner's new token. Only a replay OUTSIDE the grace window (an old,
-    // long-rotated jti) is treated as reuse and kills the family.
+    // long-rotated jti) is treated as reuse and attempts family revocation.
     if (await wasRefreshTokenJtiRecentlyRotated(payload.jti)) {
       return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
     }
-    await revokeFamily(familyId, 'reuse-detected');
+    const familyRevocation = await revokeFamily(familyId, 'reuse-detected');
     createAuditLogAsync({
       actorType: 'user',
       actorId: payload.sub,
@@ -947,7 +982,13 @@ loginRoutes.post('/refresh', async (c) => {
       resourceId: familyId,
       details: {
         replayedJti: payload.jti,
-        reason: 'Revoked refresh-token JTI replayed — entire family revoked',
+        // Preserve the established action/JTI fields for audit consumers, but
+        // the fail-closed JTI lookup also returns true on an unavailable store.
+        detection: 'revoked_or_unavailable',
+        familyRevocation,
+        reason: familyRevocation.database === 'confirmed'
+          ? 'Refresh token rejected outside rotation grace; durable family revocation confirmed'
+          : 'Refresh token rejected outside rotation grace; durable family revocation unconfirmed',
       },
       ipAddress: getClientIP(c),
       userAgent: c.req.header('user-agent'),

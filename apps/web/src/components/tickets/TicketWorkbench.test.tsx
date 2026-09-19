@@ -25,6 +25,18 @@ vi.mock('./TicketPartsCard', () => ({
   default: (p: { ticketId: string; currencyCode?: string }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
 }));
 
+// Stubbed for the same reason TicketPartsCard is: this suite is not testing the
+// checklist. It matters more here, though — the real card self-fetches, and this
+// file's catch-all fetch mock answers unknown URLs with `{success:true}`, which
+// the checklist client correctly rejects as a failed load. That reports
+// `known: false`, and the resolve/close gate then fails CLOSED (by design,
+// #5808 W01), which would block the status changes these tests assert. The
+// checklist's own behaviour is covered by TicketChecklistCard.test.tsx and
+// TicketWorkbench.checklistConfirm.test.tsx.
+vi.mock('./TicketChecklistCard', () => ({
+  default: () => <div data-testid="ticket-checklist-card-stub" />,
+}));
+
 vi.mock('../../lib/ticketConfigApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/ticketConfigApi')>();
   return { ...actual, fetchTicketConfig: vi.fn().mockResolvedValue(null) };
@@ -1046,6 +1058,188 @@ describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull(); // send completed, card removed
     });
+  });
+});
+
+describe('TicketWorkbench AI proposal card (#4211)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Same idiom as mockDraftsApi above: ticket GET, triage-suggestion GET
+   *  (disabled), ai-drafts GET (empty), and a stubbed ai-proposal GET. */
+  function mockProposalApi(
+    proposalData: unknown,
+    extra?: (url: string, init?: RequestInit) => Response | null,
+  ) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (extra) {
+        const res = extra(url, init);
+        if (res) return res;
+      }
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/tickets/tk-1/ai-proposal' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: proposalData });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('renders the proposal fetched for the ticket', async () => {
+    mockProposalApi({ runId: 'run-1', finishedAt: null, proposal: { version: 1, summary: 'Spooler wedged.' } });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    expect(await screen.findByTestId('ai-agent-run-triage-summary')).toHaveTextContent('Spooler wedged.');
+    // #4211 review: this file's `t` is bound to the 'tickets' namespace
+    // (useTranslation('tickets')), but the card's heading key
+    // (aiAgentsPage.runs.triage.title) lives in 'settings' — against the
+    // REAL i18next instance (this file mocks neither react-i18next nor
+    // TicketProposalCard), an un-namespaced `t()` call would silently
+    // render the raw key string here instead of real text. Asserting the
+    // actual translated heading is what would have caught that.
+    expect(screen.getByText('Ticket triage')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-triage-post-note')).toHaveTextContent('Post as private note');
+  });
+
+  it('posts the summary as a private note through runAction and refetches', async () => {
+    mockProposalApi({ runId: 'run-1', finishedAt: null, proposal: { version: 1, summary: 'Spooler wedged.' } });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ai-agent-run-triage-post-note');
+    fireEvent.click(screen.getByTestId('ai-agent-run-triage-post-note'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-proposal/post-note',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ runId: 'run-1', content: 'Spooler wedged.' }),
+        }),
+      );
+    });
+  });
+
+  it('renders no card when the endpoint returns null data', async () => {
+    mockProposalApi(null);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ai-agent-run-triage')).toBeNull();
+  });
+
+  // #4211 review: a failed post must leave the card mounted (so the
+  // technician can retry) and must reset the disabled state via runAction's
+  // `finally` — a missing reset would wedge the button after the first
+  // failure. Mirrors the sibling ai-drafts 409-retry regression test above.
+  it('a failed post leaves the card visible and re-enables the button', async () => {
+    let postCalls = 0;
+    mockProposalApi(
+      { runId: 'run-1', finishedAt: null, proposal: { version: 1, summary: 'Spooler wedged.' } },
+      (url, init) => {
+        if (url === '/tickets/tk-1/ai-proposal/post-note' && init?.method === 'POST') {
+          postCalls += 1;
+          return makeJsonResponse({ error: 'boom' }, false, 500);
+        }
+        return null;
+      },
+    );
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const button = await screen.findByTestId('ai-agent-run-triage-post-note');
+    fireEvent.click(button);
+
+    await waitFor(() => expect(postCalls).toBe(1));
+    // Card survives the failure — the technician can retry.
+    await waitFor(() => {
+      expect(screen.getByTestId('ai-agent-run-triage-post-note')).not.toBeDisabled();
+    });
+    expect(screen.getByTestId('ai-agent-run-triage-summary')).toHaveTextContent('Spooler wedged.');
+
+    // Retry actually re-fires the request (button wasn't permanently wedged).
+    fireEvent.click(screen.getByTestId('ai-agent-run-triage-post-note'));
+    await waitFor(() => expect(postCalls).toBe(2));
+  });
+
+  it('disables the post-note button while the request is in flight', async () => {
+    let resolvePost!: (value: Response) => void;
+    const postPromise = new Promise<Response>((resolve) => { resolvePost = resolve; });
+    mockProposalApi(
+      { runId: 'run-1', finishedAt: null, proposal: { version: 1, summary: 'Spooler wedged.' } },
+      (url, init) => {
+        if (url === '/tickets/tk-1/ai-proposal/post-note' && init?.method === 'POST') {
+          return postPromise as unknown as Response;
+        }
+        return null;
+      },
+    );
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const button = await screen.findByTestId('ai-agent-run-triage-post-note');
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ai-agent-run-triage-post-note')).toBeDisabled();
+    });
+
+    resolvePost(makeJsonResponse({ success: true }));
+  });
+
+  // #4211 review: refetchAiProposal must not clear a CORRECTLY-loaded ticket
+  // B card with a stale failure response for ticket A that lands after the
+  // switch. The earlier version applied its staleness guard only to the
+  // success path, so a slow-failing A response unconditionally nulled
+  // whatever B had already rendered.
+  it('a stale failing fetch for the previous ticket does not clear the new ticket\'s card', async () => {
+    let rejectTk1Proposal!: () => void;
+    const tk1ProposalPromise = new Promise<Response>((_resolve, reject) => { rejectTk1Proposal = () => reject(new Error('network blip')); });
+
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', internalNumber: 'T-2026-0001' }) });
+      }
+      if (url === '/tickets/tk-2' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-2', internalNumber: 'T-2026-0002' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' || url === '/tickets/tk-2/triage-suggestion') {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' || url === '/tickets/tk-2/ai-drafts') {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/tickets/tk-1/ai-proposal' && (!init?.method || init.method === 'GET')) {
+        return tk1ProposalPromise; // held open deliberately, rejected after the switch
+      }
+      if (url === '/tickets/tk-2/ai-proposal' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: { runId: 'run-2', finishedAt: null, proposal: { version: 1, summary: 'Ticket B proposal.' } } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    const { rerender } = render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+
+    rerender(<TicketWorkbench ticketId="tk-2" assignees={[]} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench-number')).toHaveTextContent('T-2026-0002');
+    });
+    expect(await screen.findByTestId('ai-agent-run-triage-summary')).toHaveTextContent('Ticket B proposal.');
+
+    // Ticket A's held-open request now fails.
+    rejectTk1Proposal();
+    await Promise.resolve().then(() => Promise.resolve()); // let the rejection's microtasks settle
+
+    // Ticket B's card must still be there.
+    expect(screen.getByTestId('ai-agent-run-triage-summary')).toHaveTextContent('Ticket B proposal.');
   });
 });
 

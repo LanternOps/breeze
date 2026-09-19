@@ -1,4 +1,5 @@
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId, type SubscriberId } from '../services/eventSubscriberIds';
+import { resolveDefaultModel } from '../services/aiModel';
 
 // The single truthy/falsey vocabulary for boolean-ish env vars. Kept as two
 // named sets rather than inline literals so a reader that must distinguish
@@ -112,6 +113,90 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+// SEC-038 W06 (#5537). When on, every remote-desktop start dispatch site
+// refuses an agent that has not declared desktopFenceProtocolVersion=1 (the
+// durable start/terminal generation fence from W04/W05) with 503
+// agent_upgrade_required — the same fail-closed shape as the #5481
+// revocation-lease gate. Default OFF: the release that introduces the gate is
+// a fleet no-op (old agents stay protected by the lease), and the flag is
+// flipped one release later once agents have auto-updated. Read at CALL time
+// so a test can flip it per-case without vi.resetModules().
+export function remoteDesktopFenceRequired(): boolean {
+  return envFlag('REMOTE_DESKTOP_FENCE_REQUIRED', false);
+}
+
+// #4442 W04 (AI sweeps act mode). A SUB-flag of
+// BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED, not a replacement for it: the sweep
+// lane widens autonomy to targets the run never established for itself (a
+// sweep proposal is fanned out per DEVICE from one device-less run), so it has
+// to be revocable on its own — turning it off must not disarm the
+// alert-triggered policy-decide lane that has been running independently.
+// Both flags are required for a sweep-minted intent to reach policy-decide.
+// Default OFF: with this false, resolvePolicyDecisionState returns
+// 'human_required' for every scoped intent without evaluating anything else,
+// which is byte-identical to the behaviour before this wave (see
+// policyDecide.sweepFlagOff.test.ts, the regression control for exactly that).
+// Read at CALL time, like policyDecideEnabled above, so a test can flip it
+// per case without vi.resetModules().
+// Task A7 (tool-catalog W1, spec docs/superpowers/plans/ai-mcp/2026-09-07-tool-catalog-w1-tool-sources-mcp.md).
+// Platform kill switch for the tool-catalog / tool-sources feature. Default
+// OFF (dark-ship). Read at CALL time, like policyDecideEnabled() above, so a
+// test can flip it per-case without vi.resetModules().
+export function toolSourcesEnabled(): boolean {
+  return envFlag('TOOL_SOURCES_ENABLED', false);
+}
+
+// Task A7. Sub-flag of toolSourcesEnabled(): whether a tool source's outbound
+// fetch may target a private/loopback/link-local address. Default OFF, and
+// refused outright on the hosted platform (validate.ts superRefine) — a
+// tool source that can reach a partner's internal network from a shared
+// hosted egress path is an SSRF vector, so this is self-hosted-only.
+export function toolSourcesAllowPrivateEgress(): boolean {
+  return envFlag('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS', false);
+}
+
+export function sweepActEnabled(): boolean {
+  return envFlag('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', false);
+}
+
+export type BreezeRegion = 'eu' | 'us';
+
+// Deployment region. Hosted regions are single-region deployments (one API +
+// worker per region), so the process knows its own region from env and every
+// org it serves lives in it. Used to pick the artifact blob bucket and, later,
+// the sandbox region (spec §8 "Residency"). Previously read inline by
+// routes/mcpServer.ts for partner-trust bootstrap; that reader now calls this.
+// Unrecognised values resolve to 'us' here; config/validate.ts refuses them at
+// boot so a typo cannot reach production.
+export function breezeRegion(): BreezeRegion {
+  const raw = (process.env.BREEZE_REGION ?? '').trim().toLowerCase();
+  return raw === 'eu' ? 'eu' : 'us';
+}
+
+/**
+ * AI script authoring, review, and reviewer-gated execution (spec
+ * 2026-09-11-ai-script-authoring-and-review-design.md §8).
+ *
+ * W01b shipped this dark. W03 (#5612) turns it ON by default: the human loop,
+ * the review card and the verification job are all in place, so a proposal can
+ * no longer reach a device without a human reading a truthful summary of it.
+ * W05 removes the flag. Call-time, not a module const: the flag is read per
+ * tool-registration and per run_script call, and tests flip it without
+ * vi.resetModules(). The compose template's `:-true` default must agree.
+ */
+export function aiScriptAuthoringEnabled(): boolean {
+  return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', true);
+}
+
+// W02 (#5612): the script-proposal reviewer's PLATFORM DEFAULT model.
+// `resolveReviewerModel(orgId)` in services/scriptProposals/reviewer.ts
+// reads the effective `ai_script_policies.reviewer_model` (org override, else
+// partner — W04) first and falls back to this constant. Unset ⇒ the platform
+// default model (which itself honours ANTHROPIC_MODEL for self-hosted
+// gateways, #1412).
+export const AI_SCRIPT_REVIEWER_MODEL =
+  process.env.BREEZE_AI_SCRIPT_REVIEWER_MODEL?.trim() || resolveDefaultModel();
+
 // AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
 //
 // Two INDEPENDENT flags, both default OFF, both read at CALL time so a test
@@ -138,6 +223,28 @@ export function aiOperatorServiceRecoveryEnabled(): boolean {
   return envFlag('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', false);
 }
 
+/**
+ * AI execution-plane workspaces (spec §8 "Hosted only", §2.2 D-I).
+ *
+ * THREE conditions, all read at CALL time so a test can flip one without
+ * vi.resetModules(): the deployment is hosted, the AI agents platform switch is
+ * on, and this sub-flag is on. Default OFF.
+ *
+ * Hosted-only is not squeamishness: the sandbox runs on a third-party vendor
+ * under LanternOps' own account and billing, so a self-hosted deployment
+ * enabling it would be spending our money in our tenant. config/validate.ts
+ * refuses the flag in production without IS_HOSTED=true, a `vercel` backend and
+ * all three Vercel credentials, so a misconfigured deploy fails at boot rather
+ * than at the first analysis run.
+ */
+export function aiWorkspaceEnabled(): boolean {
+  return (
+    isHosted()
+    && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
+    && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false)
+  );
+}
+
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have
 // an explicit m365_connections row before any tool is usable. Gates tool
 // registration (aiAgentSdkTools.ts) and the connect routes.
@@ -156,6 +263,43 @@ export function m365CustomerGraphReadOnboardingEnabled(): boolean {
 // connection flows.
 export function m365CustomerGraphActionsOnboardingEnabled(): boolean {
   return envFlag('M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED', false);
+}
+
+// Microsoft 365 tenant sync (spec §10). Dark by default and boot-validated.
+// Read at CALL time, never as a module-scope const: the ticker registration in
+// jobs/m365SyncWorker.ts removes its repeat entry when this is off, so an
+// operator flipping the flag and restarting must actually stop the scheduler.
+export function isM365TenantSyncEnabled(): boolean {
+  return envFlag('M365_TENANT_SYNC_ENABLED', false);
+}
+
+/**
+ * Positive-integer env knob with a hard clamp. A knob is a capacity dial an
+ * operator turns under load; an unparseable or out-of-range value must land on
+ * a safe number rather than NaN (which would make `depth > NaN` false and
+ * disable backpressure entirely).
+ */
+function positiveIntEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (!raw || !/^\d+$/.test(raw.trim())) return fallback;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+/** Per-API-instance `sync-domain` concurrency (spec §5.3). */
+export function m365SyncConcurrency(): number {
+  return positiveIntEnv('M365_SYNC_CONCURRENCY', 4, 1, 64);
+}
+
+/** Ticker backpressure ceiling on waiting+prioritized+delayed+active (spec §5.2 step 1). */
+export function m365SyncMaxBacklog(): number {
+  return positiveIntEnv('M365_SYNC_MAX_BACKLOG', 500, 1, 100_000);
+}
+
+/** Rows claimed per tick (spec §5.2 step 3, §5.9 — this is the capacity dial). */
+export function m365SyncTickBatch(): number {
+  return positiveIntEnv('M365_SYNC_TICK_BATCH', 200, 1, 5_000);
 }
 
 // Breeze AI for Office (Excel add-in / client AI). The Entra application
@@ -684,4 +828,28 @@ export function mlFeatureGloballyDisabled(flag: string): boolean {
   if (mlFeaturesGloballyDisabled()) return true;
   if (isFlagListed(process.env.ML_DISABLED_FLAGS, flag)) return true;
   return mlFlagEnvNames(flag).some((name) => envFlag(name));
+}
+
+export type StripeSessionRevocationMode = 'enforce' | 'observe';
+
+/**
+ * Enforcement gate for fail-closed Checkout-session revocation (SEC-150).
+ *
+ * `enforce` (default): a transition that could not prove every open Checkout
+ * session for the invoice is non-payable is REFUSED (503
+ * STRIPE_REVOCATION_PENDING); the durable intent stays and the sweep retries.
+ * `observe`: the intent is still written and Stripe is still called, but a
+ * failure never blocks the transition — the de-escalation lever for an incident.
+ *
+ * Rollback is a flip to `observe`, never a migration revert: code that ignores
+ * `revocation_requested` re-opens the finding and strands the intent rows.
+ * An unrecognized value falls back to `enforce` with a warning — a typo must
+ * never silently unlock the fail-open path.
+ */
+export function stripeSessionRevocationMode(): StripeSessionRevocationMode {
+  const raw = (process.env.STRIPE_SESSION_REVOCATION_MODE ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'enforce') return 'enforce';
+  if (raw === 'observe') return 'observe';
+  console.warn(`[config] STRIPE_SESSION_REVOCATION_MODE="${raw}" is not enforce|observe — treating as enforce`);
+  return 'enforce';
 }

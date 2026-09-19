@@ -347,6 +347,10 @@ alertsRoutes.get(
       .select({
         id: alerts.id,
         ruleId: alerts.ruleId,
+        // #5289 — the authored monitor behind a compiled rule. This select is
+        // an explicit column list, so a new column reaches the web only by
+        // being named here.
+        monitorId: alerts.monitorId,
         deviceId: alerts.deviceId,
         orgId: alerts.orgId,
         status: alerts.status,

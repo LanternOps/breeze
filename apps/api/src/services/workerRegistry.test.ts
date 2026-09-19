@@ -10,7 +10,7 @@ import {
   type WorkerRegistration,
 } from './workerRegistry';
 
-// The canonical names, in today's `index.ts:1305-1433` order (see the plan
+// The canonical names, in today's `index.ts:1325-1433` order (see the plan
 // doc, Task 1) plus every entry added since (e.g. `agentNotifyRetry`, wave 4a
 // Task 6, #3826; `aiUnattendedExposureRetention`, wave 5B Task 4, #3827;
 // `authBrowserTransitionCleanup`, auth browser transition Phase 1, #3852;
@@ -22,13 +22,14 @@ import {
 // `ticketOutboxRetention` / `intentOutboxRetention` /
 // `metricAnomalyIncidentRetention`, #4210; `deviceGroupJobs`, dynamic device
 // group re-evaluation, #4630; `aiOperatorTaskOutboxPublisher`, #5205 W05
-// #5210; `aiOperatorTaskWorker`, #5205 W06 #5211).
+// #5210; `aiOperatorTaskWorker`, #5205 W06 #5211; `m365SyncRetention`, M365
+// tenant sync W02, #5329; `m365SyncWorker`, M365 tenant sync W04, #5331).
 // This list is duplicated here deliberately — the whole point of the test is
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
-const EXPECTED_128_NAMES = [
+const EXPECTED_WORKER_NAMES = [
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'aiArtifactSweeper', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
@@ -37,39 +38,79 @@ const EXPECTED_128_NAMES = [
   'backupVerificationJobs', 'eventLogRetention', 'logCorrelationWorker', 'agentLogRetention',
   'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
+  'm365SyncRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'quickSupportReaper', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
+  // #5291 W04 — dispatches `script` monitors' diagnostic probes.
+  'monitorScriptWorker',
   'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
-  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'pax8SyncWorker',
+  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
   'deviceGroupJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
-  'recoveryMediaWorker', 'recoveryBootMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
+  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
-  'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'offboardingDrainReaper',
+  'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
-  'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep',
+  'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
-  'metricAnomalyIncidentPublisher', 'contractWorker', 'aiUnattendedExposureRetention',
+  'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
   'aiAgentImpactRollup',
   'aiAgentGraduation',
+  'scriptReviewWorker',
+  'scriptVerifyWorker',
+  'aiBudgetReservationSweep',
+  // #5306 — MFA enrolment grace window email nudge (daily sweep).
+  'mfaEnrollmentNoticeWorker',
+  // #5290 (Monitoring & automation unification, W03) — daily prune of closed
+  // monitor_episodes rows past the 400-day retention window.
+  'monitorEpisodeRetention',
+  // #4248 W03 (AI Scorecard #5757) — narrative delivery reconciliation sweep.
+  'reportRunDeliveryReconciler',
+  // Tool Catalog W1 (#5215 / #5216), Task A6.
+  'toolSourceDiscoveryWorker',
+  // Partner sending domains W03 (#6183) — the one place that calls the
+  // email-domain provider; registered only when EMAIL_DOMAINS_PROVIDER is set.
+  'sendingDomainsWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {
-  it('contains exactly the 128 known names, in order', () => {
-    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_128_NAMES);
+  it('contains exactly the known names, in order', () => {
+    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_WORKER_NAMES);
   });
 
-  it('has exactly 128 entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(128);
+  it('has exactly the expected number of entries', () => {
+    expect(WORKER_REGISTRY.length).toBe(142);
+  });
+
+  it('registers the m365 sync retention worker as global placement', async () => {
+    const entry = WORKER_REGISTRY.find((w) => w.name === 'm365SyncRetention');
+    expect(entry, 'm365SyncRetention is not in the worker registry').toBeDefined();
+    expect(entry!.placement).toBe('global');
+    const loaded = await entry!.load();
+    expect(typeof loaded.init).toBe('function');
+    expect(typeof loaded.shutdown).toBe('function');
+  });
+
+  it('registers the m365 sync worker as a socket-owner-placement entry', () => {
+    // NOTE (deviation from plan text): the plan's Step 1 pins 'global', but
+    // workerEntrypointClosure.contract.test.ts's static import-closure walk
+    // shows jobs/m365SyncWorker.ts -> services/m365Sync/run.ts ->
+    // services/m365ControlPlane/readActionService.ts -> services/aiTools.ts
+    // -> ... -> routes/agentWs.ts — reaching socket-local dispatch, same as
+    // policyEvaluationWorker's flip above. Verified by running the closure
+    // contract, per the plan's own instruction to flip and say so if it fails.
+    const entry = WORKER_REGISTRY.find((e) => e.name === 'm365SyncWorker');
+    expect(entry).toBeDefined();
+    expect(entry!.placement).toBe('socket-owner');
   });
 
   it('every entry has a well-formed shape', () => {
@@ -89,14 +130,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(128);
+    expect(selectWorkers('all').length).toBe(142);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(128);
+    expect(api.length + worker.length).toBe(142);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -104,7 +145,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(128);
+    expect(union.size).toBe(142);
   });
 
   it("'api' selects only socket-owner placements", () => {

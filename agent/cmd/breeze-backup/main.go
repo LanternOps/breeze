@@ -674,6 +674,14 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
 		result = execBackupRestoreWithProgress(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
+	} else if req.CommandType == "backup_verify" {
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		result = execBackupVerifyContext(ctx, req.Payload, mgr, vaultState)
+	} else if req.CommandType == "backup_test_restore" {
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		result = execBackupTestRestoreContext(ctx, req.Payload, mgr, vaultState)
 	} else {
 		result = run()
 	}

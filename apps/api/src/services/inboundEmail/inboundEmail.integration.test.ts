@@ -34,11 +34,13 @@ import {
   ticketComments,
   portalUsers,
   organizations,
-  partners
+  partners,
+  users,
 } from '../../db/schema';
-import { createOrganization, createPartner } from '../../__tests__/integration/db-utils';
+import { createOrganization, createPartner, createUser } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
 import { processInboundEmail } from './inboundEmailService';
+import { moveTicketOrg } from '../ticketService';
 import { fourDigitSuffix } from './fixtureNumbering';
 import type { NormalizedInboundEmail } from './types';
 
@@ -68,6 +70,7 @@ interface Fixture {
   domainB: string;
   // A known portal user under partner A's org.
   janeEmail: string;
+  janePortalUserId: string;
   // Partner B's victim ticket (forged-reference target).
   bTicketId: string;
   bThreadKey: string;
@@ -117,7 +120,10 @@ beforeEach(async () => {
 
   // Known portal user under partner A's org (the "created" + comment-author cases).
   const janeEmail = `jane-${suffix}@known.test`;
-  await db.insert(portalUsers).values({ orgId: orgA.id, email: janeEmail, name: 'Jane Known' });
+  const [janePortalUser] = await db
+    .insert(portalUsers)
+    .values({ orgId: orgA.id, email: janeEmail, name: 'Jane Known' })
+    .returning({ id: portalUsers.id });
 
   // Partner B's victim ticket. Known thread key + internal number so a forged
   // reference addressed to partner A could only match it if the guards failed.
@@ -171,6 +177,7 @@ beforeEach(async () => {
     domainA,
     domainB,
     janeEmail,
+    janePortalUserId: janePortalUser.id,
     bTicketId: bTicket.id,
     bThreadKey,
     bInternalNumber,
@@ -194,6 +201,7 @@ afterAll(async () => {
   await db.delete(ticketEmailInbound).where(sql`${ticketEmailInbound.partnerId} IN (${partnerList})`);
   await db.delete(tickets).where(sql`${tickets.partnerId} IN (${partnerList})`);
   await db.delete(portalUsers).where(sql`${portalUsers.orgId} IN (${orgList})`);
+  await db.delete(users).where(sql`${users.partnerId} IN (${partnerList})`);
   await db.delete(partnerInboundDomains).where(sql`${partnerInboundDomains.partnerId} IN (${partnerList})`);
   await db.execute(sql`DELETE FROM partner_ticket_sequences WHERE partner_id IN (${partnerList})`);
   // audit_logs is only reset by setup.ts's global beforeEach (which since
@@ -431,5 +439,297 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
     expect(aRows.length).toBe(1);
     expect(aRows[0].parseStatus).toBe('matched');
     expect(aRows[0].ticketId).toBe(fx.aResolvedTicketId);
+  });
+
+  it('CASE 7: an enumerable subject token is bound to the exact requester, not another portal user in the same org', async () => {
+    const suffix = uniqueSuffix();
+    const victimNumber = `T-2026-${fourDigitSuffix(suffix, 2)}`;
+    const [victim] = await admin()
+      .insert(tickets)
+      .values({
+        orgId: fx.orgA.id,
+        partnerId: fx.partnerA.id,
+        ticketNumber: `LEGACY-REQUESTER-${suffix}`,
+        internalNumber: victimNumber,
+        subject: 'Private requester issue',
+        status: 'resolved',
+        source: 'portal',
+        submittedBy: fx.janePortalUserId,
+        submitterEmail: fx.janeEmail,
+        resolvedAt: new Date()
+      })
+      .returning({ id: tickets.id });
+
+    const colleagueEmail = `colleague-${suffix}@known.test`;
+    await admin().insert(portalUsers).values({
+      orgId: fx.orgA.id,
+      email: colleagueEmail,
+      name: 'Same Org Colleague'
+    });
+
+    const deniedMessageId = `<requester-denied-${suffix}@known.test>`;
+    await withSystemDbAccessContext(() => processInboundEmail(buildEmail({
+      to: `support@${fx.domainA}`,
+      from: colleagueEmail,
+      fromName: 'Same Org Colleague',
+      subject: `Re: [${victimNumber}] private issue`,
+      text: 'This must not reach the requester ticket.',
+      providerMessageId: deniedMessageId
+    })));
+
+    const victimAfterDenial = await ticketById(victim.id);
+    expect(victimAfterDenial.status).toBe('resolved');
+    expect(await commentsForTicket(victim.id)).toHaveLength(0);
+    const deniedOutcome = await inboundRowsFor(fx.partnerA.id, deniedMessageId);
+    expect(deniedOutcome).toHaveLength(1);
+    expect(deniedOutcome[0].parseStatus).toBe('created');
+    expect(deniedOutcome[0].ticketId).not.toBe(victim.id);
+
+    const allowedMessageId = `<requester-allowed-${suffix}@known.test>`;
+    await withSystemDbAccessContext(() => processInboundEmail(buildEmail({
+      to: `support@${fx.domainA}`,
+      from: fx.janeEmail,
+      fromName: 'Jane Known',
+      subject: `Re: [${victimNumber}] private issue`,
+      text: 'The requester can reopen their own ticket.',
+      providerMessageId: allowedMessageId
+    })));
+
+    const victimAfterRequester = await ticketById(victim.id);
+    expect(victimAfterRequester.status).toBe('open');
+    expect(await commentsForTicket(victim.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        authorType: 'email',
+        content: 'The requester can reopen their own ticket.',
+        isPublic: true
+      })
+    ]));
+  });
+
+  it('CASE 8: requester reassignment that wins the row lock invalidates the former requester before append', async () => {
+    const suffix = uniqueSuffix();
+    const victimNumber = `T-2026-${fourDigitSuffix(suffix, 3)}`;
+    const [newRequester] = await admin()
+      .insert(portalUsers)
+      .values({
+        orgId: fx.orgA.id,
+        email: `new-requester-${suffix}@known.test`,
+        name: 'New Requester'
+      })
+      .returning({ id: portalUsers.id });
+    const [victim] = await admin()
+      .insert(tickets)
+      .values({
+        orgId: fx.orgA.id,
+        partnerId: fx.partnerA.id,
+        ticketNumber: `LEGACY-REQUESTER-RACE-${suffix}`,
+        internalNumber: victimNumber,
+        subject: 'Requester reassignment race',
+        status: 'resolved',
+        source: 'portal',
+        submittedBy: fx.janePortalUserId,
+        submitterEmail: null,
+        resolvedAt: new Date()
+      })
+      .returning({ id: tickets.id });
+
+    let releaseMove!: () => void;
+    const holdMove = new Promise<void>((resolve) => { releaseMove = resolve; });
+    let moveLocked!: () => void;
+    const moveHasLock = new Promise<void>((resolve) => { moveLocked = resolve; });
+    const mover = admin().transaction(async (tx: any) => {
+      await tx.update(tickets)
+        .set({ submittedBy: newRequester.id })
+        .where(eq(tickets.id, victim.id));
+      moveLocked();
+      await holdMove;
+    });
+    await moveHasLock;
+
+    const providerMessageId = `<requester-race-${suffix}@known.test>`;
+    const ingestion = withSystemDbAccessContext(() => processInboundEmail(buildEmail({
+      to: `support@${fx.domainA}`,
+      from: fx.janeEmail,
+      fromName: 'Former Requester',
+      subject: `Re: [${victimNumber}] stale requester`,
+      text: 'This must be re-evaluated after the requester move.',
+      providerMessageId
+    })));
+
+    try {
+      await expect.poll(async () => {
+        const blocked = await admin().execute(sql`
+          SELECT count(*)::int AS count
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND cardinality(pg_blocking_pids(pid)) > 0
+            AND query ILIKE '%tickets%'
+            AND query ILIKE '%for update%'
+        `) as unknown as Array<{ count: number }>;
+        return blocked[0]?.count ?? 0;
+      }, { timeout: 5_000, interval: 25 }).toBeGreaterThan(0);
+    } finally {
+      releaseMove();
+    }
+
+    await mover;
+    await ingestion;
+    const victimAfter = await ticketById(victim.id);
+    expect(victimAfter.status).toBe('resolved');
+    expect(victimAfter.submittedBy).toBe(newRequester.id);
+    expect(await commentsForTicket(victim.id)).toHaveLength(0);
+    const outcome = await inboundRowsFor(fx.partnerA.id, providerMessageId);
+    expect(outcome).toHaveLength(1);
+    expect(outcome[0].parseStatus).toBe('created');
+    expect(outcome[0].ticketId).not.toBe(victim.id);
+  });
+
+  it.each(['resolved', 'closed'] as const)(
+    'CASE 9: an org move that wins before a %s subject-token reply keeps the former requester out of the target org',
+    async (status) => {
+      const suffix = uniqueSuffix();
+      const targetOrg = await createOrganization({ partnerId: fx.partnerA.id });
+      seeded.orgIds.push(targetOrg.id);
+      const actor = await createUser({ partnerId: fx.partnerA.id });
+      const number = `T-2026-${fourDigitSuffix(suffix, status === 'closed' ? 5 : 4)}`;
+      const [ticket] = await admin().insert(tickets).values({
+        orgId: fx.orgA.id,
+        partnerId: fx.partnerA.id,
+        ticketNumber: `MOVE-WINS-${suffix}`,
+        internalNumber: number,
+        subject: 'Move-wins requester boundary',
+        status,
+        source: 'portal',
+        submittedBy: fx.janePortalUserId,
+        submitterEmail: fx.janeEmail,
+        ...(status === 'resolved' ? { resolvedAt: new Date() } : { closedAt: new Date() }),
+      }).returning({ id: tickets.id });
+
+      await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+      const providerMessageId = `<move-wins-${status}-${suffix}@known.test>`;
+      await withSystemDbAccessContext(() => processInboundEmail(buildEmail({
+        to: `support@${fx.domainA}`,
+        from: fx.janeEmail,
+        subject: `Re: [${number}] moved request`,
+        text: 'Must remain in the requester current organization.',
+        providerMessageId,
+      })));
+
+      expect(await commentsForTicket(ticket.id)).toHaveLength(1); // move audit comment only
+      expect((await ticketById(ticket.id)).orgId).toBe(targetOrg.id);
+      const [outcome] = await inboundRowsFor(fx.partnerA.id, providerMessageId);
+      expect(outcome.ticketId).not.toBe(ticket.id);
+      expect((await ticketById(outcome.ticketId!)).orgId).toBe(fx.orgA.id);
+    },
+  );
+
+  it('CASE 10: a live subject-token reply that wins the lock fences a concurrent org move', async () => {
+    const suffix = uniqueSuffix();
+    const targetOrg = await createOrganization({ partnerId: fx.partnerA.id });
+    seeded.orgIds.push(targetOrg.id);
+    const actor = await createUser({ partnerId: fx.partnerA.id });
+    const number = `T-2026-${fourDigitSuffix(suffix, 6)}`;
+    const [ticket] = await admin().insert(tickets).values({
+      orgId: fx.orgA.id,
+      partnerId: fx.partnerA.id,
+      ticketNumber: `SINK-WINS-${suffix}`,
+      internalNumber: number,
+      subject: 'Sink-wins requester boundary',
+      status: 'resolved',
+      source: 'portal',
+      submittedBy: fx.janePortalUserId,
+      submitterEmail: fx.janeEmail,
+      resolvedAt: new Date(),
+    }).returning({ id: tickets.id });
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const hasLock = new Promise<void>((resolve) => { locked = resolve; });
+    const ingestion = withSystemDbAccessContext(() => processInboundEmail(buildEmail({
+      to: `support@${fx.domainA}`,
+      from: fx.janeEmail,
+      subject: `Re: [${number}] source reply`,
+      text: 'Authorized only while the ticket remains in the source org.',
+      providerMessageId: `<sink-wins-${suffix}@known.test>`,
+    }), undefined, {
+      afterTicketMatchLock: async () => { locked(); await held; },
+    }));
+    await hasLock;
+    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+    try {
+      await expect.poll(async () => {
+        const rows = await admin().execute(sql`
+          SELECT count(*)::int AS count FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND cardinality(pg_blocking_pids(pid)) > 0
+        `) as unknown as Array<{ count: number }>;
+        return rows[0]?.count ?? 0;
+      }, { timeout: 5_000, interval: 25 }).toBeGreaterThan(0);
+    } finally {
+      release();
+    }
+    await ingestion;
+    await expect(move).rejects.toMatchObject({ status: 409 });
+    expect((await ticketById(ticket.id)).orgId).toBe(fx.orgA.id);
+    expect((await ticketById(ticket.id)).status).toBe('open');
+    expect(await commentsForTicket(ticket.id)).toHaveLength(1);
+  });
+
+  it('CASE 11: a closed subject-token continuation that wins stays in the source org when the original moves', async () => {
+    const suffix = uniqueSuffix();
+    const targetOrg = await createOrganization({ partnerId: fx.partnerA.id });
+    seeded.orgIds.push(targetOrg.id);
+    const actor = await createUser({ partnerId: fx.partnerA.id });
+    const number = `T-2026-${fourDigitSuffix(suffix, 7)}`;
+    const [ticket] = await admin().insert(tickets).values({
+      orgId: fx.orgA.id,
+      partnerId: fx.partnerA.id,
+      ticketNumber: `CLOSED-SINK-WINS-${suffix}`,
+      internalNumber: number,
+      subject: 'Closed sink-wins requester boundary',
+      status: 'closed',
+      source: 'portal',
+      submittedBy: fx.janePortalUserId,
+      submitterEmail: fx.janeEmail,
+      closedAt: new Date(),
+    }).returning({ id: tickets.id });
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const hasLock = new Promise<void>((resolve) => { locked = resolve; });
+    const providerMessageId = `<closed-sink-wins-${suffix}@known.test>`;
+    const ingestion = withSystemDbAccessContext(() => processInboundEmail(buildEmail({
+      to: `support@${fx.domainA}`,
+      from: fx.janeEmail,
+      subject: `Re: [${number}] source continuation`,
+      providerMessageId,
+    }), undefined, {
+      afterTicketMatchLock: async () => { locked(); await held; },
+    }));
+    await hasLock;
+    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+    try {
+      await expect.poll(async () => {
+        const rows = await admin().execute(sql`
+          SELECT count(*)::int AS count FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND cardinality(pg_blocking_pids(pid)) > 0
+        `) as unknown as Array<{ count: number }>;
+        return rows[0]?.count ?? 0;
+      }, { timeout: 5_000, interval: 25 }).toBeGreaterThan(0);
+    } finally {
+      release();
+    }
+    await ingestion;
+    await move;
+    expect((await ticketById(ticket.id)).orgId).toBe(targetOrg.id);
+    const [outcome] = await inboundRowsFor(fx.partnerA.id, providerMessageId);
+    expect(outcome.ticketId).not.toBe(ticket.id);
+    expect((await ticketById(outcome.ticketId!)).orgId).toBe(fx.orgA.id);
   });
 });

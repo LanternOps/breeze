@@ -70,7 +70,8 @@
         "autoIssue": "Émission auto",
         "renewal": "Renouvellement",
         "estimatedPerPeriod": "Est. / période",
-        "notes": "Notes"
+        "notes": "Notes",
+        "invoiceNote": "Note de facturation"
       },
       "values": {
         "noDrafts": "Non (brouillons)"
@@ -147,7 +148,8 @@
         "confirm": "Supprimer le brouillon"
       },
       "documents": {
-        "title": "Documents exécutés",
+        "title": "Ententes signées",
+        "subtitle": "Acceptées avec le devis et figées sur la version du modèle que le client a vue.",
         "columns": {
           "template": "Modèle",
           "signer": "Signataire",
@@ -155,8 +157,8 @@
           "quote": "Devis"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Aucun document exécuté pour le moment.",
-        "loadError": "Impossible de charger les documents exécutés.",
+        "empty": "Aucune entente signée pour le moment.",
+        "loadError": "Impossible de charger les ententes signées.",
         "downloadError": "Impossible de télécharger le PDF.",
         "download": "Télécharger le PDF",
         "preparing": "Préparation…",
@@ -218,8 +220,8 @@
       },
       "content": {
         "title": "Contenu",
-        "notesOptional": "Notes (facultatif)",
-        "termsOptional": "Conditions (facultatif, affichées sur la facture)",
+        "notesOptional": "Notes (facultatif, ajoutées au bloc Notes des factures générées)",
+        "termsOptional": "Note de facturation (facultatif, ajoutée au bloc Notes des factures générées)",
         "termsPlaceholder": "ex. Net 30. Renouvellement automatique sauf annulation 30 jours avant."
       },
       "lines": {
@@ -316,6 +318,11 @@
       "estimateExcluded": "Exclut {{count}} contrat(s) dont l’estimation n’est pas disponible"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contrats sont facturés dans une devise différente de celle de leur organisation.",
+        "countPlus": "{{count}}+ contrats sont facturés dans une devise différente de celle de leur organisation.",
+        "review": "Les examiner"
+      },
       "title": "Contrats",
       "description": "Accords récurrents qui génèrent automatiquement des factures brouillon selon une périodicité.",
       "newContract": "Nouveau contrat",
@@ -397,8 +404,8 @@
     },
     "tabs": {
       "contracts": "Contrats",
-      "templates": "Modèles",
-      "documents": "Documents",
+      "templates": "Modèles d'entente",
+      "documents": "Ententes signées",
       "currencyMismatches": "Écarts de devise"
     },
     "currencyMismatches": {
@@ -459,16 +466,16 @@
       }
     },
     "templatesTab": {
-      "title": "Modèles de contrat",
-      "description": "Documents de contrat réutilisables à joindre aux devis acceptés.",
-      "newTemplate": "Nouveau modèle",
+      "title": "Modèles d'entente",
+      "description": "Votre contrat-cadre et vos conditions standard. Ajoutez-en un à un devis et le client le signe avec la proposition ; la copie signée est classée avec le contrat que ce devis crée.",
+      "newTemplate": "Nouveau modèle d'entente",
       "includeArchived": "Afficher les archivés",
       "allOrgs": "Toutes les org.",
       "ownerOrg": "Organisation",
       "noVersions": "Aucune version pour l’instant",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Archiver",
-      "loadError": "Échec du chargement des modèles de contrat",
+      "loadError": "Échec du chargement des modèles d'entente",
       "createError": "Échec de la création du modèle",
       "created": "Modèle créé",
       "archiveError": "Échec de l’archivage du modèle",
@@ -484,11 +491,11 @@
         "archived": "Archivé"
       },
       "empty": {
-        "title": "Aucun modèle pour l’instant",
-        "description": "Créez votre premier modèle de contrat pour commencer."
+        "title": "Aucun modèle d'entente pour l’instant",
+        "description": "Ajoutez une seule fois votre contrat-cadre ou vos conditions standard, puis intégrez-les à n’importe quel devis. Les clients les signent en acceptant."
       },
       "createDialog": {
-        "title": "Nouveau modèle de contrat",
+        "title": "Nouveau modèle d'entente",
         "name": "Nom",
         "namePlaceholder": "ex. Contrat-cadre de services",
         "description": "Description",
@@ -502,18 +509,18 @@
         "orgRequired": "Sélectionnez une organisation pour un modèle appartenant à l’organisation.",
         "nameRequired": "Saisissez un nom de modèle.",
         "cancel": "Annuler",
-        "create": "Créer le modèle",
+        "create": "Créer le modèle d'entente",
         "creating": "Création…"
       }
     },
     "documentsTab": {
-      "title": "Documents",
-      "description": "Documents de contrat exécutés non encore liés à un contrat.",
+      "title": "Ententes signées",
+      "description": "Ententes signées qui ne sont pas encore liées à un contrat. Liez chacune d’elles pour qu’elle apparaisse sur le contrat qu’elle régit.",
       "empty": {
-        "title": "Aucun document non lié",
-        "description": "Les documents exécutés apparaissent ici jusqu'à ce qu'ils soient liés à un contrat."
+        "title": "Aucune entente signée non liée",
+        "description": "Les ententes signées apparaissent ici jusqu'à ce qu'elles soient liées à un contrat."
       },
-      "loadError": "Impossible de charger les documents.",
+      "loadError": "Impossible de charger les ententes signées.",
       "columns": {
         "template": "Modèle",
         "signer": "Signataire",
@@ -535,8 +542,8 @@
         "confirm": "Lier",
         "linking": "Liaison…"
       },
-      "linkSuccess": "Document lié au contrat.",
-      "linkError": "Impossible de lier le document à ce contrat."
+      "linkSuccess": "Entente signée liée au contrat.",
+      "linkError": "Impossible de lier l'entente signée à ce contrat."
     },
     "templateEditor": {
       "back": "Retour",
@@ -562,7 +569,7 @@
       "publish": "Publier",
       "publishDirtyHint": "Enregistrez votre brouillon avant de publier",
       "body": "Corps",
-      "bodyAria": "Corps du modèle de contrat",
+      "bodyAria": "Corps du modèle d'entente",
       "preview": "Aperçu",
       "edit": "Modifier",
       "saveDraft": "Enregistrer le brouillon",
@@ -579,28 +586,96 @@
       "publishError": "Échec de la publication de la version",
       "publishSuccess": "Version publiée",
       "warnings": {
-        "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des contrats prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
+        "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des ententes prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Modèles d'entente",
+      "signed": "Ententes signées"
+    },
+    "signedPage": {
+      "title": "Ententes signées",
+      "description": "Toutes les ententes que vos clients ont signées. Liez-en une à un contrat pour qu’elle apparaisse sur le contrat qu’elle régit.",
+      "unlinkedOnly": "Non liées seulement",
+      "empty": {
+        "title": "Aucune entente signée pour l’instant",
+        "description": "Une entente est signée lorsqu’un client accepte un devis qui en comporte une."
+      },
+      "emptyUnlinked": {
+        "title": "Aucune entente signée non liée",
+        "description": "Toutes les ententes signées sont déjà classées avec un contrat."
+      },
+      "columns": {
+        "contract": "Contrat"
+      },
+      "viewContract": "Voir le contrat",
+      "notLinked": "Non liée",
+      "rowSubtitle": "Acceptée avec le devis {{quoteNumber}} par {{signer}} le {{date}}",
+      "rowSubtitleNoQuote": "Signée par {{signer}} le {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées",
+      "usageUnavailable": "Utilisation non disponible",
+      "backToTemplates": "Retour aux modèles d'entente",
+      "archiveConfirm": {
+        "title": "Archiver ce modèle d'entente ?",
+        "message": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées. Les devis déjà rattachés continuent de fonctionner, mais aucune nouvelle section d’entente ne pourra être ajoutée.",
+        "messageUnknownUsage": "Impossible de vérifier où ce modèle est utilisé. Les devis déjà rattachés continuent de fonctionner, mais aucune nouvelle section d’entente ne pourra être ajoutée.",
+        "confirm": "Archiver le modèle"
+      }
+    },
+    "contractPill": {
+      "under": "Sous {{template}} v{{n}}"
     }
   },
   "quotes": {
     "deviceSet": {
       "roleNoun": {
-        "workstation": "postes de travail", "server": "serveurs", "printer": "imprimantes", "router": "routeurs", "switch": "commutateurs", "firewall": "pare-feu",
-        "access_point": "points d’accès", "phone": "téléphones", "iot": "appareils IoT", "camera": "caméras", "nas": "appareils NAS"
+        "workstation": "postes de travail",
+        "server": "serveurs",
+        "printer": "imprimantes",
+        "router": "routeurs",
+        "switch": "commutateurs",
+        "firewall": "pare-feu",
+        "access_point": "points d’accès",
+        "phone": "téléphones",
+        "iot": "appareils IoT",
+        "camera": "caméras",
+        "nas": "appareils NAS"
       }
     },
     "editor": {
       "deviceSet": {
-        "toggle": "Facturer par ensemble d'appareils", "typeLabel": "Ensemble d'appareils",
-        "types": { "per_device": "Par appareil", "per_device_role": "Par rôle d'appareil", "per_device_group": "Par groupe d'appareils", "per_seat": "Par poste" },
-        "rolesLabel": "Rôles d'appareil", "groupLabel": "Groupe d'appareils", "siteLabel": "Site (facultatif)", "allSites": "Tous les sites",
-        "quantityAuto": "La quantité est comptée automatiquement", "autoSummary": "Quantité auto · {{count}} {{set}} · estimée",
-        "driftChip": "le nombre a changé : {{stored}} → {{live}}", "refresh": "Actualiser les nombres", "estimateError": "Impossible de vérifier le nombre actuel d’appareils.", "pickerError": "Impossible de charger les groupes d’appareils ou les sites. Actualisez la page et réessayez.",
-        "groupDeleted": "Le groupe d'appareils « {{name}} » a été supprimé — choisissez-en un autre", "siteDeleted": "Le site « {{name}} » a été supprimé — choisissez-en un autre",
+        "toggle": "Facturer par ensemble d'appareils",
+        "typeLabel": "Ensemble d'appareils",
+        "types": {
+          "per_device": "Par appareil",
+          "per_device_role": "Par rôle d'appareil",
+          "per_device_group": "Par groupe d'appareils",
+          "per_seat": "Par poste"
+        },
+        "rolesLabel": "Rôles d'appareil",
+        "groupLabel": "Groupe d'appareils",
+        "siteLabel": "Site (facultatif)",
+        "allSites": "Tous les sites",
+        "quantityAuto": "La quantité est comptée automatiquement",
+        "autoSummary": "Quantité auto · {{count}} {{set}} · estimée",
+        "driftChip": "le nombre a changé : {{stored}} → {{live}}",
+        "refresh": "Actualiser les nombres",
+        "estimateError": "Impossible de vérifier le nombre actuel d’appareils.",
+        "pickerError": "Impossible de charger les groupes d’appareils ou les sites. Actualisez la page et réessayez.",
+        "groupDeleted": "Le groupe d'appareils « {{name}} » a été supprimé — choisissez-en un autre",
+        "siteDeleted": "Le site « {{name}} » a été supprimé — choisissez-en un autre",
         "typeLocked": "Un ensemble d'appareils ne peut pas être modifié après la création de la ligne — retirez la ligne et ajoutez-la de nouveau.",
-        "allowanceGroupLabel": "Forfait de quantité", "allowanceToggle": "Inclure une quantité fixe, puis gérer les extras",
-        "includedLabel": "Quantité incluse", "overageModeLabel": "Au-delà du forfait", "overageBill": "Facturer chaque unité supplémentaire", "overageFlag": "Signaler pour révision", "overagePriceLabel": "Prix des unités supplémentaires",
+        "allowanceGroupLabel": "Forfait de quantité",
+        "allowanceToggle": "Inclure une quantité fixe, puis gérer les extras",
+        "includedLabel": "Quantité incluse",
+        "overageModeLabel": "Au-delà du forfait",
+        "overageBill": "Facturer chaque unité supplémentaire",
+        "overageFlag": "Signaler pour révision",
+        "overagePriceLabel": "Prix des unités supplémentaires",
         "driftToast": "{{count}} ligne(s) ne correspondent plus au nombre d'appareils actuel : {{lines}}",
         "retargetToast": "{{count}} ligne(s) nécessitent de resélectionner un groupe d'appareils ou un site pour cette organisation"
       },
@@ -684,7 +759,7 @@
         "image": "Image",
         "pricingTable": "Tableau de prix",
         "richText": "Texte enrichi",
-        "contract": "Contrat",
+        "contract": "Entente / conditions",
         "table": "Tableau",
         "callout": "Encadré"
       },
@@ -735,7 +810,7 @@
       "emptyBlocks": "Aucun contenu pour le moment. Ajoutez un titre, du texte enrichi ou un tableau de prix ci-dessous.",
       "errors": {
         "addCatalogItem": "Impossible d'ajouter l'article du catalogue.",
-        "addContractSection": "Impossible d'ajouter la section de contrat",
+        "addContractSection": "Impossible d'ajouter la section d'entente",
         "addDistributorItem": "Impossible d'ajouter l'article du distributeur.",
         "addImageSection": "Impossible d'ajouter la section image.",
         "addLine": "Impossible d'ajouter la ligne.",
@@ -750,7 +825,7 @@
         "importPax8Product": "Impossible d'importer le produit Pax8.",
         "lineAddedCatalogSaveFailed": "Ligne ajoutée, mais l'enregistrement dans le catalogue a échoué.",
         "lineNeedsNameOrDescription": "Une ligne doit avoir un nom ou une description.",
-        "loadContractTemplates": "Impossible de charger les modèles de contrat",
+        "loadContractTemplates": "Impossible de charger les modèles d'entente",
         "moveLine": "Impossible de déplacer la ligne.",
         "quantityWholeGreaterThanZero": "Saisissez une quantité entière supérieure à 0.",
         "removeLine": "Impossible de supprimer la ligne.",
@@ -846,7 +921,7 @@
         "savedToCatalog": "Enregistré dans le catalogue",
         "sectionAdded": "Section ajoutée",
         "sectionRemoved": "Section supprimée",
-        "contractSectionAdded": "Section de contrat ajoutée"
+        "contractSectionAdded": "Section d'entente ajoutée"
       },
       "symbols": {
         "check": "✓",
@@ -892,8 +967,9 @@
         "reshapedWarning": "Ce tableau dépassait la limite de {{columns}} colonnes x {{rows}} lignes et a été ajusté. L'enregistrement remplace le tableau stocké par celui affiché ici."
       },
       "terms": {
-        "placeholder": "Conditions de paiement, clauses de garantie, etc.",
-        "title": "Conditions générales"
+        "placeholder": "Conditions de paiement, notes de livraison, etc.",
+        "title": "Conditions générales (texte brut)",
+        "helper": "Pour des conditions juridiques réutilisables, ajoutez une section Entente / conditions : le client la signe avec la proposition."
       },
       "title": {
         "label": "Titre du devis",
@@ -904,10 +980,10 @@
         "perYear": "/an"
       },
       "contract": {
-        "templateLabel": "Modèle de contrat",
+        "templateLabel": "Modèle d'entente",
         "templatePlaceholder": "Sélectionnez un modèle…",
-        "noTemplates": "Aucun modèle de contrat pour le moment. Créez-en un dans Contrats → Modèles.",
-        "noPublishedVersion": "Ce modèle n'a pas encore de version publiée. Publiez-la avant de l'attacher.",
+        "noTemplates": "Aucun modèle d'entente pour le moment. <templatesLink>Créez-en un</templatesLink> dans Contrats → Modèles d'entente.",
+        "noPublishedVersion": "Ce modèle n'a pas encore de version publiée. Publiez-la avant de l'ajouter à un devis.",
         "pinnedVersion": "Épinglé à v{{version}}",
         "autoVariablesTitle": "Rempli automatiquement à partir du devis",
         "autoHint": "Ces valeurs sont résolues à partir du devis lors de l'envoi de la proposition.",
@@ -916,7 +992,7 @@
         "labelPlaceholder": "Libellé facultatif (p. ex. Contrat-cadre de services)",
         "variableRequired": "Saisissez une valeur",
         "variableUnresolved": "Cette variable n'est toujours pas résolue",
-        "untitledTemplate": "Contrat",
+        "untitledTemplate": "Entente",
         "readOnlyHint": "Supprimez et rajoutez cette section pour changer le modèle, la version ou les variables.",
         "updateToVersion": "Mettre à jour vers v{{version}}",
         "saveVariables": "Enregistrer les variables",
@@ -1285,16 +1361,20 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.", "estimate": "Quantité estimée — facturée selon le nombre réel de {{set}} à chaque période de facturation.",
-        "setDevices": "appareils", "setSeats": "postes", "setGroup": "appareils dans « {{name}} »", "atSite": "{{set}} au site {{site}}",
+        "badge": "Est.",
+        "estimate": "Quantité estimée — facturée selon le nombre réel de {{set}} à chaque période de facturation.",
+        "setDevices": "appareils",
+        "setSeats": "postes",
+        "setGroup": "appareils dans « {{name}} »",
+        "atSite": "{{set}} au site {{site}}",
         "allowanceBill": "Comprend {{included}}; les unités supplémentaires sont facturées {{price}} chacune.",
         "allowanceFlag": "Comprend {{included}}; les unités supplémentaires sont signalées pour révision, pas facturées automatiquement."
       },
       "additionalItems": "Articles supplémentaires",
       "contract": {
-        "download": "Télécharger le contrat",
-        "previewTitle": "Document du contrat {{name}}",
-        "unavailable": "Fichier du contrat indisponible",
+        "download": "Télécharger l'entente",
+        "previewTitle": "Entente {{name}}",
+        "unavailable": "Fichier de l'entente indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
       "draft": "Brouillon",
@@ -1780,6 +1860,7 @@
       },
       "reverseError": "Impossible d'annuler le paiement.",
       "reverseSuccess": "Paiement annulé",
+      "reverseInQuickbooksToo": "Annulez également ce paiement dans QuickBooks",
       "sendLink": "Envoyer le lien de paiement",
       "setUp": "Configurer",
       "shareLinkPrompt": "Partagez ce lien de paiement avec votre client :",
@@ -1991,7 +2072,9 @@
       "total": "Total"
     },
     "title": "Factures",
-    "tryAgain": "Réessayer"
+    "tryAgain": "Réessayer",
+    "exportBillables": "Exporter les éléments facturables",
+    "exportBillablesDialogTitle": "Exporter les éléments facturables"
   },
   "orgBillingSettings": {
     "address": {
@@ -2123,6 +2206,24 @@
     },
     "statusPill": {
       "prefix": "Statut :"
+    }
+  },
+  "partnerBillingSettingsTabs": {
+    "defaults": "Valeurs par défaut",
+    "documents": "Documents",
+    "connections": "Connexions"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Comptabilité",
+      "description": "Stripe et QuickBooks se connectent sous Intégrations — gérez-les là-bas.",
+      "cta": "Gérer les connexions comptables →"
+    },
+    "catalog": {
+      "title": "Catalogue et distributeurs",
+      "description": "Le catalogue de produits et les connexions aux distributeurs (Pax8, TD SYNNEX) se trouvent à deux endroits — passez de l'un à l'autre ici.",
+      "catalogCta": "Ouvrir le catalogue de produits →",
+      "distributorsCta": "Ouvrir les distributeurs →"
     }
   }
 }

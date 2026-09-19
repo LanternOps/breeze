@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { DispatchOutcome } from '../services/agentCommandRelay';
 
+vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
+
 /**
  * Multi-target dispatch coverage for `processDispatchBackup` (#4137).
  *
@@ -34,6 +36,17 @@ vi.mock('../db', () => ({
 vi.mock('./backupRetention', () => ({
   cleanupExpiredSnapshots: vi.fn(),
   sweepUnreferencedBackupObjects: vi.fn(),
+  // D18 W01: real (not mocked) identity logic -- stampDispatchPinAndIdentity
+  // calls this for every dispatched target, hyperv/mssql included.
+  normalizeStorageIdentity: (provider: string, providerConfig: Record<string, unknown>): string => {
+    if (provider === 'local') {
+      const rawPath = typeof providerConfig.path === 'string' ? providerConfig.path : '';
+      return `local::${rawPath}`;
+    }
+    const endpoint = typeof providerConfig.endpoint === 'string' ? providerConfig.endpoint : '';
+    const bucket = typeof providerConfig.bucket === 'string' ? providerConfig.bucket : '';
+    return `${provider}::${endpoint}::${bucket}`;
+  },
 }));
 
 const captureExceptionMock = vi.fn();
@@ -121,9 +134,12 @@ function selectResult(rows: unknown[]) {
   return { from: () => ({ where: () => awaited }) };
 }
 
+let currentDeviceOrgId = 'org-1';
+
 function wireDb() {
   mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
     const keys = cols ? Object.keys(cols) : [];
+    if (keys.length === 1 && keys[0] === 'orgId') return selectResult([{ orgId: currentDeviceOrgId }]);
     if (keys.length === 0) return selectResult([CONFIG_ROW]); // config load
     if (keys.length === 1 && keys[0] === 'status') {
       if (statusCallsSinceFirstInsert !== null) statusCallsSinceFirstInsert += 1;
@@ -176,9 +192,29 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     statusCallsSinceFirstInsert = null;
     cancelAfterInsertOnCheck = null;
     vmRows = [{ vmName: 'vm-a' }, { vmName: 'vm-b' }];
+    currentDeviceOrgId = 'org-1';
     wireDb();
     agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
     agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  it('fails every unsent target when the device moves before dispatch', async () => {
+    currentDeviceOrgId = 'org-2';
+    expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    for (const id of ['job-1', 'child-1']) {
+      expect(updatesFor(id).some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
+    }
+  });
+
+  it('rechecks ownership between target sends', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockImplementationOnce(async () => {
+      currentDeviceOrgId = 'org-2';
+      return { status: 'sent', via: 'local' };
+    });
+    expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
+    expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(updatesFor('child-1').some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
   });
 
   it('creates ONE child backup_jobs row for the second target and dispatches both', async () => {
@@ -331,8 +367,12 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
       }),
     );
     // The parent's send is the one that threw — delivery is AMBIGUOUS, so its
-    // row stays in-flight for a genuine agent result to land on.
-    expect(updatesFor('job-1')).toHaveLength(0);
+    // row stays in-flight for a genuine agent result to land on. D18 W01:
+    // Phase 3 now unconditionally stamps storage_identity on every prepared
+    // job (including the parent) before any send is attempted, so job-1 DOES
+    // pick up that one update — the assertion narrows to "no STATUS-settling
+    // update happened", which is the actual thing #4137 guarantees here.
+    expect(updatesFor('job-1').some((u) => 'status' in u.payload)).toBe(false);
   });
 
   it('leaves an already-sent target and the throwing target alone while settling the untouched one', async () => {
@@ -343,8 +383,11 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
 
     await expect(__testOnly.processDispatchBackup(DATA as never)).rejects.toThrow('relay exploded');
 
-    expect(updatesFor('job-1')).toHaveLength(0); // sent — result still coming
-    expect(updatesFor('child-1')).toHaveLength(0); // threw — ambiguous
+    // D18 W01: job-1 (the parent) picks up ONE non-status storage_identity
+    // stamp from Phase 3 (unconditional for every prepared job) -- narrow to
+    // "no STATUS-settling update", the actual #4137 guarantee.
+    expect(updatesFor('job-1').some((u) => 'status' in u.payload)).toBe(false); // sent — result still coming
+    expect(updatesFor('child-1').some((u) => 'status' in u.payload)).toBe(false); // threw — ambiguous
     expect(updatesFor('child-2')).toContainEqual(
       expect.objectContaining({ payload: expect.objectContaining({ status: 'failed' }) }),
     );

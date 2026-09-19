@@ -24,16 +24,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { DispatchOutcome } from '../services/agentCommandRelay';
 
-const { mockDb, ctxState } = vi.hoisted(() => ({
-  mockDb: {
+vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
+
+const { mockDb, ctxState } = vi.hoisted(() => {
+  const db = {
     select: vi.fn(),
+    selectDistinct: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
-  },
-  // DB-access-context depth + an ordered event log, so a test can prove which
-  // work runs inside a held transaction and which runs after it closes.
-  ctxState: { depth: 0, events: [] as string[] },
-}));
+    // D18 W01: stampDispatchPinAndIdentity opens `db.transaction(...)` for a
+    // file/system_image target -- transparent passthrough, since this file's
+    // depth tracking is about withSystemDbAccessContext, not the transaction.
+    // Assigned below (self-reference) rather than inline so the object
+    // literal's own type isn't `unknown`.
+    transaction: vi.fn() as unknown as (cb: (tx: unknown) => unknown) => unknown,
+  };
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+  return {
+    mockDb: db,
+    // DB-access-context depth + an ordered event log, so a test can prove
+    // which work runs inside a held transaction and which runs after it
+    // closes.
+    ctxState: { depth: 0, events: [] as string[] },
+  };
+});
 
 vi.mock('../db', () => ({
   db: mockDb,
@@ -55,9 +69,35 @@ vi.mock('../db', () => ({
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, partnerId: null },
 }));
 
+// D18 W02: recording stubs (not plain vi.fn()) so this file's REAL ctxState
+// can prove WHERE each call happens -- specifically that
+// sweepUnreferencedBackupObjects runs at depth 0, never nested inside a held
+// DB context (see the describe block below).
+const cleanupExpiredSnapshotsMock = vi.fn(async () => {
+  ctxState.events.push(`cleanupExpiredSnapshots@depth${ctxState.depth}`);
+  return { deleted: 0, skippedLegalHold: 0, skippedImmutable: 0, skippedPinned: 0, skippedUnresolved: 0, prunedByMaxVersions: 0, failed: 0 };
+});
+const sweepUnreferencedBackupObjectsMock = vi.fn(async () => {
+  ctxState.events.push(`sweepUnreferencedBackupObjects@depth${ctxState.depth}`);
+  return {
+    deleted: 0, skippedIdentities: 0, blockedIdentities: 0,
+    retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+  };
+});
 vi.mock('./backupRetention', () => ({
-  cleanupExpiredSnapshots: vi.fn(),
-  sweepUnreferencedBackupObjects: vi.fn(),
+  cleanupExpiredSnapshots: cleanupExpiredSnapshotsMock,
+  sweepUnreferencedBackupObjects: sweepUnreferencedBackupObjectsMock,
+  // D18 W01: real (not mocked) identity logic -- stampDispatchPinAndIdentity
+  // calls this for every dispatched target.
+  normalizeStorageIdentity: (provider: string, providerConfig: Record<string, unknown>): string => {
+    if (provider === 'local') {
+      const rawPath = typeof providerConfig.path === 'string' ? providerConfig.path : '';
+      return `local::${rawPath}`;
+    }
+    const endpoint = typeof providerConfig.endpoint === 'string' ? providerConfig.endpoint : '';
+    const bucket = typeof providerConfig.bucket === 'string' ? providerConfig.bucket : '';
+    return `${provider}::${endpoint}::${bucket}`;
+  },
 }));
 
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
@@ -105,21 +145,34 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
         rows = configFound ? [CONFIG_ROW] : []; label = 'configSelect'; // config load: db.select() with no arg
       } else if (keys.length === 1 && keys[0] === 'status') {
         rows = cancelled ? [{ status: 'cancelled' }] : []; label = 'cancelledSelect'; // isBackupJobCancelled
+      } else if (keys.length === 1 && keys[0] === 'orgId') {
+        rows = [{ orgId: 'org-1' }]; label = 'deviceOrgSelect';
       } else if (keys.length === 1 && keys[0] === 'agentId') {
         rows = [{ agentId: 'agent-1' }]; label = 'deviceSelect'; // device -> agent lookup
       } else if (keys.includes('featureLinkId')) {
         rows = [JOB_ROW]; label = 'jobSelect'; // job mode lookup
+      } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
+        // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup --
+        // no eligible base for these depth-scoping tests (irrelevant to what
+        // this file asserts).
+        rows = []; label = 'baseCandidateSelect';
+      } else if (keys.length === 1 && keys[0] === 'id') {
+        rows = []; label = 'baseLockOrRetirementSelect';
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
+      const limitFn = vi.fn().mockImplementation(async () => {
+        ctxState.events.push(`${label}@depth${ctxState.depth}`);
+        return rows;
+      });
       return {
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockImplementation(async () => {
-              ctxState.events.push(`${label}@depth${ctxState.depth}`);
-              return rows;
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: limitFn }) }),
             }),
           }),
+          where: vi.fn().mockReturnValue({ limit: limitFn, for: limitFn }),
         }),
       };
     }) as never);
@@ -180,11 +233,19 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'jobSelect@depth1',
       'cancelledSelect@depth1',
       'cancelledSelect@depth1',
+      // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup + the
+      // tentative identity/lease stamp UPDATE, both inside this same short
+      // context (no eligible base -> one candidate select, one update).
+      'baseCandidateSelect@depth1',
+      'update@depth1',
       'recordExpectation@depth1',
       'ctx:exit',
       // Phase 4: the actual send, NO context held. This is the #1105 fix —
       // this call used to run at depth1, pinning a pooled connection across
       // dispatchCommandToAgent's ack-wait poll.
+      'ctx:enter',
+      'deviceOrgSelect@depth1',
+      'ctx:exit',
       'wsDispatch@depth0',
       // Phase 5 (settle): final cancellation guard + status flip — ONE short
       // context.
@@ -262,7 +323,15 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'jobSelect@depth1',
       'cancelledSelect@depth1',
       'cancelledSelect@depth1',
+      // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup + the
+      // tentative identity/lease stamp UPDATE, both inside this same short
+      // context (no eligible base -> one candidate select, one update).
+      'baseCandidateSelect@depth1',
+      'update@depth1',
       'recordExpectation@depth1',
+      'ctx:exit',
+      'ctx:enter',
+      'deviceOrgSelect@depth1',
       'ctx:exit',
       'wsDispatch@depth0',
       'ctx:enter',
@@ -271,5 +340,38 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'ctx:exit',
     ]);
     warn.mockRestore();
+  });
+});
+
+describe('processCleanupExpiredSnapshots DB-context scoping (D18 §3.7 / W02)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ctxState.depth = 0;
+    ctxState.events = [];
+    mockDb.selectDistinct.mockReturnValue({
+      from: vi.fn().mockImplementation(async () => {
+        ctxState.events.push(`orgRowsSelect@depth${ctxState.depth}`);
+        return [];
+      }),
+    });
+  });
+
+  it('calls sweepUnreferencedBackupObjects at depth 0 — never nested inside a held DB context', async () => {
+    const { processCleanupExpiredSnapshots } = await import('./backupWorker');
+    await processCleanupExpiredSnapshots();
+
+    expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+    const sweepEvent = ctxState.events.find((e) => e.startsWith('sweepUnreferencedBackupObjects@'));
+    expect(sweepEvent).toBe('sweepUnreferencedBackupObjects@depth0');
+  });
+
+  it('runs the org-row read inside a short context that closes before the sweep', async () => {
+    const { processCleanupExpiredSnapshots } = await import('./backupWorker');
+    await processCleanupExpiredSnapshots();
+
+    const orgReadIndex = ctxState.events.indexOf('orgRowsSelect@depth1');
+    const sweepIndex = ctxState.events.indexOf('sweepUnreferencedBackupObjects@depth0');
+    expect(orgReadIndex).toBeGreaterThanOrEqual(0);
+    expect(sweepIndex).toBeGreaterThan(orgReadIndex);
   });
 });

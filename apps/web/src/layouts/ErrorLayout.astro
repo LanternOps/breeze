@@ -1,12 +1,16 @@
 ---
 import '../styles/globals.css';
+import { tServer } from '../lib/i18n/server';
 
 interface Props {
-  title: string;
+  title?: string;
+  titleKey?: string;
   statusCode: number;
 }
 
-const { title, statusCode } = Astro.props;
+const { title, titleKey, statusCode } = Astro.props;
+const pageTitle = titleKey ? tServer(Astro.locals.locale, titleKey) : title;
+const metaDescription = tServer(Astro.locals.locale, 'layout.metaDescription');
 ---
 
 <!DOCTYPE html>
@@ -14,7 +18,7 @@ const { title, statusCode } = Astro.props;
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Breeze RMM - Remote Monitoring and Management" />
+    <meta name="description" content={metaDescription} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!--
       Theme bootstrap is the same already-CSP-allowed external script used by
@@ -22,7 +26,7 @@ const { title, statusCode } = Astro.props;
       here on purpose — error pages must render without view-transition JS.
     -->
     <script is:inline src="/theme-bootstrap.js"></script>
-    <title>{title} | Breeze RMM</title>
+    <title>{pageTitle} | Breeze RMM</title>
   </head>
   <body class="min-h-screen bg-background antialiased">
     <main class="flex min-h-screen flex-col items-center justify-center px-4 py-12 text-center">

@@ -24,6 +24,52 @@ export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
 // Session Management
 // ============================================
 
+/** `devices.id` is a uuid column — a malformed client-supplied id would raise 22P02. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Load a device row only when the caller may reach it on BOTH tenancy axes
+ * (SECURITY-CRITICAL, org axis + site axis per #1047). Returns null on a miss —
+ * "not found" and "not yours" are indistinguishable to the caller by design.
+ *
+ * Single source of truth for authorizing an attacker-controllable device id out
+ * of `pageContext`: both the device-memory load and the session org anchor
+ * (#5593) run this same predicate.
+ */
+async function loadAccessibleDeviceRow(
+  deviceId: string,
+  auth: AuthContext,
+): Promise<{ orgId: string; siteId: string | null } | null> {
+  if (!UUID_PATTERN.test(deviceId)) return null;
+
+  const rows = await db
+    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  const deviceRow = rows[0];
+  if (!deviceRow) return null;
+  if (!auth.canAccessOrg(deviceRow.orgId)) return null;
+  // `canAccessSite` is undefined for unrestricted (e.g. partner) scopes; when
+  // present it returns false for sites outside the caller's allowlist.
+  if (auth.canAccessSite && !auth.canAccessSite(deviceRow.siteId)) return null;
+  return deviceRow;
+}
+
+/**
+ * Org anchor derived from the page the chat was opened on (#5593).
+ *
+ * Returns the org of the page-context device when the caller can access it, or
+ * undefined so the caller falls back to its previous resolution chain.
+ */
+async function resolvePageContextOrgId(
+  auth: AuthContext,
+  pageContext: AiPageContext | undefined,
+): Promise<string | undefined> {
+  if (!pageContext || pageContext.type !== 'device') return undefined;
+  return (await loadAccessibleDeviceRow(pageContext.id, auth))?.orgId;
+}
+
 export async function createSession(
   auth: AuthContext,
   options: {
@@ -66,12 +112,26 @@ export async function createSession(
     deviceRow = rows[0] ?? null;
   }
 
+  // The sidebar opened from a device page sends `pageContext` but no
+  // `deviceId`/`orgId` (a deviceId is only sent for an explicit device-scoped
+  // task). Without this branch a partner-scoped caller (`auth.orgId` undefined)
+  // fell through to `accessibleOrgIds[0]` — an unrelated org — so the session's
+  // approval mode, M365 connection and tool-audit rows all resolved against the
+  // wrong tenant (#5593). Anchor to the page-context device's org instead, but
+  // only when the caller can reach that org (and site); otherwise leave the
+  // pre-existing fallback untouched.
+  const pageContextOrgId =
+    options.orgId || options.deviceId
+      ? undefined
+      : await resolvePageContextOrgId(auth, sanitizedPageContext);
+
   const orgId =
     options.orgId ??
     // Anchor to the device's org when the caller can reach it; otherwise fall
     // through so the opaque device check below rejects without leaking the
     // device's existence to callers outside its org.
     (deviceRow && auth.canAccessOrg(deviceRow.orgId) ? deviceRow.orgId : undefined) ??
+    pageContextOrgId ??
     auth.orgId ??
     auth.accessibleOrgIds?.[0] ??
     null;
@@ -539,18 +599,7 @@ export function waitForPlanApproval(
  * the caller skips loading device context rather than throwing.
  */
 async function canLoadDeviceContext(deviceId: string, auth: AuthContext): Promise<boolean> {
-  const rows = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-  const deviceRow = rows[0];
-  if (!deviceRow) return false;
-  if (!auth.canAccessOrg(deviceRow.orgId)) return false;
-  // `canAccessSite` is undefined for unrestricted (e.g. partner) scopes; when
-  // present it returns false for sites outside the caller's allowlist.
-  if (auth.canAccessSite && !auth.canAccessSite(deviceRow.siteId)) return false;
-  return true;
+  return (await loadAccessibleDeviceRow(deviceId, auth)) !== null;
 }
 
 /**

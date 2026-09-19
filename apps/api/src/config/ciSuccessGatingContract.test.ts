@@ -40,10 +40,10 @@ const blockingEnd = ciSuccess.indexOf('; then', blockingStart) + '; then'.length
 const blockingCondition = ciSuccess.slice(blockingStart, blockingEnd);
 const conditionalChecks = ciSuccess.slice(blockingEnd);
 
-// smoke-test and guided-setup-smoke are deliberately non-blocking on PRs and required on main
-// pushes via the IS_PR guard (both boot a full stack; guided-setup-smoke also runs the real
+// The smoke suites and their shared image producer are non-blocking on PRs and required
+// in merge groups/manual validation via IS_PR (both boot a full stack; guided setup runs the real
 // self-host installer + systemd unit on the runner).
-const PR_EXEMPT_JOBS = new Set(['smoke-test', 'guided-setup-smoke']);
+const PR_EXEMPT_JOBS = new Set(['build-smoke-images', 'smoke-test', 'guided-setup-smoke', 'workspace-runtime']);
 
 const UNGATED_JOBS = new Set([
   'ci-success', // the aggregate itself
@@ -55,16 +55,19 @@ const UNGATED_JOBS = new Set([
   // criterion — a week of green, then move it into ci-success needs: with an env var and a
   // blocking assertion — is recorded at its job definition in ci.yml.
   'portal-dev-e2e',
-  'check-migrations', // KNOWN GAP, not policy - see comment below
+  // check-migrations is in ci-success needs: so its result can be read, but it is asserted ONLY
+  // on the tooling-only path (APP_CHANGED == 'false'), where it is the sole validation of the
+  // release-lineage / migration-immutability guards. For an application PR it remains
+  // non-blocking, exactly as before. #4227 (the reason it was left non-blocking) is closed and
+  // the job is green today, so promoting it for every PR is a reasonable follow-up — but that
+  // is a policy change to make deliberately, not as a side effect of a CI speed-up.
   'lint-agent', // KNOWN GAP
   'test-agent-race', // KNOWN GAP
   'agent-windows-manifest-guard', // KNOWN GAP
 ]);
-// The four KNOWN GAP jobs above run on every PR but are not in ci-success needs:, so they
+// The three KNOWN GAP jobs above run on every PR but are not in ci-success needs:, so they
 // cannot block a merge — the same defect as #3941. They are pinned here so the gap is visible
-// and any NEW job must be a conscious decision, not silently ungated. Promoting them is
-// deliberately out of scope for this PR: check-migrations is currently red repo-wide, tracked
-// by #4227, so making it blocking would block every PR.
+// and any NEW job must be a conscious decision, not silently ungated.
 
 describe('ci-success gating contract', () => {
   // Without this, a change to the `needs:` / `env:` / `run:` formatting would empty the parsed
@@ -176,21 +179,36 @@ describe('ci-success gating contract', () => {
 
   it('every code job is gated on the classifier (docs-only PRs skip it)', () => {
     // docs-check is gated on the `docs` output instead; build-mobile-ios inherits the gate
-    // through mobile-native-changes (its two lines are pinned by mobile-native-ci.test.mjs).
-    const exempt = new Set(['changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios']);
+    // through mobile-native-changes (its two lines are pinned by mobile-native-ci.test.mjs);
+    // recovery-media-e2e carries a compound gate (code AND agent), asserted below instead.
+    const exempt = new Set([
+      'changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios', 'recovery-media-e2e',
+    ]);
+    // lint/check-migrations/security-audit validate CI plumbing itself and must keep running
+    // on a tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.
+    const codeOnly = new Set(['lint', 'check-migrations', 'security-audit']);
     const ungated = workflowJobs.filter((job) => {
       if (exempt.has(job)) return false;
       const body = jobBodies.get(job) ?? '';
-      return (
-        !/^    needs: \[[^\]]*\bchanges\b[^\]]*\]$/m.test(body) ||
-        !/^    if: needs\.changes\.outputs\.code == 'true'$/m.test(body)
-      );
+      if (!/^    needs: \[[^\]]*\bchanges\b[^\]]*\]$/m.test(body)) return true;
+      const expectedIf = codeOnly.has(job)
+        ? "if: needs.changes.outputs.code == 'true'"
+        : "if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'";
+      return !new RegExp(`^    ${expectedIf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm').test(body);
     });
     expect(
       ungated,
-      `Jobs that would run on a docs-only PR: ${ungated.join(', ')}. ` +
-        "Add `changes` to needs: and `if: needs.changes.outputs.code == 'true'`.",
+      `Jobs that would run on a docs-only OR tooling-only PR: ${ungated.join(', ')}. ` +
+        "Add `changes` to needs: and the code(+app) gate.",
     ).toEqual([]);
+  });
+
+  it('recovery-media-e2e is gated on both the code and agent classifier outputs', () => {
+    const body = jobBodies.get('recovery-media-e2e') ?? '';
+    expect(body).toMatch(/^    needs: \[[^\]]*\bchanges\b[^\]]*\]$/m);
+    expect(body).toMatch(
+      /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.agent == 'true'$/m,
+    );
   });
 
   it('test-mobile blocks a merge (regression guard for #3941)', () => {

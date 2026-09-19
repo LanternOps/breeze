@@ -1,0 +1,362 @@
+{
+  "managed": {
+    "readOnly": "Géré par un moniteur",
+    "description": "Cet enregistrement est généré à partir d’un moniteur et ne peut pas être modifié directement. Gérez-le plutôt depuis le moniteur.",
+    "open": "Ouvrir le moniteur",
+    "badge": "Géré par un moniteur",
+    "badgeHint": "Géré par un moniteur — modifiez-le plutôt depuis le moniteur.",
+    "monitorLabel": "Moniteur"
+  },
+  "hub": {
+    "title": "Surveillance et automatisation",
+    "tabs": {
+      "monitors": "Moniteurs",
+      "network": "Réseau",
+      "delivery": "Livraison",
+      "legacyRules": "Règles héritées"
+    },
+    "ariaLabel": "Sections de surveillance"
+  },
+  "list": {
+    "title": "Moniteurs",
+    "description": "Surveillez une condition, réagissez sur l’appareil, notifiez et escaladez lorsqu’elle persiste.",
+    "new": "Nouveau moniteur",
+    "empty": "Aucun moniteur pour l’instant.",
+    "columns": {
+      "name": "Nom",
+      "kind": "Type",
+      "severity": "Gravité",
+      "deployedTo": "Déployé sur",
+      "enabled": "Activé",
+      "owner": "Responsable"
+    },
+    "allOrgs": "Toutes les orgs",
+    "policiesCount_one": "{{count}} politique",
+    "policiesCount_other": "{{count}} politiques",
+    "notDeployed": "Non déployé",
+    "errors": {
+      "fetch": "Impossible de charger les moniteurs",
+      "delete": "Impossible de supprimer le moniteur",
+      "toggle": "Impossible de mettre à jour le moniteur"
+    },
+    "deleteConfirm": "Supprimer le moniteur {{name}}? Sa règle d’alerte et son automatisation de réponse seront également supprimées.",
+    "builtIn": "Intégré",
+    "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas."
+  },
+  "editor": {
+    "titleNew": "Nouveau moniteur",
+    "titleEdit": "Modifier le moniteur",
+    "breadcrumb": {
+      "monitors": "Moniteurs",
+      "new": "Nouveau moniteur"
+    },
+    "sections": {
+      "watch": "Quoi surveiller",
+      "noise": "Gravité et bruit",
+      "respond": "Répondre",
+      "notify": "Notifier",
+      "escalate": "Escalader vers une personne",
+      "deployed": "Déployé sur"
+    },
+    "tabs": {
+      "settings": "Paramètres",
+      "activity": "Activité"
+    },
+    "fields": {
+      "name": "Nom",
+      "description": "Description",
+      "kind": "Type",
+      "severity": "Gravité",
+      "cooldownMinutes": "Temps de recharge (minutes)",
+      "autoResolve": "Résoudre automatiquement lorsque la condition se rétablit",
+      "deliveryMode": "Livraison",
+      "channels": "Chaînes",
+      "escalationPolicy": "Politique d’escalade",
+      "recurrenceThreshold": "Escalader après",
+      "recurrenceWindowDays": "épisodes en (jours)",
+      "pauseResponses": "Suspendre les réponses automatiques jusqu’à ce qu’une personne les réinitialise",
+      "aiAgent": "Agent IA (active les réponses de triage par IA)"
+    },
+    "deliveryModes": {
+      "inherit": "Utiliser les règles de routage",
+      "channels": "Règles de routage plus ces canaux",
+      "none": "Ne pas notifier"
+    },
+    "agentDeliveredHint": "Cette surveillance s’exécute sur l’appareil et doit aussi exister dans l’onglet Surveillance des services et des processus de la politique, jusqu’à ce que ce soit unifié.",
+    "responsesHint": "Les réponses s’exécutent dans l’ordre sur l’appareil qui a enfreint la condition.",
+    "recurrenceHint": "Compté en épisodes de manquement : un nouvel épisode ne commence qu’après le rétablissement de la condition.",
+    "ownerScope": {
+      "legend": "Propriétaire",
+      "partner": "Toutes les organisations (à l’échelle des partenaires)",
+      "organization": "Cette organisation seulement"
+    },
+    "actions": {
+      "save": "Enregistrer le moniteur",
+      "saving": "Enregistrement...",
+      "create": "Créer un moniteur",
+      "test": "Tester sur un appareil",
+      "deploy": "Déployer vers…",
+      "delete": "Supprimer"
+    },
+    "errors": {
+      "load": "Impossible de charger le moniteur",
+      "save": "Impossible d’enregistrer le moniteur",
+      "delete": "Impossible de supprimer le moniteur",
+      "test": "Test échoué",
+      "generic": "Quelque chose a mal tourné"
+    },
+    "saved": "Moniteur enregistré",
+    "deleted": "Moniteur supprimé",
+    "detached": "Moniteur détaché",
+    "loading": "Chargement du moniteur…",
+    "noAttachments": "Pas encore déployé dans une politique.",
+    "testResult": {
+      "triggered": "Condition remplie sur {{device}}",
+      "notTriggered": "Condition non remplie sur {{device}}"
+    },
+    "testDialog": {
+      "title": "Tester sur un appareil",
+      "selectDevice": "Appareil",
+      "run": "Exécuter le test"
+    }
+  },
+  "kinds": {
+    "cpu": "Utilisation du CPU",
+    "memory": "Utilisation de la mémoire",
+    "disk": "Utilisation du disque",
+    "offline": "Appareil hors ligne",
+    "event_log": "Journal d’événements",
+    "patch_compliance": "Conformité aux correctifs",
+    "service": "Service arrêté",
+    "process": "Processus arrêté",
+    "process_resource": "Ressource du processus",
+    "cert_expiry": "Expiration du certificat",
+    "bandwidth": "Bande passante",
+    "disk_io": "E/S disque",
+    "network_errors": "Erreurs réseau",
+    "antivirus": "Protection antivirus",
+    "software_presence": "Présence de logiciel",
+    "backup_continuity": "Continuité des sauvegardes",
+    "script": "Vérification de script",
+    "network_check": "Vérification réseau"
+  },
+  "fields": {
+    "operator": "Comparaison",
+    "value": "Valeur",
+    "durationMinutes": "Pendant au moins (minutes)",
+    "category": "Catégorie",
+    "level": "Niveau",
+    "sourcePattern": "La source correspond à",
+    "messagePattern": "Le message correspond à",
+    "countThreshold": "Occurrences",
+    "windowMinutes": "Dans un délai de (minutes)",
+    "serviceName": "Nom du service",
+    "processName": "Nom du processus",
+    "consecutiveFailures": "Défaillances consécutives",
+    "resource": "Ressource",
+    "withinDays": "Expire dans (jours)",
+    "direction": "Direction",
+    "errorType": "Direction de l’erreur",
+    "interfaceName": "Interface (optionnel)",
+    "check": "Vérification",
+    "staleAfterDays": "Périmé après (jours)",
+    "minThreatCount": "Nombre minimal de menaces",
+    "softwareName": "Nom du logiciel",
+    "vendor": "Fournisseur (optionnel)",
+    "presence": "Présence",
+    "version": "Numéro de version",
+    "backupCheck": "Vérification",
+    "maxAgeHours": "Âge maximal (heures)",
+    "failureCount": "Nombre de défaillances",
+    "script": "Script à exécuter",
+    "scriptSelectPlaceholder": "Sélectionner un script…",
+    "scriptLoadError": "Échec du chargement des scripts",
+    "intervalMinutes": "Exécuter toutes les (minutes)",
+    "timeoutSeconds": "Délai d’expiration (secondes)",
+    "breachOnNonZeroExit": "Manquement si le code de sortie est différent de zéro",
+    "checkType": "Type de vérification",
+    "target": "Cible",
+    "port": "Numéro de port",
+    "expectStatus": "Code de statut attendu",
+    "pollingIntervalSeconds": "Interroger toutes les (secondes)"
+  },
+  "operators": {
+    "gt": "supérieur à",
+    "gte": "au moins",
+    "lt": "inférieur à",
+    "lte": "au plus",
+    "eq": "égal à",
+    "neq": "différent de"
+  },
+  "severities": {
+    "critical": "Critique",
+    "high": "Élevée",
+    "medium": "Moyenne",
+    "low": "Faible",
+    "info": "Information"
+  },
+  "eventCategories": {
+    "security": "Sécurité",
+    "hardware": "Matériel",
+    "application": "Application",
+    "system": "Système"
+  },
+  "eventLevels": {
+    "warning": "Avertissement",
+    "error": "Erreur",
+    "critical": "Critique"
+  },
+  "resources": {
+    "cpu": "CPU",
+    "memory": "Mémoire"
+  },
+  "directions": {
+    "in": "Entrant",
+    "out": "Sortant",
+    "read": "Lecture",
+    "write": "Écriture",
+    "total": "Total"
+  },
+  "antivirusChecks": {
+    "not_protected": "Non protégé",
+    "definitions_stale": "Définitions périmées",
+    "realtime_disabled": "Protection en temps réel désactivée",
+    "threats_present": "Menaces présentes"
+  },
+  "presences": {
+    "installed": "Installé",
+    "not_installed": "Non installé",
+    "version_below": "Version inférieure à"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Aucune sauvegarde réussie",
+    "consecutive_failures": "Défaillances consécutives"
+  },
+  "checkTypes": {
+    "icmp_ping": "Ping ICMP",
+    "tcp_port": "Port TCP",
+    "http_check": "Vérification HTTP",
+    "dns_check": "Vérification DNS"
+  },
+  "deploy": {
+    "title": "Déployer le moniteur",
+    "existingPolicy": "Joindre à une politique de configuration existante",
+    "newPolicy": "Créer une politique pour",
+    "levels": {
+      "organization": "cette organisation",
+      "site": "un site",
+      "device_group": "un groupe de dispositifs"
+    },
+    "selectPolicy": "Politique de configuration",
+    "selectTarget": "Cible",
+    "noOrgSelected": "Sélectionnez une organisation pour le déploiement.",
+    "policyName": "Nom de la politique",
+    "attach": "Joindre",
+    "attached": "Moniteur joint",
+    "cancel": "Annuler",
+    "detachConfirm": "Détacher de {{policy}}?",
+    "errors": {
+      "attach": "Impossible de joindre le moniteur",
+      "detach": "Impossible de détacher le moniteur"
+    }
+  },
+  "policyTab": {
+    "title": "Moniteurs",
+    "description": "Moniteurs joints à cette politique. Les lignes désactivées désactivent un moniteur pour la portée de cette politique; les outremises en modifient les seuils.",
+    "attachExisting": "Joindre un moniteur existant",
+    "createNew": "Créer un moniteur",
+    "empty": "Aucun moniteur joint.",
+    "columns": {
+      "monitor": "Moniteur",
+      "kind": "Type",
+      "enabled": "Activé",
+      "overrides": "Outremises",
+      "source": "Source"
+    },
+    "inherited": "Hérité du niveau supérieur",
+    "overrideEditor": {
+      "title": "Outremise pour cette politique",
+      "clear": "Effacer les outremises"
+    },
+    "save": "Enregistrer",
+    "errors": {
+      "save": "Impossible d’enregistrer les moniteurs"
+    }
+  },
+  "legacy": {
+    "title": "Règles d’alerte héritées",
+    "description": "Règles d’alerte autonomes qui ne sont pas gérées par un moniteur. Convertissez-les pour regrouper réponses, livraison et escalade en un seul endroit.",
+    "empty": "Aucune règle héritée.",
+    "columns": {
+      "name": "Nom",
+      "template": "Modèle",
+      "target": "Cible",
+      "owner": "Responsable",
+      "active": "Actif"
+    },
+    "convert": "Convertir en moniteur",
+    "converted": "Convertie",
+    "notConvertible": "Les conditions de cette règle ne peuvent pas être exprimées comme un seul moniteur.",
+    "errors": {
+      "fetch": "Impossible de charger les règles d’alerte",
+      "convert": "Impossible de convertir la règle"
+    }
+  },
+  "devices": {
+    "title": "Appareils",
+    "columns": {
+      "device": "Appareil",
+      "enabled": "Activé",
+      "overrides": "Outremises",
+      "source": "Politique source"
+    },
+    "empty": "Aucun appareil n’est encore couvert par ce moniteur.",
+    "errors": {
+      "fetch": "Impossible de charger les appareils"
+    }
+  },
+  "activity": {
+    "title": "Activité",
+    "columns": {
+      "device": "Appareil",
+      "state": "État",
+      "openSince": "Ouvert depuis",
+      "episodesInWindow": "Épisodes dans la fenêtre",
+      "escalated": "Escaladé",
+      "responses": "Réponses"
+    },
+    "state": {
+      "ok": "Sain",
+      "breach": "Dépassement",
+      "unknown": "Inconnu"
+    },
+    "responses": {
+      "active": "Actives",
+      "paused": "Réponses en pause jusqu’à la réinitialisation"
+    },
+    "reset": {
+      "button": "Réinitialiser l’escalade",
+      "confirm": "Réinitialiser l’escalade pour {{device}}? Ceci remet à zéro le compteur de récurrence et reprend les réponses automatiques. Ceci ne ferme pas l’épisode ouvert et ne résout pas l’alerte.",
+      "success": "Escalade réinitialisée",
+      "error": "Échec de la réinitialisation de l’escalade"
+    },
+    "empty": {
+      "title": "Aucune activité pour le moment",
+      "body": "Ce moniteur n’a encore évalué aucun appareil."
+    },
+    "episodes": {
+      "title": "Épisodes",
+      "endReason": {
+        "recovered": "Rétabli",
+        "monitorDetached": "Moniteur détaché"
+      },
+      "outcome": {
+        "queued": "En attente",
+        "completed": "Terminé",
+        "failed": "Échoué",
+        "skippedPaused": "Ignoré (réponses en pause)",
+        "skippedNoResponse": "Ignoré (aucune réponse configurée)"
+      }
+    }
+  }
+}

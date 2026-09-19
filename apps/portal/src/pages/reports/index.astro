@@ -2,14 +2,16 @@
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import ReportRunList from '../../components/portal/ReportRunList';
 import { portalApi } from '../../lib/api';
-import { buildServerApiConfig } from '../../lib/server';
+import { buildServerApiConfig, loadPortalBranding } from '../../lib/server';
 import { redirectToLoginAfter401 } from '../../lib/session';
 import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+import { withBase } from '../../lib/basePath';
 
 const response = await portalApi.getReportRuns(
   { page: 1, limit: 20 },
   buildServerApiConfig(Astro.request),
 );
+const branding = await loadPortalBranding(Astro.request);
 
 if (response.statusCode === 401) {
   return redirectToLoginAfter401(Astro);
@@ -26,6 +28,21 @@ if (isPortalPageDisabled(response)) {
 ---
 
 <PortalLayout title="Reports">
+  {branding.enableLifecycle && (
+    <a
+      href={withBase('/reports/lifecycle')}
+      data-testid="reports-lifecycle-card"
+      class="mb-6 flex items-center justify-between rounded-lg border border-border bg-card px-5 py-4 text-sm transition-colors hover:bg-accent"
+    >
+      <span>
+        <span class="block font-semibold text-foreground">Hardware lifecycle</span>
+        <span class="mt-0.5 block text-muted-foreground">
+          See the replacement plan for the machines we manage for you.
+        </span>
+      </span>
+      <span aria-hidden="true" class="text-muted-foreground">&rarr;</span>
+    </a>
+  )}
   <ReportRunList
     client:load
     initialRuns={response.data ?? []}

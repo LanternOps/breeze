@@ -131,6 +131,7 @@ const ZERO: StoredCounters = {
   fixWatchesHeld: 0,
   fixWatchesRecurred: 0,
   narrativesDelivered: 0,
+  fleetDesignsDelivered: 0,
   llmCents: 0,
 };
 
@@ -148,7 +149,10 @@ const ZERO: StoredCounters = {
  *          attribution to queued_at rather than finished_at.
  *   DAY_B  2 triage runs carrying a ticketProposal (a third has error_code set,
  *          a fourth has no ticketProposal — neither counts); 2 consumed drafts
- *          (a third is still active). llm_cents 49 = 13 + 17 + 19.
+ *          (a third is still active); 1 Fleet Design delivered (W05 — a second
+ *          design run has no report_run_id and a third failed; neither counts;
+ *          all three carry cost 0 so llm_cents is untouched).
+ *          llm_cents 49 = 13 + 17 + 19.
  *   DAY_C  1 suppression; fixes_proposed 3 = two agent fix intents (BOTH count,
  *          the completed one included — arm (a) counts a proposal by created_at
  *          regardless of what later became of it) + one `intentId: null`
@@ -162,7 +166,7 @@ const EXPECTED_BY_DAY: ReadonlyArray<{ day: UtcDay; counters: StoredCounters }> 
   { day: shiftUtcDay(THROUGH, -6), counters: ZERO },
   { day: shiftUtcDay(THROUGH, -5), counters: ZERO },
   { day: DAY_A, counters: { ...ZERO, alertsJudged: 3, noiseFlagged: 2, narrativesDelivered: 1, llmCents: 26 } },
-  { day: DAY_B, counters: { ...ZERO, ticketsTriaged: 2, draftsSent: 2, llmCents: 49 } },
+  { day: DAY_B, counters: { ...ZERO, ticketsTriaged: 2, draftsSent: 2, fleetDesignsDelivered: 1, llmCents: 49 } },
   {
     day: DAY_C,
     counters: {
@@ -233,7 +237,7 @@ async function createTenant(partnerId?: string): Promise<Tenant> {
 }
 
 interface RunOptions {
-  profile: 'full' | 'verdict' | 'sweep' | 'narrative' | 'triage';
+  profile: 'full' | 'verdict' | 'sweep' | 'narrative' | 'triage' | 'design';
   queuedAt: Date;
   finishedAt?: Date | null;
   costCents: number;
@@ -378,6 +382,21 @@ async function insertTicket(t: Tenant): Promise<string> {
   return ticket.id as string;
 }
 
+async function insertFleetDesignReportRun(t: Tenant): Promise<string> {
+  const adminDb = getTestDb() as any;
+  const [report] = await adminDb
+    .insert(reports)
+    .values({ orgId: t.orgId, name: 'impact fixture fleet design', type: 'ai_fleet_design' })
+    .onConflictDoNothing()
+    .returning({ id: reports.id });
+  const reportId = report?.id ?? (await adminDb.select({ id: reports.id }).from(reports).where(and(eq(reports.orgId, t.orgId), eq(reports.type, 'ai_fleet_design'))).limit(1))[0]!.id;
+  const [run] = await adminDb
+    .insert(reportRuns)
+    .values({ reportId, status: 'completed' })
+    .returning({ id: reportRuns.id });
+  return run.id as string;
+}
+
 async function insertNarrativeReportRun(t: Tenant): Promise<string> {
   const adminDb = getTestDb() as any;
   const [report] = await adminDb
@@ -440,6 +459,32 @@ async function seedFullFixture(t: Tenant): Promise<void> {
     finishedAt: at(DAY_A, '11:00:00'),
     costCents: 7,
     reportRunId: null,
+  });
+
+  // ---- DAY_B: fleet designs (W05, #5655) ---------------------------------
+  await insertRun(t, {
+    profile: 'design',
+    queuedAt: at(DAY_B, '06:00:00'),
+    finishedAt: at(DAY_B, '06:30:00'),
+    costCents: 0,
+    reportRunId: await insertFleetDesignReportRun(t),
+  });
+  // Negative controls: no artifact; and a failed run that still has one.
+  await insertRun(t, {
+    profile: 'design',
+    queuedAt: at(DAY_B, '06:40:00'),
+    finishedAt: at(DAY_B, '06:50:00'),
+    costCents: 0,
+    reportRunId: null,
+  });
+  await insertRun(t, {
+    profile: 'design',
+    status: 'failed',
+    errorCode: 'design_missing',
+    queuedAt: at(DAY_B, '07:00:00'),
+    finishedAt: at(DAY_B, '07:10:00'),
+    costCents: 0,
+    reportRunId: await insertFleetDesignReportRun(t),
   });
 
   // ---- DAY_B: triage + drafts -------------------------------------------
@@ -594,6 +639,7 @@ const BOUNDARY_EXPECTED_DAY_B: StoredCounters = {
   fixWatchesHeld: 1,
   fixWatchesRecurred: 1,
   narrativesDelivered: 1,
+  fleetDesignsDelivered: 0,
   llmCents: 90,
 };
 
@@ -736,6 +782,7 @@ function countersOf(row: Record<string, unknown>): StoredCounters {
     fixWatchesHeld: row.fixWatchesHeld as number,
     fixWatchesRecurred: row.fixWatchesRecurred as number,
     narrativesDelivered: row.narrativesDelivered as number,
+    fleetDesignsDelivered: row.fleetDesignsDelivered as number,
     llmCents: row.llmCents as number,
   };
 }
@@ -827,7 +874,7 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe('ai_agent_impact_daily — rollup counters against live Postgres', () => {
-  it('computes every one of the eleven stored columns from every source, and excludes every non-qualifying row', async () => {
+  it('computes every one of the twelve stored columns from every source, and excludes every non-qualifying row', async () => {
     const t = await createTenant();
     await seedFullFixture(t);
 
@@ -1181,6 +1228,7 @@ describe('partners.ai_impact_weights — partner-axis read + read-time re-pricin
       fixWatchesHeld: 1,
       fixWatchesRecurred: 1,
       narrativesDelivered: 1,
+      fleetDesignsDelivered: 1,
     };
     expect(withDefaults.through).toBe(THROUGH);
     expect(withDefaults.series).toHaveLength(7);

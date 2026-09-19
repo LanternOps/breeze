@@ -12,7 +12,7 @@ import type {
   AiAgentTriggerKind,
   AiAgentTriggers,
 } from '@breeze/shared';
-import { envFlag } from '../../config/env';
+import { envFlag, isHosted } from '../../config/env';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import {
   db,
@@ -23,12 +23,22 @@ import {
 // Direct module imports, NOT the ../../db/schema barrel: this module is the
 // admission gate every trigger path calls, and pulling the barrel would force
 // every partial-mock unit test of those paths to stub the whole schema surface.
-import { aiAgents, aiAgentRuns, type AiAgentRunRow } from '../../db/schema/aiAgents';
+import {
+  aiAgents, aiAgentRuns, type AiAgentRunRow, type AiAgentRunStagedInputs,
+} from '../../db/schema/aiAgents';
+import { aiBudgets } from '../../db/schema/ai';
 import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
-import { checkBudget } from '../aiCostTracker';
+import {
+  checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents,
+} from '../aiCostTracker';
+import { WORKSPACE_TOOL_NAMES } from '../workspace/workspaceToolNames';
+import { deploymentRegion } from '../workspace/workspacePaths';
+import { isWorkspaceBreakerOpen } from '../workspace/workspaceBreaker';
+import { isToolAllowlisted } from './toolAllowlist';
 import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
 import { publishEvent } from '../eventBus';
+import { captureException } from '../sentry';
 import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
 import { isCircuitOpen, isTerminalRunStatus, recordRunTerminal } from './agentCircuit';
 import {
@@ -37,6 +47,8 @@ import {
 } from '../aiOperator/taskOutbox';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { agentRunMatchesResourceScope } from './runResourceScope';
+import { recordAgentRunSkip } from './skipVisibility';
 import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
 
 /**
@@ -129,6 +141,46 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *  - triageMaxTurns        — run loop (triageLimits(), triageProfile.ts):
  *                            substitutes for maxTurnsPerRun on a
  *                            triage-profile run; not enforced here.
+ *  - maxConcurrentDesignRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            design-profile runs only — counted separately
+ *                            from every other per-run-shape concurrency cap
+ *                            above (Fleet Designer W01).
+ *  - maxDesignRunsPerDay   — HERE (admission rule 6b, via profileCaps()),
+ *                            design-profile runs only, over a 24-HOUR window
+ *                            rather than the hourly window every other
+ *                            profile uses (`caps.windowMs`) — a design run is
+ *                            a scheduled-at-most-monthly, expensive-relative-
+ *                            to-a-sweep report, so an hourly rate cap would
+ *                            be meaningless; a daily one bounds manual-trigger
+ *                            abuse without needing its own bespoke plumbing.
+ *  - designBudgetCentsPerRun — run loop (designLimits(), designProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            design-profile run; not enforced here.
+ *  - designMaxTurns        — run loop (designLimits(), designProfile.ts):
+ *                            substitutes for maxTurnsPerRun on a
+ *                            design-profile run; not enforced here.
+ *  - maxConcurrentPatchRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            patch-profile runs only — counted separately
+ *                            from every other per-run-shape concurrency cap
+ *                            above (AI patch agent W01).
+ *  - maxPatchRunsPerDay    — HERE (admission rule 6b, via profileCaps()),
+ *                            patch-profile runs only, over the same 24-HOUR
+ *                            window as design: a patch run is once a day per
+ *                            org plus the occasional manual "Run now".
+ *  - patchBudgetCentsPerRun — run loop (patchLimits(), patchProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            patch-profile run; not enforced here.
+ *  - patchMaxTurns         — run loop (patchLimits(), patchProfile.ts):
+ *                            substitutes for maxTurnsPerRun on a
+ *                            patch-profile run; not enforced here.
+ *  - maxUnattendedDevicesPerSweep — persistSweepFindings' readiness-cohort
+ *                            walk (sweepActCohort.ts, #4442 W05): bounds how
+ *                            many DISTINCT devices one sweep occurrence may
+ *                            mint act-eligible. Merged with min.
+ *  - sweepPromoteThreshold — graduationService.evaluateEligibility (#4442
+ *                            W05): an extra bar, on top of promoteThreshold,
+ *                            over verified evidence from SWEEP-minted
+ *                            intents only. Merged with max.
  */
 
 export interface CreateAgentRunInput {
@@ -145,6 +197,22 @@ export interface CreateAgentRunInput {
     ruleId: string | null;
     siteId: string | null;
     deviceTags: string[];
+    /**
+     * AI patch agent W04 (#5750) — the alert's TEMPLATE category, resolved
+     * by the caller (`classifyAlertAsPatchWork`), evaluated against
+     * `triggers.alertCategories`. `null`/absent = could not be resolved,
+     * which fails a non-empty filter (same as `ruleId: null` vs
+     * `alertRuleIds`).
+     */
+    category?: string | null;
+    /**
+     * AI patch agent W04 (#5750) — for a DEVICE-LESS reactive patch run
+     * (`deviceId: null`, rule 8a), the alert's device, so `deviceGroupIds`
+     * judges the device the alert is about instead of failing on "no
+     * device". Never used for pinning, ownership or maintenance checks —
+     * those stay keyed on `deviceId`.
+     */
+    focusDeviceId?: string | null;
   };
   /**
    * The triggering ticket for `triggerKind: 'ticket'` runs (wave 6 PR 3,
@@ -242,6 +310,16 @@ export interface CreateAgentRunInput {
    * responsibility, same posture as `alertId`/`ticketId`/`anomalyIncidentId`.
    */
   scheduleId?: string | null;
+  /**
+   * Execution plane W04 — the frozen inputs of a `profile: 'analysis'` run
+   * (spec §7 step 1). `deviceIds` is the device SET dataset queries may span
+   * (bounded by `analysisMaxInputDevicesPerRun`); `inputHandles` are artifact
+   * handles a technician already gathered in chat under normal approval.
+   * Both are written verbatim to `ai_agent_runs.staged_inputs` and are the
+   * ONLY things `workspace_stage` will accept (spec §8 "Data minimisation").
+   * Required for an `analysis` run; ignored for every other profile.
+   */
+  analysis?: { deviceIds: string[]; inputHandles: string[] };
 }
 
 export type AgentRunSkipReason =
@@ -276,7 +354,41 @@ export type AgentRunSkipReason =
   // (admission rule 6b, via profileCaps()). Same posture as the verdict,
   // sweep and narrative pairs above: deliberately NOT added to
   // PUBLISHED_SKIP_REASONS — volume guards, not policy events.
-  | 'max_concurrent_triage_runs' | 'triage_rate';
+  | 'max_concurrent_triage_runs' | 'triage_rate'
+  // Fleet Designer (W01) — the design-profile equivalents, counted against
+  // maxConcurrentDesignRuns/maxDesignRunsPerDay instead (admission rule 6b,
+  // via profileCaps()). Same posture as the verdict/sweep/narrative/triage
+  // pairs above: deliberately NOT added to PUBLISHED_SKIP_REASONS — a volume
+  // guard on a scheduled-at-most-monthly, manually-triggerable run shape,
+  // not a policy event worth a bus publish.
+  | 'max_concurrent_design_runs' | 'design_rate'
+  // AI patch agent (W01) — the patch-profile equivalents, counted against
+  // maxConcurrentPatchRuns/maxPatchRunsPerDay (admission rule 6b, via
+  // profileCaps()). Same posture as every pair above: deliberately NOT added
+  // to PUBLISHED_SKIP_REASONS — volume guards on a scheduled shape.
+  | 'max_concurrent_patch_runs' | 'patch_rate'
+  // Execution plane W04 (spec §8). The first four are POLICY events, not
+  // volume guards, so unlike every other profile's pair they ARE published:
+  // a technician who launched an analysis and got nothing needs to see why.
+  | 'analysis_not_available' | 'external_processing_disabled' | 'workspace_capability_missing'
+  | 'analysis_region_unavailable'
+  // Volume guards, counted against analysisMaxConcurrentRuns/
+  // analysisMaxRunsPerHour — same posture as the profile pairs above,
+  // deliberately NOT published.
+  | 'max_concurrent_analysis_runs' | 'analysis_rate'
+  // Spend guards for the COMPUTE leg (spec §5.6). Published: an org that has
+  // burned its daily compute budget must be able to see that it did.
+  | 'compute_budget_exceeded' | 'compute_credits_exhausted'
+  // The frozen device SET is larger than `analysisMaxInputDevicesPerRun`.
+  // Its OWN reason, not the pre-existing `device_not_in_org`: that one means
+  // "you named a device that is not yours", which is a tenancy signal a
+  // technician must never see for the entirely benign act of selecting too
+  // many of their own devices. Published.
+  | 'too_many_input_devices'
+  // The sandbox backend's circuit breaker is open (R5, spec §9). Published:
+  // a technician whose analysis will not start deserves to know the provider
+  // is down rather than that they did something wrong.
+  | 'workspace_unavailable';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -349,10 +461,11 @@ async function deviceMatchesAnyGroup(
 /**
  * Spec §5.3 trigger filters.
  *
- * Asymmetry is deliberate and load-bearing: `alertSeverities` is an explicit
- * opt-in list (empty matches NOTHING — an agent with no severities selected
- * must not fire on everything), while every other filter is a narrowing one
- * where empty/absent means "all".
+ * Asymmetry is deliberate and load-bearing. `alertSeverities` is REQUIRED and
+ * has NO spelling that means unrestricted: it is an explicit opt-in list, and
+ * an empty one matches NOTHING (an agent with no severities selected must not
+ * fire on everything). Every other filter here is optional and narrowing:
+ * ABSENT means "all", and PRESENT — including `[]` — means "only these".
  *
  * `deviceGroupIds` (wave 6 PR 4, #3828 Task 1 — previously "deliberately NOT
  * evaluated", see git history for the old docstring): resolves group
@@ -382,18 +495,27 @@ export async function evaluateAgentTriggerFilters(
   if (!severities.includes(ctx.severity)) return false;
 
   const ruleIds = triggers.alertRuleIds ?? [];
-  if (ruleIds.length > 0 && (ctx.ruleId === null || !ruleIds.includes(ctx.ruleId))) return false;
+  if (triggers.alertRuleIds !== undefined && (ctx.ruleId === null || !ruleIds.includes(ctx.ruleId))) return false;
+
+  // AI patch agent W04 (#5750) — template category, beside alertRuleIds and
+  // with its exact null semantics: an unresolved category fails a non-empty
+  // filter rather than passing it.
+  const categories = triggers.alertCategories ?? [];
+  if (triggers.alertCategories !== undefined && (ctx.category == null || !categories.includes(ctx.category))) return false;
 
   const siteIds = triggers.siteIds ?? [];
-  if (siteIds.length > 0 && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
+  if (triggers.siteIds !== undefined && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
 
   const deviceTags = triggers.deviceTags ?? [];
-  if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+  if (triggers.deviceTags !== undefined && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
 
   const groupIds = triggers.deviceGroupIds ?? [];
-  if (groupIds.length > 0) {
-    if (deviceId === null) return false;
-    if (!(await deviceMatchesAnyGroup(deviceId, orgId, groupIds))) return false;
+  if (triggers.deviceGroupIds !== undefined) {
+    if (groupIds.length === 0) return false;
+    // W04: a device-less reactive patch run judges its FOCUS device.
+    const groupDeviceId = deviceId ?? ctx.focusDeviceId ?? null;
+    if (groupDeviceId === null) return false;
+    if (!(await deviceMatchesAnyGroup(groupDeviceId, orgId, groupIds))) return false;
   }
 
   return true;
@@ -405,7 +527,7 @@ export async function evaluateAgentTriggerFilters(
  * `effectivePolicy` since the original PR but never evaluated anywhere,
  * so a helpdesk agent fired on EVERY ticket created in the org regardless
  * of its configured filters. This mirrors `evaluateAgentTriggerFilters`
- * above: same narrowing (empty/absent = unrestricted) convention as
+ * above: same narrowing (absent = unrestricted, empty = deny) convention as
  * `siteIds`/`deviceTags`, NOT `alertSeverities`' opt-in-list asymmetry —
  * `AiAgentTriggers.ticketCategories`/`ticketPriorities` are both declared
  * `undefined`-means-unrestricted in the validator (`.min(1)`-or-undefined).
@@ -429,7 +551,7 @@ export function evaluateTicketTriggerFilters(
   ctx: NonNullable<CreateAgentRunInput['ticketContext']>,
 ): boolean {
   const categories = triggers.ticketCategories ?? [];
-  if (categories.length > 0) {
+  if (triggers.ticketCategories !== undefined) {
     const matchesCategory = categories.some((value) => (
       PG_UUID_REGEX.test(value)
         ? ctx.categoryId !== null && value.toLowerCase() === ctx.categoryId.toLowerCase()
@@ -439,7 +561,7 @@ export function evaluateTicketTriggerFilters(
   }
 
   const priorities = triggers.ticketPriorities ?? [];
-  if (priorities.length > 0 && !priorities.includes(ctx.priority)) return false;
+  if (triggers.ticketPriorities !== undefined && !priorities.includes(ctx.priority)) return false;
 
   return true;
 }
@@ -448,7 +570,7 @@ export function evaluateTicketTriggerFilters(
  * Wave 6 PR 4 (#3828 Task 3) — anomaly-trigger narrowing filters.
  *
  * `anomalyTypes`/`metricNames`/`minAnomalyScore` follow the same
- * narrowing (empty/absent = unrestricted) convention as every OTHER filter
+ * narrowing (absent = unrestricted, empty = deny) convention as every OTHER filter
  * here — NOT `alertSeverities`' opt-in-list asymmetry — matching the
  * validator's `.min(1)`-or-undefined declaration for these fields
  * (`packages/shared/src/validators/aiAgents.ts`). `minAnomalyScore` is a
@@ -467,21 +589,22 @@ export async function evaluateAnomalyTriggerFilters(
   orgId: string,
 ): Promise<boolean> {
   const anomalyTypes = triggers.anomalyTypes ?? [];
-  if (anomalyTypes.length > 0 && !anomalyTypes.includes(ctx.anomalyType)) return false;
+  if (triggers.anomalyTypes !== undefined && !anomalyTypes.includes(ctx.anomalyType)) return false;
 
   const metricNames = triggers.metricNames ?? [];
-  if (metricNames.length > 0 && !metricNames.some((name) => ctx.metricNames.includes(name))) return false;
+  if (triggers.metricNames !== undefined && !metricNames.some((name) => ctx.metricNames.includes(name))) return false;
 
   if (triggers.minAnomalyScore !== undefined && ctx.peakScore < triggers.minAnomalyScore) return false;
 
   const siteIds = triggers.siteIds ?? [];
-  if (siteIds.length > 0 && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
+  if (triggers.siteIds !== undefined && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
 
   const deviceTags = triggers.deviceTags ?? [];
-  if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+  if (triggers.deviceTags !== undefined && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
 
   const groupIds = triggers.deviceGroupIds ?? [];
-  if (groupIds.length > 0) {
+  if (triggers.deviceGroupIds !== undefined) {
+    if (groupIds.length === 0) return false;
     if (deviceId === null) return false;
     if (!(await deviceMatchesAnyGroup(deviceId, orgId, groupIds))) return false;
   }
@@ -512,7 +635,20 @@ const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'max_concurrent_runs', 'max_runs_per_hour', 'org_budget_exceeded',
   'agent_daily_budget_exceeded', 'duplicate', 'ownership_mismatch',
   'device_not_in_org',
+  // Execution plane W04 — policy and spend events, not volume guards.
+  'analysis_not_available', 'external_processing_disabled', 'workspace_capability_missing',
+  'analysis_region_unavailable', 'compute_budget_exceeded', 'compute_credits_exhausted',
+  'too_many_input_devices', 'workspace_unavailable',
 ]);
+
+/**
+ * The fallback daily sandbox-compute ceiling for an org with no `ai_budgets`
+ * row. MUST equal the `DEFAULT 500` on `ai_budgets.max_compute_cents_per_day`
+ * (W02's migration): the column default covers every org that HAS a row, this
+ * covers every org that does not, and a drift between them would make the
+ * ceiling depend on whether anyone had ever opened AI settings.
+ */
+const DEFAULT_MAX_COMPUTE_CENTS_PER_DAY = 500;
 
 /**
  * Advisory-lock namespace for agent-run admission. `pg_advisory_xact_lock` is
@@ -684,30 +820,44 @@ export async function reapStalledAgentRuns(scope: {
  * `AI_AGENT_RUN_PROFILES` without a matching arm here must fail to compile
  * rather than silently falling through to inherit `full`'s caps (which a
  * ternary chain would have done for any un-matched value).
+ *
+ * `windowMs` (Fleet Designer W01): every pre-existing arm's rate window was
+ * an implicit, hard-coded hour; it is now explicit per arm so `design` can
+ * use a 24-hour window instead without a second code path at the call site
+ * (rule 6b reads `caps.windowMs`/`caps.maxPerWindow` uniformly).
  */
 function profileCaps(
   profile: AiAgentRunProfile,
   limits: AiAgentLimits,
-): { maxConcurrent: number; maxPerHour: number; concurrentSkip: AgentRunSkipReason; rateSkip: AgentRunSkipReason } {
+): {
+  maxConcurrent: number;
+  maxPerWindow: number;
+  windowMs: number;
+  concurrentSkip: AgentRunSkipReason;
+  rateSkip: AgentRunSkipReason;
+} {
   switch (profile) {
     case 'full':
       return {
         maxConcurrent: limits.maxConcurrentRuns,
-        maxPerHour: limits.maxRunsPerHour,
+        maxPerWindow: limits.maxRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_runs',
         rateSkip: 'max_runs_per_hour',
       };
     case 'verdict':
       return {
         maxConcurrent: limits.maxConcurrentVerdictRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns,
-        maxPerHour: limits.maxVerdictRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour,
+        maxPerWindow: limits.maxVerdictRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_verdict_runs',
         rateSkip: 'verdict_rate',
       };
     case 'sweep':
       return {
         maxConcurrent: limits.maxConcurrentSweepRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns,
-        maxPerHour: limits.maxSweepRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour,
+        maxPerWindow: limits.maxSweepRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_sweep_runs',
         rateSkip: 'sweep_rate',
       };
@@ -715,7 +865,8 @@ function profileCaps(
       return {
         maxConcurrent:
           limits.maxConcurrentNarrativeRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns,
-        maxPerHour: limits.maxNarrativeRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour,
+        maxPerWindow: limits.maxNarrativeRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_narrative_runs',
         rateSkip: 'narrative_rate',
       };
@@ -729,9 +880,46 @@ function profileCaps(
     case 'triage':
       return {
         maxConcurrent: limits.maxConcurrentTriageRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentTriageRuns,
-        maxPerHour: limits.maxTriageRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour,
+        maxPerWindow: limits.maxTriageRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_triage_runs',
         rateSkip: 'triage_rate',
+      };
+    // Fleet Designer (W01) — a design run is a scheduled-at-most-monthly (or
+    // manually-triggered) report, not a high-frequency background loop, so
+    // its rate cap is a 24-HOUR window rather than the hourly window every
+    // other profile above uses. `maxConcurrentDesignRuns` still guards
+    // ordinary same-instant overlap the same way as every other profile.
+    case 'design':
+      return {
+        maxConcurrent: limits.maxConcurrentDesignRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns,
+        maxPerWindow: limits.maxDesignRunsPerDay ?? AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay,
+        windowMs: 86_400_000,
+        concurrentSkip: 'max_concurrent_design_runs',
+        rateSkip: 'design_rate',
+      };
+    // AI patch agent (W01) — a patch run is scheduled once a day per org
+    // (plus the occasional manual "Run now"), so it shares design's 24-HOUR
+    // rate window rather than the hourly one.
+    case 'patch':
+      return {
+        maxConcurrent: limits.maxConcurrentPatchRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns,
+        maxPerWindow: limits.maxPatchRunsPerDay ?? AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay,
+        windowMs: 86_400_000,
+        concurrentSkip: 'max_concurrent_patch_runs',
+        rateSkip: 'patch_rate',
+      };
+    // Execution plane W04 (spec §5.4) — the most expensive run shape there
+    // is (sandbox compute on top of tokens), so it gets its own counters for
+    // exactly the reason every sibling does: one analysis burst must never
+    // starve triage/verdict/sweep admission, and vice versa.
+    case 'analysis':
+      return {
+        maxConcurrent: limits.analysisMaxConcurrentRuns ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxConcurrentRuns,
+        maxPerWindow: limits.analysisMaxRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxRunsPerHour,
+        windowMs: 3_600_000,
+        concurrentSkip: 'max_concurrent_analysis_runs',
+        rateSkip: 'analysis_rate',
       };
     default: {
       const exhaustive: never = profile;
@@ -786,8 +974,12 @@ export async function createAndEnqueueAgentRun(
 
   let snapshot: AiAgentPolicySnapshot | null = null;
   const skip = (reason: AgentRunSkipReason): CreateAgentRunResult => {
-    // A dropped trigger must never be invisible (spec §7's silent-drop finding).
-    console.info('[aiAgentRunService] run skipped', {
+    // A dropped trigger must never be invisible (spec §7's silent-drop
+    // finding). #5381: this used to be a bare `console.info`, which is below
+    // the level a container's logs are actually read at and left no trace the
+    // UI could read. `recordAgentRunSkip` logs at warn (throttled per
+    // org+reason) AND counts the skip for the settings page's banner.
+    recordAgentRunSkip({
       reason, orgId, kind, triggerKind, deviceId,
       alertId: input.alertId ?? null,
       agentId: snapshot?.agentId ?? null,
@@ -814,22 +1006,62 @@ export async function createAndEnqueueAgentRun(
   //    every guardrail check would deny anyway (spec §10).
   if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return skip('kill_switch_off');
 
+  // 1b. Execution plane W04 (spec §8 "Hosted only"). Checked BEFORE the
+  //     policy read: a self-hosted install has no vendor sandbox account and
+  //     must never resolve an agent or publish a skip that implies it could.
+  //     `isHosted()` and the sub-flag are both required — the flag alone on a
+  //     self-hosted box would admit a run whose first `workspace_*` call
+  //     fails with `workspace_unavailable` after spending tokens.
+  const analysisProfileRequested = (input.profile ?? 'full') === 'analysis';
+  if (analysisProfileRequested && !(isHosted() && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false))) {
+    return skip('analysis_not_available');
+  }
+  // 1c. R5 / spec §9 — the sandbox backend's circuit breaker. Checked at
+  //     ADMISSION as well as in `ensure()` so a provider outage stops
+  //     admitting runs instead of admitting them to burn tokens and then
+  //     fail at their first workspace call. Fails OPEN-for-admission on a
+  //     Redis outage (`isWorkspaceBreakerOpen` returns false when it cannot
+  //     read): the breaker is an availability optimisation, and losing Redis
+  //     must not take analysis down on its own — `ensure()` still refuses if
+  //     the provider really is broken.
+  if (analysisProfileRequested && await isWorkspaceBreakerOpen()) {
+    return skip('workspace_unavailable');
+  }
+
   // 2. Effective policy. Throws 404 when the org itself is missing — that is a
   //    caller bug, not a skip, and is deliberately allowed to propagate.
   const resolved = await resolveEffectiveAgentSystem(orgId, kind);
   if (!resolved) return skip('no_effective_agent');
   snapshot = resolved;
+
+  // 2a. Fleet Designer (W01) — the kind/profile pairing, BOTH directions, and
+  //     deliberately before every volume gate below so no cooldown or rate
+  //     skip can mask a mismatch. Rule 8a states the forward half (a design
+  //     run must be a device-less designer). This is the half that carries the
+  //     safety: `profile` defaults to 'full' when a caller omits it
+  //     (`input.profile ?? 'full'` above), and the generic manual-trigger
+  //     route POST /ai/agents/:id/runs omits it — so without this check a
+  //     designer agent admitted through that route would run on the FULL
+  //     profile, where `isDesignProfile` is false and none of the read-only
+  //     machinery applies: no `designLimits` (maxActionsPerRun 0), no
+  //     `designToolAllowlist` floor (the agent's own toolAllowlist is used
+  //     instead), no read-only tool denial. A designer runs on the design
+  //     profile or it does not run.
+  if (kind === 'designer' && (input.profile ?? 'full') !== 'design') return skip('ownership_mismatch');
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
+  if (!(await agentRunMatchesResourceScope(effective.triggers, orgId, deviceId))) {
+    return skip('trigger_filter_mismatch');
+  }
   // Wave 6 PR 3 (#3828) — design authority: a ticket-triggered run is ALWAYS
   // shadow, regardless of the agent's configured effective mode. This is a
   // downgrade only ('off' already skipped above at mode_off — a ticket
-  // trigger can never turn a disabled agent on). Placed here (immediately
-  // after the mode_off check, before the circuit breaker / trigger filter /
-  // maintenance-window / admission-counter gates below) so every earlier and
-  // later admission rule sees the SAME modeAtStart a real 'act'-mode agent
-  // would have produced for any other trigger kind — forcing shadow changes
+  // trigger can never turn a disabled agent on). Placed here (after the
+  // mode_off and resource-scope gates above, before the circuit breaker /
+  // trigger filter / maintenance-window / admission-counter gates below) so
+  // every earlier and later admission rule sees the SAME modeAtStart a real
+  // 'act'-mode agent would have produced for any other trigger kind — forcing shadow changes
   // only what the run records and how the guardrail tool gate treats it
   // (aiGuardrails.ts's shadow branch + the device-less-mutation deny, since
   // ticket runs are also always device-less), never admission precedence.
@@ -950,6 +1182,30 @@ export async function createAndEnqueueAgentRun(
       hashtext(${`${resolved.agentId}:${orgId}`})
     )`);
 
+    // 4b2. Execution plane W04 (#5715) — a SECOND lock, keyed on the ORG
+    //      alone, for analysis admissions only.
+    //
+    //      The lock above is keyed on (agent, org) because every counter below
+    //      is. The compute ceiling at step 7b is NOT: it is an org-wide daily
+    //      pot (`ai_budgets.max_compute_cents_per_day`) summed across every
+    //      agent's runs. An org may hold several agents (one per kind), so two
+    //      admissions for different agents in the same org take DIFFERENT
+    //      (agent, org) locks, both read `settled + reserved` before either
+    //      commits its reservation, and both admit — the exact over-admission
+    //      shape the reservation exists to prevent, just on the agent axis
+    //      rather than the request axis.
+    //
+    //      Taken only for `analysis` (the one profile with a reservation), so
+    //      no other profile's admission queues behind an unrelated org-mate,
+    //      and always AFTER the (agent, org) lock so every taker orders the
+    //      two the same way and no pair can deadlock.
+    if (analysisProfileRequested) {
+      await db.execute(sql`select pg_advisory_xact_lock(
+        ${AGENT_RUN_ADMISSION_LOCK_NAMESPACE}::int4,
+        hashtext(${`analysis-compute:${orgId}`})
+      )`);
+    }
+
     const now = Date.now();
 
     // Scoping note for 5/6/7: every count is pinned to (agentId, orgId), not
@@ -966,6 +1222,70 @@ export async function createAndEnqueueAgentRun(
     // queued_at DESC), the index Task 1 added for exactly these counts.
     const profile: AiAgentRunProfile = input.profile ?? 'full';
     const profileScope = eq(aiAgentRuns.profile, profile);
+
+    // 4d. Execution plane W04 — every analysis-only gate, in one place and
+    //     BEFORE any counter, so a refused analysis never consumes a slot.
+    let analysisReservationCents = 0;
+    let stagedInputs: AiAgentRunStagedInputs | null = null;
+    if (profile === 'analysis') {
+      const analysis = input.analysis;
+      if (!analysis) return skip('analysis_not_available');
+
+      // (a) Per-org external-processing switch (spec §8). Read HERE, never
+      //     in `buildAgentToolCatalog` — that function is memoized
+      //     process-wide, so a per-org value baked into it would be whatever
+      //     the first org to warm the cache had.
+      const [orgSwitch] = await db
+        .select({ enabled: organizations.aiExternalProcessing })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+      if (orgSwitch?.enabled !== true) return skip('external_processing_disabled');
+
+      // (b) Capability: ALL FOUR refs must be in the effective allowlist.
+      //     Three of four is not a partial capability — a run that can stage
+      //     and execute but not collect would burn compute and produce
+      //     nothing retrievable.
+      const allowlist = effective.toolAllowlist;
+      if (!WORKSPACE_TOOL_NAMES.every((name) => isToolAllowlisted(allowlist, name))) {
+        return skip('workspace_capability_missing');
+      }
+
+      // (c) Residency (spec §8). The worker that will execute this run is
+      //     this process's region; asserting it at ADMISSION means a
+      //     misconfigured region is a skip, not a half-spent run that fails
+      //     at its first workspace call.
+      let region: 'eu' | 'us';
+      try {
+        region = deploymentRegion();
+      } catch {
+        return skip('analysis_region_unavailable');
+      }
+
+      // (d) Freeze the input set. `deviceIds` are frozen here and nowhere
+      //     else — `buildAgentAuthContext` pins `allowedDeviceIds` to exactly
+      //     this list at loop start, so a device added to the org afterwards
+      //     is not reachable by an already-admitted run.
+      const maxDevices = effective.limits.analysisMaxInputDevicesPerRun
+        ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxInputDevicesPerRun;
+      // Too many of the technician's OWN devices is its own refusal —
+      // `device_not_in_org` is a tenancy signal and must not be reused for it.
+      if (analysis.deviceIds.length > maxDevices) return skip('too_many_input_devices');
+      if (analysis.deviceIds.length > 0) {
+        const rows = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(and(inArray(devices.id, analysis.deviceIds), eq(devices.orgId, orgId)));
+        if (rows.length !== new Set(analysis.deviceIds).size) return skip('device_not_in_org');
+      }
+      stagedInputs = {
+        handles: [...new Set(analysis.inputHandles)],
+        deviceIds: [...new Set(analysis.deviceIds)],
+        region,
+      };
+      analysisReservationCents = effective.limits.analysisMaxComputeCentsPerRun
+        ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun;
+    }
 
     // 4c. Release runs a worker can no longer be executing before counting
     //     them, or one SIGKILLed replica wedges this (agent, org) forever.
@@ -1016,11 +1336,11 @@ export async function createAndEnqueueAgentRun(
       return skip(caps.concurrentSkip);
     }
 
-    const [lastHour] = await db
+    const [inWindow] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
-      .where(and(agentOrgScope, profileScope, gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
-    if ((lastHour?.value ?? 0) >= caps.maxPerHour) {
+      .where(and(agentOrgScope, profileScope, gte(aiAgentRuns.queuedAt, new Date(now - caps.windowMs))));
+    if ((inWindow?.value ?? 0) >= caps.maxPerWindow) {
       return skip(caps.rateSkip);
     }
 
@@ -1040,6 +1360,44 @@ export async function createAndEnqueueAgentRun(
     const spentCents = Number(spend?.totalCostCents ?? 0) || 0;
     if (spentCents >= effective.limits.maxBudgetCentsPerDay) {
       return skip('agent_daily_budget_exceeded');
+    }
+
+    // 7b. Execution plane W04 (spec §5.6) — the COMPUTE budget, which is a
+    //     separate currency from tokens and has to be checked separately.
+    //     The day's usage is spend PLUS outstanding reservations: counting
+    //     only settled `compute_cents` would admit N concurrent runs that
+    //     each individually fit under the ceiling and together blow through
+    //     it, which is the same over-admission shape step 4b's advisory lock
+    //     exists to prevent for run counts.
+    if (analysisReservationCents > 0) {
+      const [computeSpend] = await db
+        .select({
+          settled: sum(aiAgentRuns.computeCents),
+          reserved: sum(aiAgentRuns.computeReservedCents),
+        })
+        .from(aiAgentRuns)
+        .where(and(eq(aiAgentRuns.orgId, orgId), gte(aiAgentRuns.queuedAt, startOfUtcDay)));
+      const usedCents = (Number(computeSpend?.settled ?? 0) || 0)
+        + (Number(computeSpend?.reserved ?? 0) || 0);
+      // The ceiling is per-org DB CONFIGURATION (`ai_budgets`, W02's column),
+      // not a policy-snapshot limit: a daily org ceiling frozen onto each run
+      // would defeat itself, since the point is that the day's runs share one
+      // pot. An org with no `ai_budgets` row at all falls back to the same
+      // 500¢ the column defaults to — the two defaults must stay equal, which
+      // is what the "no budgets row" case in the admission suite pins.
+      const [computeBudget] = await db
+        .select({ maxComputeCentsPerDay: aiBudgets.maxComputeCentsPerDay })
+        .from(aiBudgets)
+        .where(eq(aiBudgets.orgId, orgId))
+        .limit(1);
+      const dailyCap = computeBudget?.maxComputeCentsPerDay ?? DEFAULT_MAX_COMPUTE_CENTS_PER_DAY;
+      if (usedCents + analysisReservationCents > dailyCap) return skip('compute_budget_exceeded');
+
+      // Credits, for platform-billed runs only (a BYOK partner still PAYS
+      // for compute — see `checkComputeCredits` — just not from credits).
+      if (await checkComputeCredits(orgId, billingSource, analysisReservationCents)) {
+        return skip('compute_credits_exhausted');
+      }
     }
 
     // 8. Ownership (spec §4.2). THIS is the single place the cross-table
@@ -1073,6 +1431,25 @@ export async function createAndEnqueueAgentRun(
     } catch (error) {
       if (error instanceof AgentRunOwnershipError) return skip('ownership_mismatch');
       throw error;
+    }
+
+    // 8a. Fleet Designer (W01): a `design`-profile run must be driven by a
+    //     `designer` agent against no device — anything else is a caller
+    //     bug (a triage/patch/helpdesk agent has no `submit_fleet_design`
+    //     floor to run against, and a design run is device-less by
+    //     construction, Global Constraints). Same `ownership_mismatch` skip
+    //     as the cross-table invariant above: this is the same class of
+    //     violation, just on `kind`/`deviceId` instead of `orgId`.
+    if (profile === 'design' && (agentRow.kind !== 'designer' || deviceId !== null)) {
+      return skip('ownership_mismatch');
+    }
+    // 8a (patch). AI patch agent (W01): a `patch`-profile run must be driven
+    //     by a `patch` agent against no device. Only THIS direction — the
+    //     reverse pin (rule 2a's designer arm) would delete the device lane a
+    //     patch agent already has on the `full` profile (POST
+    //     /ai/agents/:id/runs), which this program does not remove.
+    if (profile === 'patch' && (agentRow.kind !== 'patch' || deviceId !== null)) {
+      return skip('ownership_mismatch');
     }
 
     // 8b. device ∈ org. `assertRunOwnership` covers agent<->org only; the
@@ -1147,10 +1524,23 @@ export async function createAndEnqueueAgentRun(
         // LLM default is invisible here, and spec §6.2 asks for the RESOLVED
         // model, not the requested one.
         resolvedModel: input.task ? (resolved.effective.model ?? null) : null,
+        // Execution plane W04 — the frozen input allowlist. NULL for every
+        // other profile (`stagedInputs` is only ever set in step 4d).
+        stagedInputs,
       })
       .onConflictDoNothing({ target: [aiAgentRuns.orgId, aiAgentRuns.dedupeKey] })
       .returning();
-    if (inserted) return { created: true, run: inserted };
+    if (inserted) {
+      // Execution plane W04 (spec §5.6) — the reservation is stamped on the
+      // row the moment it exists, INSIDE the advisory lock and the same
+      // transaction as every counter above, so step 7b's "settled + reserved"
+      // sum sees it immediately. Settlement (runLoop's `finally`) replaces
+      // it; the enqueue-failure path below settles it at zero.
+      if (analysisReservationCents > 0) {
+        await reserveComputeCents(orgId, inserted.id, analysisReservationCents, billingSource);
+      }
+      return { created: true, run: inserted };
+    }
 
     // The key is taken. Usually that IS the same trigger fired twice — but it
     // is also how a run whose enqueue never landed blocks its own retry: step
@@ -1210,6 +1600,10 @@ export async function createAndEnqueueAgentRun(
         finishedAt: null,
         queuedAt: new Date(),
         correlationId: randomUUID(),
+        // Execution plane W04 — a reclaimed row must never carry a PREVIOUS
+        // attempt's frozen inputs: this attempt froze its own set (or, for a
+        // non-analysis profile, none at all).
+        stagedInputs,
       })
       .where(and(
         eq(aiAgentRuns.orgId, orgId),
@@ -1263,6 +1657,20 @@ export async function createAndEnqueueAgentRun(
   } catch (error) {
     console.error('[aiAgentRunService] run enqueue failed', { runId: run.id, orgId, error });
     const failed = await failRunAfterEnqueueFailure(run.id);
+    // Execution plane W04 — a run that will never execute must not hold its
+    // compute reservation against the org's daily ceiling until midnight.
+    // Settling at 0 is the release: it is the SAME path the normal finish
+    // takes, so there is only one way a reservation ever ends.
+    if ((input.profile ?? 'full') === 'analysis') {
+      try {
+        await settleComputeCents(orgId, run.id, 0, await getLlmBillingSourceForOrg(orgId));
+      } catch (settleError) {
+        console.error('[aiAgentRunService] failed to release a compute reservation', {
+          runId: run.id, error: settleError,
+        });
+        captureException(settleError instanceof Error ? settleError : new Error(String(settleError)));
+      }
+    }
     return { created: true, run: failed ?? { ...run, status: 'failed', errorCode: 'enqueue_failed' } };
   }
 }
@@ -1329,6 +1737,10 @@ export async function transitionRunStatus(
         outcome: aiAgentRuns.outcome,
         profile: aiAgentRuns.profile,
         taskId: aiAgentRuns.taskId,
+        // Execution plane W04 — an outstanding compute reservation, released
+        // below on any terminal transition. Returned from the CAS itself so
+        // the release reads the value the transition actually observed.
+        computeReservedCents: aiAgentRuns.computeReservedCents,
       });
     const row = rows[0] ?? null;
 
@@ -1389,6 +1801,37 @@ export async function transitionRunStatus(
   // but is safe by construction: its only errorCode ('stalled') always
   // classifies `neutral` (agentCircuit.ts), so `recordRunTerminal` returns
   // before issuing any SQL at all in that path.
+  // Execution plane W04 (#5715) — release an outstanding compute reservation
+  // on EVERY terminal transition, in the same chokepoint the circuit
+  // bookkeeping uses and for the same reason: the two hand-picked release
+  // sites (the run loop's `finalizeWorkspaceForRun`, admission's
+  // enqueue-failure path) only cover runs that got that far. A worker killed
+  // mid-run, or a run stopped at the pre-start policy gate, reaches a terminal
+  // status through `reapStalledAgentRuns` / `transitionRunStatus` alone — and
+  // left its reservation standing, which (a) counts against the org's daily
+  // compute ceiling until UTC midnight, refusing that org's later analyses
+  // with `compute_budget_exceeded`, and (b) never bills the compute the
+  // provider really did run.
+  //
+  // Settled at the RESERVATION, not at zero: spec §9's "usage unavailable ⇒
+  // settle at the reservation, never $0" — a run we lost track of is exactly
+  // the case where the measured number is gone. A normally finished run has
+  // already settled (which NULLs the column), so this is a no-op for it, and
+  // `settleComputeCents` is idempotent against a cleared reservation.
+  const outstandingReservation = moved.computeReservedCents ?? 0;
+  if (isTerminalRunStatus(to) && outstandingReservation > 0) {
+    try {
+      await settleComputeCents(
+        moved.orgId, moved.id, outstandingReservation, await getLlmBillingSourceForOrg(moved.orgId),
+      );
+    } catch (error) {
+      console.error('[aiAgentRunService] compute reservation release failed; the org keeps a held reservation', {
+        runId, orgId: moved.orgId, reservedCents: outstandingReservation, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   if (isTerminalRunStatus(to)) {
     try {
       const runVerdict: AgentRunVerdict | null =

@@ -11,11 +11,19 @@ const { dbState } = vi.hoisted(() => ({
   dbState: {
     rows: [] as unknown[],
     where: undefined as unknown,
+    // The projection object handed to select(). Response-body assertions cannot
+    // discriminate here (the mock resolves `rows` verbatim regardless of what
+    // was selected), so column coverage is asserted against this instead.
+    selected: undefined as Record<string, unknown> | undefined,
   },
 }));
 vi.mock('../../db', () => {
   const chain: Record<string, unknown> = {};
-  for (const m of ['select', 'from', 'limit']) chain[m] = vi.fn(() => chain);
+  for (const m of ['from', 'limit']) chain[m] = vi.fn(() => chain);
+  chain.select = vi.fn((fields?: Record<string, unknown>) => {
+    dbState.selected = fields;
+    return chain;
+  });
   chain.where = vi.fn((predicate: unknown) => {
     dbState.where = predicate;
     return chain;
@@ -55,6 +63,7 @@ describe('GET /branding (authenticated)', () => {
     vi.clearAllMocks();
     dbState.rows = [];
     dbState.where = undefined;
+    dbState.selected = undefined;
   });
 
   it('returns all visibility flags for the authenticated org', async () => {
@@ -64,6 +73,9 @@ describe('GET /branding (authenticated)', () => {
       enableBackups: false,
       enableReports: true,
       enableSupportUsage: false,
+      enableService: true,
+      enableDocuments: false,
+      enableLifecycle: true,
     }];
 
     const response = await authenticatedApp.request('/branding');
@@ -76,12 +88,33 @@ describe('GET /branding (authenticated)', () => {
         enableBackups: false,
         enableReports: true,
         enableSupportUsage: false,
+        enableService: true,
+        enableDocuments: false,
+        enableLifecycle: true,
       },
     });
 
     const query = new PgDialect().sqlToQuery(dbState.where as SQL);
     expect(query.sql).toContain('"portal_branding"."org_id" = $1');
     expect(query.params).toEqual([ORG_ID]);
+
+    // The mock returns `rows` verbatim, so the body assertion above proves
+    // nothing about the SELECT. Assert the projection itself: every visibility
+    // flag the portal gates on must be selected here, or the portal reads the
+    // flag as undefined and the surface silently disappears.
+    expect(Object.keys(dbState.selected ?? {})).toEqual(
+      expect.arrayContaining([
+        'enableDevices',
+        'enableDashboard',
+        'enableSecurity',
+        'enableBackups',
+        'enableReports',
+        'enableSupportUsage',
+        'enableService',
+        'enableDocuments',
+        'enableLifecycle',
+      ]),
+    );
   });
 
   it('returns 404 when the authenticated org has no portal_branding row (default state)', async () => {
@@ -97,6 +130,9 @@ describe('GET /branding (authenticated)', () => {
     expect(body).not.toHaveProperty('enableBackups');
     expect(body).not.toHaveProperty('enableReports');
     expect(body).not.toHaveProperty('enableSupportUsage');
+    expect(body).not.toHaveProperty('enableService');
+    expect(body).not.toHaveProperty('enableDocuments');
+    expect(body).not.toHaveProperty('enableLifecycle');
   });
 
   it('applies private cache headers scoped to the authenticated viewer', async () => {
@@ -121,6 +157,7 @@ describe('GET /branding/:domain (public)', () => {
     vi.clearAllMocks();
     dbState.rows = [];
     dbState.where = undefined;
+    dbState.selected = undefined;
   });
 
   it('does not require authentication and does not expose visibility flags', async () => {
@@ -157,7 +194,28 @@ describe('GET /branding/:domain (public)', () => {
     expect(body.branding).not.toHaveProperty('enableBackups');
     expect(body.branding).not.toHaveProperty('enableReports');
     expect(body.branding).not.toHaveProperty('enableSupportUsage');
+    expect(body.branding).not.toHaveProperty('enableService');
+    expect(body.branding).not.toHaveProperty('enableDocuments');
+    expect(body.branding).not.toHaveProperty('enableLifecycle');
     expect(response.headers.get('Cache-Control')).toContain('public');
+
+    // Same reasoning as the authenticated case: the mock ignores the
+    // projection, so the not.toHaveProperty assertions above only prove the
+    // fixture is clean. This is the assertion that actually fails if a
+    // visibility flag is ever added to the pre-auth, unauthenticated lookup.
+    for (const flag of [
+      'enableDevices',
+      'enableDashboard',
+      'enableSecurity',
+      'enableBackups',
+      'enableReports',
+      'enableSupportUsage',
+      'enableService',
+      'enableDocuments',
+      'enableLifecycle',
+    ]) {
+      expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);
+    }
   });
 
   it('returns 404 when the domain is unverified or unknown', async () => {

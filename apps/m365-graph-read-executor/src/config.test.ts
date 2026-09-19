@@ -50,6 +50,19 @@ describe('M365 Graph-read executor config', () => {
       azureCredentialMode: 'managed-identity',
       bindHost: '10.20.30.40',
       port: 8788,
+      sync: {
+        syncMaxInFlight: 4,
+        maxInFlight: 32,
+        signinActivityRpm: 4,
+        signinPagesPerCall: 5,
+        maxItemsUsers: 25_000,
+        maxItemsDevices: 25_000,
+        maxItemsCaPolicies: 500,
+        maxItemsSkus: 200,
+        maxItemsSigninEvents: 25_000,
+        signinEventsRpm: 6,
+        continuationKey: null,
+      },
     });
   });
 
@@ -159,5 +172,85 @@ describe('M365 Graph-read executor config', () => {
     expect(loadExecutorConfig(validEnv({
       M365_GRAPH_READ_EXECUTOR_AZURE_CREDENTIAL_MODE: 'workload-identity',
     })).azureCredentialMode).toBe('workload-identity');
+  });
+});
+
+describe('M365 Graph-read executor sync limits', () => {
+  it('defaults every sync limit and leaves the continuation key ephemeral', () => {
+    expect(loadExecutorConfig(validEnv()).sync).toEqual({
+      syncMaxInFlight: 4,
+      maxInFlight: 32,
+      signinActivityRpm: 4,
+      signinPagesPerCall: 5,
+      maxItemsUsers: 25_000,
+      maxItemsDevices: 25_000,
+      maxItemsCaPolicies: 500,
+      maxItemsSkus: 200,
+      maxItemsSigninEvents: 25_000,
+      signinEventsRpm: 6,
+      continuationKey: null,
+    });
+  });
+
+  it('parses explicit overrides and a 32-byte base64 continuation key', () => {
+    const key = Buffer.alloc(32, 7);
+    expect(loadExecutorConfig(validEnv({
+      M365_SYNC_MAX_IN_FLIGHT: '2',
+      M365_MAX_IN_FLIGHT: '8',
+      M365_SIGNIN_ACTIVITY_RPM: '1',
+      M365_SIGNIN_PAGES_PER_CALL: '20',
+      M365_SYNC_MAX_ITEMS_USERS: '1000',
+      M365_SYNC_MAX_ITEMS_DEVICES: '2000',
+      M365_SYNC_MAX_ITEMS_CA: '50',
+      M365_SYNC_MAX_ITEMS_SKUS: '10',
+      M365_SYNC_MAX_ITEMS_SIGNIN_EVENTS: '3000',
+      M365_SIGNIN_EVENTS_RPM: '2',
+      M365_SYNC_CONTINUATION_KEY: key.toString('base64'),
+    })).sync).toEqual({
+      syncMaxInFlight: 2,
+      maxInFlight: 8,
+      signinActivityRpm: 1,
+      signinPagesPerCall: 20,
+      maxItemsUsers: 1000,
+      maxItemsDevices: 2000,
+      maxItemsCaPolicies: 50,
+      maxItemsSkus: 10,
+      maxItemsSigninEvents: 3000,
+      signinEventsRpm: 2,
+      continuationKey: key,
+    });
+  });
+
+  it.each([
+    ['M365_SYNC_MAX_IN_FLIGHT', '0'],
+    ['M365_SYNC_MAX_IN_FLIGHT', '65'],
+    ['M365_SYNC_MAX_IN_FLIGHT', '2.5'],
+    ['M365_SYNC_MAX_IN_FLIGHT', 'four'],
+    ['M365_MAX_IN_FLIGHT', '0'],
+    ['M365_MAX_IN_FLIGHT', '1025'],
+    ['M365_SIGNIN_ACTIVITY_RPM', '0'],
+    ['M365_SIGNIN_ACTIVITY_RPM', '61'],
+    ['M365_SIGNIN_PAGES_PER_CALL', '0'],
+    ['M365_SIGNIN_PAGES_PER_CALL', '61'],
+    ['M365_SYNC_MAX_ITEMS_USERS', '0'],
+    ['M365_SYNC_MAX_ITEMS_USERS', '200001'],
+    ['M365_SYNC_MAX_ITEMS_SKUS', '0'],
+  ])('refuses %s=%s', (name, value) => {
+    expect(() => loadExecutorConfig(validEnv({ [name]: value }))).toThrow(name);
+  });
+
+  it('refuses a total cap below the sync cap — interactive headroom must exist', () => {
+    expect(() => loadExecutorConfig(validEnv({
+      M365_SYNC_MAX_IN_FLIGHT: '8', M365_MAX_IN_FLIGHT: '4',
+    }))).toThrow('M365_MAX_IN_FLIGHT');
+  });
+
+  it.each([
+    Buffer.alloc(31, 1).toString('base64'),
+    Buffer.alloc(33, 1).toString('base64'),
+    'not base64 at all!!',
+  ])('refuses a continuation key that is not exactly 32 bytes of base64', (value) => {
+    expect(() => loadExecutorConfig(validEnv({ M365_SYNC_CONTINUATION_KEY: value })))
+      .toThrow('M365_SYNC_CONTINUATION_KEY');
   });
 });

@@ -8,7 +8,8 @@
  */
 import './setup';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { stripeConnectAccounts } from '../../db/schema/stripePayments';
 import { createPartner, createOrganization } from './db-utils';
 
 // #1610 replaced Stripe Connect with the per-partner API-key model: createInvoicePayLink
@@ -42,12 +43,28 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 function ctxFor(orgId: string, partnerId: string): DbAccessContext { return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [partnerId], userId: null }; }
 function qActor(orgId: string, partnerId: string): QuoteActor { return { userId: null, partnerId, accessibleOrgIds: [orgId] }; }
 function iActor(orgId: string, partnerId: string): InvoiceActor { return { userId: null, partnerId, accessibleOrgIds: [orgId] }; }
-async function seed() { return withSystemDbAccessContext(async () => { const partner = await createPartner(); const org = await createOrganization({ partnerId: partner.id }); return { partner, org }; }); }
+// createInvoicePayLink re-checks the durable stripe_connect_accounts row inside the
+// mapping transaction (SEC-151): the account the mock reports must exist for the seeded
+// partner, and stripe_account_id is globally unique, so each partner gets its own id.
+let currentAccountId = 'acct_test';
+
+async function seed() {
+  return withSystemDbAccessContext(async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    currentAccountId = `acct_qpay_${Math.random().toString(36).slice(2, 10)}`;
+    await db.insert(stripeConnectAccounts).values({
+      partnerId: partner.id, stripeAccountId: currentAccountId,
+      apiKey: 'enc:synthetic', keyLast4: 'test', livemode: false,
+    });
+    return { partner, org };
+  });
+}
 
 describe('createQuotePayLink (breeze_app, real DB)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getPartnerStripeClientMock.mockResolvedValue({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: 'acct_test' });
+    getPartnerStripeClientMock.mockImplementation(async () => ({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: currentAccountId }));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_quote_1', url: 'https://checkout.stripe.com/c/pay/quote', payment_intent: null });
   });
 

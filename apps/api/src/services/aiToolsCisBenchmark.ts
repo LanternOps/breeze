@@ -20,7 +20,12 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { scheduleCisRemediationWithResult } from '../jobs/cisJobs';
 import { extractFailedCheckIds } from './cisHardening';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -34,6 +39,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -102,19 +110,19 @@ registerTool({
     // Site axis (app-layer only; RLS does NOT enforce it). cisBaselineResults are
     // device-keyed; a site-restricted caller may only see results for devices in
     // their allowed sites. Narrow to that set (no-op for unrestricted callers).
+    const emptyResult = JSON.stringify({
+      count: 0,
+      totalMatched: 0,
+      summary: { averageScore: 100, devicesAudited: 0, failingDevices: 0, compliantDevices: 0 },
+      results: [],
+      scopeNote: SITE_SCOPE_EMPTY_NOTE,
+    });
     if (auth.allowedSiteIds && auth.canAccessSite) {
       const queryOrgId =
         (typeof input.orgId === 'string' ? input.orgId : null) ??
         auth.orgId ??
         auth.accessibleOrgIds?.[0] ??
         null;
-      const emptyResult = JSON.stringify({
-        count: 0,
-        totalMatched: 0,
-        summary: { averageScore: 100, devicesAudited: 0, failingDevices: 0, compliantDevices: 0 },
-        results: [],
-        scopeNote: SITE_SCOPE_EMPTY_NOTE,
-      });
       if (!queryOrgId) return emptyResult;
       const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
       if (!allowed || allowed.length === 0) return emptyResult;
@@ -123,6 +131,16 @@ registerTool({
       }
       conditions.push(inArray(cisBaselineResults.deviceId, allowed));
     }
+
+    // Exact-device axis, applied independently of the site axis: a device-LESS
+    // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+    // branch above no-ops for it and the tool read the whole org (#6086).
+    const frozenDeviceIds = runFrozenDeviceIds(auth);
+    if (frozenDeviceIds && typeof input.deviceId === 'string' && !frozenDeviceIds.includes(input.deviceId)) {
+      return emptyResult;
+    }
+    const cisDeviceCondition = deviceScopeCondition(auth, cisBaselineResults.deviceId);
+    if (cisDeviceCondition) conditions.push(cisDeviceCondition);
 
     const rankedResults = db
       .select({

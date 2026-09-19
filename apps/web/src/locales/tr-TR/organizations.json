@@ -31,6 +31,8 @@
       "devices": "Cihazlar",
       "tickets": "Biletler",
       "billing": "Sözleşmeler ve Faturalandırma",
+      "service": "Hizmet",
+      "documents": "Belgeler",
       "activity": "Etkinlik"
     },
     "comingSoon": {
@@ -70,7 +72,8 @@
         "invoicesNothingDue": "Vadesi gelen yok",
         "contacts": "Kişiler",
         "portalUsers": "Portal kullanıcıları",
-        "sites": "Siteler"
+        "sites": "Siteler",
+        "lastActivity": "Son etkinlik"
       },
       "activity": {
         "title": "Son etkinlik",
@@ -125,8 +128,258 @@
       "sections": {
         "contracts": "Sözleşmeler",
         "invoices": "Faturalar",
-        "quotes": "Alıntılar"
+        "quotes": "Alıntılar",
+        "agreements": "Anlaşmalar"
       }
+    },
+    "documents": {
+      "title": "Belgeler",
+      "subtitle": "Bu kuruluşa ait runbook'lar, taban çizgileri, politikalar ve teslimat kanıtları.",
+      "empty": "Henüz belge yok. Kitaplığı başlatmak için bir runbook, taban çizgisi veya imzalı bir politika yükleyin.",
+      "emptyFiltered": "Bu kategoride belge yok.",
+      "loadFailed": "Belgeler yüklenemedi.",
+      "upload": "Belge yükle",
+      "uploading": "Yükleniyor…",
+      "replace": "Değiştir",
+      "download": "İndir",
+      "delete": "Sil",
+      "deleteConfirm": "\"{{title}}\" silinsin mi? Bu işlem dosyayı ve tüm önceki sürümlerini kaldırır. Bu işlem geri alınamaz.",
+      "edit": "Düzenle",
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "versions": "Sürüm geçmişi",
+      "showSuperseded": "Önceki sürümleri göster",
+      "form": {
+        "title": "Başlık",
+        "description": "Açıklama",
+        "category": "Kategori",
+        "portalVisible": "Müşteri portalında görünür",
+        "file": "Dosya",
+        "fileHint": "PDF, JPEG, PNG veya WebP, 10 MB'a kadar.",
+        "replaceHint": "Mevcut sürüm geçmiş olarak saklanır ve yeni dosya güncel sürüm olur."
+      },
+      "filter": {
+        "all": "Tüm kategoriler"
+      },
+      "category": {
+        "baseline": "Taban çizgisi",
+        "runbook": "İşletim kılavuzu",
+        "policy": "Politika",
+        "evidence": "Kanıt",
+        "report": "Rapor",
+        "export": "Dışa aktarma",
+        "other": "Diğer"
+      },
+      "column": {
+        "title": "Başlık",
+        "category": "Kategori",
+        "size": "Boyut",
+        "uploaded": "Yükleme tarihi",
+        "portal": "Müşteri portalı",
+        "actions": "İşlemler"
+      },
+      "badge": {
+        "superseded": "Önceki sürüm",
+        "portal": "Portalda"
+      },
+      "errors": {
+        "tooLarge": "Bu dosya 10 MB'tan büyük.",
+        "unsupportedType": "Yalnızca PDF, JPEG, PNG ve WebP dosyaları depolanabilir.",
+        "storageUnavailable": "Belge depolama şu anda kullanılamıyor. Kısa süre sonra tekrar deneyin.",
+        "notHead": "Bu belge zaten değiştirildi. Sayfayı yeniden yükleyip güncel sürüm üzerinden devam edin.",
+        "emptyFile": "Bu dosya boş.",
+        "uploadFailed": "Belge yüklenemedi.",
+        "updateFailed": "Belge kaydedilemedi.",
+        "deleteFailed": "Belge silinemedi.",
+        "downloadFailed": "Belge indirilemedi."
+      },
+      "toast": {
+        "uploaded": "Belge yüklendi",
+        "replaced": "Yeni sürüm yüklendi",
+        "updated": "Belge güncellendi",
+        "deleted": "Belge silindi"
+      }
+    }
+  },
+  "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} kuruluş)",
+    "partnerOption_one": "{{id}}… ({{count}} kuruluş)",
+    "partnerScopeHint": "Tek bir iş ortağının hesapları gösteriliyor; aşağıdaki toplamlar yalnızca bu iş ortağına aittir",
+    "title": "Kuruluşlar",
+    "description": "Her müşteri, hâlâ neye ihtiyacı olduğu ve neyin açık olduğu.",
+    "loading": "Kuruluşlar yükleniyor…",
+    "actions": {
+      "addOrganization": "Kuruluş ekle",
+      "tryAgain": "Tekrar deneyin",
+      "clearFilters": "Filtreleri temizle",
+      "openRecord": "Kaydı aç",
+      "contact": "{{name}} ile iletişime geç",
+      "newTicket": "Yeni bilet",
+      "workHere": "Bu kuruluşta çalış",
+      "settings": "Ayarlar",
+      "archive": "Kuruluşu arşivle",
+      "merge": "Başka bir kuruluşla birleştir",
+      "restore": "Geri yükle",
+      "restoring": "Geri yükleniyor…"
+    },
+    "rowMenu": { "label": "{{name}} için işlemler" },
+    "search": { "label": "Kuruluş, kişi ve e-posta ara" },
+    "lens": { "label": "Görünüm", "setup": "Kurulum", "account": "Hesap", "both": "Her ikisi" },
+    "filters": {
+      "label": "Filtrele",
+      "all": "Tümü",
+      "setupIncomplete": "Kurulum tamamlanmadı",
+      "accountMissing": "Hesap verileri eksik",
+      "openTickets": "Açık biletler",
+      "trial": "Deneme",
+      "archived": "Arşivlenenler",
+      "unlinked": "Bağlı olmayan"
+    },
+    "sort": { "label": "Sırala", "manual": "Elle sıralama", "name": "A'dan Z'ye", "tickets": "Açık biletler" },
+    "columns": { "organization": "Kuruluş", "setup": "Kurulum", "account": "Hesap verileri", "tickets": "Açık biletler", "actions": "Satır işlemleri", "integrations": "Entegrasyonlar" },
+    "band": {
+      "label": "Hesap hazırlığı",
+      "all": "Hesaplar",
+      "allSub": "{{trial}} deneme · {{suspended}} askıda",
+      "setupIncomplete": "Kurulum tamamlanmadı",
+      "accountMissing": "Hesap verileri eksik",
+      "openTickets": "Açık biletler",
+      "openTicketsSub": "{{count}} SLA ihlali",
+      "pending": "Kuruluşlar denetleniyor…",
+      "partial": "Bazı kuruluşlar denetlenemedi.",
+      "unlinked": "Bağlı olmayan"
+    },
+    "chips": {
+      "noSite": "Site yok",
+      "noDevices": "Kayıtlı cihaz yok",
+      "noCheckIn": "Hiçbir agent bağlanmadı",
+      "staleCheckIn_one": "{{count}} gündür agent bağlanmadı",
+      "staleCheckIn_other": "{{count}} gündür agent bağlanmadı",
+      "noPolicy": "Atanmış politika yok",
+      "primaryContact": "Birincil kişi",
+      "contactEmail": "Kişi e-postası",
+      "contactPhone": "Kişi telefonu",
+      "billingContact": "Fatura kişisi",
+      "billingAddress": "Fatura adresi",
+      "overdueInvoices_one": "{{count}} gecikmiş fatura",
+      "overdueInvoices_other": "{{count}} gecikmiş fatura",
+      "invitation_one": "{{count}} davet kabul edilmedi",
+      "invitation_other": "{{count}} davet kabul edilmedi",
+      "complete": "Tamam",
+      "notApplicable": "Uygulanamaz",
+      "unavailable": "Kullanılamıyor",
+      "stillNeeded": "Hâlâ gerekli",
+      "link": "{{orgName}} için {{chip}}",
+      "noActiveContract": "Etkin sözleşme yok",
+      "noBackup": "Yedekleme yapılandırılmamış"
+    },
+    "repair": {
+      "sites": "{{orgName}} için Siteler sekmesini aç",
+      "devices": "{{orgName}} için Cihazlar sekmesini aç",
+      "policies": "Yapılandırma politikalarını aç",
+      "contacts": "{{orgName}} için Kişiler sekmesini aç",
+      "settings": "{{orgName}} ayarlarını aç",
+      "billing": "{{orgName}} için Faturalandırma sekmesini aç",
+      "backup": "{{orgName}} yedeklemesini aç"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "DNS filtresi" },
+      "state": { "linked": "Bağlı", "pending": "Beklemede", "error": "İlgilenilmesi gerekiyor", "identity": "Yalnızca kimlik", "not_linked": "Bağlı değil" },
+      "reason": {
+        "suggested_match": "Önerilen eşleşme, henüz onaylanmadı",
+        "sync_error": "Son eşitleme başarısız oldu",
+        "consent_pending": "Microsoft onayı bekleniyor",
+        "expired": "Bağlantının süresi doldu",
+        "degraded": "Bağlantı bozulmuş",
+        "suspended": "Bağlantı askıya alındı",
+        "error": "Bağlantı bir hata bildirdi",
+        "never_synced": "Hiç eşitlenmedi",
+        "sync_failed": "Bağlayıcı eşitlemesi başarısız oldu",
+        "disabled": "Bağlantı devre dışı",
+        "connector_error": "Bağlayıcı etkin değil veya hatalı"
+      },
+      "notLinked": "{{system}} bağlı değil",
+      "nothingLinked": "Hiçbir şey bağlı değil",
+      "connectorMuted": "{{system}} bağlayıcısı bağlı değil",
+      "badgeLabel": "{{orgName}}: {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}}: {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} yeniden bağlanmalı",
+          "disconnected": "{{system}} bağlantısı kesildi",
+          "error": "{{system}} bağlayıcısında bir hata var",
+          "disabled": "{{system}} bağlayıcısı devre dışı"
+        },
+        "openSettings": "{{system}} ayarlarını aç"
+      }
+    },
+    "tickets": { "open": "{{count}} açık", "awaiting": "{{count}} müşteri yanıtı bekliyor", "sla": "{{count}} SLA ihlali" },
+    "meta": {
+      "workspace": "Çalışma alanı",
+      "devices_one": "{{count}} cihaz",
+      "devices_other": "{{count}} cihaz",
+      "sites_one": "{{count}} site",
+      "sites_other": "{{count}} site",
+      "archivedBadge": "Arşivlendi",
+      "archivingBadge": "Arşivleniyor…",
+      "keptIndefinitely": "Süresiz olarak saklanıyor",
+      "purgeToday": "Bugün kalıcı olarak silinecek",
+      "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
+      "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek"
+    },
+    "reorder": {
+      "handle": "{{name}} sırasını değiştir",
+      "hint": "Bu kuruluşu taşımak için yukarı ve aşağı ok tuşlarını kullanın.",
+      "dragToReorder": "Yeniden sıralamak için sürükleyin",
+      "moved": "{{name}}, {{total}} kuruluş içinde {{position}}. sıraya taşındı"
+    },
+    "footer": {
+      "summary": "{{accounts}} etkin hesap · {{devices}} cihaz",
+      "summaryWithTickets": "{{accounts}} etkin hesap · {{devices}} cihaz · {{tickets}} açık bilet",
+      "manualHint": "Elle sıralama: bir satırı sürükleyin veya tutamacında ok tuşlarını kullanın."
+    },
+    "empty": {
+      "title": "Henüz kuruluş yok",
+      "description": "Kurulumu ve hesap verilerini izlemeye başlamak için ilk müşterinizi ekleyin.",
+      "noMatches": "Aramanızla veya filtrenizle eşleşen kuruluş yok."
+    },
+    "archived": {
+      "loading": "Arşivlenen kuruluşlar yükleniyor…",
+      "empty": "Arşivlenmiş kuruluş yok.",
+      "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
+      "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
+      "fetchError": "Arşivlenen kuruluşlar yüklenemedi"
+    },
+    "restore": {
+      "success": "{{name}} geri yüklendi — durum: {{status}}.",
+      "recreateRequiredNote": "Tekrar tam olarak kullanılabilir olmadan önce: {{items}}",
+      "suspendedNote": "Arşivlenmeden önce askıya alınmıştı, bu nedenle askıya alınmış olarak geri yüklendi — normal erişimi sürdürmeden önce bunu çözün.",
+      "errors": {
+        "restore": "Kuruluş geri yüklenemedi",
+        "mfaRequired": "Kuruluşları geri yüklemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin.",
+        "purging": "Bu kuruluş zaten kalıcı olarak siliniyor ve artık geri yüklenemez."
+      }
+    },
+    "add": {
+      "title": "Kuruluş ekle",
+      "description": "Aşağıdaki ayrıntılarla yeni bir kuruluş oluşturun.",
+      "submit": "Kuruluş oluştur",
+      "created": "{{name}} eklendi. Satırı sırada ne kurulacağını gösterir."
+    },
+    "errors": {
+      "fetchOrganizations": "Kuruluşlar getirilemedi",
+      "generic": "Bir hata oluştu",
+      "saveOrder": "Kuruluş sırası kaydedilemedi",
+      "saveOrganization": "Kuruluş kaydedilemedi",
+      "readiness": "Bazı kuruluşların hesap hazırlığı denetlenemedi."
+    }
+  },
+  "shared": {
+    "sortableTh": {
+      "ascending": "Artan",
+      "descending": "Azalan",
+      "sortBy": "Şuna göre sırala: {{label}}",
+      "sortByWithDirection": "Şuna göre sırala: {{label}}, {{direction}}"
     }
   }
 }

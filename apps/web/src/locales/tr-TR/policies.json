@@ -835,6 +835,17 @@
         "openAlertsFeature": "Uyarıları Aç\nBu sekmede kayıtlı ",
         "legacyAlertRulesMovedToAlerts": "{{count}} eski uyarı kuralları, bu politikanın Uyarılar özelliğine taşındı. İzleme artık bunları saklamaz."
       },
+      "monitorsTab": {
+        "attachMonitor": "Bir izleyici ekle",
+        "loadingMonitors": "İzleyiciler yükleniyor…",
+        "noMoreMonitorsToAttach": "Eklenecek başka izleyici yok",
+        "selectAMonitorToAttach": "Eklenecek bir izleyici seçin…",
+        "noMonitorsAttached": "Bu politikaya henüz izleyici eklenmedi.",
+        "inherited": "Devralındı",
+        "overrideValue": "Geçersiz kılma değeri",
+        "overridesLabel": "Geçersiz kılmalar:",
+        "failedToLoadMonitors": "İzleyiciler yüklenemedi"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows UAC yükseltme istemlerini yakalayın",
         "theAgentObservesUACConsentPromptsAnd": "Temsilci, UAC onay istemlerini gözlemler ve bunları PAM incelemesi için yükseltme talepleri olarak kaydeder. Yakalama varsayılan olarak kapalıdır; bir cihazın kapsamını PAM'e dahil etmek için burada etkinleştirin.",
@@ -1175,7 +1186,21 @@
         "generateACriticalAlertWhenWarrantyExpires": "Garantinin süresi bu kadar gün içinde dolduğunda kritik bir uyarı oluşturun.",
         "enabled": "etkin",
         "warnDays": "warnDays",
-        "criticalDays": "kritikDayler"
+        "criticalDays": "kritikDayler",
+        "collectHpWarrantyFromTheDevice": "HP garantisini cihazdan topla",
+        "hpCmslConsentExplainer": "HP garanti verileri, HP'nin Client Management Script Library aracı kullanılarak cihaz üzerinde okunur. Bu kutuyu işaretlemek HP lisansını bu müşteri adına kabul eder ve HP, IP adresi dahil olmak üzere cihazdan teknik bilgi toplayabilir. İşaretlenmezse HP cihazları mevcut garanti durumlarını korur.",
+        "hpCmslNoAcceptanceRecordedYet": "Henüz kayıtlı bir kabul yok. Bu kutu işaretliyken kaydettiğinizde kullanıcınız ve sunucu saati kaydedilir.",
+        "hpCmslAcceptedByOn": "{{date}} tarihinde {{user}} tarafından kabul edildi",
+        "hpCmslTermsChangedSaveAgain": "HP, bu kabulden bu yana lisans koşullarını değiştirdi. Yeniden kabul etmek için tekrar kaydedin.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Bu ilke, devralınan garanti ayarlarının tamamını değiştirir; alan alan birleştirme yoktur. Cihaz üzerinde toplama kapalıyken kaydedilmesi, bu ilkenin ulaştığı her cihazda HP garanti toplamayı durdurur."
+      },
+      "rationale": {
+        "label": "Gerekçe",
+        "edit": "Gerekçeyi düzenle",
+        "placeholder": "Bu öğe neden var…",
+        "save": "Kaydet",
+        "cancel": "İptal",
+        "none": "Kayıtlı gerekçe yok."
       }
     }
   },
@@ -1310,6 +1335,8 @@
       "readyToDeployStandalone": "Dağıtıma hazır."
     },
     "complianceDashboard": {
+      "autoInstallArmed": "Otomatik kurulum etkin",
+      "complianceCheckQueued": "Uyumluluk denetimi sıraya alındı",
       "failedToLoadSoftwarePolicyData": "Yazılım ilkesi verileri yüklenemedi",
       "couldNotLoadLatestPolicyDetailsShowing": "En son politika ayrıntıları yüklenemedi. Önbelleğe alınmış veriler gösteriliyor.",
       "couldNotLoadPolicyDetailsShowingCached": "Politika ayrıntıları yüklenemedi. Önbelleğe alınmış veriler gösteriliyor.",
@@ -1349,7 +1376,19 @@
       "failedToUpdatePolicy": "Politika güncellenemedi",
       "failedToCreatePolicy": "Politika oluşturulamadı",
       "policyUpdated": "Politika başarıyla güncellendi",
-      "policyCreated": "Politika başarıyla oluşturuldu"
+      "policyCreated": "Politika başarıyla oluşturuldu",
+      "armInstallRequiresMfa": "Otomatik yüklemeyi etkinleştirmek çok faktörlü kimlik doğrulama gerektirir. MFA'yı tamamlayıp tekrar deneyin.",
+      "armInstallRequiresPermission": "Otomatik yüklemeyi etkinleştirmek devices.execute iznini gerektirir. Bir yöneticiden bu izni vermesini isteyin, ardından tekrar deneyin.",
+      "installStatusPending": "Yükleme sırada",
+      "installStatusInProgress": "Yükleniyor…",
+      "installStatusCompleted": "Yüklendi",
+      "installStatusFailed": "Yükleme başarısız",
+      "installStatusGaveUp": "Tekrarlanan başarısızlıklardan sonra vazgeçildi",
+      "installStatusSkipped": "Bu geçişte atlandı",
+      "installSkippedNoCatalog": "Gerekli bir kuralın bağlı bir katalog öğesi yok, bu yüzden yüklenecek bir şey yok. Bunu düzeltmek için politika düzenleyicisinde bir katalog bağlantısı ekleyin.",
+      "installSkippedCapOrPlatform": "Bu bir hata değil — geçiş başına yükleme sınırına ulaşıldı ya da bu cihazın platformunda yazılım için bir yükleme yöntemi yok. Bir sonraki geçişte tekrar denenebilir.",
+      "installAttempts": "{{count}} deneme",
+      "installLastAttempt": "Son yükleme denemesi: "
     },
     "deploymentList": {
       "running": "Koşuyor",
@@ -1387,7 +1426,9 @@
       "noDeploymentsYet": "Henüz hiçbir dağıtım oluşturulmadı.",
       "failedToCancelDeployment": "Dağıtım iptal edilemedi",
       "deploymentCancelled": "Dağıtım iptal edildi",
-      "pageOf": "Sayfa {{page}} / {{pages}}"
+      "pageOf": "Sayfa {{page}} / {{pages}}",
+      "policyOwned": "Politika tarafından yönetiliyor",
+      "policyOwnedTooltip": "Bir yazılım politikasının otomatik yükleme düzeltmesi tarafından otomatik olarak oluşturuldu"
     },
     "deploymentProgress": {
       "queued": "Sıraya alındı",
@@ -1571,6 +1612,9 @@
       "s": "s"
     },
     "policyForm": {
+      "dryRunUnassigned": "0 cihaz — genellikle bu ilke henüz hiçbir cihaza atanmadığı için; tamamen uyumlu bir filo veya boş bir site izin listesi de 0 verir",
+      "manageAssignments": "Yapılandırma ilkesi atamalarını yönet",
+      "gracePeriodHelp": "Bir sonraki uyumluluk denetiminde uygulanır",
       "scope": "Kapsam",
       "allOrganizations": "Tüm kuruluşlar",
       "partnerWideTemplate": "(iş ortağı çapında şablon)",
@@ -1615,7 +1659,16 @@
       "autoUninstall2": "otomatik kaldırma",
       "gracePeriod": "ek süre",
       "gracePeriod2": "GracePeriod",
-      "saving": "Kaydediliyor..."
+      "saving": "Kaydediliyor...",
+      "catalogLink": "Bağlı katalog öğesi",
+      "catalogLinkNone": "Yok — bağlı değil",
+      "autoInstall": "Eksik yazılımı otomatik yükle",
+      "autoInstallCatalogWarning": "{{total}} kuraldan {{count}} tanesinin bağlı bir katalog öğesi yok ve eksik olarak algılanacak ama asla yüklenmeyecek.",
+      "dryRunLoading": "Kaç cihazın etkileneceği kontrol ediliyor...",
+      "dryRunResult": "Bu, eksik yazılımı yaklaşık {{count}} cihaza yükleyecek.",
+      "dryRunUnavailable": "Cihaz sayısı önizlemesi henüz kullanılamıyor. Etkinleştirme yine de bir sonraki uyumluluk taramasında geçerli olacak.",
+      "dryRunNewPolicy": "Bu yeni bir politika — cihaz etkisi, kaydettikten sonraki ilk uyumluluk taramasına kadar bilinmeyecek.",
+      "catalogUnavailable": "Yazılım kataloğu yüklenemedi, bu yüzden aşağıdaki katalog bağlantısı seçicileri boş. Bu, katalog öğesi bulunmamasıyla aynı şey değildir — bir kuralın bağlanamayacağını varsaymadan önce sayfayı yeniden yükleyin."
     },
     "softwareCatalog": {
       "ready": "Hazır",

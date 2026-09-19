@@ -84,9 +84,11 @@ test.describe('organization record', () => {
       { name: `E2E Record B ${stamp}`, slug: `e2e-record-b-${stamp}` },
     );
 
-    await test.step('1. opens from the settings list at /organizations/:id', async () => {
-      await page.goto('/settings/organizations');
-      await page.getByTestId(`org-open-record-${orgA.id}`).click();
+    await test.step('1. opens from the organizations board at /organizations/:id', async () => {
+      await page.goto('/organizations');
+      await waitForAppReady(page, 'org-board');
+      await page.getByTestId('org-board-search').fill(orgA.name);
+      await page.getByTestId(`org-board-row-${orgA.id}`).click();
       await page.waitForURL(`**/organizations/${orgA.id}`);
       await waitForAppReady(page, 'org-record-header');
       await expect(record.header()).toContainText(orgA.name);

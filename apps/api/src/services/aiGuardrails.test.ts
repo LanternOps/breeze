@@ -31,7 +31,6 @@ vi.mock('./aiTools', () => ({
       // Tier 3 (SR5-01) and downgrade list to Tier 2 (recon only)
       file_operations: 1,
       execute_command: 3,
-      run_backup_verification: 2,
       // Ticketing tools
       manage_tickets: 1,
       manage_alerts: 1,
@@ -544,14 +543,6 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     expect(result.requiresApproval).toBe(false);
   });
 
-  it('does not require a special full recovery approval path for backup verification', () => {
-    const result = checkGuardrails('run_backup_verification', {
-      deviceId: '11111111-1111-1111-1111-111111111111',
-      verificationType: 'test_restore',
-    });
-    expect(result.allowed).toBe(true);
-    expect(result.requiresApproval).toBe(false);
-  });
 });
 
 // ─── Approval descriptions for fleet tools ──────────────────────────────
@@ -1266,6 +1257,108 @@ describe('manage_policy_feature_link maintenance escalation (RMM-QA-176 D9)', ()
       action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
     });
     expect(check.description).toContain('maintenance');
+  });
+});
+
+// ─── #5511 W02: manage_policy_feature_link HP CMSL escalation ────────────────
+
+describe('manage_policy_feature_link hpCmsl escalation (#5511 W02, contract D4)', () => {
+  const enabling = { hpCmsl: { enabled: true } };
+  const thresholdsOnly = { enabled: true, warnDays: 90, criticalDays: 30 };
+
+  it('escalates add of a warranty link that enables HP collection to tier 3, supervised', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: 'warranty', inlineSettings: enabling,
+    });
+    expect(check.tier).toBe(3);
+    expect(check.requiresApproval).toBe(true);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
+  it('escalates update WITHOUT a featureType — the input that turns collection on for an existing link', () => {
+    // featureType is not a required input on `update`, so an escalation keyed
+    // on it would miss exactly this call. Predicating on the settings content
+    // is what makes the arm reachable at all.
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'update', configPolicyId: 'p1', featureLinkId: 'l1', inlineSettings: enabling,
+    });
+    expect(check.tier).toBe(3);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
+  it('leaves an alert-threshold-only warranty link at the tool base tier 2 — it installs nothing', () => {
+    for (const action of ['add', 'update'] as const) {
+      const check = checkGuardrails('manage_policy_feature_link', {
+        action, configPolicyId: 'p1', featureLinkId: 'l1', featureType: 'warranty', inlineSettings: thresholdsOnly,
+      });
+      expect(check.tier, `${action} of thresholds-only must not escalate`).toBe(2);
+      expect(check.requiresApproval).toBe(false);
+    }
+  });
+
+  it('leaves an explicit DISABLE at tier 2 — turning collection off is the fail-safe direction', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'update', configPolicyId: 'p1', featureLinkId: 'l1', inlineSettings: { hpCmsl: { enabled: false } },
+    });
+    expect(check.tier).toBe(2);
+    expect(check.requiresApproval).toBe(false);
+  });
+
+  it('leaves a warranty link with no inlineSettings at all at tier 2', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: 'warranty',
+    });
+    expect(check.tier).toBe(2);
+  });
+
+  it('is never triggered by a READ carrying the same settings', () => {
+    // Same protection as the maintenance arm's own read control: the action
+    // guard, not ordering, is what keeps `list` out of an approval the MCP
+    // transport would then deny outright.
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'list', configPolicyId: 'p1', inlineSettings: enabling,
+    });
+    expect(check.tier).toBe(2);
+    expect(check.requiresApproval).toBe(false);
+  });
+
+  it('fails safe on a malformed hpCmsl block rather than escalating on junk', () => {
+    // warrantyHpCmslRequested parses the sub-block strictly, so a
+    // non-conforming shape is not "enabled". The WRITE refuses it anyway
+    // (Task 3's 400), so the base tier is the right answer here.
+    for (const inlineSettings of [
+      { hpCmsl: 'true' },
+      { hpCmsl: { enabled: 'true' } },
+      { hpCmsl: [] },
+    ]) {
+      const check = checkGuardrails('manage_policy_feature_link', {
+        action: 'add', configPolicyId: 'p1', featureType: 'warranty', inlineSettings,
+      });
+      expect(check.tier).toBe(2);
+    }
+  });
+
+  it('names HP CMSL in the approval description so an approver knows software gets installed', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'update', configPolicyId: 'p1', featureLinkId: 'l1', inlineSettings: enabling,
+    });
+    expect(check.description).toContain('HP CMSL');
+  });
+
+  it('leaves the maintenance escalation exactly as it was', () => {
+    // The control for this whole task: adding an arm must not disturb the
+    // existing one, in either direction.
+    const maintenance = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
+    });
+    expect(maintenance.tier).toBe(3);
+    expect(maintenance.approvalScope).toBe('supervised');
+    expect(maintenance.description).toContain('maintenance');
+
+    const patch = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: 'patch',
+    });
+    expect(patch.tier).toBe(2);
   });
 });
 

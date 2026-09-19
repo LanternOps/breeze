@@ -1935,6 +1935,62 @@ body {
   margin-bottom: 4px;
 }
 
+/* W03 (#5612): AI script proposal summary inside the approval card. */
+.helper-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.helper-proposal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.helper-proposal-risk {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.helper-proposal-risk[data-tier='high'],
+.helper-proposal-risk[data-tier='critical'] {
+  color: var(--danger, #d33);
+  border-color: var(--danger, #d33);
+}
+
+.helper-proposal-summary {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.helper-proposal-goal {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.helper-proposal-findings,
+.helper-proposal-strict ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.helper-proposal-strict-note {
+  font-size: 11px;
+  color: var(--danger, #d33);
+  margin-bottom: 4px;
+}
+
 .helper-approval-details summary {
   cursor: pointer;
   font-size: 11px;

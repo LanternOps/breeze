@@ -3,6 +3,8 @@ import {
   findRoutesTouchingDevices,
   findRoutesTouchingDeviceData,
   findRoutesWithDeadPermsSiteGate,
+  findRoutesWithGateBeyondWindow,
+  findRoutesWithTruncatedHandlerWindow,
   type RouteInfo,
 } from '../helpers/routeScan';
 
@@ -152,6 +154,12 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/bootPerformance.ts:POST /:id/boot-performance',
   'routes/agents/changes.ts:PUT /:id/changes',
   'routes/agents/commands.ts:POST /:id/commands/:commandId/result',
+  // Agent-token heartbeat ingest. Surfaced by #4019 (its `onedriveDeviceState`
+  // upsert sits tens of KB into the handler, far past the old 4000-byte window):
+  // every device write in the handler is keyed on `device.id` from the bearer
+  // match, so there is no user `permissions` context and no caller-supplied
+  // device selector.
+  'routes/agents/heartbeat.ts:POST /:id/heartbeat',
   // Primary agent-token path: command lookup is pinned to the authenticated
   // device ID plus exact command ID/type/target role; no user site scope exists.
   'routes/agents/pamObservations.ts:POST /:id/commands/:commandId/pam-observations',
@@ -169,6 +177,11 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // pendingRow.deviceId === device.id. No user session, no user-supplied
   // device input, so allowedSiteIds never applies.
   'routes/agents/mtls.ts:POST /renew-cert/confirm',
+  // Same agent-token path as /renew-cert/confirm above, and exempt for the same
+  // reason: every `deviceMtlsCertificates.deviceId` predicate is
+  // `eq(…, device.id)` for the agent authenticated by agentBearerAuthMiddleware.
+  // Surfaced by #4019 — the writes sit well past the old 4000-byte window.
+  'routes/agents/mtls.ts:POST /renew-cert',
   'routes/agents/sessions.ts:PUT /:id/sessions',
   'routes/agents/state.ts:PUT /:id/config-state',
   'routes/agents/state.ts:PUT /:id/registry-state',
@@ -198,8 +211,14 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/lifecycle.ts:GET /me/mobile-devices',
   'routes/mobile.ts:POST /devices',
   // routes/mobile.ts:POST /notifications/register was exempt here until #2983
-  // moved its mobile_devices queries into services/mobileDeviceIdentity.ts —
-  // the file-local scanner no longer flags it, so the ratchet removed it.
+  // moved its mobile_devices queries into services/mobileDeviceIdentity.ts, and
+  // the ratchet removed it. #4019 brought it back: the handler still upserts
+  // `mobileDevices` directly (`onConflictDoUpdate({ target: mobileDevices
+  // .deviceId })`), well past the point the old 4000-byte window stopped reading.
+  // The exemption REASON is the unchanged one: `mobile_devices.device_id` is a
+  // mobile INSTALLATION id, not an RMM device with a site, and the row is
+  // already narrowed by `userId` — tighter than site scope.
+  'routes/mobile.ts:POST /notifications/register',
   'routes/portal/assets.ts:GET /assets',
   'routes/portal/assets.ts:POST /assets/:id/checkin',
   'routes/portal/assets.ts:POST /assets/:id/checkout',
@@ -226,21 +245,23 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // lookup is constrained (inArray) to the device ids listStatusRows already
   // resolved, so it discloses no device beyond the caller's accessible orgs.
   'routes/security/compliance.ts:GET /encryption',
-  // ---- AI agent RUN reads (wave 6.1, #3828/#4157): org-wide reads that take
-  // NO device-selection input. Flagged only because the run row carries an
-  // `aiAgentRuns.deviceId` column, which is display metadata on an ORG-owned
-  // run row — never a caller-supplied device selector.
-  // Fleet runs list: query is cursor/limit/agentId/status/orgId only; rows are
-  // constrained by auth.orgCondition(aiAgentRuns.orgId) (the routes/devices/
-  // core.ts fleet-list pattern) and an optional orgId filter 403s unless
-  // auth.canAccessOrg, with RLS beneath.
-  'routes/aiAgents.ts:GET /runs',
-  // Run detail: path param is a RUN uuid, not a device; the row is org-scoped
-  // by the same orgCondition predicate + RLS, and 404s when out of scope.
-  'routes/aiAgents.ts:GET /runs/:runId',
-  // Agent-scoped runs list: path param is an AGENT uuid resolved through
-  // getAgent(auth, id) (404 unless accessible); query is `limit` only.
-  'routes/aiAgents.ts:GET /:id/runs',
+  // ---- Newly VISIBLE to the widened detector (#4019); posture unchanged.
+  // Public bare-metal-recovery bootstrap (mounted on `bmrPublicRoutes`, BEFORE
+  // authMiddleware): the caller presents an opaque recovery token, so there is
+  // no user session and no `permissions` context at all. The single
+  // `eq(devices.id, row.deviceId)` read is keyed on the device recorded ON the
+  // token row and runs inside runInRecoveryOrgContext(row.orgId) — the caller
+  // supplies no device selector. Its device access sits past the old byte
+  // window.
+  'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
+  // Org record-page overview: partner/system scope only, gated on ORGS_READ +
+  // auth.canAccessOrg(id), and the `devices` read is a pure aggregate
+  // (count(*) FILTER …) over `eq(devices.orgId, id)` — no per-device rows are
+  // returned, so no cross-site device is disclosed. Same posture as the
+  // org-wide aggregates above; site-scoping the totals themselves remains the
+  // same separate product call. Its `devices` block sits past the old window
+  // (the handler is a long chain of per-permission aggregate blocks).
+  'routes/orgSummary.ts:GET /organizations/:id/summary',
 ]);
 
 // SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
@@ -257,6 +278,9 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // when its lookup moved into resolveOwnedMobileDeviceId(); see the note in
   // SITE_SCOPE_INPUT_SOURCED_BASELINE above.
   'routes/mobile.ts:POST /devices',
+  // Same mobile-installation row, same reason (#4019 re-flagged it — see the
+  // note in SITE_SCOPE_INPUT_EXEMPT).
+  'routes/mobile.ts:POST /notifications/register',
   'routes/lifecycle.ts:GET /admin/users/:userId/mobile-devices',
   'routes/lifecycle.ts:GET /me/mobile-devices',
   // Site-gated via the cross-file getDeviceWithOrgCheck resolver (remote/helpers.ts).
@@ -273,21 +297,17 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // Partner/system-only aggregates use user auth but cannot be reached by
   // organization site-restricted roles; see SITE_SCOPE_INPUT_EXEMPT above.
   'routes/huntress.ts:GET /status',
+  // Newly visible to the widened detector (#4019). Neither references a
+  // non-user auth guard token in its file (orgSummary uses plain authMiddleware;
+  // bmr's public router has no auth middleware at all), so both are recorded
+  // here as deliberate exceptions; reasons in SITE_SCOPE_INPUT_EXEMPT above.
+  'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
+  'routes/orgSummary.ts:GET /organizations/:id/summary',
   'routes/updateRings.ts:GET /:id/compliance',
   // Org-scoped compliance list (see note in SITE_SCOPE_INPUT_EXEMPT). Reached
   // via user auth (requireScope) but exempt because the escrow enrichment is
   // constrained to the org-scoped device set listStatusRows already resolved.
   'routes/security/compliance.ts:GET /encryption',
-  // AI agent run reads (wave 6.1, #3828/#4157). Reached via plain user auth
-  // (requireAiRead), so they carry a `permissions` context and must be listed
-  // here — but they are exempt for the no-device-input reason, not the
-  // non-user-auth one: every query is constrained to the caller's accessible
-  // orgs (auth.orgCondition / getAgent / canAccessOrg) with RLS beneath, no
-  // parameter selects a device, and `deviceId` is display metadata on an
-  // org-owned run row. See the matching note in SITE_SCOPE_INPUT_EXEMPT.
-  'routes/aiAgents.ts:GET /runs',
-  'routes/aiAgents.ts:GET /runs/:runId',
-  'routes/aiAgents.ts:GET /:id/runs',
 ]);
 
 // BASELINE RATCHET — pre-existing handlers flagged at the time this detector
@@ -375,9 +395,10 @@ describe('site-scope coverage — input-sourced / list-style', () => {
     const stillFlagged = new Set(
       routes.filter((r) => !r.usesSiteScopeGate).map((r) => r.id),
     );
-    const stale = [...SITE_SCOPE_INPUT_BASELINE, ...SITE_SCOPE_INPUT_EXEMPT].filter(
-      (e) => !stillFlagged.has(e),
-    );
+    const stale = [
+      ...SITE_SCOPE_INPUT_BASELINE,
+      ...SITE_SCOPE_INPUT_EXEMPT,
+    ].filter((e) => !stillFlagged.has(e));
     const message =
       stale.length === 0
         ? ''
@@ -430,12 +451,13 @@ const DEAD_PERMS_GATE_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/remote/sessions.ts:POST /sessions/:id/desktop-connect-code',
   'routes/remote/sessions.ts:GET /ice-servers',
   'routes/remote/sessions.ts:POST /sessions/:id/ice',
-  // ws-ticket mint route sources its site gate from `auth.allowedSiteIds`
-  // (set unconditionally by authMiddleware via getUserPermissions — the same
-  // source as `permissions.allowedSiteIds`), not the `permissions` context, so
-  // the gate is live without requirePermission. Gating event-ticket minting
-  // behind DEVICES_READ would lock non-device roles out of org-level events.
-  'routes/eventWs.ts:POST /ws-ticket',
+  // (Empty.) `routes/eventWs.ts:POST /ws-ticket` lived here because the
+  // detector matched `c.get('permissions')` inside the handler's own comment
+  // EXPLAINING that it deliberately does NOT read that context — it sources the
+  // site gate from `auth.allowedSiteIds` instead. #4019 made the scanner read
+  // comment-stripped source, so the false positive is gone and the shrink-only
+  // ratchet below correctly demands the entry go. The route's posture is
+  // unchanged; only the scanner's view of it is.
 ]);
 
 // BASELINE RATCHET — routes whose perms-sourced site gate is dead RIGHT NOW,
@@ -503,5 +525,67 @@ describe('site-scope coverage — dead permissions-sourced gate', () => {
           `gained a live source or moved — remove them so the ratchet tightens):\n` +
           stale.map((s) => `  - ${s}`).join('\n');
     expect(stale, message).toEqual([]);
+  });
+});
+
+/**
+ * Fourth detector: the SCANNER'S OWN blind spot. Every detector above reads a
+ * per-route window capped at `HANDLER_SLICE_BYTES`. A handler longer than the
+ * cap is read only in part, and before #4019 that truncation was silent AND
+ * unsafe: comments counted against the budget, so a long explanatory comment
+ * could push a handler's device-table access out of the window and drop the
+ * route out of `findRoutesTouchingDeviceData()` entirely — taking its allowlist
+ * entry with it, and hiding any site-scope gap introduced further down. A
+ * comment could evict a route from a security scanner.
+ *
+ * #4019 removed the cap from the device-data detector (it now reads the whole
+ * handler) and made the scanner read comment-stripped source, which leaves
+ * exactly one direction where truncation can still weaken an answer rather than
+ * merely over-flag: the DEAD-GATE detector. It must see the handler's
+ * `permissions`/`allowedSiteIds` read to judge it, so a fail-open site check
+ * sitting past the cap reads as "no site gate here at all" instead of "dead
+ * gate". {@link findRoutesWithGateBeyondWindow} reports precisely the routes
+ * where that happened AND where seeing the gate would have changed the verdict
+ * (nothing inside the window supplies a live `permissions` source).
+ *
+ * There is deliberately no allowlist. A hit means the scanner cannot answer for
+ * that handler, which is a fact about the scanner, not a policy call: either
+ * hoist the site check to the top of the handler, split the handler, or raise
+ * the cap.
+ */
+describe('site-scope coverage — scanner truncation blind spot', () => {
+  it('never stops reading before a perms-sourced site gate', async () => {
+    const blind = await findRoutesWithGateBeyondWindow();
+    const truncated = await findRoutesWithTruncatedHandlerWindow();
+
+    // Non-degeneracy control. `blind` being empty is the PASSING state, so this
+    // assertion would stay green forever if the wiring silently broke (wrong
+    // import, a `scanAllRoutes` filter bug, ROUTE_DIR pointing at an empty
+    // tree) and both helpers just returned []. The corpus really does contain
+    // handlers longer than HANDLER_SLICE_BYTES — several were added to the
+    // exempt sets above precisely because widening the detector caught them —
+    // so require that the scanner still sees at least one.
+    expect(
+      truncated.length,
+      'No route window truncates at HANDLER_SLICE_BYTES at all — the truncation ' +
+        'detector is almost certainly not wired to the corpus any more, which ' +
+        'would make the blind-spot assertion below vacuously green.',
+    ).toBeGreaterThan(0);
+
+    const message =
+      blind.length === 0
+        ? ''
+        : `\n${blind.length} handler(s) put their \`permissions\`-sourced site ` +
+          `gate PAST the ${'`HANDLER_SLICE_BYTES`'} window the dead-gate detector ` +
+          `reads, with no live permissions source inside the window — so the ` +
+          `detector reported "no gate" where it would have reported "DEAD gate":\n` +
+          blind.map(formatOffender).join('\n') +
+          `\n\n(${truncated.length} of the scanned route windows currently ` +
+          `truncate at the cap; only the ones above change an answer.)\n\n` +
+          `Fix by moving the site check to the top of the handler, splitting the ` +
+          `handler, or raising HANDLER_SLICE_BYTES. Do NOT allowlist this — a ` +
+          `hit means the scanner cannot answer for the handler at all.`;
+
+    expect(blind, message).toEqual([]);
   });
 });

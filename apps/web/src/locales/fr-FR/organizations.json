@@ -31,6 +31,8 @@
       "devices": "Appareils",
       "tickets": "Tickets",
       "billing": "Contrats et facturation",
+      "service": "Prestations",
+      "documents": "Documentation",
       "activity": "Activité"
     },
     "comingSoon": {
@@ -70,7 +72,8 @@
         "invoicesNothingDue": "Rien à payer",
         "contacts": "Contacts",
         "portalUsers": "Utilisateurs du portail",
-        "sites": "Sites"
+        "sites": "Sites",
+        "lastActivity": "Dernière activité"
       },
       "activity": {
         "title": "Activité récente",
@@ -125,8 +128,258 @@
       "sections": {
         "contracts": "Contrats",
         "invoices": "Factures",
-        "quotes": "Devis"
+        "quotes": "Devis",
+        "agreements": "Conventions"
       }
+    },
+    "documents": {
+      "title": "Bibliothèque de documents",
+      "subtitle": "Guides opérationnels, lignes de base, politiques et preuves de livraison pour cette organisation.",
+      "empty": "Aucun document pour le moment. Téléversez un guide opérationnel, une ligne de base ou une politique signée pour démarrer la bibliothèque.",
+      "emptyFiltered": "Aucun document dans cette catégorie.",
+      "loadFailed": "Impossible de charger les documents.",
+      "upload": "Téléverser un document",
+      "uploading": "Téléversement…",
+      "replace": "Remplacer",
+      "download": "Télécharger",
+      "delete": "Supprimer",
+      "deleteConfirm": "Supprimer « {{title}} » ? Cela retire le fichier et toutes ses versions antérieures. Cette action est irréversible.",
+      "edit": "Modifier",
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "versions": "Historique des versions",
+      "showSuperseded": "Afficher les versions antérieures",
+      "form": {
+        "title": "Titre",
+        "description": "Descriptif",
+        "category": "Catégorie",
+        "portalVisible": "Visible dans le portail client",
+        "file": "Fichier",
+        "fileHint": "PDF, JPEG, PNG ou WebP, jusqu'à 10 Mo.",
+        "replaceHint": "La version actuelle est conservée dans l'historique et le nouveau fichier devient la version courante."
+      },
+      "filter": {
+        "all": "Toutes les catégories"
+      },
+      "category": {
+        "baseline": "Ligne de base",
+        "runbook": "Guide opérationnel",
+        "policy": "Politique",
+        "evidence": "Justificatif",
+        "report": "Rapport",
+        "export": "Exportation",
+        "other": "Autre"
+      },
+      "column": {
+        "title": "Titre",
+        "category": "Catégorie",
+        "size": "Taille",
+        "uploaded": "Téléversé",
+        "portal": "Portail",
+        "actions": "Opérations"
+      },
+      "badge": {
+        "superseded": "Version antérieure",
+        "portal": "Dans le portail"
+      },
+      "errors": {
+        "tooLarge": "Ce fichier dépasse 10 Mo.",
+        "unsupportedType": "Seuls les fichiers PDF, JPEG, PNG et WebP peuvent être stockés.",
+        "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu.",
+        "notHead": "Ce document a déjà été remplacé. Rechargez la page et travaillez à partir de la version courante.",
+        "emptyFile": "Ce fichier est vide.",
+        "uploadFailed": "Impossible de téléverser le document.",
+        "updateFailed": "Impossible d'enregistrer le document.",
+        "deleteFailed": "Impossible de supprimer le document.",
+        "downloadFailed": "Impossible de télécharger le document."
+      },
+      "toast": {
+        "uploaded": "Document téléversé",
+        "replaced": "Nouvelle version téléversée",
+        "updated": "Document mis à jour",
+        "deleted": "Document supprimé"
+      }
+    }
+  },
+  "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} organisations)",
+    "partnerOption_one": "{{id}}… ({{count}} organisation)",
+    "partnerScopeHint": "Les comptes d’un seul partenaire sont affichés ; les totaux ci-dessous concernent uniquement ce partenaire",
+    "title": "Organisations",
+    "description": "Chaque client, ce qu'il lui manque encore et ce qui est en cours.",
+    "loading": "Chargement des organisations…",
+    "actions": {
+      "addOrganization": "Ajouter l’organisation",
+      "tryAgain": "Réessayer",
+      "clearFilters": "Effacer les filtres",
+      "openRecord": "Ouvrir la fiche",
+      "contact": "Contacter {{name}}",
+      "newTicket": "Nouveau ticket",
+      "workHere": "Travailler dans cette organisation",
+      "settings": "Paramètres",
+      "archive": "Archiver l'organisation",
+      "merge": "Fusionner avec une autre organisation",
+      "restore": "Restaurer",
+      "restoring": "Restauration…"
+    },
+    "rowMenu": { "label": "Actions pour {{name}}" },
+    "search": { "label": "Rechercher des organisations, des contacts et des e-mails" },
+    "lens": { "label": "Vue", "setup": "Configuration", "account": "Compte", "both": "Les deux" },
+    "filters": {
+      "label": "Filtrer",
+      "all": "Toutes",
+      "setupIncomplete": "Configuration incomplète",
+      "accountMissing": "Données du compte manquantes",
+      "openTickets": "Tickets ouverts",
+      "trial": "Essai",
+      "archived": "Archivées",
+      "unlinked": "Non liés"
+    },
+    "sort": { "label": "Trier", "manual": "Ordre manuel", "name": "De A à Z", "tickets": "Tickets ouverts" },
+    "columns": { "organization": "Organisation", "setup": "Configuration", "account": "Données du compte", "tickets": "Tickets ouverts", "actions": "Actions sur la ligne", "integrations": "Intégrations" },
+    "band": {
+      "label": "Préparation des comptes",
+      "all": "Comptes",
+      "allSub": "{{trial}} en essai · {{suspended}} suspendues",
+      "setupIncomplete": "Configuration incomplète",
+      "accountMissing": "Données du compte manquantes",
+      "openTickets": "Tickets ouverts",
+      "openTicketsSub": "{{count}} SLA dépassés",
+      "pending": "Vérification des organisations…",
+      "partial": "Certaines organisations n'ont pas pu être vérifiées.",
+      "unlinked": "Non liés"
+    },
+    "chips": {
+      "noSite": "Aucun site",
+      "noDevices": "Aucun appareil inscrit",
+      "noCheckIn": "Aucun agent ne s'est signalé",
+      "staleCheckIn_one": "Aucun agent signalé depuis {{count}} jour",
+      "staleCheckIn_other": "Aucun agent signalé depuis {{count}} jours",
+      "noPolicy": "Aucune politique attribuée",
+      "primaryContact": "Contact principal",
+      "contactEmail": "E-mail du contact",
+      "contactPhone": "Téléphone du contact",
+      "billingContact": "Contact de facturation",
+      "billingAddress": "Adresse de facturation",
+      "overdueInvoices_one": "{{count}} facture en retard",
+      "overdueInvoices_other": "{{count}} factures en retard",
+      "invitation_one": "{{count}} invitation non acceptée",
+      "invitation_other": "{{count}} invitations non acceptées",
+      "complete": "Complet",
+      "notApplicable": "Sans objet",
+      "unavailable": "Indisponible",
+      "stillNeeded": "Reste à faire",
+      "link": "{{chip}} pour {{orgName}}",
+      "noActiveContract": "Aucun contrat actif",
+      "noBackup": "Aucune sauvegarde configurée"
+    },
+    "repair": {
+      "sites": "Ouvrir l'onglet Sites de {{orgName}}",
+      "devices": "Ouvrir l'onglet Appareils de {{orgName}}",
+      "policies": "Ouvrir les politiques de configuration",
+      "contacts": "Ouvrir l'onglet Contacts de {{orgName}}",
+      "settings": "Ouvrir les paramètres de {{orgName}}",
+      "billing": "Ouvrir l'onglet Facturation de {{orgName}}",
+      "backup": "Ouvrir la sauvegarde de {{orgName}}"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "Filtre DNS" },
+      "state": { "linked": "Lié", "pending": "En attente", "error": "Nécessite une attention", "identity": "Identité seulement", "not_linked": "Non lié" },
+      "reason": {
+        "suggested_match": "Correspondance suggérée, pas encore confirmée",
+        "sync_error": "Échec de la dernière synchronisation",
+        "consent_pending": "En attente du consentement Microsoft",
+        "expired": "Connexion expirée",
+        "degraded": "Connexion dégradée",
+        "suspended": "Connexion suspendue",
+        "error": "La connexion a signalé une erreur",
+        "never_synced": "Jamais synchronisé",
+        "sync_failed": "Échec de la synchronisation du connecteur",
+        "disabled": "Connexion désactivée",
+        "connector_error": "Connecteur inactif ou en échec"
+      },
+      "notLinked": "{{system}} non lié",
+      "nothingLinked": "Rien de lié",
+      "connectorMuted": "Le connecteur {{system}} n'est pas connecté",
+      "badgeLabel": "{{orgName}} : {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}} : {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} doit être reconnecté",
+          "disconnected": "{{system}} est déconnecté",
+          "error": "Le connecteur {{system}} a une erreur",
+          "disabled": "Le connecteur {{system}} est désactivé"
+        },
+        "openSettings": "Ouvrir les paramètres {{system}}"
+      }
+    },
+    "tickets": { "open": "{{count}} ouverts", "awaiting": "{{count}} en attente du client", "sla": "{{count}} SLA dépassés" },
+    "meta": {
+      "workspace": "Espace de travail",
+      "devices_one": "{{count}} appareil",
+      "devices_other": "{{count}} appareils",
+      "sites_one": "{{count}} site",
+      "sites_other": "{{count}} sites",
+      "archivedBadge": "Archivée",
+      "archivingBadge": "Archivage en cours…",
+      "keptIndefinitely": "Conservée indéfiniment",
+      "purgeToday": "Suppression définitive aujourd'hui",
+      "purgeCountdown_one": "Suppression définitive dans {{count}} jour",
+      "purgeCountdown_other": "Suppression définitive dans {{count}} jours"
+    },
+    "reorder": {
+      "handle": "Réorganiser {{name}}",
+      "hint": "Utilisez les flèches haut et bas pour déplacer cette organisation.",
+      "dragToReorder": "Glisser pour réorganiser",
+      "moved": "{{name}} déplacée en position {{position}} sur {{total}}"
+    },
+    "footer": {
+      "summary": "{{accounts}} comptes actifs · {{devices}} appareils",
+      "summaryWithTickets": "{{accounts}} comptes actifs · {{devices}} appareils · {{tickets}} tickets ouverts",
+      "manualHint": "Ordre manuel : faites glisser une ligne ou utilisez les flèches sur sa poignée."
+    },
+    "empty": {
+      "title": "Aucune organisation pour l'instant",
+      "description": "Ajoutez votre premier client pour commencer à suivre la configuration et les données du compte.",
+      "noMatches": "Aucune organisation ne correspond à votre recherche ou à votre filtre."
+    },
+    "archived": {
+      "loading": "Chargement des organisations archivées…",
+      "empty": "Aucune organisation archivée.",
+      "noMatches": "Aucune organisation archivée ne correspond à votre recherche.",
+      "truncatedNote": "Affichage des {{count}} premières organisations archivées. Effectuez une recherche pour affiner la liste.",
+      "fetchError": "Échec du chargement des organisations archivées"
+    },
+    "restore": {
+      "success": "{{name}} restaurée — statut : {{status}}.",
+      "recreateRequiredNote": "Avant qu'elle soit à nouveau pleinement utilisable : {{items}}",
+      "suspendedNote": "Elle était suspendue avant son archivage ; elle a donc été restaurée à l'état suspendu — réglez ce point avant qu'elle ne reprenne un accès normal.",
+      "errors": {
+        "restore": "Échec de la restauration de l'organisation",
+        "mfaRequired": "La restauration des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
+        "purging": "Cette organisation est déjà en cours de suppression définitive et ne peut plus être restaurée."
+      }
+    },
+    "add": {
+      "title": "Ajouter l’organisation",
+      "description": "Créez une nouvelle organisation avec les détails ci-dessous.",
+      "submit": "Créer une organisation",
+      "created": "{{name}} ajoutée. Sa ligne indique ce qu'il reste à configurer."
+    },
+    "errors": {
+      "fetchOrganizations": "Impossible de récupérer des organisations",
+      "generic": "Une erreur s’est produite",
+      "saveOrder": "Impossible d’enregistrer l’ordre organisationnel",
+      "saveOrganization": "Impossible d’enregistrer l’organisation",
+      "readiness": "Impossible de vérifier la préparation de certaines organisations."
+    }
+  },
+  "shared": {
+    "sortableTh": {
+      "ascending": "Croissant",
+      "descending": "Décroissant",
+      "sortBy": "Trier par {{label}}",
+      "sortByWithDirection": "Trier par {{label}}, {{direction}}"
     }
   }
 }

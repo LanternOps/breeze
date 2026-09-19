@@ -40,6 +40,7 @@ import {
   PamDeviceMoveBlockedError,
 } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
+import { assertDeviceTicketsNotPinnedToDeliverable, TicketServiceError } from '../../services/ticketService';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -240,10 +241,13 @@ moveOrgRoutes.post(
         // action_intents composites must stay IMMEDIATE so a newly added
         // referencing row type fails fast instead of silently at COMMIT.
         //
+        // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third
+        // composite (ticket_id, org_id) child FK, same shape and same reason.
+        //
         // Safe to precede the org lock below: SET CONSTRAINTS takes no table
         // locks, so it does not participate in this transaction's lock order.
         await tx.execute(
-          sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`,
+          sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED`,
         );
         // Creation barrier / cross-org move lock order (#3778): BOTH organizations
         // FOR SHARE, ascending UUID, as the FIRST statement of this transaction —
@@ -262,6 +266,13 @@ moveOrgRoutes.post(
         if (!lockedTarget) throw new OrgVanishedDuringMoveError('target');
         if (!lockedSource) throw new OrgVanishedDuringMoveError('source');
         await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId });
+        // #5573 W02 — a ticket on this device that is a service deliverable's
+        // work item pins it to the deliverable's org. `tickets` is in
+        // getDeviceOrgDenormalizedTables(), so the loop below would re-stamp
+        // its org_id and trip sd_occ_ticket_org_fk (deliberately NOT deferred
+        // by name above) as an opaque 23503. Cheap precondition, same 409 the
+        // ticket-level move answers with.
+        await assertDeviceTicketsNotPinnedToDeliverable(tx, deviceId, sourceOrgId);
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
 
@@ -330,6 +341,33 @@ moveOrgRoutes.post(
         await tx.execute(
           sql`UPDATE manual_assets SET linked_device_id = NULL
               WHERE linked_device_id = ${deviceId}::uuid`,
+        );
+
+        // #5329 (M365 tenant sync, spec §3.4) — m365_intune_devices links a
+        // Breeze device to its Intune record via the composite FK
+        // (breeze_device_id, org_id) -> devices(id, org_id). Once the device
+        // leaves the org that link is not merely stale but unrepresentable, so
+        // null it. The ROW survives: it is the SOURCE org's Intune snapshot and
+        // must outlive the link. The next Intune run in the NEW org re-links the
+        // device if it is managed there.
+        //
+        // Placement is load-bearing, exactly as for manual_assets above: the FK
+        // is DEFERRABLE INITIALLY IMMEDIATE, so its check fires at the end of
+        // the `UPDATE devices SET org_id` statement immediately below.
+        //
+        // Unlike the manual_assets case there is no trigger-side mirror at all:
+        // breeze_device_child_orgid_tables() requires a column literally named
+        // `device_id`, and this one is `breeze_device_id`, so
+        // breeze_cascade_device_org_id() never sees the table. This statement is
+        // the only detach on any path.
+        //
+        // Scoped to the SOURCE org as well as the device. An org MERGE never
+        // reaches this route: it deletes the loser org's m365_intune_devices
+        // rows outright in the resolve phase (services/orgMergeCustomExecutors.ts).
+        await tx.execute(
+          sql`UPDATE m365_intune_devices SET breeze_device_id = NULL
+              WHERE breeze_device_id = ${deviceId}::uuid
+                AND org_id = ${sourceOrgId}::uuid`,
         );
 
         // Flip the device row first so any concurrent agent heartbeat
@@ -439,6 +477,32 @@ moveOrgRoutes.post(
         await tx.execute(
           sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, anomaly_incident_id = NULL
               WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // #5022 W01: script_executions IS re-stamped to the target org (it is
+        // in CORE_DEVICE_ORG_DENORMALIZED_TABLES, core.ts), but ai_agent_runs
+        // deliberately is NOT (the statement directly above), and ai_sessions
+        // is re-stamped only when it is device-bound — a device-less chat
+        // session stays behind. Either way a moved execution can end up
+        // pointing at a session or run in a DIFFERENT tenant, and
+        // /devices/:id/scripts would then serve a foreign id to the target
+        // org. Sever both pointers; RETAIN ai_initiator_kind, so the fact that
+        // an AI did the work survives the move while the cross-tenant pointer
+        // does not.
+        //
+        // Like the ai_agent_runs statement above, this normally matches
+        // NOTHING: the devices row was already flipped earlier in this same
+        // transaction, firing breeze_cascade_device_org_id(), whose body
+        // carries an identical statement (2026-10-16-182100-ai-origin-
+        // attribution.sql). Kept as a route-local mirror so the detach is
+        // visible where the move is read, and so the route still detaches if
+        // the trigger is dropped. Both copies are convergent — whichever runs
+        // first wins and the other matches nothing.
+        await tx.execute(
+          sql`UPDATE script_executions
+                 SET ai_session_id = NULL, ai_agent_run_id = NULL
+               WHERE device_id = ${deviceId}::uuid
+                 AND (ai_session_id IS NOT NULL OR ai_agent_run_id IS NOT NULL)`,
         );
 
         // AI Operator task history stays with the SOURCE org too (#5205 W03,
@@ -810,6 +874,24 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_email_links')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // ticket_checklist_items (#5783 W01) denormalizes org_id from its
+        // ticket and has no device_id, so neither the generic loop nor
+        // breeze_cascade_device_org_id() (which discovers its tables BY the
+        // device_id column) reaches it. Tickets bound to this device move org,
+        // so their checklist rows must follow via the same tickets join, or the
+        // source org keeps read access to this device's checklist steps after
+        // the move and the target org loses them. Placed AFTER
+        // ticket_email_links to extend — not reorder — the documented global
+        // lock order; moveTicketOrg's loop appends it last for the same reason.
+        //
+        // Unlike the statements above, this table's FK is composite and
+        // DEFERRABLE INITIALLY IMMEDIATE, which is why
+        // ticket_checklist_items_ticket_org_fk is named in this transaction's
+        // SET CONSTRAINTS … DEFERRED at the top.
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_checklist_items')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in
         // core.ts): alert_correlation_groups, alert_correlation_members and
         // ai_alert_verdicts all denormalize org_id but have NO device_id
@@ -1042,6 +1124,11 @@ moveOrgRoutes.post(
       // failed-move audit.
       if (err instanceof TicketMoveCurrencyBlockedError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
+      }
+      // #5573 W02 — same shape: the transaction rolled back untouched, so this
+      // is an explainable refusal, not a failure worth Sentry.
+      if (err instanceof TicketServiceError && err.code === 'DELIVERABLE_TICKET_PINNED') {
+        return c.json({ error: err.message, code: err.code }, 409);
       }
       // A row deleted under us is a lost race, not an exception: the
       // transaction rolled back, so answer exactly as the pre-transaction

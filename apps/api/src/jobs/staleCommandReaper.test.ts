@@ -27,6 +27,7 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     targetConfig: 'restore_jobs.target_config',
     completedAt: 'restore_jobs.completed_at',
     updatedAt: 'restore_jobs.updated_at',
+    createdAt: 'restore_jobs.created_at',
   },
   backupJobsTable: {
     id: 'backup_jobs.id',
@@ -139,7 +140,8 @@ import {
   reapStaleSoftwareDeploymentResults,
   resolveMaxReapPerRun,
   SOFTWARE_INSTALL_TIMEOUT_MS,
-  reapStaleScriptExecutions
+  reapStaleScriptExecutions,
+  reapCommandlessPendingRestores,
 } from './staleCommandReaper';
 
 function selectChain(resolvedValue: unknown) {
@@ -1529,5 +1531,38 @@ describe('reapStaleScriptExecutions terminal-command guard (#3097)', () => {
     const written = execSet.mock.calls[0]![0];
     expect(written.status).toBe('timeout');
     expect(String(written.errorMessage)).toContain('no response from agent');
+  });
+});
+
+describe('reapCommandlessPendingRestores (D18 W01 §3.2 F8)', () => {
+  it('fails a commandless pending restore_jobs row older than 1h', async () => {
+    updateMock.mockImplementation(() => backupUpdateChain([{ id: 'restore-commandless-old' }]));
+
+    const reaped = await reapCommandlessPendingRestores();
+
+    expect(reaped).toBe(1);
+  });
+
+  it('does not touch a restore that already has a command_id (returns 0 rows from the DB-side WHERE)', async () => {
+    updateMock.mockImplementation(() => backupUpdateChain([]));
+
+    const reaped = await reapCommandlessPendingRestores();
+
+    expect(reaped).toBe(0);
+  });
+
+  it('sets status to failed with a distinguishing errorLog-equivalent detail', async () => {
+    let capturedSet: Record<string, unknown> | undefined;
+    updateMock.mockImplementation(() => ({
+      set: (values: Record<string, unknown>) => {
+        capturedSet = values;
+        return { where: () => ({ returning: vi.fn().mockResolvedValue([{ id: 'restore-1' }]) }) };
+      },
+    }));
+
+    await reapCommandlessPendingRestores();
+
+    expect(capturedSet?.status).toBe('failed');
+    expect(capturedSet?.completedAt).toBeInstanceOf(Date);
   });
 });

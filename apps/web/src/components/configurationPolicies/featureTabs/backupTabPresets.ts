@@ -217,6 +217,16 @@ export const LINUX_WHOLE_MACHINE_EXCLUDES: string[] = [
   "/swapfile",
   "/swap.img",
   "**/lost+found/**",
+  // #5581: the agent's own live checkpoint journal and bare-metal rebuild
+  // scratch space. The journal file GROWS across the very run that is
+  // backing it up (a Record append per uploaded file) — capturing it is
+  // exactly the "manifest describes stale bytes" failure mode, and it is
+  // internal agent state, never something an operator asked to back up.
+  // Defense in depth alongside the agent's own hard-exclude of its
+  // resolved journal directory regardless of these presets (see
+  // agent/internal/backup/backup.go's collectBackupFilesFromPaths).
+  "/var/lib/breeze/backup-journal/**",
+  "/var/lib/breeze/rebuild/**",
 ];
 
 export const WINDOWS_WHOLE_MACHINE_EXCLUDES: string[] = [
@@ -228,6 +238,8 @@ export const WINDOWS_WHOLE_MACHINE_EXCLUDES: string[] = [
   "/Windows/Temp/**",
   "/Windows/SoftwareDistribution/Download/**",
   "**/AppData/Local/Temp/**",
+  // #5581 — see the matching Linux comment above.
+  "/ProgramData/Breeze/data/backup-journal/**",
 ];
 
 export type WholeMachinePreset = {

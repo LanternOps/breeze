@@ -72,6 +72,9 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  // remoteDesktopStartIntent.ts (real impl, not mocked in this file) throws
+  // unless this reports an open db access context.
+  hasDbAccessContext: vi.fn(() => true),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -90,6 +93,9 @@ vi.mock('../../db/schema', () => ({
     bytesTransferred: 'remoteSessions.bytesTransferred',
     recordingUrl: 'remoteSessions.recordingUrl',
     createdAt: 'remoteSessions.createdAt',
+    desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
+    terminalGeneration: 'remoteSessions.terminalGeneration',
+    terminationPhase: 'remoteSessions.terminationPhase',
   },
   devices: {
     id: 'devices.id',
@@ -227,7 +233,7 @@ vi.mock('../../services/partnerTrust', () => ({
   }),
 }));
 
-const isRevocationLeaseCapable = vi.fn<() => Promise<boolean>>(async () => true);
+const isDesktopStartCapable = vi.fn<() => Promise<boolean>>(async () => true);
 const LEASE_FIXTURE = {
   token: 'lease-token',
   expiresAt: 1_000_060_000,
@@ -244,7 +250,7 @@ const renewRevocationLease = vi.fn<() => Promise<Record<string, unknown>>>(async
 vi.mock('../../services/remoteRevocationLease', () => ({
   AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
   AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
-  isRevocationLeaseCapable: (...a: unknown[]) => isRevocationLeaseCapable(...(a as [])),
+  isDesktopStartCapable: (...a: unknown[]) => isDesktopStartCapable(...(a as [])),
   prepareRevocationLeaseForStart: (...a: unknown[]) => prepareRevocationLeaseForStart(...(a as [])),
   renewRevocationLease: (...a: unknown[]) => renewRevocationLease(...(a as [])),
 }));
@@ -278,6 +284,7 @@ function makeRemoteSessionRow(deviceId: string) {
     userId: 'user-1',
     type: 'desktop',
     status: 'active',
+    terminationPhase: undefined as 'none' | 'pending' | 'confirmed' | undefined,
     startedAt: new Date('2026-01-01T00:00:00Z'),
     endedAt: null,
     durationSeconds: null,
@@ -293,6 +300,22 @@ function makeRemoteSessionRow(deviceId: string) {
 
 // DELETE /sessions/stale, no deviceId: the device/site subquery is embedded in
 // the one atomic update().where().returning() claim.
+// terminalSessionReturning's shape (SEC-038 W03): every stale/teardown UPDATE
+// runs through toTerminalSessionRow, which throws on a missing generation.
+function staleTerminalRow(id: string) {
+  return {
+    id,
+    type: 'desktop',
+    deviceId: DEVICE_IN_ALLOWED,
+    orgId: '',
+    userId: '',
+    status: 'disconnected',
+    promptMode: null,
+    terminalGeneration: 1n,
+    terminationPhase: 'pending',
+  };
+}
+
 function rigStaleNarrowing(staleIds: string[]) {
   const deviceWhere = vi.fn().mockReturnValue({ __siteScopedDeviceSubquery: true });
   vi.mocked(db.select).mockReturnValueOnce({
@@ -301,7 +324,7 @@ function rigStaleNarrowing(staleIds: string[]) {
   const staleWhere = vi.fn();
   const returning = vi
     .fn()
-    .mockResolvedValue(staleIds.map((id) => ({ id, type: 'desktop', deviceId: DEVICE_IN_ALLOWED })));
+    .mockResolvedValue(staleIds.map((id) => staleTerminalRow(id)));
   vi.mocked(db.update).mockReturnValueOnce({
     set: vi.fn().mockReturnValue({ where: staleWhere.mockReturnValue({ returning }) }),
   } as never);
@@ -313,11 +336,79 @@ function rigStaleUnrestricted(staleIds: string[]) {
   const staleWhere = vi.fn();
   const returning = vi
     .fn()
-    .mockResolvedValue(staleIds.map((id) => ({ id, type: 'desktop', deviceId: DEVICE_IN_ALLOWED })));
+    .mockResolvedValue(staleIds.map((id) => staleTerminalRow(id)));
   vi.mocked(db.update).mockReturnValueOnce({
     set: vi.fn().mockReturnValue({ where: staleWhere.mockReturnValue({ returning }) }),
   } as never);
   return { staleWhere };
+}
+
+// Rigs the full commitDesktopStartIntent / assertDesktopStartIntentCurrent DB
+// sequence that a successful desktop offer now drives through
+// remoteDesktopStartIntent.ts's real implementation (SEC-038 W02, not mocked
+// in this file): the row-locked read, the generation-bump update, and the
+// pre-publication re-read. `includeHardwareLookup` covers the REST route's
+// extra device-hardware gpu select that runs before the commit.
+function rigDesktopStartIntent(options: {
+  lockedStatus?: string;
+  committedGeneration?: bigint;
+  includeHardwareLookup?: boolean;
+} = {}) {
+  const {
+    lockedStatus = 'pending',
+    committedGeneration = 1n,
+    includeHardwareLookup = true,
+  } = options;
+
+  // A prior test in a describe whose beforeEach only calls vi.clearAllMocks()
+  // (not mockReset()) can leave an unconsumed mockReturnValueOnce queued on
+  // these mocks — e.g. when a test exits the offer flow early (agent-upgrade
+  // 503) after consuming only the hardware+lock selects, stranding the
+  // pre-send-reread once-value for the NEXT test to dequeue out of order.
+  // Reset before queuing this test's own sequence so it can never inherit one.
+  vi.mocked(db.select).mockReset();
+  vi.mocked(db.update).mockReset();
+
+  if (includeHardwareLookup) {
+    // (a) device hardware gpu lookup: select().from().where().limit() -> []
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+  }
+
+  // (b) commit: row lock read — select().from().where().limit().for('update')
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockReturnValue({
+          for: vi.fn().mockResolvedValue([
+            { status: lockedStatus, terminationPhase: 'none', generation: 0n },
+          ]),
+        }),
+      }),
+    }),
+  } as never);
+
+  // (c) commit: generation-bump update — update().set().where().returning()
+  const returning = vi.fn().mockResolvedValue([{ generation: committedGeneration }]);
+  vi.mocked(db.update).mockReturnValueOnce({
+    set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
+  } as never);
+
+  // (d) pre-send re-read — select().from().where().limit()
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([
+          { terminationPhase: 'none', generation: committedGeneration },
+        ]),
+      }),
+    }),
+  } as never);
+
+  return { returning };
 }
 
 function rigLockedCleanupDevice(siteId: string | null, orgId = ORG_ID) {
@@ -474,6 +565,23 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(countWhere).toHaveBeenCalledTimes(1);
       expect(listWhere).toHaveBeenCalledTimes(1);
     });
+
+    // SEC-038 W06 (#5537): the list serializer carries terminationPhase
+    // through from the row and defaults a missing value to 'none'.
+    it('serializes terminationPhase on every list row', async () => {
+      rigListSessionsUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', terminationPhase: 'pending' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2' },
+      ]);
+
+      const res = await app.request('/remote/sessions', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((s: { terminationPhase: string }) => s.terminationPhase)).toEqual(['pending', 'none']);
+    });
   });
 
   describe('GET /sessions/history', () => {
@@ -597,6 +705,24 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(statsWhere).toHaveBeenCalledTimes(1);
       expect(listWhere).toHaveBeenCalledTimes(1);
     });
+
+    // SEC-038 W06 (#5537): this is the endpoint SessionHistory.tsx renders, so
+    // a pending teardown must reach the wire distinctly from a confirmed end.
+    it('serializes terminationPhase on every history row', async () => {
+      rigSessionHistoryUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', terminationPhase: 'pending' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2', status: 'disconnected', terminationPhase: 'confirmed' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-3', status: 'failed' },
+      ]);
+
+      const res = await app.request('/remote/sessions/history', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((s: { terminationPhase: string }) => s.terminationPhase)).toEqual(['pending', 'confirmed', 'none']);
+    });
   });
 
   describe('DELETE /sessions/stale', () => {
@@ -616,11 +742,13 @@ describe('remote sessions — site-scope enforcement', () => {
       // one UPDATE predicate rather than a stale SELECT-id snapshot.
       expect(staleWhere).toHaveBeenCalledTimes(1);
       // Wiring: the disconnected rows must be handed to the agent-stop teardown,
-      // shaped {id,type,deviceId}. Dropping this call silently reintroduces the
-      // "live stream survives a /stale sweep" vulnerability (PR #1283).
+      // shaped as the terminal-intent contract's returning projection
+      // (id/type/deviceId/status/terminalGeneration/terminationPhase).
+      // Dropping this call silently reintroduces the "live stream survives a
+      // /stale sweep" vulnerability (PR #1283).
       expect(teardownDisconnectedSessions).toHaveBeenCalledTimes(1);
       expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
-        { id: 'sess-allowed', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
+        staleTerminalRow('sess-allowed'),
       ]);
     });
 
@@ -668,9 +796,7 @@ describe('remote sessions — site-scope enforcement', () => {
 
     it('locks an allowed exact device before atomically claiming only its stale sessions', async () => {
       const { forUpdate } = rigLockedCleanupDevice(ALLOWED_SITE);
-      const returning = vi.fn().mockResolvedValue([
-        { id: 'sess-allowed', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
-      ]);
+      const returning = vi.fn().mockResolvedValue([staleTerminalRow('sess-allowed')]);
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({ returning }),
@@ -686,7 +812,7 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(await res.json()).toEqual({ cleaned: 1, ids: ['sess-allowed'] });
       expect(forUpdate).toHaveBeenCalledWith('update');
       expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
-        { id: 'sess-allowed', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
+        staleTerminalRow('sess-allowed'),
       ]);
     });
 
@@ -706,8 +832,8 @@ describe('remote sessions — site-scope enforcement', () => {
       // Wiring: even on the unrestricted path the disconnected rows are torn down.
       expect(teardownDisconnectedSessions).toHaveBeenCalledTimes(1);
       expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
-        { id: 'sess-1', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
-        { id: 'sess-2', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
+        staleTerminalRow('sess-1'),
+        staleTerminalRow('sess-2'),
       ]);
     });
 
@@ -730,7 +856,10 @@ describe('remote sessions — site-scope enforcement', () => {
     // creating the new one. That sweep marks rows disconnected then must push
     // teardownDisconnectedSessions(rows) so a still-live desktop/terminal for a
     // stale row gets the agent stop — not just a DB flip. Wiring guard (PR #1283).
-    function rigCreateSession(staleRows: Array<{ id: string; type: string; deviceId: string }>) {
+    function rigCreateSession(staleRows: Array<{
+      id: string; type: string; deviceId: string;
+      status?: string; terminalGeneration?: bigint; terminationPhase?: string;
+    }>) {
       // 1. stale-terminate UPDATE: chain exposes a `.returning()` fn that the
       //    route detects (typeof === 'function') and awaits.
       const staleReturning = vi.fn().mockResolvedValue(staleRows);
@@ -777,7 +906,7 @@ describe('remote sessions — site-scope enforcement', () => {
         osType: 'linux',
         status: 'online',
       });
-      const staleRows = [{ id: 'stale-1', type: 'desktop', deviceId: DEVICE_IN_ALLOWED }];
+      const staleRows = [staleTerminalRow('stale-1')];
       rigCreateSession(staleRows);
 
       const res = await app.request('/remote/sessions', {
@@ -787,7 +916,7 @@ describe('remote sessions — site-scope enforcement', () => {
       });
 
       expect(res.status).toBe(201);
-      // Wiring: the swept {id,type,deviceId} rows must be handed to the
+      // Wiring: the swept terminal-intent rows must be handed to the
       // agent-stop teardown. Dropping this reintroduces the "stale row left a
       // live stream running" hole.
       expect(teardownDisconnectedSessions).toHaveBeenCalledTimes(1);
@@ -899,24 +1028,39 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       expect((await res.json()).id).toBe(SESSION_ID);
     });
+
+    // SEC-038 W06 (#5537): the web ConnectDesktopButton polls this route and
+    // must never read a session whose teardown is still pending at the
+    // endpoint as "connected", so the phase has to be on the wire.
+    it.each(['none', 'pending', 'confirmed'] as const)('surfaces terminationPhase=%s so the viewer/UI can tell a pending teardown from a live session', async (terminationPhase) => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: terminationPhase === 'none' ? 'active' : 'disconnected', deviceId: DEVICE_IN_ALLOWED, webrtcOffer: 'v=0', webrtcAnswer: null, iceCandidates: [], startedAt: null, endedAt: null, durationSeconds: null, bytesTransferred: null, recordingUrl: null, errorMessage: null, createdAt: new Date('2026-01-01T00:00:00Z'), terminationPhase },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', hostname: 'h', osType: 'linux', status: 'online' },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'Test User', email: 'test@example.com' }]) }),
+        }),
+      } as never);
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}`, {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).terminationPhase).toBe(terminationPhase);
+    });
   });
 
   describe('POST /sessions/:id/offer', () => {
     const offerBody = JSON.stringify({ offer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n' });
 
-    function rigOfferUpdate(updatedStatus = 'connecting') {
-      const returning = vi
-        .fn()
-        .mockResolvedValue([{ id: SESSION_ID, status: updatedStatus, webrtcOffer: 'v=0\r\n' }]);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
-      } as never);
-      // device hardware lookup (gpu) — select().from().where().limit()
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
-        }),
-      } as never);
+    function rigOfferUpdate() {
+      // The route no longer issues its own db.update: the offer commit (row
+      // lock + generation bump) plus the device-hardware gpu lookup and the
+      // pre-send re-read all run through remoteDesktopStartIntent.ts's real
+      // implementation. See rigDesktopStartIntent.
+      return rigDesktopStartIntent({ lockedStatus: 'pending' });
     }
 
     it('returns 403 when caller is site-restricted away from the session device site', async () => {
@@ -1149,7 +1293,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    isRevocationLeaseCapable.mockResolvedValue(true);
+    isDesktopStartCapable.mockResolvedValue(true);
     prepareRevocationLeaseForStart.mockResolvedValue({
       ok: true,
       lease: LEASE_FIXTURE,
@@ -1183,7 +1327,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
 
   it('refuses to CREATE a desktop session against an agent with no lease support (503 agent_upgrade_required)', async () => {
     rigDeviceOnline();
-    isRevocationLeaseCapable.mockResolvedValue(false);
+    isDesktopStartCapable.mockResolvedValue(false);
 
     const res = await app.request('/remote/sessions', {
       method: 'POST',
@@ -1198,7 +1342,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
 
   it('fails CLOSED when the capability probe itself throws', async () => {
     rigDeviceOnline();
-    isRevocationLeaseCapable.mockRejectedValue(new Error('db down'));
+    isDesktopStartCapable.mockRejectedValue(new Error('db down'));
 
     const res = await app.request('/remote/sessions', {
       method: 'POST',
@@ -1240,7 +1384,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
 
   it('does NOT gate terminal sessions on the desktop lease capability', async () => {
     rigDeviceOnline();
-    isRevocationLeaseCapable.mockResolvedValue(false);
+    isDesktopStartCapable.mockResolvedValue(false);
 
     const res = await app.request('/remote/sessions', {
       method: 'POST',
@@ -1249,7 +1393,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(isRevocationLeaseCapable).not.toHaveBeenCalled();
+    expect(isDesktopStartCapable).not.toHaveBeenCalled();
   });
 
   function rigOffer() {
@@ -1257,18 +1401,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
       session: { id: SESSION_ID2, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_ID2 },
       device: { id: DEVICE_ID2, orgId: ORG_ID2, siteId: null, agentId: 'agent-1' },
     });
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: SESSION_ID2, status: 'connecting', webrtcOffer: 'sdp' }]),
-        }),
-      }),
-    } as never);
-    (db as any).select = vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
-      }),
-    });
+    rigDesktopStartIntent({ lockedStatus: 'pending' });
   }
 
   const offerBody = JSON.stringify({ offer: 'v=0\r\n' });
@@ -1448,8 +1581,13 @@ describe('POST /remote/sessions/:id/end', () => {
     app.route('/remote', sessionRoutes);
   });
 
+  // The terminal-intent contract's returning() is unqualified on End (the
+  // route calls toTerminalSessionRow(updated) on the full row), so the mocked
+  // row must carry the generation/phase columns or that call throws.
+  const endTerminalFields = { terminalGeneration: 1n, terminationPhase: 'pending' as const };
+
   it('dispatches stop_desktop through the durable relay, never the socket-local send', async () => {
-    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
 
     const res = await endRequest();
 
@@ -1457,15 +1595,18 @@ describe('POST /remote/sessions/:id/end', () => {
     // The agent's command socket routinely lives on another API replica, where
     // sendCommandToAgent silently returns false and the stream keeps running.
     expect(sendCommandToAgent).not.toHaveBeenCalled();
+    // The generation is bound into both the command id and the payload
+    // (SEC-038 W03) so the agent's fence and the API's confirm can bind the
+    // stop back to this exact terminal decision.
     expect(dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
-      id: `desk-stop-${SESSION_ID}`,
+      id: `desk-stop-${SESSION_ID}-1`,
       type: 'stop_desktop',
-      payload: { sessionId: SESSION_ID },
+      payload: { sessionId: SESSION_ID, terminalGeneration: '1' },
     });
   });
 
   it('does not await the relay ack — the response lands before the dispatch settles', async () => {
-    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
     // The relay branch polls Redis for up to 5s. Awaiting it inside the auth
     // middleware's ambient request transaction is the #1105 pool-poison
     // pattern, so the handler must return without it.
@@ -1480,7 +1621,7 @@ describe('POST /remote/sessions/:id/end', () => {
   });
 
   it('warns and reports to Sentry when the relay reports the stop was NOT delivered', async () => {
-    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
     // dispatchCommandToAgent RESOLVES with a status; it does not throw. A bare
     // try/catch around it would therefore be silent for every real
     // non-delivery — which is the case that leaves the peer-to-peer stream up.
@@ -1501,7 +1642,7 @@ describe('POST /remote/sessions/:id/end', () => {
   });
 
   it('distinguishes a faulted relay from an undelivered stop', async () => {
-    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
     dispatchCommandToAgent.mockResolvedValueOnce({ status: 'infrastructure_error', message: 'relay enqueue failed' });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -1516,7 +1657,7 @@ describe('POST /remote/sessions/:id/end', () => {
   });
 
   it('still answers 200 when the relay throws (teardown is best-effort, the row is already terminal)', async () => {
-    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
     dispatchCommandToAgent.mockRejectedValueOnce(new Error('relay down'));
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -1587,7 +1728,7 @@ describe('POST /remote/sessions/:id/end', () => {
   });
 
   it('does NOT gate End on the remote-access policy — a disabled policy must never strand a live stream', async () => {
-    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
 
     const res = await endRequest();
 

@@ -43,6 +43,7 @@ const COUNTERS: AiAgentImpactCounters = {
   fixWatchesHeld: 0,
   fixWatchesRecurred: 0,
   narrativesDelivered: 0,
+  fleetDesignsDelivered: 0,
 };
 
 function renderDrawer(overrides: {
@@ -451,6 +452,7 @@ describe('ImpactWeightsDrawer', () => {
         fixWatchesHeld: 0,
         fixWatchesRecurred: 0,
         narrativesDelivered: 0,
+        fleetDesignsDelivered: 0,
       };
       renderDrawer({ counters: ZERO_COUNTERS });
 
