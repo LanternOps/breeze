@@ -138,14 +138,22 @@ function timeEntryActorFrom(auth: AuthContext) {
   };
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Preserve undefined on omission so the service applies the category default. */
+/**
+ * Preserve undefined on omission so the service applies the category default.
+ *
+ * A well-formed UUID is NOT trusted. It used to short-circuit the lookup, but a
+ * model hallucinates syntactically valid ids as readily as names, and an id the
+ * partner does not own reached the composite FK `(work_type_id, partner_id)`
+ * unchecked -- a 23503 raised inside the request transaction, which aborts it,
+ * so this function's own caller could only surface a raw 500. Both an id and a
+ * name are now matched against the partner's ACTIVE list and a miss returns the
+ * same enumerated refusal, which is also what steers the model to a real value.
+ */
 async function resolveWorkTypeId(raw: string | undefined, partnerId: string): Promise<string | undefined> {
   if (!raw) return undefined;
-  if (UUID_RE.test(raw)) return raw;
   const active = await listWorkTypes(partnerId, { includeInactive: false });
-  const match = active.find((w) => w.name.toLowerCase() === raw.trim().toLowerCase());
+  const needle = raw.trim().toLowerCase();
+  const match = active.find((w) => w.id.toLowerCase() === needle || w.name.toLowerCase() === needle);
   if (!match) {
     throw new TimeEntryServiceError(
       `Unknown work type "${raw}". Valid work types: ${active.map((w) => w.name).join(', ') || '(none configured)'}`,

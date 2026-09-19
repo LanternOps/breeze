@@ -18,7 +18,7 @@ vi.mock('../db', () => ({
   },
 }));
 
-import { archiveWorkType, createWorkType, WorkTypeServiceError } from './workTypeService';
+import { archiveWorkType, createWorkType, getActiveWorkType, updateWorkType, WorkTypeServiceError } from './workTypeService';
 
 const PARTNER = 'bbbbbbbb-2222-4222-8222-222222222222';
 
@@ -77,5 +77,33 @@ describe('createWorkType duplicate handling', () => {
     await expect(createWorkType(PARTNER, { name: 'Remote' })).rejects.toMatchObject({
       status: 409, code: 'WORK_TYPE_NAME_TAKEN',
     });
+  });
+});
+
+describe('getActiveWorkType', () => {
+  it('returns the ACTIVE row for the acting partner', async () => {
+    selectQueue.push([{ id: 'wt-1', partnerId: PARTNER, name: 'Remote', isActive: true }]);
+    await expect(getActiveWorkType('wt-1', PARTNER)).resolves.toMatchObject({ id: 'wt-1' });
+  });
+
+  // The composite FK (work_type_id, partner_id) raises 23503 INSIDE the request
+  // transaction, which aborts it -- a caught-after-the-fact mapping can only
+  // ever produce a raw 500. This lookup is the pre-write gate, so a miss must
+  // be null and never throw.
+  it('returns null when no row matches (unknown id, archived, or another partner)', async () => {
+    selectQueue.push([]);
+    await expect(getActiveWorkType('wt-missing', PARTNER)).resolves.toBeNull();
+  });
+});
+
+describe('updateWorkType', () => {
+  it('raises a 404 WORK_TYPE_NOT_FOUND when the id belongs to another partner', async () => {
+    const { db } = await import('../db');
+    (db.update as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([]) }) }),
+    }));
+    const err = await updateWorkType('wt-1', PARTNER, { name: 'Renamed' }).catch((e) => e);
+    expect(err).toBeInstanceOf(WorkTypeServiceError);
+    expect(err).toMatchObject({ status: 404, code: 'WORK_TYPE_NOT_FOUND' });
   });
 });

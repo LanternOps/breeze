@@ -9,6 +9,7 @@ import { PERMISSIONS } from '../services/permissions';
 import { ticketCategoryInputSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import { getActiveWorkType } from '../services/workTypeService';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const ticketCategoriesRoutes = new Hono();
@@ -26,6 +27,27 @@ const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
   }
   return next();
 };
+
+/**
+ * Tenant guard for the category's default work type, mirroring the parentId
+ * guard above: `(default_work_type_id, partner_id) -> work_types(id, partner_id)`
+ * is a composite FK, and a 23503 from it fires INSIDE the request transaction —
+ * which aborts it, so nothing downstream can turn that into a clean 400. An
+ * archived work type is refused too: it may stay stamped on history, but it
+ * must not become the default for new entries.
+ *
+ * Returns an error message, or null when there is nothing to check (`undefined`
+ * = field omitted, `null` = explicitly cleared).
+ */
+async function invalidDefaultWorkType(
+  defaultWorkTypeId: string | null | undefined,
+  partnerId: string,
+): Promise<string | null> {
+  if (defaultWorkTypeId == null) return null;
+  return (await getActiveWorkType(defaultWorkTypeId, partnerId))
+    ? null
+    : 'Default work type not found';
+}
 
 async function partnerCurrency(partnerId: string): Promise<string | null> {
   const rows = await db.select({ currencyCode: partners.currencyCode })
@@ -195,6 +217,9 @@ ticketCategoriesRoutes.post(
       }
     }
 
+    const workTypeError = await invalidDefaultWorkType(body.defaultWorkTypeId, auth.partnerId);
+    if (workTypeError) return c.json({ error: workTypeError }, 400);
+
     let rateCurrency: string | null = null;
     if (body.defaultHourlyRate != null) {
       rateCurrency = await partnerCurrency(auth.partnerId);
@@ -268,6 +293,23 @@ ticketCategoriesRoutes.patch(
     const conditions: SQL[] = [eq(ticketCategories.id, id)];
     if (auth.scope === 'partner' && auth.partnerId) {
       conditions.push(eq(ticketCategories.partnerId, auth.partnerId));
+    }
+
+    if (body.defaultWorkTypeId != null) {
+      // Partner scope: the caller's partner is authoritative. System scope:
+      // resolve the target category's partner first (same shape as parentId).
+      let targetPartnerId: string | null = auth.scope === 'partner' ? (auth.partnerId ?? null) : null;
+      if (!targetPartnerId) {
+        const catRows = await db
+          .select({ partnerId: ticketCategories.partnerId })
+          .from(ticketCategories)
+          .where(eq(ticketCategories.id, id))
+          .limit(1);
+        targetPartnerId = catRows[0]?.partnerId ?? null;
+        if (!targetPartnerId) return c.json({ error: 'Category not found' }, 404);
+      }
+      const workTypeError = await invalidDefaultWorkType(body.defaultWorkTypeId, targetPartnerId);
+      if (workTypeError) return c.json({ error: workTypeError }, 400);
     }
 
     const set: Record<string, unknown> = {

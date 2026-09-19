@@ -70,6 +70,7 @@ vi.mock('../../services/auditEvents', () => ({
 }));
 
 import { timeEntriesRoutes } from './index';
+import { TimeEntryServiceError } from '../../services/timeEntryService';
 
 const ADMIN_PERMS = { permissions: [{ resource: '*', action: '*' }] };
 const TIME_ENTRY_ID = '3f2f1d8e-1111-4222-8333-444455556666';
@@ -243,6 +244,41 @@ describe('POST /time-entries billed-state admission', () => {
     });
     expect(res.status).toBe(400);
     expect(serviceMocks.createTimeEntry).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /time-entries workTypeId admission', () => {
+  const WORK_TYPE_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+  const span = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };
+
+  const post = (body: unknown) => timeEntriesRoutes.request('/', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  it('threads a well-formed workTypeId to the service', async () => {
+    serviceMocks.createTimeEntry.mockResolvedValue({ id: TIME_ENTRY_ID, workTypeId: WORK_TYPE_ID });
+    const res = await post({ ...span, workTypeId: WORK_TYPE_ID });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.createTimeEntry.mock.calls[0]?.[0]).toMatchObject({ workTypeId: WORK_TYPE_ID });
+  });
+
+  it('rejects a malformed workTypeId at the validator, before the service', async () => {
+    const res = await post({ ...span, workTypeId: 'not-a-uuid' });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  // Foreign and archived ids are the SAME miss in the service (getActiveWorkType
+  // filters both). The route contract under test is that the refusal surfaces as
+  // a 400 with a machine-readable code -- never the raw 500 an uncaught composite
+  // -FK 23503 would produce once it aborted the request transaction.
+  it.each(['a foreign partner\'s work type', 'an archived work type'])('maps the service refusal for %s to 400 WORK_TYPE_NOT_FOUND', async () => {
+    serviceMocks.createTimeEntry.mockRejectedValue(
+      new TimeEntryServiceError('Unknown work type', 400, 'WORK_TYPE_NOT_FOUND'),
+    );
+    const res = await post({ ...span, workTypeId: WORK_TYPE_ID });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'WORK_TYPE_NOT_FOUND' });
   });
 });
 

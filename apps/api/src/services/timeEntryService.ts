@@ -4,6 +4,7 @@ import { timeEntries, ticketParts, tickets, ticketCategories, organizations, par
 import { workTypes } from '../db/schema/workTypes';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
+import { getActiveWorkType } from './workTypeService';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
 import { CURRENCY_CODES, isZeroDecimal, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
@@ -44,7 +45,9 @@ export type TimeEntryServiceErrorCode =
   | 'ENDED_AT_REQUIRED'
   | 'RANGE_OUTSIDE_SIGNAL'
   | 'INVALID_TZ'
-  | 'ORG_DENIED';
+  | 'ORG_DENIED'
+  /** 400 — a caller-supplied work_type_id that is not an ACTIVE row of the acting partner. */
+  | 'WORK_TYPE_NOT_FOUND';
 
 export class TimeEntryServiceError extends Error {
   constructor(
@@ -240,6 +243,33 @@ export function resolveDefaultRate(
   if (org?.defaultHourlyRate != null && org.rateCurrency === orgCurrency) return org.defaultHourlyRate;
   if (category?.defaultHourlyRate != null && category.rateCurrency === orgCurrency) return category.defaultHourlyRate;
   return null;
+}
+
+/**
+ * Refuse a caller-supplied work type that is not an ACTIVE row of the acting
+ * partner, BEFORE any write.
+ *
+ * `(work_type_id, partner_id) -> work_types(id, partner_id)` is a composite FK,
+ * so a foreign or archived id raises 23503 — inside the request-long
+ * `withDbAccessContext` transaction, which that violation ABORTS. Mapping it
+ * afterwards is impossible (every follow-up statement fails with 25P02 and the
+ * driver substitutes the raw error back in at commit — exactly the #2189 trap
+ * startTimer documents), so the caller receives a raw 500. Hence: validate
+ * first, never catch 23503.
+ *
+ * Only a caller-supplied, non-null id is checked. `undefined` means "apply the
+ * server-side default" and an explicit `null` means "no work type" — neither
+ * references a row. The CATEGORY default is deliberately exempt too: spec §3.1
+ * keeps retired categories supplying their default, and that id is already
+ * partner-consistent by the category's own composite FK.
+ */
+async function assertWorkTypeUsable(
+  workTypeId: string | null | undefined,
+  partnerId: string,
+): Promise<void> {
+  if (workTypeId == null) return;
+  if (await getActiveWorkType(workTypeId, partnerId)) return;
+  throw new TimeEntryServiceError('Unknown work type', 400, 'WORK_TYPE_NOT_FOUND');
 }
 
 async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
@@ -505,6 +535,7 @@ export async function createTimeEntry(
 
   const hourlyRate = input.hourlyRate !== undefined ? toRate(input.hourlyRate) : defaultRate;
   // Only undefined falls through; explicit null means no work type.
+  await assertWorkTypeUsable(input.workTypeId, partnerId);
   const workTypeId = input.workTypeId !== undefined ? input.workTypeId : defaultWorkTypeId;
   assertRepresentable(hourlyRate, currencyCode);
 
@@ -625,6 +656,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
   assertRepresentable(defaultRate, currencyCode);
 
   // Match manual entry stamping, including an explicit null from the caller.
+  await assertWorkTypeUsable(input.workTypeId, partnerId);
   const workTypeId = input.workTypeId !== undefined ? input.workTypeId : defaultWorkTypeId;
   const attempt = async () => {
     // D3: auto-stop the previous timer, then start the new one. The partial
@@ -776,6 +808,7 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   const link = typeof input.ticketId === 'string' ? await resolveAndLockTicketLink(input.ticketId, actor) : null;
   const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
   assertCanMutate(entry, actor);
+  await assertWorkTypeUsable(input.workTypeId, entry.partnerId);
   if (entry.billingStatus === 'billed' && BILLED_LOCKED_ENTRY_FIELDS.some((k) => input[k] !== undefined)) {
     throw new TimeEntryServiceError('This entry has been invoiced; only its description can change', 409, 'ENTRY_BILLED');
   }

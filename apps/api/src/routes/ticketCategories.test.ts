@@ -98,6 +98,11 @@ vi.mock('../db/schema', () => ({
   partners: { id: 'id', currencyCode: 'currencyCode' }
 }));
 
+const workTypeMocks = vi.hoisted(() => ({ getActiveWorkType: vi.fn() }));
+vi.mock('../services/workTypeService', () => ({
+  getActiveWorkType: (...args: unknown[]) => workTypeMocks.getActiveWorkType(...args),
+}));
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: writeRouteAuditMock,
 }));
@@ -845,7 +850,10 @@ describe('category default time entry minutes', () => {
 describe('category default work type', () => {
   const WORK_TYPE_ID = '9a8b7c6d-2222-4333-8444-555566667777';
 
-  beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
+  beforeEach(() => {
+    vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth();
+    workTypeMocks.getActiveWorkType.mockResolvedValue({ id: WORK_TYPE_ID, partnerId: 'p-1', name: 'Remote', isActive: true });
+  });
 
   it.each([WORK_TYPE_ID, null])('PATCH accepts and persists defaultWorkTypeId %s', async (defaultWorkTypeId) => {
     dbUpdateReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId }]);
@@ -914,5 +922,55 @@ describe('category default work type', () => {
     const res = await makeApp().request('/ticket-categories');
     expect(res.status).toBe(200);
     expect((await res.json()).data[0].defaultWorkTypeId).toBe(WORK_TYPE_ID);
+  });
+});
+
+// The composite FK (default_work_type_id, partner_id) -> work_types(id, partner_id)
+// raises 23503 INSIDE the request transaction, aborting it -- so the 400 has to
+// come from a pre-write check, exactly like the parentId guard above it.
+describe('category default work type tenancy guard', () => {
+  const FOREIGN_WORK_TYPE = 'cccccccc-3333-4333-8333-333333333333';
+
+  beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
+
+  it.each(['POST', 'PATCH'])('%s rejects a work type belonging to another partner with 400', async (method) => {
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    const path = method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CATEGORY_ID}`;
+    const res = await makeApp().request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId: FOREIGN_WORK_TYPE }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/work type/i);
+    const { db } = await import('../db');
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(workTypeMocks.getActiveWorkType).toHaveBeenCalledWith(FOREIGN_WORK_TYPE, 'p-1');
+  });
+
+  it.each(['POST', 'PATCH'])('%s rejects an ARCHIVED work type with 400', async (method) => {
+    // getActiveWorkType filters is_active, so an archived row is the same miss.
+    workTypeMocks.getActiveWorkType.mockResolvedValue(null);
+    const path = method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CATEGORY_ID}`;
+    const res = await makeApp().request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId: 'dddddddd-4444-4444-8444-444444444444' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['POST', 'PATCH'])('%s does NOT look up an explicit null (clearing the default)', async (method) => {
+    dbInsertReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId: null }]);
+    dbUpdateReturning.mockResolvedValue([{ id: CATEGORY_ID, partnerId: 'p-1', defaultWorkTypeId: null }]);
+    const path = method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CATEGORY_ID}`;
+    const res = await makeApp().request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hardware', defaultWorkTypeId: null }),
+    });
+    expect(res.status).toBe(method === 'POST' ? 201 : 200);
+    expect(workTypeMocks.getActiveWorkType).not.toHaveBeenCalled();
   });
 });

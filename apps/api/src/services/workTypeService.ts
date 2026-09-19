@@ -2,8 +2,6 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { workTypes, type WorkType } from '../db/schema/workTypes';
-// ticketCategories lives in tickets.ts; ticketConfig.ts holds orgTicketSettings.
-import { ticketCategories } from '../db/schema/tickets';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export const WORK_TYPE_NAME_MAX = 60;
@@ -92,14 +90,26 @@ export async function archiveWorkType(id: string, partnerId: string): Promise<Wo
 }
 
 /**
- * The category's default work type, or null. Read in the ambient context:
- * ticket_categories is partner-axis and already RLS-protected.
+ * The ACTIVE work type with this id for this partner, or null.
+ *
+ * THE PRE-WRITE GATE for every caller that stamps `work_type_id`. The composite
+ * FK `(work_type_id, partner_id) -> work_types(id, partner_id)` raises 23503,
+ * and that violation happens INSIDE the request transaction opened by
+ * `withDbAccessContext` -- which aborts it. Every statement after that fails
+ * with 25P02, so a catch-and-map-to-400 around the insert is unreachable and
+ * the caller gets a raw 500 (the same trap #2189 documented for startTimer's
+ * unique index). Validate first; never catch 23503 after the fact.
+ *
+ * Archived rows are excluded deliberately: an archived work type may stay
+ * stamped on historical entries, but nothing new may be stamped with it.
+ *
+ * Ambient RLS context, like `listWorkTypes` -- see its note.
  */
-export async function getCategoryDefaultWorkTypeId(categoryId: string): Promise<string | null> {
+export async function getActiveWorkType(id: string, partnerId: string): Promise<WorkType | null> {
   const rows = await db
-    .select({ defaultWorkTypeId: ticketCategories.defaultWorkTypeId })
-    .from(ticketCategories)
-    .where(eq(ticketCategories.id, categoryId))
+    .select()
+    .from(workTypes)
+    .where(and(eq(workTypes.id, id), eq(workTypes.partnerId, partnerId), eq(workTypes.isActive, true)))
     .limit(1);
-  return rows[0]?.defaultWorkTypeId ?? null;
+  return rows[0] ?? null;
 }

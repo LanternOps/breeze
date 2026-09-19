@@ -853,11 +853,31 @@ describe('work types in the ticketing tool', () => {
     expect(workTypeMocks.listWorkTypes).toHaveBeenCalledWith('p-1', { includeInactive: false });
   });
 
-  it.each(['log_time_entry', 'start_timer'])('%s passes a UUID through without a lookup', async (action) => {
+  it.each(['log_time_entry', 'start_timer'])('%s accepts a UUID that IS in the partner\'s active list', async (action) => {
     await getTool().handler({ ...timeInput, action, workType: workTypeId }, auth);
-    expect(workTypeMocks.listWorkTypes).not.toHaveBeenCalled();
+    expect(workTypeMocks.listWorkTypes).toHaveBeenCalledWith('p-1', { includeInactive: false });
     const service = action === 'log_time_entry' ? timeEntryMocks.createTimeEntry : timeEntryMocks.startTimer;
     expect(service.mock.calls[0]?.[0]).toMatchObject({ workTypeId });
+  });
+
+  // A model hallucinates well-formed UUIDs. Passing one through unchecked put it
+  // straight into the composite FK, which raises 23503 INSIDE the request
+  // transaction -- the tool's own catch can only report a raw 500 by then.
+  it.each(['log_time_entry', 'start_timer'])('%s REFUSES a well-formed UUID that is not the partner\'s', async (action) => {
+    const hallucinated = 'ffffffff-9999-4999-8999-999999999999';
+    const out = JSON.parse(await getTool().handler({ ...timeInput, action, workType: hallucinated }, auth));
+    expect(out.error).toMatch(/Unknown work type/);
+    expect(out.error).toMatch(/On-site/);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+    expect(timeEntryMocks.startTimer).not.toHaveBeenCalled();
+  });
+
+  it.each(['log_time_entry', 'start_timer'])('%s REFUSES an ARCHIVED work type id (absent from the active list)', async (action) => {
+    const archived = 'bbbbbbbb-2222-4222-8222-222222222222';
+    const out = JSON.parse(await getTool().handler({ ...timeInput, action, workType: archived }, auth));
+    expect(out.error).toMatch(/Unknown work type/);
+    expect(timeEntryMocks.createTimeEntry).not.toHaveBeenCalled();
+    expect(timeEntryMocks.startTimer).not.toHaveBeenCalled();
   });
 
   it.each(['log_time_entry', 'start_timer'])('%s rejects unknown work types and names the valid options', async (action) => {
