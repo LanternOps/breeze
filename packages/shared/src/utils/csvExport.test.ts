@@ -75,6 +75,16 @@ describe('rowsToCsv', () => {
     expect(csv.split('\n')[0]).toBe('"a,b","c"');
   });
 
+  // Deliberate coercion change: `rowsToCsv` now shares `csvCellToString` with
+  // `escapeCsvCell`, so a live `Date` in a report row renders as an ISO string
+  // instead of the locale/TZ-dependent `Date.prototype.toString()` form. The
+  // scheduled-report email attachment passes in-process rows, so Dates do reach
+  // here; the API's other CSV writers have always emitted ISO.
+  it('renders Date cells as ISO timestamps, not locale strings', () => {
+    const csv = rowsToCsv([{ seenAt: new Date('2026-09-18T12:34:56.000Z') }]);
+    expect(csv).toBe('"seenAt"\n"2026-09-18T12:34:56.000Z"');
+  });
+
   it('renders null/undefined cells as empty', () => {
     expect(rowsToCsv([{ a: null, b: undefined }])).toBe('"a","b"\n"",""');
   });
