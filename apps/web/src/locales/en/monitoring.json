@@ -34,6 +34,7 @@
     "policiesCount_one": "{{count}} policy",
     "policiesCount_other": "{{count}} policies",
     "notDeployed": "Not deployed",
+    "toggleEnabled": "Enabled: {{name}}",
     "errors": {
       "fetch": "Failed to load monitors",
       "delete": "Failed to delete monitor",

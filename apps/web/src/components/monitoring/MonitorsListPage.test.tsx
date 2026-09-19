@@ -107,4 +107,16 @@ describe('MonitorsListPage (#5289)', () => {
       ),
     );
   });
+
+  it('exposes the enabled toggle as an accessible switch, not colour-only state (paper cut #12)', async () => {
+    render(<MonitorsListPage />);
+    await waitFor(() => expect(screen.getByTestId('monitors-list-page')).toBeInTheDocument());
+
+    const toggle = within(screen.getByTestId('monitors-list-row-m-org')).getByTestId(
+      'monitors-list-enabled-m-org',
+    );
+    expect(toggle).toHaveAttribute('role', 'switch');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle.getAttribute('aria-label')).toMatch(/Disk usage/);
+  });
 });
