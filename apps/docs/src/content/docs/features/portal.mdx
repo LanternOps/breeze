@@ -39,12 +39,14 @@ The service-insight sections — Dashboard, Security, Backups, Reports, support 
 | Toggle | Default | What the customer sees |
 |--------|---------|------------------------|
 | **Dashboard** | Off | A service-health summary when they sign in |
+| **Devices** | Off (v0.114.0+) | The devices page — see [Devices](#devices) below |
 | **Security** | Off | Security posture, protection, threats, and vulnerabilities |
 | **Backups** | Off | Backup coverage, verification, restore tests, and readiness |
 | **Reports** | Off | The ability to generate and download approved reports |
 | **Support usage** | Off | Month-to-date billable support-time totals, and SLA badges in the ticket list |
 | **Service** | Off | Scheduled deliverables, what was delivered, and key dates (v0.113.0+) |
 | **Documents** | Off | The documents you have shared with them, for download (v0.113.0+) |
+| **Hardware lifecycle** | Off | The live replacement plan for the customer's machines — see [Hardware Lifecycle](#hardware-lifecycle) below |
 
 To change them:
 
@@ -178,7 +180,7 @@ The device list shows what the customer's own devices are doing, in plain langua
 
 **Export CSV** downloads the same list for a customer who wants it in a spreadsheet — for an insurance questionnaire, an asset register, or their own auditor.
 
-The device list is governed by the existing **Self-service** feature toggle, not by the visibility settings.
+The device list is controlled by its own **Devices** visibility toggle (v0.114.0+), off by default and included in **Enable all visibility**. Organizations that already had **Self-service** turned on before this change kept portal access to their device list — Self-service still grants it as an alternate path, so you don't need to also turn on Devices for those customers unless you've since turned Self-service off.
 
 ---
 
@@ -206,6 +208,14 @@ With **Reports** visibility on, the customer can generate and download reports t
 A finished run offers both **PDF** and **CSV** downloads. These are the same report types described in [Reports](/features/reports/); only the trigger is different.
 
 With Reports off, a customer who navigates to the reports URL is redirected to their proposals — the same as every other section that is off.
+
+---
+
+## Hardware Lifecycle
+
+With **Hardware lifecycle** visibility on, the customer sees a live replacement plan for the machines you manage for them: a status bar and schedule summary, then plan tables broken out by **Workstations and laptops** and, if the customer has any, **Servers**. Each table lists every device with its operating system, age, purchase date, warranty status, current status, and replacement timeline, color-coded (Replace now / Due soon / On track / Unknown) and with risk tags on devices whose OS has stopped or is about to stop receiving security updates. Below the tables, a **What we recommend** section calls out specific actions, and **Other equipment we manage** lists devices that aren't on a replacement timeline.
+
+A **Refresh** button regenerates the plan on demand. Device names link back to the device's entry in the portal's device list only when **Devices** visibility (or Self-service) is also on for that organization.
 
 ---
 

@@ -15,6 +15,7 @@ import {
   Mail
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { runAction, ActionError } from '@/lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -176,19 +177,26 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   const handleGenerate = async (report: Report) => {
     setGeneratingIds(prev => new Set([...prev, report.id]));
     try {
-      const response = await fetchWithAuth(`/reports/${report.id}/generate`, {
-        method: 'POST'
+      await runAction({
+        request: () => fetchWithAuth(`/reports/${report.id}/generate`, {
+          method: 'POST'
+        }),
+        errorFallback: t('reports.reportsList.errors.generateReport'),
+        successMessage: t('reports.reportsList.success.generated', { name: report.name })
       });
 
-      if (!response.ok) {
-        throw new Error(t('reports.reportsList.errors.generateReport'));
-      }
-
       onGenerate?.(report);
+      // The run completes synchronously server-side (lastGeneratedAt is
+      // already updated), so the row must be refetched now, not just the
+      // recent-runs list — otherwise it keeps reading "Never" until reload.
+      fetchReports();
       // Refresh runs after a short delay
       setTimeout(fetchRecentRuns, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generateReport'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : t('reports.reportsList.errors.generateReport'));
+      }
     } finally {
       setGeneratingIds(prev => {
         const next = new Set(prev);

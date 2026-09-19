@@ -203,15 +203,14 @@ describe('selectExecutionAgentForMonitor (SR5-08 site-bound fallback)', () => {
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
-  it('treats an asset with a null site as unbound (org-wide allowed)', async () => {
+  it('fails closed for a bound asset with a null site', async () => {
     vi.mocked(db.select)
       // asset → siteId null
-      .mockReturnValueOnce(selectLimitResolved([{ siteId: null }]) as any)
-      // org-wide online agent lookup
-      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-any' }]) as any);
+      .mockReturnValueOnce(selectLimitResolved([{ siteId: null }]) as any);
 
     const agentId = await selectExecutionAgentForMonitor({ orgId: 'org-1', assetId: 'asset-1' });
-    expect(agentId).toBe('agent-any');
+    expect(agentId).toBeNull();
+    expect(db.select).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -751,6 +750,9 @@ describe('processCheckMonitor (wave 3.5b #4084 — dispatch via facade)', () => 
       .mockReturnValueOnce(selectLimitResolved([MONITOR_ROW]) as any)
       // org-wide online agent lookup (assetless monitor)
       .mockReturnValueOnce(selectLimitResolved(agentId ? [{ agentId }] : []) as any);
+    if (agentId) vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([MONITOR_ROW]) as any)
+      .mockReturnValueOnce(selectLimitResolved([{ agentId }]) as any);
   }
 
   it('warns and returns not-dispatched when no agent is connected anywhere, without calling dispatch', async () => {
@@ -919,6 +921,10 @@ describe('partner-wide network monitors (#5291 W04)', () => {
           }),
         }),
       } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{ id: 'm-partner', orgId: null, partnerId: 'p1', assetId: null, isActive: true, monitorType: 'icmp_ping', target: 'example.com' }]) as any)
+      .mockReturnValueOnce(selectLimitResolved([{ id: 'org-a' }]) as any)
+      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-a' }]) as any);
     vi.mocked(isAgentConnectedAnywhere).mockResolvedValue(true);
     vi.mocked(dispatchCommandToAgent).mockResolvedValue({ status: 'sent', via: 'local' } as never);
 

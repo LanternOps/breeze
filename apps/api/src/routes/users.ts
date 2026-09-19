@@ -44,7 +44,13 @@ import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remote
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
 import { resetAllFactorsAndInvalidate, sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
-import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
+import {
+  combineMfaPolicyFacts,
+  getScopeSecuritySettings,
+  getEffectiveMfaPolicy,
+  type MfaSecuritySettings,
+} from '../services/mfaPolicy';
+import { previewMfaEnrollmentGrace, resolveMfaGraceDays } from '../services/mfaEnrollmentGrace';
 import { requestPendingEmailChange } from '../services/pendingEmail';
 import { resolveDelegatedSiteIds } from '../services/organizationMembershipDelegation';
 
@@ -753,7 +759,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     const emailService = getEmailService();
     if (emailService) {
       // To the NEW address: prove you control it.
-      await emailService.sendVerificationEmail({ to: pendingNewEmail, name: updated.name ?? undefined, verificationUrl })
+      await emailService.sendVerificationEmail({ to: pendingNewEmail, name: updated.name ?? undefined, verificationUrl, purpose: 'auth.email_change_verify' })
         .catch((err: unknown) => { console.error('[users] pending-email verification send failed', err); captureException(err); });
       // To the OLD (still-authoritative) address: a change was REQUESTED. Fires
       // at INITIATION, not only on completion — the owner of the address being
@@ -1060,6 +1066,77 @@ async function annotateMfaProtected<T extends { id: string; mfaEnabled: boolean 
   return rows.map((row) => ({ ...row, mfaProtected: row.mfaEnabled === true || withPasskey.has(row.id) }));
 }
 
+/** One of these per row on the Admin → Users list MFA status column (#5690). */
+export type MfaStatusColumn = 'enrolled' | 'pending' | 'overdue' | 'not_required';
+
+/**
+ * #5690 — derives the Admin → Users list MFA status column from facts already
+ * in hand: `mfaProtected` (from `annotateMfaProtected`, above) plus each row's
+ * `roleForceMfa`, `mfaEpoch` and persisted grace columns. One settings read
+ * for the whole scope (`getScopeSecuritySettings`), not one per row, and
+ * `previewMfaEnrollmentGrace` (read-only — never grants) rather than
+ * `evaluateMfaEnrollmentGrace`, because a GET must not have the side effect of
+ * granting enrolment windows to every role-forced user it lists.
+ *
+ * Reuses `combineMfaPolicyFacts` — the same rule `getEffectiveMfaPolicy`
+ * applies at login/middleware — so this column can never disagree with live
+ * enforcement about whether a user is actually gated right now.
+ */
+function annotateMfaStatus<
+  T extends {
+    id: string;
+    mfaEnabled: boolean;
+    mfaProtected: boolean;
+    roleForceMfa: boolean;
+    mfaEpoch: number;
+    mfaEnrollmentDeadline: Date | string | null;
+    mfaEnrollmentGraceGrantedAt: Date | string | null;
+  }
+>(rows: T[], security: MfaSecuritySettings | undefined): Array<
+  Omit<T, 'roleForceMfa' | 'mfaEpoch' | 'mfaEnrollmentDeadline' | 'mfaEnrollmentGraceGrantedAt'> & {
+    mfaStatus: MfaStatusColumn;
+    mfaEnrollmentDeadline: string | null;
+  }
+> {
+  const graceDays = resolveMfaGraceDays(security);
+  const now = new Date();
+  return rows.map((row) => {
+    const { roleForceMfa, mfaEpoch, mfaEnrollmentDeadline, mfaEnrollmentGraceGrantedAt, ...rest } = row;
+    const toDate = (v: Date | string | null) => (v == null ? null : v instanceof Date ? v : new Date(v));
+    const grace = previewMfaEnrollmentGrace({
+      hasFactor: row.mfaProtected,
+      mfaEpoch,
+      deadline: toDate(mfaEnrollmentDeadline),
+      grantedAt: toDate(mfaEnrollmentGraceGrantedAt),
+      graceDays,
+      now,
+    });
+    const policy = combineMfaPolicyFacts({ roleForceMfa, security, grace });
+
+    // NOTE: during an active grace window `combineMfaPolicyFacts` intentionally
+    // reports `required: false` (that's what keeps the live enforcement gate
+    // from biting) — so `graceWindow === 'active'` must be checked BEFORE
+    // `required`, not after, or a pending user would misreport as
+    // `not_required`.
+    let mfaStatus: MfaStatusColumn;
+    if (row.mfaProtected) {
+      mfaStatus = 'enrolled';
+    } else if (policy.source.graceWindow === 'active') {
+      mfaStatus = 'pending';
+    } else if (!policy.required) {
+      mfaStatus = 'not_required';
+    } else {
+      mfaStatus = 'overdue';
+    }
+
+    return {
+      ...rest,
+      mfaStatus,
+      mfaEnrollmentDeadline: mfaStatus === 'pending' ? (policy.pendingEnrollment?.deadline ?? null) : null,
+    };
+  });
+}
+
 userRoutes.get(
   '/',
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
@@ -1076,8 +1153,12 @@ userRoutes.get(
           status: users.status,
           lastLoginAt: users.lastLoginAt,
           mfaEnabled: users.mfaEnabled,
+          mfaEpoch: users.mfaEpoch,
+          mfaEnrollmentDeadline: users.mfaEnrollmentDeadline,
+          mfaEnrollmentGraceGrantedAt: users.mfaEnrollmentGraceGrantedAt,
           roleId: roles.id,
           roleName: roles.name,
+          roleForceMfa: roles.forceMfa,
           orgAccess: partnerUsers.orgAccess,
           orgIds: partnerUsers.orgIds
         })
@@ -1086,7 +1167,13 @@ userRoutes.get(
         .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
         .where(eq(partnerUsers.partnerId, scopeContext.partnerId));
 
-      return c.json({ data: await annotateMfaProtected(data) });
+      const withProtected = await annotateMfaProtected(data);
+      const security = await getScopeSecuritySettings({
+        scope: 'partner',
+        partnerId: scopeContext.partnerId,
+        orgId: null,
+      });
+      return c.json({ data: annotateMfaStatus(withProtected, security) });
     }
 
     const data = await db
@@ -1097,8 +1184,12 @@ userRoutes.get(
         status: users.status,
         lastLoginAt: users.lastLoginAt,
         mfaEnabled: users.mfaEnabled,
+        mfaEpoch: users.mfaEpoch,
+        mfaEnrollmentDeadline: users.mfaEnrollmentDeadline,
+        mfaEnrollmentGraceGrantedAt: users.mfaEnrollmentGraceGrantedAt,
         roleId: roles.id,
         roleName: roles.name,
+        roleForceMfa: roles.forceMfa,
         siteIds: organizationUsers.siteIds,
         deviceGroupIds: organizationUsers.deviceGroupIds
       })
@@ -1107,7 +1198,13 @@ userRoutes.get(
       .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
       .where(eq(organizationUsers.orgId, scopeContext.orgId));
 
-    return c.json({ data: await annotateMfaProtected(data) });
+    const withProtected = await annotateMfaProtected(data);
+    const security = await getScopeSecuritySettings({
+      scope: 'organization',
+      orgId: scopeContext.orgId,
+      partnerId: null,
+    });
+    return c.json({ data: annotateMfaStatus(withProtected, security) });
   }
 );
 

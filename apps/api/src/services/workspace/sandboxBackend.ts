@@ -65,7 +65,7 @@ export interface SandboxCreateSpec {
   memoryMb: 2048;
   /** Provider-side hard stop, seconds. */
   deadlineSeconds: number;
-  /** 'breeze-analysis@<digest>' — recorded; v1 uses the vendor default runtime. */
+  /** Legacy bootstrap request; deployment configuration selects the Vercel image. */
   image: string;
 }
 
@@ -75,6 +75,8 @@ export interface SandboxHandle {
   providerRef: string;
   region: SandboxRegion;
   createdAt: Date;
+  /** Exact deployment-selected image reference; a tag is not a resolved digest. */
+  runtimeImage?: string;
 }
 
 export interface ExecOptions {

@@ -95,7 +95,9 @@
     "aiRisk": "Risco de IA",
     "deviceBackup": "Backup de Dispositivos",
     "sectionServiceDesk": "Central de serviços",
-    "serviceManagement": "Gestão de serviços"
+    "serviceManagement": "Gestão de serviços",
+    "ticketing": "Tickets",
+    "deliverableTemplates": "Modelos de entregáveis"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -956,7 +958,8 @@
         "fallbackTitle": "Monitor",
         "fields": {
           "interval": "Intervalo (s)",
-          "timeout": "Tempo limite (s)"
+          "timeout": "Tempo limite (s)",
+          "target": "URL de destino"
         },
         "labels": {
           "lastChecked": "Última verificação: {{time}}",
@@ -984,6 +987,20 @@
           "httpCheck": "Verificação HTTP",
           "icmpPing": "Ping ICMP",
           "tcpPort": "Porta TCP"
+        },
+        "targetResetNote": "Alterar a URL redefine a observação TLS.",
+        "saved": "Monitor atualizado",
+        "certificate": {
+          "title": "Certificado",
+          "issuer": "Emissor",
+          "expires": "Expira em",
+          "observedHost": "Host observado",
+          "state": "Estado",
+          "states": {
+            "observed": "Observado",
+            "handshakeFailed": "Falha na negociação TLS",
+            "notTls": "Sem TLS"
+          }
         }
       },
       "NetworkMonitorList": {

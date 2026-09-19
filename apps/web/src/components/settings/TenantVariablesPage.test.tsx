@@ -1,9 +1,15 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TenantVariablesPage from './TenantVariablesPage';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', async (importOriginal) => {
+  // applyOrgId is a pure URL-building helper (no network/state) — keep the
+  // real implementation so the coalescing cache key matches production
+  // exactly; only fetchWithAuth needs mocking.
+  const actual = await importOriginal<typeof import('../../stores/auth')>();
+  return { ...actual, fetchWithAuth: vi.fn() };
+});
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
@@ -37,6 +43,7 @@ const ORG_VAR = {
   description: 'Collector address',
   ownerScope: 'organization' as const,
   orgId: 'org-a',
+  orgName: 'Acme North',
   partnerId: null,
   version: 1,
   createdAt: '2026-08-11T00:00:00.000Z',
@@ -61,6 +68,9 @@ beforeEach(() => {
   scopeState.orgId = 'org-a';
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url === '/tenant-variables?scope=partner' && (!init || !init.method)) {
+      return makeJsonResponse({ data: [SECRET_VAR] });
+    }
     if (url === '/tenant-variables' && (!init || !init.method)) {
       return makeJsonResponse({ data: [ORG_VAR, SECRET_VAR] });
     }
@@ -78,6 +88,210 @@ beforeEach(() => {
 });
 
 describe('TenantVariablesPage', () => {
+  it('requests only partner-wide variables in All Organizations and explains where org rows live', async () => {
+    scopeState.orgId = null;
+    render(<TenantVariablesPage />);
+
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+    expect(fetchMock).toHaveBeenCalledWith('/tenant-variables?scope=partner');
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
+    expect(screen.getByTestId('tenant-variables-org-note').textContent).toBe(
+      'Organization-owned variables are listed under each organization.'
+    );
+    expect(screen.queryByTestId('tenant-variable-filter-scope-organization')).toBeNull();
+  });
+
+  it('keeps inherited rows with an org selected and labels its own rows with the org name', async () => {
+    render(<TenantVariablesPage />);
+
+    const row = await screen.findByTestId('tenant-variable-row-syslog_host');
+    expect(fetchMock).toHaveBeenCalledWith('/tenant-variables');
+    expect(row.textContent).toContain('Acme North');
+    expect(screen.getByTestId('tenant-variable-row-s1_site_token')).toBeTruthy();
+    expect(screen.queryByTestId('tenant-variables-org-note')).toBeNull();
+  });
+
+  it('does not apply an organization filter when switching to the partner-wide view', async () => {
+    const { rerender } = render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    fireEvent.click(screen.getByTestId('tenant-variable-filter-scope-organization'));
+
+    scopeState.orgId = null;
+    rerender(<TenantVariablesPage />);
+
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+    expect(fetchMock).toHaveBeenLastCalledWith('/tenant-variables?scope=partner');
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
+
+    scopeState.orgId = 'org-a';
+    rerender(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    expect(fetchMock).toHaveBeenLastCalledWith('/tenant-variables');
+  });
+
+  it('coalesces the outgoing page instance\'s org-switch refetch with the freshly-mounted instance\'s mount fetch (#6103)', async () => {
+    // Models Astro's real navigation lifecycle for a same-URL org switch:
+    // the org store updates (and the STILL-MOUNTED old page instance reacts
+    // and starts refetching) before the soft navigation tears that instance
+    // down and mounts a fresh one, which immediately fetches again on mount.
+    // Without coalescing that is two network requests for data the old
+    // instance's fetch result is thrown away.
+    let resolveSwitchFetch: ((r: Response) => void) | undefined;
+    const deferred = new Promise<Response>((resolve) => {
+      resolveSwitchFetch = resolve;
+    });
+    const baseImpl = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tenant-variables?scope=partner' && (!init || !init.method)) {
+        return deferred;
+      }
+      return baseImpl(input, init);
+    });
+
+    const { unmount, rerender } = render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    fetchMock.mockClear();
+
+    // Org store flips to All-orgs; the still-mounted old instance's effect
+    // reacts and kicks off its own (soon-to-be-discarded) fetch.
+    scopeState.orgId = null;
+    rerender(<TenantVariablesPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // Astro's remount: old instance torn down, brand-new instance mounted —
+    // in the browser this happens while the first request above is still
+    // in flight.
+    unmount();
+    render(<TenantVariablesPage />);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Only ONE network request should have gone out for the partner-scope
+    // query across both instances.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveSwitchFetch!(makeJsonResponse({ data: [SECRET_VAR] }));
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+  });
+
+  it('lets two concurrently-coalesced callers both read the shared response without throwing (#6103)', async () => {
+    // A real Response body can only be read once — a second `.json()` call
+    // throws "body stream already read". makeJsonResponse's mocked `.json()`
+    // doesn't model that (it can be called any number of times), so this
+    // double reads once and throws on the second, exactly like the real
+    // fetch API. If two coalesced instances both stay mounted (not
+    // guaranteed the outgoing one unmounts before the shared request
+    // resolves) and both `await response.json()` on the same raw Response,
+    // the second read throws as an unhandled rejection with no user-visible
+    // error. The fix caches the PARSED result, not the raw Response, so this
+    // must not happen.
+    let bodyRead = false;
+    const singleReadResponse = {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: vi.fn().mockImplementation(async () => {
+        if (bodyRead) throw new TypeError('Body is unusable: body stream already read');
+        bodyRead = true;
+        return { data: [ORG_VAR, SECRET_VAR] };
+      })
+    } as unknown as Response;
+
+    let resolveFetch: ((r: Response) => void) | undefined;
+    const deferred = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    fetchMock.mockImplementation(async () => deferred);
+
+    render(<TenantVariablesPage />);
+    const second = render(<TenantVariablesPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    resolveFetch!(singleReadResponse);
+
+    // Both mounted instances must resolve successfully (no unhandled
+    // rejection — vitest fails the run on one, which is the regression guard).
+    await screen.findAllByTestId('tenant-variable-row-syslog_host');
+    expect(within(second.container).getByTestId('tenant-variable-row-syslog_host')).toBeTruthy();
+  });
+
+  it('reloads with its own request after a delete instead of joining a list GET that was already in flight (#6103)', async () => {
+    // A GET that started BEFORE the mutation committed would repaint the
+    // pre-mutation list if the post-mutation reload coalesced into it.
+    const first = render(<TenantVariablesPage />);
+    await within(first.container).findByTestId('tenant-variable-row-syslog_host');
+
+    const baseImpl = fetchMock.getMockImplementation()!;
+    // Settled at the end: the in-flight slot is module-level, so a request
+    // left hanging here would be joined by the next test.
+    const hung: Array<(r: Response) => void> = [];
+    const isListGet = (input: unknown, init?: RequestInit) =>
+      String(input).startsWith('/tenant-variables') && !String(input).includes('/tenant-variables/') && (!init || !init.method);
+    fetchMock.mockImplementation(async (input, init) => {
+      if (isListGet(input, init as RequestInit | undefined)) {
+        return new Promise<Response>((resolve) => hung.push(resolve));
+      }
+      return baseImpl(input, init);
+    });
+    fetchMock.mockClear();
+
+    // A second instance mounts; its list GET hangs in flight.
+    render(<TenantVariablesPage />);
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter((c) => isListGet(c[0], c[1] as RequestInit | undefined))).toHaveLength(1)
+    );
+
+    const row = within(first.container);
+    fireEvent.click(row.getByTestId('tenant-variable-delete-syslog_host'));
+    fireEvent.click(row.getByTestId('tenant-variable-delete-syslog_host'));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter((c) => isListGet(c[0], c[1] as RequestInit | undefined))).toHaveLength(2)
+    );
+
+    hung.forEach((resolve) => resolve(makeJsonResponse({ data: [] })));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('does not coalesce requests for the same path across different orgs (#6103)', async () => {
+    // A rapid org switch landing mid-flight must never let a second caller
+    // silently receive the FIRST org's in-flight (and possibly wrong-tenant)
+    // response just because the raw path string matches. Neither request
+    // needs to resolve for this assertion — only the call count matters.
+    const neverResolves = new Promise<Response>(() => {});
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tenant-variables' && (!init || !init.method)) {
+        return neverResolves;
+      }
+      return makeJsonResponse({ data: [] });
+    });
+
+    scopeState.isPartnerScope = false;
+    scopeState.orgId = 'org-a';
+    const { unmount, rerender } = render(<TenantVariablesPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // Org switches to a different org before the first request resolves; the
+    // still-mounted instance's effect fires a second request for the SAME
+    // raw path but a DIFFERENT ambient org.
+    scopeState.orgId = 'org-b';
+    rerender(<TenantVariablesPage />);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    unmount();
+  });
+
+  it('does not request partner scope for an organization-scoped caller', async () => {
+    scopeState.isPartnerScope = false;
+    scopeState.orgId = null;
+    render(<TenantVariablesPage />);
+
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    expect(fetchMock).toHaveBeenCalledWith('/tenant-variables');
+    expect(screen.queryByTestId('tenant-variables-org-note')).toBeNull();
+  });
+
   it('lists variables and badges the partner-wide row', async () => {
     render(<TenantVariablesPage />);
     expect(await screen.findByTestId('tenant-variable-row-syslog_host')).toBeTruthy();

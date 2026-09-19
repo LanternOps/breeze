@@ -10,6 +10,8 @@ let tokenResult: { accessToken: string; expiresIn: number };
 let graphResult: { ok: boolean; orgDisplayName?: string; error?: string };
 let tokenThrows = false;
 
+const { authOverrides } = vi.hoisted(() => ({ authOverrides: { current: null as Record<string, unknown> | null } }));
+
 vi.mock('../config/env', () => ({ M365_ENABLED: true }));
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
@@ -17,9 +19,15 @@ vi.mock('../services/permissions', () => ({
     ORGS_WRITE: { resource: 'organizations', action: 'write' },
   },
 }));
+// `allowedSiteIds` is left UNDEFINED by default (an unrestricted caller);
+// the site-ceiling suite sets it per-test. Hoisted ref, not a module const —
+// vi.mock factories are hoisted above module initialisation.
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', { scope: 'organization', orgId: 'org-1', user: { id: 'user-1' } });
+    c.set('auth', {
+      scope: 'organization', orgId: 'org-1', user: { id: 'user-1' },
+      ...(authOverrides.current ?? {}),
+    });
     return next();
   }),
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
@@ -61,6 +69,8 @@ import { m365Routes } from './m365';
 import { authMiddleware } from '../middleware/auth';
 import { encryptSecret } from '../services/secretCrypto';
 import { acquireClientCredentialsToken, testGraphAccess } from '../services/c2cM365';
+import { db } from '../db';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 
 function app() {
   const a = new Hono();
@@ -80,6 +90,7 @@ const storedRow = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authOverrides.current = null;
   selectRows = []; insertRows = []; deleteRows = [];
   tokenResult = { accessToken: 'tok', expiresIn: 3600 };
   graphResult = { ok: true, orgDisplayName: 'Contoso' };
@@ -204,5 +215,70 @@ describe('m365 connection routes', () => {
     bare.route('/m365', m365Routes);
     await bare.request('/m365/connection');
     expect(authMiddleware).toHaveBeenCalled();
+  });
+});
+
+/**
+ * An M365 connection IS the org's whole Entra tenant: connecting or
+ * disconnecting one turns every m365_* tool on or off for the entire
+ * organization at once. There is no per-site slice of it, so it belongs to
+ * the same org-wide governance class as webhooks, notification channels and
+ * config policies — `organizations:write` + MFA alone let a site-restricted
+ * technician rewire (or cut off) an org's identity integration.
+ */
+describe('m365 connection routes — org-wide governance site ceiling', () => {
+  const connectBody = JSON.stringify({
+    tenantId: '11111111-1111-1111-1111-111111111111',
+    clientId: 'client-1',
+    clientSecret: 'super-secret',
+  });
+
+  it('POST /connection is 403 for a site-restricted caller, before any credential use', async () => {
+    authOverrides.current = { allowedSiteIds: ['site-1'] };
+    const res = await app().request('/m365/connection', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: connectBody,
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(acquireClientCredentialsToken).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('POST /connection is 403 when the ceiling is the EMPTY site list', async () => {
+    authOverrides.current = { allowedSiteIds: [] };
+    const res = await app().request('/m365/connection', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: connectBody,
+    });
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /connection is 403 for a site-restricted caller, with no delete issued', async () => {
+    authOverrides.current = { allowedSiteIds: ['site-1'] };
+    const res = await app().request('/m365/connection', { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('leaves the UNRESTRICTED write paths unchanged', async () => {
+    // Control: same requests, no ceiling — the 201/200 contract is untouched.
+    insertRows = [storedRow];
+    const created = await app().request('/m365/connection', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: connectBody,
+    });
+    expect(created.status).toBe(201);
+
+    deleteRows = [storedRow];
+    const removed = await app().request('/m365/connection', { method: 'DELETE' });
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ connected: false });
+  });
+
+  it('does NOT gate the read surface', async () => {
+    // A site-restricted tech may still SEE whether the org is connected.
+    authOverrides.current = { allowedSiteIds: ['site-1'] };
+    const res = await app().request('/m365/connection');
+    expect(res.status).toBe(200);
   });
 });

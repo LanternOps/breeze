@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Biletleme",
-        "description": "Durumlar, SLA'lar, dışa aktarmalar"
+        "description": "Durumlar, SLA'lar, kategoriler, formlar",
+        "linkCta": "Bilet ayarlarını yönet →"
       },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
@@ -565,6 +566,10 @@
       "loginBranding": {
         "label": "Oturum Aç Markalama",
         "description": "Giriş sayfasının görünümü"
+      },
+      "modules": {
+        "label": "Modüller",
+        "description": "Servis masası ve faturalandırma açık/kapalı"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -1134,6 +1139,10 @@
       "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
       "enableAll": "Tüm görünürlüğü etkinleştir",
       "toggles": {
+        "enableDevices": {
+          "label": "Cihazlar",
+          "description": "Cihazlar sayfasını göster. Self servis de bu sayfaya erişim sağlar."
+        },
         "enableDashboard": {
           "label": "Pano",
           "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."
@@ -1544,6 +1553,7 @@
       "actMode": {
         "label": "Eylem modu",
         "hint": "Etkinleştirildiğinde, bu zamanlama onay beklemek yerine belirli düzeltmeleri otomatik olarak uygulayabilir.",
+        "deploymentDisabledHint": "Bu dağıtımda BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED kapalı olduğundan eylem modu kullanılamıyor. Etkinleştirmek için yöneticinizle iletişime geçin.",
         "disabledHint": "Eylem modunu etkinleştirmek için tüm kuruluşlara tam iş ortağı erişimi gerekir.",
         "scopeNote": "Gözetimsiz düzeltmeler yalnızca durmuş bir hizmeti yeniden başlatmakla sınırlıdır ve yalnızca kuruluşuna manage_services:restart izni zaten verilmiş cihazlarda uygulanır. Bunun dışındaki her şey onay beklemeye devam eder.",
         "disableForOrg": "Bu kuruluş için eylem modunu devre dışı bırak",
@@ -1617,7 +1627,9 @@
       "act": "Eylem",
       "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
       "actUnavailable": "Bu aracı için henüz kullanılamıyor.",
-      "shadowUnavailableForKind": "Bu aracı yalnızca rapor okur ve yazar — gölgede izlenecek hiçbir şey yok."
+      "designerAct": "Açık",
+      "designerActConsequence": "Zamanlamaya göre veya isteğe bağlı çalışır ve bir Fleet Design yazar. Hiçbir cihazı değiştirmez.",
+      "shadowApprovalNotice": "Öneriler Onaylar'a düşer; birini onaylamak onu gerçekten çalıştırır — deneme çalıştırması değildir."
     },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
@@ -2115,11 +2127,13 @@
           "title": "Bu çalıştırmanın oluşturduğu dosyalar",
           "download": "İndir",
           "preview": "Önizleme",
-          "attachToTicket": "Bilete ekle",
-          "attach": "{{name}} dosyasını ekle",
+          "attachToTicket": "Dahili not olarak ekle",
+          "attach": "{{name}} dosyasını dahili not olarak ekle",
           "ticketIdPlaceholder": "Bilet No",
-          "attachedToTicket": "Bilete eklendi",
-          "attachFailed": "Dosya bu bilete eklenemedi"
+          "attachedToTicket": "Bilete dahili not olarak eklendi",
+          "attachFailed": "Dosya bu bilete eklenemedi",
+          "attachedButCommentFailed": "Dosya eklendi, ancak bilete not eklenemedi",
+          "downloadExpired": "Bu dosyanın süresi doldu ve artık indirilemiyor."
         },
         "workspace": {
           "title": "Korumalı alanda ne çalıştı",
@@ -3054,6 +3068,11 @@
       "searchPlaceholder": "Betik ara…",
       "selectedCount_one": "{{count}} betik yetkilendirildi",
       "selectedCount_other": "{{count}} betik yetkilendirildi"
+    },
+    "designerNote": {
+      "title": "Bu aracı yalnızca okur ve rapor yazar",
+      "body": "Bir Fleet Designer hiçbir zaman bir cihazda bir şey çalıştırmaz. Açık, çalışabileceği ve tasarımlarını seçtiğiniz alıcılara teslim edebileceği anlamına gelir.",
+      "ack": "Bu aracının gözetimsiz çalıştığını ve Fleet Design teslim ettiğini anlıyorum."
     }
   },
   "apiKeyForm": {
@@ -3396,7 +3415,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın.",
+    "distributorsLink": "Distribütör bağlantılarını yönet →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Geçerli şifre gerekli",
@@ -4094,6 +4114,7 @@
     "languageLoadFailed": "Tercih kaydedildi, ancak dil yüklenemedi; İngilizce gösteriliyor. Bağlantınızı kontrol edip tekrar deneyin."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Varsayılan süre kaydı (dakika)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA dakika ve saatlik ücret rakam olmalıdır.",
     "categoryUpdated": "Kategori güncellendi",
     "ticketing": "Biletleme",
@@ -4195,7 +4216,10 @@
     "inboundEmail": "Gelen E-posta",
     "cannedResponses": "Hazır yanıtlar",
     "checkingAccess": "Erişiminiz kontrol ediliyor...",
-    "timeTracking": "Zaman Takibi"
+    "timeTracking": "Zaman Takibi",
+    "email": "E-posta",
+    "templates": "Şablonlar",
+    "timeCapture": "Zaman kaydı"
   },
   "ticketFormsCard": {
     "heading": "Başvuru formları",
@@ -5170,7 +5194,15 @@
     "columns": {
       "email": "E-posta",
       "role": "Rol",
-      "lastLogin": "Son giriş"
+      "lastLogin": "Son giriş",
+      "mfaStatus": "MFA durumu"
+    },
+    "mfaStatus": {
+      "enrolled": "Kayıtlı",
+      "pending": "Beklemede",
+      "pendingByDate": "Beklemede — {{date}} tarihine kadar kaydolun",
+      "overdue": "Gecikti",
+      "notRequired": "Gerekli değil"
     },
     "status": {
       "active": "Aktif",
@@ -5236,6 +5268,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Kuruluşa ait değişkenler ilgili kuruluşun altında listelenir.",
     "title": "Değişkenler",
     "description": "Bir satıcı site belirteci, dahili bir depo URL'si gibi bir değeri bir kez tanımlayın ve bunu müşteri başına sabit kodlamak yerine komut dosyalarından referans alın.",
     "loading": "Değişkenler yükleniyor…",
@@ -5579,5 +5612,18 @@
     "saveFailed": "Bu ayarlar kaydedilemedi.",
     "loading": "Yükleniyor…",
     "loadFailed": "Betik yazımı ayarları yüklenemedi."
+  },
+  "ticketingHubPage": {
+    "heading": "Bilet Ayarları",
+    "description": "Tüm organizasyonlarınıza uygulanan durumlar, SLA'lar, kategoriler, giriş formları, e-posta, şablonlar ve zaman kaydı."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog varsayılanları",
+    "description": "Katalog içe aktarmalarını ve teklif düzenleyicisinin otomatik doldurmasını önceden doldurmak için kullanılır — fiyat çözümlemesini doğrudan etkilemez.",
+    "loading": "Katalog varsayılanları yükleniyor...",
+    "loadError": "Katalog varsayılanları yüklenemedi.",
+    "saveError": "Katalog varsayılanları kaydedilemedi",
+    "saveSuccess": "Katalog varsayılanları kaydedildi",
+    "saveButton": "Kaydet"
   }
 }

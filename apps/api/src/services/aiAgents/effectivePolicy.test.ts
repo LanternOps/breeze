@@ -173,6 +173,16 @@ afterEach(() => {
 });
 
 describe('mergeAgentPolicies — tighten only', () => {
+  it.each(['siteIds', 'deviceTags', 'deviceGroupIds', 'alertRuleIds', 'alertCategories', 'ticketCategories', 'anomalyTypes', 'metricNames'] as const)(
+    'preserves an empty deny-all intersection for %s', (key) => {
+      const partner = policy();
+      const org = policy();
+      partner.triggers = { ...partner.triggers, [key]: ['a'] };
+      org.triggers = { ...org.triggers, [key]: ['b'] };
+      expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers[key]).toEqual([]);
+    },
+  );
+
   it('uses the partner policy unchanged when there is no org override', () => {
     const partner = policy();
     const { effective, provenance } = mergeAgentPolicies(partner, null, { allowedModels: null });
@@ -417,6 +427,23 @@ describe('mergeAgentPolicies — tighten only', () => {
     const org = policy({ toolAllowlist: ['manage_services:restart', 'run_script'] });
     expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.toolAllowlist)
       .toEqual(['run_script', 'manage_services:restart']);
+  });
+
+  // #6096 D5c. `minAnomalyScore` is a FLOOR ("only fire at or above this"), so
+  // `Math.max` is the tighten-only rule here — the same direction as the
+  // intersections above, spelled differently because the value is a threshold.
+  it('minAnomalyScore: the stricter (higher) floor wins', () => {
+    const partner = policy({ triggers: { ...policy().triggers, minAnomalyScore: 5 } });
+    const org = policy({ triggers: { ...policy().triggers, minAnomalyScore: 3 } });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers.minAnomalyScore)
+      .toBe(5);
+  });
+
+  it('minAnomalyScore: an unset partner floor leaves the org floor intact', () => {
+    const partner = policy();
+    const org = policy({ triggers: { ...policy().triggers, minAnomalyScore: 3 } });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers.minAnomalyScore)
+      .toBe(3);
   });
 
   it('supervisedActionKeys: bare partner key is a ceiling over its actions', () => {

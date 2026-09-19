@@ -399,6 +399,9 @@
       },
       "loading": "Raporlar yükleniyor...",
       "never": "Hiçbir zaman",
+      "success": {
+        "generated": "\"{{name}}\" raporu oluşturuldu."
+      },
       "visibleInPortal": "Müşteri portalında görünür",
       "newReport": "Yeni Rapor",
       "nextOccurrence": "Sonraki: {{next}}",

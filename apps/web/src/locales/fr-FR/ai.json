@@ -30,6 +30,7 @@
     "contentChanged": "Les détails de cette demande ont changé après sa création ; elle ne peut donc plus être approuvée.",
     "expired": "Cette demande a expiré avant de pouvoir être traitée.",
     "notSoleApprover": "Un autre approbateur est désormais requis – vous ne pouvez plus approuver votre propre demande.",
+    "siteCeiling": "Cette approbation accorde une autorité à l'échelle de l'organisation. Votre accès est limité à des sites spécifiques – un autre approbateur doit donc décider de cette demande.",
     "noApproverDevice": "Approuver votre propre demande nécessite Touch ID / Windows Hello.",
     "registerDevice": "Enregistrer cet appareil",
     "decideFailed": "Échec de l’envoi de la décision",

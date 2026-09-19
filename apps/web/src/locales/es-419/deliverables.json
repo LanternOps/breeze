@@ -83,6 +83,10 @@
   },
   "drawer": {
     "title": "Ocurrencias",
+    "empty_one": "Aún no hay ocurrencias. La primera se planifica {{count}} día antes de su fecha de vencimiento.",
+    "empty_other": "Aún no hay ocurrencias. La primera se planifica {{count}} días antes de su fecha de vencimiento.",
+    "emptyWithDate_one": "Aún no hay ocurrencias. La primera se planifica {{count}} día antes de su fecha de vencimiento ({{date}}).",
+    "emptyWithDate_other": "Aún no hay ocurrencias. La primera se planifica {{count}} días antes de su fecha de vencimiento ({{date}}).",
     "evidence": "Evidencia",
     "noEvidence": "Sin evidencia adjunta",
     "late": "Atrasada",

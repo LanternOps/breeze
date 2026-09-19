@@ -41,6 +41,14 @@ If migrations are listed, you're committing prod to those migrations the moment 
 
 **Smoke-test privileged migrations as a NON-SUPERUSER role (learned the hard way, v0.95.0→v0.95.1).** CI and the local docker-compose test DB both migrate as the Postgres **superuser** (`POSTGRES_USER=breeze`), which silently passes statements a least-privilege role would be *denied*. Prod is DO-managed **`doadmin` — NOT a superuser**, so a migration that only a superuser can run passes every test and then **crash-loops the API on deploy** (this is exactly what took EU down on v0.95.0: `ALTER FUNCTION ... OWNER TO <role>` requires the *new owner* to hold `CREATE` on the schema; a superuser bypasses that check, doadmin does not → `permission denied for schema public`). So: any migration in the range that does `CREATE ROLE`, `ALTER ... OWNER TO`, `GRANT`/`REVOKE` on a schema, `CREATE EXTENSION`, or a `SECURITY DEFINER` function — **run it against a non-superuser role before tagging.** Two ways: pipe the migration to a real managed DB (or a droplet's `doadmin`) inside `BEGIN; ...; ROLLBACK;` with `ON_ERROR_STOP=1`, or `SET ROLE <nosuperuser-createrole-role>` on a local DB that already has the full schema. If it only works as a superuser, fix it forward (grant the owning role the privilege for the one statement, then revoke) **before** it reaches prod.
 
+## Step 0.2 — Pre-cut gates: the sweep doc and the lab rigs
+
+**Every release ships the agent.** `release.yml` builds and registers the full agent family on every tag, and the fleet promote is a standing rollout step — so "needs an agent release" is never a blocker or a special to-do, it is just what a release is. What an agent-side change *does* need is its real-host check done **before** the tag.
+
+1. Read the newest `docs/testing/release-sweeps/*.md` and its **"Before the release cut"** list, plus `docs/release-notes/next-release-draft.md` → "Release to-do". Any sweep fix PR named there merges before the tag.
+2. **Rows a sweep left `BLOCKED` / `PARTIAL` for want of a live agent are run on the SSH lab rigs before tagging — not deferred to after the cut, and not left for a reporter to find.** Use the non-prod rigs (the second Windows Server VM and the KIT `lab-ubuntu-src` VM are lab-enrolled against a local stack; the first Windows VM and the Ubuntu KVM rig are prod-enrolled — leave those alone unless the row is about prod upgrade behaviour). Recipe: `pnpm wt-stack up` at the commit to be tagged → cross-compile the agent family from that commit (`GOOS=… CGO_ENABLED=0 go build -ldflags "-X main.version=<v>"`) → back up the rig's agent config → re-point `server_url` at the Mac's Tailscale/LAN address and re-enroll → run the rows → restore the config. Record results in the sweep doc.
+3. A row that still cannot be run (no hardware for it) is carried into the release body's known-gaps note with the exact prerequisite, by name.
+
 ## Step 0.4 — Author the in-app "What's New" entry (BEFORE tagging)
 
 The post-upgrade splash (`WhatsNewSplash`, shown on dashboard load) renders an entry from
@@ -416,6 +424,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] **Advisory-debt pre-flight run** (`gh api ... select(.state=="draft")`) — any draft whose patched version already rolled out is **published before this release proceeds**
 - [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
+- [ ] **Pre-cut gates** (Step 0.2): newest sweep doc's "Before the release cut" list cleared, sweep fix PR merged, live-agent rows run on the lab rigs (not deferred)
 - [ ] In-app What's New entry added to `WHATS_NEW_ENTRIES` (`apps/web/src/lib/whatsNew.ts`) and **merged to main BEFORE the tag** — version = bare semver of this release (or deliberately skipped for an internal-only release)
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
 - [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked

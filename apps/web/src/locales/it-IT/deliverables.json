@@ -83,6 +83,10 @@
   },
   "drawer": {
     "title": "Occorrenze",
+    "empty_one": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorno prima della scadenza.",
+    "empty_other": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorni prima della scadenza.",
+    "emptyWithDate_one": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorno prima della scadenza ({{date}}).",
+    "emptyWithDate_other": "Nessuna occorrenza per ora. La prima viene pianificata {{count}} giorni prima della scadenza ({{date}}).",
     "evidence": "Evidenze",
     "noEvidence": "Nessuna evidenza allegata",
     "late": "In ritardo",

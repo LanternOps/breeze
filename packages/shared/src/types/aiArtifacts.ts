@@ -8,6 +8,15 @@
 export const AI_ARTIFACT_KINDS = ['input_capture', 'step_script', 'step_stdout', 'output', 'report'] as const;
 export type AiArtifactKind = (typeof AI_ARTIFACT_KINDS)[number];
 
+/** Preview text is escaped, never rendered as markup. Unknown/binary types have no preview. */
+export function isTextArtifactContentType(contentType: string): boolean {
+  const mime = contentType.split(';', 1)[0]?.trim().toLowerCase();
+  return mime?.startsWith('text/') === true || [
+    'application/json', 'application/jsonl', 'application/x-ndjson',
+    'application/xml', 'application/yaml', 'application/x-yaml',
+  ].includes(mime ?? '');
+}
+
 export interface AiRunArtifactDto {
   id: string;
   runId: string | null;
@@ -17,9 +26,9 @@ export interface AiRunArtifactDto {
   contentType: string;
   bytes: number;
   sha256: string;
-  /** First ≤ 2048 bytes of the RAW content, UTF-8 decoded, secret-redacted. Text-escape before rendering. */
+  /** First ≤ 2048 characters of RAW text, secret-redacted; empty for binary content. Text-escape before rendering. */
   headPreview: string;
-  /** Last ≤ 2048 bytes, same treatment. */
+  /** Last ≤ 2048 characters, same treatment. */
   tailPreview: string;
   sourceDeviceId: string | null;
   createdByTool: string;

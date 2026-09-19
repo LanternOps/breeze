@@ -3,7 +3,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../../db', () => ({ db: {} }));
 
-import { complianceSiteCondition } from './helpers';
+import { complianceDeviceCondition, complianceSiteCondition } from './helpers';
 
 const dialect = new PgDialect();
 
@@ -26,6 +26,24 @@ describe('complianceSiteCondition (#4880)', () => {
   it('compiles an empty allowlist to a predicate that matches nothing', () => {
     // Callers short-circuit before this, but the fallback must fail closed.
     const { sql } = dialect.sqlToQuery(complianceSiteCondition([])!);
+    expect(sql).toContain('false');
+  });
+});
+
+describe('complianceDeviceCondition (#6096)', () => {
+  it('returns no predicate for an unrestricted caller', () => {
+    expect(complianceDeviceCondition(undefined)).toBeUndefined();
+    expect(complianceDeviceCondition(null)).toBeUndefined();
+  });
+
+  it('binds every allowed device id against the compliance row device', () => {
+    const { sql, params } = dialect.sqlToQuery(complianceDeviceCondition(['dev-1', 'dev-2'])!);
+    expect(sql).toContain('"automation_policy_compliance"."device_id" in ($1, $2)');
+    expect(params).toEqual(['dev-1', 'dev-2']);
+  });
+
+  it('compiles an empty allowlist to a predicate that matches nothing', () => {
+    const { sql } = dialect.sqlToQuery(complianceDeviceCondition([])!);
     expect(sql).toContain('false');
   });
 });

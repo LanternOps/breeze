@@ -200,14 +200,17 @@ describe('GET /monitoring/assets/:id/metrics', () => {
     expect(body.error).toBe('Asset not found');
   });
 
-  it("returns 403 for a site-restricted caller outside the asset's site", async () => {
+  it("returns an opaque 404 (matching a missing asset) for a site-restricted caller outside the asset's site (#5777)", async () => {
     vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow({ siteId: SITE_DENIED })]) as any);
 
     const res = await get('?oid=1.3.6.1.2.1.1.1.0', { 'x-restrict-site': SITE_ALLOWED });
 
-    expect(res.status).toBe(403);
+    // Same status AND same body as the "asset in another org" 404 above — an
+    // out-of-ceiling asset must not be distinguishable from a missing one
+    // (existence oracle, #5777).
+    expect(res.status).toBe(404);
     const body = await res.json();
-    expect(body.error).toBe('Access to this site denied');
+    expect(body.error).toBe('Asset not found');
   });
 
   it('returns 404 when the asset has no SNMP device', async () => {

@@ -188,6 +188,52 @@ export function combineMfaPolicyFacts(facts: {
  *   If settings cannot be read, tenant-disableable TOTP and SMS are denied;
  *   passkeys remain allowed because policy cannot disable them.
  */
+/**
+ * Read-only `security` settings for a scope, resolved exactly the way
+ * `getEffectiveMfaPolicy` resolves them (partner-inherited for org scope via
+ * `getEffectiveOrgSettings`, partner's own row for partner scope). Exists for
+ * callers that need the setting WITHOUT the role-force read or the
+ * enrolment-grace grant write — e.g. the Admin → Users list, which derives an
+ * MFA status column for many users off one settings read rather than one
+ * `getEffectiveMfaPolicy` call (and its grant side effect) per row.
+ *
+ * Fails open (`undefined`) on a read error, same disposition as
+ * `getEffectiveMfaPolicy`'s settings branch when neither fail-closed flag is
+ * set — a transient blip must not make an admin list look wrong, and
+ * `resolveMfaGraceDays(undefined)` already falls back to the documented
+ * default.
+ */
+export async function getScopeSecuritySettings(
+  input: Pick<MfaPolicyInput, 'scope' | 'orgId' | 'partnerId'>,
+): Promise<MfaSecuritySettings | undefined> {
+  if (input.scope === 'system') return undefined;
+
+  return dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(async () => {
+      try {
+        if (input.scope === 'organization' && input.orgId) {
+          const { effective } = await getEffectiveOrgSettings(input.orgId);
+          return effective.security as MfaSecuritySettings | undefined;
+        }
+        if (input.scope === 'partner' && input.partnerId) {
+          const [partner] = await dbModule.db
+            .select({ settings: partners.settings })
+            .from(partners)
+            .where(eq(partners.id, input.partnerId))
+            .limit(1);
+          const settings = (partner?.settings ?? {}) as Record<string, unknown>;
+          return settings.security as MfaSecuritySettings | undefined;
+        }
+        return undefined;
+      } catch (err) {
+        console.error('[mfa-policy] getScopeSecuritySettings read failed — failing open (undefined):', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        return undefined;
+      }
+    }),
+  );
+}
+
 export async function getEffectiveMfaPolicy(
   input: MfaPolicyInput,
   opts?: { failClosed?: boolean; failClosedMethods?: boolean },

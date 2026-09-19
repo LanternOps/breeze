@@ -481,4 +481,21 @@ describe('InvoicesPage', () => {
       expect(within(orgSelect).getByText('Off-Page Org')).toBeInTheDocument();
     });
   });
+
+  describe('Export billables (M5)', () => {
+    it('shows an Export billables button that opens BillablesExportCard in a dialog', async () => {
+      wireDefault();
+      render(<InvoicesPage />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('invoices-export-billables-open'));
+      expect(await screen.findByTestId('billables-export-card')).toBeInTheDocument();
+    });
+
+    it('hides the Export billables button when the page is locked to one org', async () => {
+      wireDefault();
+      render(<InvoicesPage lockedOrgId="org-1" />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      expect(screen.queryByTestId('invoices-export-billables-open')).not.toBeInTheDocument();
+    });
+  });
 });

@@ -25,6 +25,7 @@ import {
   listCustomerGraphActionsConnections,
   retestCustomerGraphActionsConnection,
 } from '../services/m365ControlPlane/writeActionConnectionService';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { buildM365ActionsConsentBindingCookie } from '../services/m365ControlPlane/browserBinding';
 import { isM365CustomerGraphActionsOnboardingEnabledForOrg } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import {
@@ -228,6 +229,14 @@ m365CustomerGraphActionsRoutes.post(
   requireOrgsWrite,
   requireMfa(),
   async (c) => {
+    // Org-wide governance: Customer Graph Actions is the organization's WRITE
+    // consent to its whole Entra tenant — granting, retesting or severing it
+    // has no per-site slice to narrow a site-restricted caller to.
+    // `organizations:write` + MFA are not enough (services/siteCeilingAccess.ts,
+    // contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
@@ -273,6 +282,14 @@ m365CustomerGraphActionsRoutes.post(
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
+    // Org-wide governance: Customer Graph Actions is the organization's WRITE
+    // consent to its whole Entra tenant — granting, retesting or severing it
+    // has no per-site slice to narrow a site-restricted caller to.
+    // `organizations:write` + MFA are not enough (services/siteCeilingAccess.ts,
+    // contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
@@ -321,6 +338,14 @@ m365CustomerGraphActionsRoutes.post(
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
+    // Org-wide governance: Customer Graph Actions is the organization's WRITE
+    // consent to its whole Entra tenant — granting, retesting or severing it
+    // has no per-site slice to narrow a site-restricted caller to.
+    // `organizations:write` + MFA are not enough (services/siteCeilingAccess.ts,
+    // contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
     if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);

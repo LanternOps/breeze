@@ -22,7 +22,7 @@ import { WorkspaceToolError } from './workspaceErrors';
 export const WORKSPACE_CPU = 1 as const;
 export const WORKSPACE_MEMORY_MB = 2048 as const;
 export const WORKSPACE_MEMORY_GB = WORKSPACE_MEMORY_MB / 1024;
-/** Pinned bootstrap (spec §5.3 "Sandbox contents at create"); hash on the row. */
+/** Legacy bootstrap revision. Actual provider image is recorded separately as runtimeImage. */
 export const WORKSPACE_BOOTSTRAP_IMAGE = 'breeze-analysis@sha256:bootstrap-v1';
 export const WORKSPACE_BOOTSTRAP_HASH = 'bootstrap-v1';
 

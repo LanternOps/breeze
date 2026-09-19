@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   analyzeRouteSource,
   findDeviceScopedTables,
+  stripComments,
 } from './routeScan';
 
 // Device-scoped table export names used by the inline fixtures below.
@@ -464,5 +465,215 @@ describe('findDeviceScopedTables — schema-derived table set', () => {
   it('excludes a clearly org-only table (organizations)', async () => {
     const tables = await findDeviceScopedTables();
     expect(tables.has('organizations')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4019 — comments must not be able to change the scanner's answer.
+// ---------------------------------------------------------------------------
+
+/** Filler comment prose of at least `bytes` bytes, as a JSDoc block. */
+function commentFiller(bytes: number): string {
+  const line = '   * this is explanatory prose that competes with code for the byte budget\n';
+  return `  /**\n${line.repeat(Math.ceil(bytes / line.length))}   */\n`;
+}
+
+describe('stripComments', () => {
+  it('removes line and block comments but keeps every newline', () => {
+    const src = ['const a = 1; // trailing', '/* block', '   more */', 'const b = 2;'].join('\n');
+    const out = stripComments(src);
+    expect(out).not.toContain('trailing');
+    expect(out).not.toContain('more');
+    expect(out).toContain('const a = 1;');
+    expect(out).toContain('const b = 2;');
+    // Line structure is the contract that keeps reported line numbers honest.
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+  });
+
+  it('leaves comment-looking text inside string and template literals alone', () => {
+    const src = [
+      `const url = 'https://example.com/a//b';`,
+      'const t = `path // not a comment ${x /* nor this */} tail`;',
+      `const d = "/* still a string */";`,
+    ].join('\n');
+    const out = stripComments(src);
+    expect(out).toContain('https://example.com/a//b');
+    expect(out).toContain('path // not a comment');
+    expect(out).toContain('/* still a string */');
+    // The interpolation IS code, so a comment inside it is stripped.
+    expect(out).not.toContain('nor this');
+  });
+
+  it('does not let an unescaped slash inside a regex character class open a comment', () => {
+    // This shape is common under routes/ (base64 validators) and is exactly how
+    // a naive stripper swallows the rest of the file.
+    const src = [
+      'const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==)?$/;',
+      'const keep = eq(deviceMetrics.deviceId, id);',
+    ].join('\n');
+    const out = stripComments(src);
+    expect(out).toContain('BASE64_RE');
+    expect(out).toContain('eq(deviceMetrics.deviceId, id)');
+  });
+
+  it('keeps a division expression intact', () => {
+    const src = 'const half = Math.ceil(total / 3) * 4; const g = canAccessSite(p, s);';
+    expect(stripComments(src)).toBe(src);
+  });
+
+  it('does not fuse identifiers across an inline block comment', () => {
+    expect(stripComments('canAcc/* x */essSite')).toBe('canAcc essSite');
+  });
+
+  it('keeps division intact after a closing paren or bracket', () => {
+    // `)` and `]` end a VALUE, so a following `/` divides. Getting this wrong
+    // would open a phantom regex that swallows code to the next `/`.
+    const src = 'const a = (x)/y; const b = arr[0]/2; const g = canAccessSite(p, s);';
+    expect(stripComments(src)).toBe(src);
+  });
+
+  it('handles an escaped delimiter inside a regex literal', () => {
+    const src = ['const RE = /^a\\/b$/;', 'const keep = eq(deviceMetrics.deviceId, id);'].join('\n');
+    expect(stripComments(src)).toBe(src);
+  });
+
+  it('handles a template interpolation nested inside another template', () => {
+    const src = 'const t = `outer ${`inner ${a / b} // tail`} done`;';
+    expect(stripComments(src)).toBe(src);
+  });
+
+  it('strips a comment inside a NESTED template interpolation', () => {
+    const out = stripComments('const t = `o ${`i ${x /* gone */} `} `;');
+    expect(out).not.toContain('gone');
+    expect(out).toContain('`o ${`i ${x');
+  });
+
+  it('does not run past the line end on an unterminated string literal', () => {
+    // A stray quote must not turn the rest of the file into string content —
+    // that would hide every gate and device reference below it.
+    const src = ["const broken = 'oops;", 'const keep = canAccessSite(p, s); // note'].join('\n');
+    const out = stripComments(src);
+    expect(out).toContain('canAccessSite(p, s);');
+    expect(out).not.toContain('note');
+  });
+
+  it('strips an unterminated block comment through end of file', () => {
+    expect(stripComments('const a = 1;\n/* never closed\nmore prose')).toBe('const a = 1;\n\n');
+  });
+});
+
+describe('analyzeRouteSource — comments cannot change the answer (#4019)', () => {
+  it('still sees device-table access that a long comment pushed past the byte budget', () => {
+    // The exact regression from #4019: an explanatory comment inside the handler
+    // moves the handler's only device-table reference past HANDLER_SLICE_BYTES.
+    // Before the fix the route vanished from findRoutesTouchingDeviceData().
+    const src = [
+      `router.get('/incidents', async (c) => {`,
+      commentFiller(4200),
+      `    const { deviceId } = c.req.query();`,
+      `    return c.json(await db.select().from(deviceMetrics)`,
+      `      .where(eq(deviceMetrics.deviceId, deviceId)));`,
+      `  });`,
+    ].join('\n');
+    expect(src.indexOf('deviceMetrics.deviceId')).toBeGreaterThan(4000);
+
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.touchesDeviceData).toBe(true);
+    expect(route.usesSiteScopeGate).toBe(false);
+  });
+
+  it('still sees device-table access sitting past the byte budget in real code', () => {
+    // Same class, no comments involved: the data detector reads the whole
+    // handler, so a genuinely long handler cannot hide its device access either.
+    const filler = '    const pad = computeSomething(auth, request, options);\n'.repeat(90);
+    const src = [
+      `router.post('/bulk', async (c) => {`,
+      filler,
+      `    return c.json(await db.select().from(deviceMetrics)`,
+      `      .where(inArray(deviceMetrics.deviceId, body.deviceIds)));`,
+      `  });`,
+    ].join('\n');
+    expect(src.indexOf('deviceMetrics.deviceId')).toBeGreaterThan(4000);
+
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.touchesDeviceData).toBe(true);
+  });
+
+  it('does NOT accept a gate name that only appears in a comment', () => {
+    const src = [
+      `router.get('/extensions', async (c) => {`,
+      `    // TODO: call canAccessSite(perms, device.siteId) here before shipping.`,
+      `    const { deviceId } = c.req.query();`,
+      `    return c.json(await db.select().from(browserExtensions)`,
+      `      .where(eq(browserExtensions.deviceId, deviceId)));`,
+      `  });`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.touchesDeviceData).toBe(true);
+    expect(route.usesSiteScopeGate).toBe(false);
+  });
+
+  it('does NOT promote a helper to a gate wrapper on a comment mention alone', () => {
+    const src = [
+      `function loadDevice(id) {`,
+      `  // Site access is enforced by canAccessSite in the caller, not here.`,
+      `  return db.select().from(devices).where(eq(devices.id, id));`,
+      `}`,
+      `router.get('/thing/:id', async (c) => {`,
+      `  const d = await loadDevice(c.req.param('id'));`,
+      `  return c.json(await db.select().from(browserExtensions)`,
+      `    .where(eq(browserExtensions.deviceId, d.id)));`,
+      `});`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.usesSiteScopeGate).toBe(false);
+  });
+
+  it('does NOT invent a route from a route definition quoted in a comment', () => {
+    const src = [
+      `// Replaces the inline \`.get('/download/:os/:arch', handler)\` registration.`,
+      `router.get('/download', async (c) => c.json({}));`,
+    ].join('\n');
+    const routes = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES);
+    expect(routes.map((r) => r.id)).toEqual(['routes/x.ts:GET /download']);
+  });
+
+  it('reports the real line number of a route below a long comment block', () => {
+    const src = [commentFiller(4200), `router.get('/thing', async (c) => c.json({}));`].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    const expectedLine = src.slice(0, src.indexOf(`router.get('/thing'`)).split('\n').length;
+    expect(route.line).toBe(expectedLine);
+  });
+
+  it('reports a perms-sourced site gate that falls past the scanned window', () => {
+    const filler = '    const pad = computeSomething(auth, request, options);\n'.repeat(90);
+    const src = [
+      `router.get('/late-gate', async (c) => {`,
+      filler,
+      `    const perms = c.get('permissions');`,
+      `    if (perms?.allowedSiteIds && !perms.allowedSiteIds.includes(row.siteId)) deny();`,
+      `    return c.json(row);`,
+      `  });`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.handlerWindowTruncated).toBe(true);
+    expect(route.permsSiteGateBeyondWindow).toBe(true);
+    // The detector itself stayed silent — which is exactly why the flag exists.
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+
+  it('does not raise the truncation alarm when the window already proves the gate is live', () => {
+    const filler = '    const pad = computeSomething(auth, request, options);\n'.repeat(90);
+    const src = [
+      `router.get('/late-gate', requirePermission(P.r, P.a), async (c) => {`,
+      filler,
+      `    const perms = c.get('permissions');`,
+      `    if (perms?.allowedSiteIds && !perms.allowedSiteIds.includes(row.siteId)) deny();`,
+      `    return c.json(row);`,
+      `  });`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES)[0]!;
+    expect(route.handlerWindowTruncated).toBe(true);
+    expect(route.permsSiteGateBeyondWindow).toBe(false);
   });
 });

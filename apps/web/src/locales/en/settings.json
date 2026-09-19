@@ -548,7 +548,8 @@
       },
       "ticketing": {
         "label": "Ticketing",
-        "description": "Statuses, SLAs, exports"
+        "description": "Statuses, SLAs, categories, forms",
+        "linkCta": "Manage ticketing settings →"
       },
       "aiBudgets": {
         "label": "AI Budgets",
@@ -565,6 +566,10 @@
       "loginBranding": {
         "label": "Login Branding",
         "description": "Login page appearance"
+      },
+      "modules": {
+        "label": "Modules",
+        "description": "Service desk & billing on/off"
       }
     },
     "saved": "Partner settings saved",
@@ -1134,6 +1139,10 @@
       "description": "Choose which service insights this customer can see in the portal.",
       "enableAll": "Enable all visibility",
       "toggles": {
+        "enableDevices": {
+          "label": "Devices",
+          "description": "Show the Devices page. Self-service also grants access to this page."
+        },
         "enableDashboard": {
           "label": "Dashboard",
           "description": "Show a service-health summary when customers sign in."
@@ -1544,6 +1553,7 @@
       "actMode": {
         "label": "Act mode",
         "hint": "When armed, this schedule may apply certain fixes automatically instead of waiting for approval.",
+        "deploymentDisabledHint": "Act mode is unavailable because BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED is off for this deployment. Contact your administrator to enable it.",
         "disabledHint": "Arming act mode requires full partner access to all organizations.",
         "scopeNote": "Unattended fixes are limited to restarting a stopped service, and only on devices whose organization has already been granted manage_services:restart. Everything else still waits for approval.",
         "disableForOrg": "Disable act mode for this organization",
@@ -1617,7 +1627,9 @@
       "act": "Act",
       "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
       "actUnavailable": "Not available for this agent yet.",
-      "shadowUnavailableForKind": "This agent only reads and writes reports — there is nothing to shadow."
+      "designerAct": "On",
+      "designerActConsequence": "Runs on schedule or on demand and writes a Fleet Design. Never changes a device.",
+      "shadowApprovalNotice": "Proposals land in Approvals; approving one runs it for real, not a dry run."
     },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
@@ -2115,11 +2127,13 @@
           "title": "Files this run produced",
           "download": "Download",
           "preview": "Preview",
-          "attachToTicket": "Attach to a ticket",
-          "attach": "Attach {{name}}",
+          "attachToTicket": "Attach as internal note",
+          "attach": "Attach {{name}} as internal note",
           "ticketIdPlaceholder": "Ticket ID",
-          "attachedToTicket": "Attached to the ticket",
-          "attachFailed": "Could not attach the file to that ticket"
+          "attachedToTicket": "Attached to the ticket as an internal note",
+          "attachFailed": "Could not attach the file to that ticket",
+          "attachedButCommentFailed": "The file was attached, but the ticket note could not be added",
+          "downloadExpired": "This file has expired and is no longer available to download."
         },
         "workspace": {
           "title": "What ran in the workspace",
@@ -3054,6 +3068,11 @@
       "searchPlaceholder": "Search scripts…",
       "selectedCount_one": "{{count}} script authorized",
       "selectedCount_other": "{{count}} scripts authorized"
+    },
+    "designerNote": {
+      "title": "This agent only reads and writes reports",
+      "body": "A Fleet Designer never executes anything on a device. On means it may run and deliver its designs to the recipients you choose.",
+      "ack": "I understand this agent runs unattended and delivers Fleet Designs."
     }
   },
   "apiKeyForm": {
@@ -3396,7 +3415,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Product Catalog",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "The product catalog is available to partner accounts only.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Manage hardware, software, and service items used across quotes, contracts, and invoices. Connect distributors (Pax8, TD SYNNEX) under Integrations → Distributors."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Manage hardware, software, and service items used across quotes, contracts, and invoices. Connect distributors (Pax8, TD SYNNEX) under Integrations → Distributors.",
+    "distributorsLink": "Manage distributor connections →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Current password is required",
@@ -4094,6 +4114,7 @@
     "languageLoadFailed": "Preference saved, but the language failed to load — showing English. Check your connection and try again."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Default time entry (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes and hourly rate must be numbers.",
     "categoryUpdated": "Category updated",
     "ticketing": "Ticketing",
@@ -4195,7 +4216,10 @@
     "inboundEmail": "Inbound Email",
     "cannedResponses": "Canned responses",
     "checkingAccess": "Checking your access...",
-    "timeTracking": "Time Tracking"
+    "timeTracking": "Time Tracking",
+    "email": "Email",
+    "templates": "Templates",
+    "timeCapture": "Time capture"
   },
   "ticketFormsCard": {
     "heading": "Intake forms",
@@ -5165,13 +5189,21 @@
     "columns": {
       "email": "Email",
       "role": "Role",
-      "lastLogin": "Last login"
+      "lastLogin": "Last login",
+      "mfaStatus": "MFA status"
     },
     "status": {
       "active": "Active",
       "invited": "Invited",
       "suspended": "Suspended",
       "pending": "Pending"
+    },
+    "mfaStatus": {
+      "enrolled": "Enrolled",
+      "pending": "Pending",
+      "pendingByDate": "Pending — enroll by {{date}}",
+      "overdue": "Overdue",
+      "notRequired": "Not required"
     },
     "empty": "No users match your search."
   },
@@ -5231,6 +5263,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organization-owned variables are listed under each organization.",
     "title": "Variables",
     "description": "Define a value once — a vendor site token, an internal repo URL — and reference it from scripts instead of hardcoding it per customer.",
     "loading": "Loading variables…",
@@ -5579,5 +5612,18 @@
     "title": "AI budget",
     "description": "Spending caps, rate limits and approval mode for the AI assistant in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
     "selectOrganization": "Select an organization to configure its AI budget."
+  },
+  "ticketingHubPage": {
+    "heading": "Ticketing Settings",
+    "description": "Statuses, SLAs, categories, intake forms, email, templates and time capture — applied across all of your organizations."
+  },
+  "catalogDefaultsCard": {
+    "title": "Catalog defaults",
+    "description": "Used to pre-fill catalog imports and the quote editor's auto-fill — these never affect price resolution directly.",
+    "loading": "Loading catalog defaults...",
+    "loadError": "Failed to load catalog defaults.",
+    "saveError": "Failed to save catalog defaults",
+    "saveSuccess": "Catalog defaults saved",
+    "saveButton": "Save"
   }
 }

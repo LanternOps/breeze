@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Privilégios elevados",
     "relativeTime": {
       "justNow": "Agora mesmo",
       "minutesAgo": "há {{count}} min",
@@ -1342,6 +1343,11 @@
       "confirmSuffix": "Esta ação não pode ser desfeita."
     },
     "library": {
+      "target": "Importar em",
+      "allOrgs": "Todas as organizações do parceiro",
+      "chooseOrg": "Escolha uma organização",
+      "partnerPermission": "Você não pode importar scripts para todas as organizações. Escolha uma organização.",
+      "importSuccess": "“{{name}}” importado",
       "title": "Biblioteca de scripts do sistema",
       "description": "Importe scripts para sua organização",
       "searchPlaceholder": "Pesquisar scripts do sistema...",

@@ -109,7 +109,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // customer's own data, not an API response, so it is not in scope of that
   // comment.
   "ai_run_artifacts": tablePolicy("org_id", {"included":["id","org_id","run_id","session_id","kind","name","content_type","bytes","sha256","blob_key","head_preview","tail_preview","source_device_id","created_by_tool","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "ai_run_workspaces": tablePolicy("org_id", {"included":["id","org_id","run_id","backend","provider_ref","region","status","created_at","ready_at","destroying_since","destroyed_at","deadline_at","cpu_ms","wall_ms","mem_allocated_mb","compute_cents","staged_bytes","artifact_bytes","step_count","destroy_attempts","last_error"],"reviewedIncluded":["bootstrap_hash"],"excludedSensitive":[],"excludedOpen":["steps"]}),
+  "ai_run_workspaces": tablePolicy("org_id", {"included":["id","org_id","run_id","backend","provider_ref","region","status","created_at","ready_at","destroying_since","destroyed_at","deadline_at","cpu_ms","wall_ms","mem_allocated_mb","compute_cents","staged_bytes","artifact_bytes","step_count","destroy_attempts","last_error","runtime_image"],"reviewedIncluded":["bootstrap_hash"],"excludedSensitive":[],"excludedOpen":["steps"]}),
   "ai_screenshots": tablePolicy("org_id", {"included":["id","device_id","org_id","session_id","storage_key","width","height","size_bytes","captured_by","reason","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // AI script authoring W04 (#5612). protected_resources is jsonb, so it is
   // excludedOpen per CLAUDE.md — an open container may embed capabilities,
@@ -458,7 +458,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "plugin_installations": tablePolicy("org_id", {"included":["id","org_id","catalog_id","version","status","enabled","sandbox_enabled","installed_at","installed_by","last_active_at","error_message","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config","permissions","resource_limits"]}),
   "plugin_instances": tablePolicy("org_id", {"included":["id","plugin_id","org_id","enabled","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config"]}),
   "plugins": tablePolicy("org_id", {"included":["id","org_id","name","slug","version","description","author","homepage","manifest_url","entry_point","status","is_system","installed_at","updated_at","error_message","last_active_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["permissions","hooks","settings"]}),
-  "portal_branding": tablePolicy("org_id", {"included":["id","org_id","logo_url","favicon_url","primary_color","secondary_color","accent_color","custom_domain","domain_verified","welcome_message","support_email","support_phone","footer_text","custom_css","enable_tickets","enable_asset_checkout","enable_self_service","created_at","updated_at","enable_dashboard","enable_security","enable_backups","enable_reports","enable_support_usage","enable_service","enable_documents","enable_lifecycle"],"reviewedIncluded":["enable_password_reset"],"excludedSensitive":[],"excludedOpen":[]}),
+  "portal_branding": tablePolicy("org_id", {"included":["id","org_id","logo_url","favicon_url","primary_color","secondary_color","accent_color","custom_domain","domain_verified","welcome_message","support_email","support_phone","footer_text","custom_css","enable_tickets","enable_asset_checkout","enable_devices","enable_self_service","created_at","updated_at","enable_dashboard","enable_security","enable_backups","enable_reports","enable_support_usage","enable_service","enable_documents","enable_lifecycle"],"reviewedIncluded":["enable_password_reset"],"excludedSensitive":[],"excludedOpen":[]}),
   // auth_epoch is server-side bearer-session revocation state, not portable
   // customer content. Exporting it would disclose credential/status transition
   // history and invite consumers to treat an internal generation as restorable
@@ -560,7 +560,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // W01 (spec §7.1): poll_seq is a monotonic per-device dispatch counter —
   // ordinary operational state, a plain integer, `included` (the same treatment
   // as devices.reboot_deferrals_used).
-  "snmp_devices": tablePolicy("org_id", {"included":["id","org_id","asset_id","name","ip_address","snmp_version","port","auth_protocol","priv_protocol","username","polling_interval","template_id","is_active","last_polled","last_poll_attempted_at","consecutive_failures","last_status","poll_seq","created_at"],"reviewedIncluded":[],"excludedSensitive":["community","auth_password","priv_password"],"excludedOpen":[]}),
+  // Reviewed tenant diagnostics: agent error text may echo an SNMP community name;
+  // include the diagnostic in tenant exports while stored credentials remain excluded.
+  "snmp_devices": tablePolicy("org_id", {"included":["id","org_id","asset_id","name","ip_address","snmp_version","port","auth_protocol","priv_protocol","username","polling_interval","template_id","is_active","last_polled","last_poll_attempted_at","consecutive_failures","last_status","last_error_at","poll_seq","created_at"],"reviewedIncluded":["last_error"],"excludedSensitive":["community","auth_password","priv_password"],"excludedOpen":[]}),
   // W01 (spec §7.3): base_oid and instance are public SNMP OID identifiers —
   // the same class of value as the existing `oid` column, which has always been
   // `included`. `error` is a closed set of five SNMP PDU/bound codes

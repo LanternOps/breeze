@@ -186,6 +186,22 @@ describe('webhooks mount-order regression (#2053)', () => {
     expect(qboVerifyWebhookMock).not.toHaveBeenCalled();
   });
 
+  it('the Svix-signed delivery webhook is reachable under the shared /webhooks prefix', async () => {
+    const { resendWebhookRoutes } = await import('./webhooks/emailProvider');
+    const app = new Hono();
+    app.route('/webhooks', webhookRoutes);          // session-auth CRUD, mounted FIRST
+    app.route('/webhooks', resendWebhookRoutes);    // public, mounted after
+    const res = await app.request('/webhooks/email-provider/resend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    // Anything but 401-with-"Missing or invalid authorization header" proves the
+    // CRUD router's auth did not blanket the public sibling. With no secret
+    // configured in this suite's env the route is inert, so 404 is the answer.
+    expect(res.status).toBe(404);
+  });
+
   it('webhookRoutes CRUD still requires session auth (no token → 401 auth header)', async () => {
     const res = await buildApp().request('/webhooks', { method: 'GET' });
     expect(res.status).toBe(401);
