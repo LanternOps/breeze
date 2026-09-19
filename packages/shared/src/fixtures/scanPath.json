@@ -21,6 +21,16 @@
   },
   {
     "osType": "windows",
+    "input": "C:.",
+    "expected": "C:."
+  },
+  {
+    "osType": "windows",
+    "input": "C:..",
+    "expected": "C:.."
+  },
+  {
+    "osType": "windows",
     "input": "\\\\server\\share",
     "expected": "\\\\server\\share"
   },

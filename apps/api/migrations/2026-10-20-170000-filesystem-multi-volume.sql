@@ -50,7 +50,7 @@ AS $fn$
   SELECT CASE
     WHEN raw_path IS NULL OR btrim(raw_path) = ''
       THEN CASE WHEN os_type = 'windows' THEN 'C:\' ELSE '/' END
-    WHEN raw_path ~ '(^|[\\/])\.\.?([\\/]|$)'
+    WHEN raw_path ~ '(^|^[A-Za-z]:|[\\/])\.\.?([\\/]|$)'
       THEN raw_path
     WHEN os_type = 'windows' THEN (
       -- Preserve UNC's two leading separators before collapsing the rest.
@@ -106,7 +106,7 @@ BEGIN
   SELECT count(*) INTO verbatim_rows
     FROM public.device_filesystem_snapshots
    WHERE scan_path IS NULL
-     AND raw_payload->>'path' ~ '(^|[\\/])\.\.?([\\/]|$)';
+     AND raw_payload->>'path' ~ '(^|^[A-Za-z]:|[\\/])\.\.?([\\/]|$)';
 
   UPDATE public.device_filesystem_snapshots s
      SET scan_path = public.breeze_w02_normalize_scan_path(

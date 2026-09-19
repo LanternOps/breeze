@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 /**
  * AI Filesystem Tools
  *
@@ -32,8 +33,7 @@ import {
   setFilesystemScanGeneration,
   safeCleanupCategories,
 } from './filesystemAnalysis';
-import { aiExecuteCommand, aiQueueCommandForExecution } from './aiDispatch';
-import { waitForCommandResult } from './commandQueue';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -183,7 +183,14 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
       if (refresh || !snapshot) {
         const timeoutMs = Math.max(90_000, ((Number(input.timeoutSeconds) || 300) + 75) * 1000);
-        const queued = await aiQueueCommandForExecution(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
+        const commandId = randomUUID();
+        // Commit registration before the command can be delivered. Escaping the
+        // ambient context does not close the outer AI transaction; this short
+        // org-scoped transaction commits independently before dispatch starts.
+        await runOutsideDbContext(() => withDbAccessContext({
+          scope: 'organization', orgId: access.device.orgId, accessibleOrgIds: [access.device.orgId],
+        }, () => setFilesystemScanGeneration(deviceId, access.device.orgId, scanPath, commandId)));
+        const commandResult = await aiExecuteCommand(auth, 'analyze_disk_usage', deviceId, 'filesystem_analysis', {
           trigger: 'on_demand',
           path: scanPath,
           maxDepth: input.maxDepth,
@@ -194,23 +201,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           timeoutSeconds: input.timeoutSeconds,
           autoContinue: isRootScopedScan,
           resumeAttempt: 0,
-        }, { userId: auth.user.id, preferHeartbeat: true });
-        if (!queued.command) {
-          return JSON.stringify({ error: queued.error || 'Failed to queue filesystem analysis' });
-        }
-        const commandId = queued.command.id;
-        const completed = await runOutsideDbContext(async () => {
-          // Commit the registration before polling: a held outer transaction
-          // would block the result handler's claim on this same state row.
-          await withDbAccessContext({
-            scope: 'organization', orgId: access.device.orgId, accessibleOrgIds: [access.device.orgId],
-          }, () => setFilesystemScanGeneration(deviceId, access.device.orgId, scanPath, commandId));
-          return waitForCommandResult(commandId, timeoutMs);
-        });
-        const commandResult = completed.result;
-        if (!commandResult) {
-          return JSON.stringify({ error: 'Filesystem analysis returned no result' });
-        }
+        }, { userId: auth.user.id, timeoutMs, preferHeartbeat: true, commandId });
 
         if (commandResult.status !== 'completed') {
           return JSON.stringify({ error: commandResult.error || 'Filesystem analysis failed' });

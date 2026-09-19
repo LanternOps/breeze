@@ -73,6 +73,10 @@ function normalizePosixScanPath(raw: string): string {
 }
 
 function normalizeWindowsScanPath(raw: string): string {
+  // A drive-relative dot segment depends on that drive's current directory.
+  // Keep it verbatim rather than silently treating it as the volume root.
+  if (/^[A-Za-z]:\.\.?(?:[\\/]|$)/.test(raw)) return raw;
+
   const slashed = raw.replace(/\//g, '\\');
 
   // UNC (`\\server\share`). The volumes service refuses these outright — they

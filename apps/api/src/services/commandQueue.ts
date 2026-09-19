@@ -916,6 +916,8 @@ export async function queueBackupStopCommand(
 }
 
 export interface ExecuteCommandOptions {
+  /** Preallocated ID for callers that must commit result-handler state before dispatch. */
+  commandId?: string;
   userId?: string;
   timeoutMs?: number;
   preferHeartbeat?: boolean;
@@ -1306,6 +1308,7 @@ async function dispatchPreparedCommand(
           deviceId,
           type,
           payload: payloadWithBudget,
+          ...(options.commandId ? { id: options.commandId } : {}),
           status: 'pending',
           createdBy: safeUserId,
           targetRole,

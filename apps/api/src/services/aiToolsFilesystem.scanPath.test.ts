@@ -45,7 +45,7 @@ vi.mock('./filesystemAnalysis', () => ({
 }));
 
 import { db, withDbAccessContext } from '../db';
-import { aiQueueCommandForExecution } from './aiDispatch';
+import { aiExecuteCommand, aiQueueCommandForExecution } from './aiDispatch';
 import { waitForCommandResult } from './commandQueue';
 import {
   getLatestFilesystemCleanupSnapshot,
@@ -108,13 +108,16 @@ describe('analyze_disk_usage — path (spec §9)', () => {
 
     await registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true, path: 'd:/' }, AUTH);
 
-    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
       AUTH, 'analyze_disk_usage', DEVICE_ID, 'filesystem_analysis',
       expect.objectContaining({ path: 'D:\\', autoContinue: false }),
       expect.anything(),
     );
-    expect(setFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, 'org-1', 'D:\\', 'cmd-scan');
-    expect(vi.mocked(setFilesystemScanGeneration).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(waitForCommandResult).mock.invocationCallOrder[0]!);
+    expect(setFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, 'org-1', 'D:\\', expect.any(String));
+    const commandId = vi.mocked(setFilesystemScanGeneration).mock.calls[0]![3];
+    expect(aiExecuteCommand).toHaveBeenCalledWith(AUTH, 'analyze_disk_usage', DEVICE_ID, 'filesystem_analysis', expect.anything(), expect.objectContaining({ commandId }));
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+    expect(vi.mocked(setFilesystemScanGeneration).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(aiExecuteCommand).mock.invocationCallOrder[0]!);
     expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
   });
 
@@ -124,9 +127,9 @@ describe('analyze_disk_usage — path (spec §9)', () => {
     vi.mocked(setFilesystemScanGeneration).mockImplementationOnce(async () => {
       expect(contextState).toEqual({ outside: true, scoped: true });
     });
-    vi.mocked(waitForCommandResult).mockImplementationOnce(async () => {
-      expect(contextState).toEqual({ outside: true, scoped: false });
-      return { status: 'completed', result: { status: 'completed', stdout: '{}' } } as never;
+    vi.mocked(aiExecuteCommand).mockImplementationOnce(async () => {
+      expect(contextState).toEqual({ outside: false, scoped: false });
+      return { status: 'completed', stdout: '{}' } as never;
     });
     await registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true }, AUTH);
     expect(withDbAccessContext).toHaveBeenCalledWith(
@@ -141,7 +144,7 @@ describe('analyze_disk_usage — path (spec §9)', () => {
 
     await registered.get('analyze_disk_usage')!.handler({ deviceId: DEVICE_ID, refresh: true }, AUTH);
 
-    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
       AUTH, 'analyze_disk_usage', DEVICE_ID, 'filesystem_analysis',
       expect.objectContaining({ path: '/', autoContinue: true }),
       expect.anything(),

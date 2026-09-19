@@ -41,6 +41,10 @@ describe('normalizeScanPath — Windows', () => {
     expect(normalizeScanPath('windows', 'C:\\a\\..\\..\\..')).toBe('C:\\');
   });
 
+  it.each(['C:.', 'C:..', 'c:./folder', 'c:../folder'])('preserves drive-relative dot segments: %s', (path) => {
+    expect(normalizeScanPath('windows', path)).toBe(path);
+  });
+
   it('keeps exactly two leading separators on a UNC path so the volume filter can see it', () => {
     expect(normalizeScanPath('windows', '\\\\fileserver\\share\\')).toBe('\\\\fileserver\\share');
     expect(normalizeScanPath('windows', '//fileserver//share')).toBe('\\\\fileserver\\share');
@@ -71,6 +75,11 @@ describe('normalizeScanPath — POSIX', () => {
     expect(normalizeScanPath('linux', '/opt/./app')).toBe('/opt/app');
     expect(normalizeScanPath('linux', '/opt/app/../data')).toBe('/opt/data');
     expect(normalizeScanPath('linux', '/opt/../..')).toBe('/');
+    // A colon is an ordinary filename character on POSIX.
+    expect(normalizeScanPath('linux', 'C:.')).toBe('C:.');
+    expect(normalizeScanPath('linux', 'C:..')).toBe('C:..');
+    expect(normalizeScanPath('linux', './data')).toBe('data');
+    expect(normalizeScanPath('linux', '../data')).toBe('../data');
   });
 
   it('falls back to the OS root for an empty path', () => {

@@ -10,6 +10,16 @@ describe('filesystem multi-volume migration safety contracts', () => {
     expect(migration).toContain("WHEN left(slashed, 2) = '\\\\'");
   });
 
+  it.each(['C:.', 'C:..', 'c:./folder', 'c:../folder', '/opt/./data', '/opt/../data', 'C:\\opt\\..\\data'])(
+    'stores dot segments verbatim and includes them in the warning count: %s', (path) => {
+      const guards = [...migration.matchAll(/(?:raw_path|raw_payload->>'path') ~ '([^']+)'/g)];
+      expect(guards).toHaveLength(2);
+      for (const [, guard] of guards) {
+        expect(new RegExp(guard!).test(path)).toBe(true);
+      }
+    },
+  );
+
   it('requires the newest snapshot original path as verification, without falling back to an older snapshot', () => {
     expect(migration).toContain("SELECT s.scan_path, NULLIF(btrim(s.raw_payload->>'path'), '') AS original_path");
     expect(migration).toContain('AND n.original_path IS NOT NULL');

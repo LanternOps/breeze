@@ -213,12 +213,16 @@ describe('scan generation (spec §13 #18)', () => {
     expect(onConflictDoUpdate).toHaveBeenCalledWith(expect.objectContaining({ set: expect.objectContaining({ scanGeneration: 'cmd-1' }) }));
   });
 
-  it('accepts a NULL generation and excludes only the same applied command', async () => {
+  it('accepts a NULL generation with a durable command ordering guard', async () => {
     const { where, set } = mockUpdateReturning([{ deviceId: 'device-1' }]);
     await expect(claimFilesystemScanGeneration('device-1', 'D:\\', 'cmd-2')).resolves.toBe('claimed');
     const query = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
     expect(query.sql).toMatch(/scan_generation" is null/i);
     expect(query.sql).toMatch(/last_applied_command_id" IS DISTINCT FROM/i);
+    expect(query.sql).toMatch(/NOT EXISTS[\s\S]*device_commands[\s\S]*applied\.created_at >= arriving\.created_at/i);
+    expect(query.sql).toContain('JOIN device_commands AS arriving ON arriving.id = $4');
+    expect(query.sql).toContain('WHERE applied.id = "device_filesystem_scan_state"."last_applied_command_id"');
+    expect(query.params).toEqual(['device-1', 'D:\\', 'cmd-2', 'cmd-2', 'cmd-2']);
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ lastAppliedCommandId: 'cmd-2' }));
   });
 
@@ -247,6 +251,86 @@ describe('scan generation (spec §13 #18)', () => {
     await expect(claimFilesystemScanGeneration('device-1', '/', 'cmd-1', db, 'org-1')).resolves.toBe('absent');
     await expect(claimFilesystemScanGeneration('device-1', '/', 'cmd-2', db, 'org-1')).resolves.toBe('claimed');
     expect(state).toMatchObject({ scanGeneration: null, lastAppliedCommandId: 'cmd-2' });
+  });
+
+  // Stateful executor: exercise registration, receipt persistence and late
+  // delivery using the predicates emitted by the service, rather than returning
+  // a predetermined claim result regardless of the query.
+  function generationStore() {
+    const commands = new Map([['A', 1], ['B', 2], ['equal-B', 2]]);
+    let state = { scanGeneration: null as string | null, lastAppliedCommandId: null as string | null };
+    vi.mocked(db.insert).mockReturnValue({ values: (values: typeof state) => ({
+      onConflictDoUpdate: async () => { state.scanGeneration = values.scanGeneration; },
+    }) } as never);
+    vi.mocked(db.update).mockReturnValue({ set: (updates: typeof state) => ({
+      where: (predicate: Parameters<PgDialect['sqlToQuery']>[0]) => ({ returning: async () => {
+        const query = new PgDialect().sqlToQuery(predicate);
+        const command = updates.lastAppliedCommandId!;
+        const priorTime = commands.get(state.lastAppliedCommandId!);
+        const arrivalTime = commands.get(command);
+        const checksOrdering = /NOT EXISTS[\s\S]*device_commands[\s\S]*applied\.created_at >= arriving\.created_at/i.test(query.sql);
+        const outdated = checksOrdering && priorTime !== undefined && arrivalTime !== undefined && priorTime >= arrivalTime;
+        const ownsGeneration = state.scanGeneration === command;
+        if (state.lastAppliedCommandId === command || (!ownsGeneration && (state.scanGeneration !== null || outdated))) return [];
+        state = { ...state, ...updates };
+        return [{ deviceId: 'device-1' }];
+      } }),
+    }) } as never);
+    vi.mocked(db.select).mockImplementation(() => ({ from: () => ({ where: () => ({ limit: async () => [state] }) }) }) as never);
+    return {
+      commands,
+      state: () => ({ ...state }),
+      register: (id: string) => setFilesystemScanGeneration('device-1', 'org-1', '/', id),
+      apply: (id: string) => claimFilesystemScanGeneration('device-1', '/', id),
+    };
+  }
+
+  it('rejects A arriving after registered B applied and leaves the state unchanged', async () => {
+    const store = generationStore();
+    await store.register('A');
+    await store.register('B');
+    await expect(store.apply('B')).resolves.toBe('claimed');
+    const afterB = store.state();
+    await expect(store.apply('A')).resolves.toBe('superseded');
+    expect(store.state()).toEqual(afterB);
+  });
+
+  it('applies ordered A then B and rejects A replayed after B', async () => {
+    const store = generationStore();
+    await store.register('A');
+    await expect(store.apply('A')).resolves.toBe('claimed');
+    await store.register('B');
+    await expect(store.apply('B')).resolves.toBe('claimed');
+    const afterB = store.state();
+    await expect(store.apply('A')).resolves.toBe('superseded');
+    expect(store.state()).toEqual(afterB);
+  });
+
+  it('rejects an unregistered command with the same creation time as B', async () => {
+    const store = generationStore();
+    await store.register('B');
+    await store.apply('B');
+    const afterB = store.state();
+    await expect(store.apply('equal-B')).resolves.toBe('superseded');
+    expect(store.state()).toEqual(afterB);
+  });
+
+  it('applies an unregistered result when the last-applied command was pruned', async () => {
+    const store = generationStore();
+    await store.register('B');
+    await store.apply('B');
+    store.commands.delete('B');
+    await expect(store.apply('A')).resolves.toBe('claimed');
+    expect(store.state().lastAppliedCommandId).toBe('A');
+  });
+
+  it('keeps an explicitly registered generation authoritative regardless of creation time', async () => {
+    const store = generationStore();
+    await store.register('B');
+    await store.apply('B');
+    await store.register('A');
+    await expect(store.apply('A')).resolves.toBe('claimed');
+    expect(store.state().lastAppliedCommandId).toBe('A');
   });
 
   it('claims the generation when the command id matches, clearing it in the same statement', async () => {

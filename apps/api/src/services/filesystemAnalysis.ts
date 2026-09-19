@@ -513,7 +513,22 @@ export async function claimFilesystemScanGeneration(
     .where(and(
       eq(deviceFilesystemScanState.deviceId, deviceId),
       eq(deviceFilesystemScanState.scanPath, scanPath),
-      or(eq(deviceFilesystemScanState.scanGeneration, commandId), isNull(deviceFilesystemScanState.scanGeneration)),
+      or(
+        eq(deviceFilesystemScanState.scanGeneration, commandId),
+        and(
+          isNull(deviceFilesystemScanState.scanGeneration),
+          // Clearing the generation after B applies must not let older A (or
+          // its replay) replace B. Compare in this UPDATE so the row lock and
+          // receipt advance stay atomic. A pruned applied command has no
+          // ordering evidence, so legacy delivery is still allowed.
+          sql`NOT EXISTS (
+            SELECT 1 FROM device_commands AS applied
+            JOIN device_commands AS arriving ON arriving.id = ${commandId}
+            WHERE applied.id = ${deviceFilesystemScanState.lastAppliedCommandId}
+              AND applied.created_at >= arriving.created_at
+          )`,
+        ),
+      ),
       sql`${deviceFilesystemScanState.lastAppliedCommandId} IS DISTINCT FROM ${commandId}`,
     ))
     .returning({ deviceId: deviceFilesystemScanState.deviceId });
