@@ -18,6 +18,7 @@
     "oauth:gen-keys": "tsx scripts/oauth-gen-keys.ts",
     "metric-anomalies:backfill": "tsx scripts/metric-anomaly-backfill.ts",
     "metric-rollups:backfill": "tsx scripts/metric-rollup-backfill.ts",
+    "dry-run:labour-pricing": "tsx scripts/labour-pricing-dry-run.ts",
     "m365-sync:benchmark": "tsx scripts/m365-sync-benchmark.ts",
     "partner-trust:backfill-cards": "tsx scripts/partner-trust-backfill-cards.ts",
     "reports:reprovision-portal-definitions": "tsx scripts/reprovision-portal-report-definitions.ts",
