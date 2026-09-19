@@ -122,8 +122,20 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
     setSending(true);
     try {
       await onSend(content.trim(), isPublic, readyIds);
+      // A chip still sitting in 'error' (e.g. a rejected file type) never made
+      // it into attachmentIds, so the comment above just posted WITHOUT it.
+      // Keep that chip — clearing it here would silently discard the user's
+      // file selection and leave the earlier upload-error toast as the only
+      // trace that anything went wrong.
+      const failedChips = chips.filter((c) => c.status === 'error');
+      if (failedChips.length > 0) {
+        showToast({
+          type: 'warning',
+          message: t('ticketComposer.attachments.sentWithoutAttachment', { count: failedChips.length }),
+        });
+      }
       setContent('');
-      setChips([]);
+      setChips(failedChips);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch {
       // failure already surfaced via runAction toast; keep the draft AND the
@@ -131,7 +143,7 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
     } finally {
       setSending(false);
     }
-  }, [content, isPublic, onSend, readyIds, sending, uploading]);
+  }, [chips, content, isPublic, onSend, readyIds, sending, t, uploading]);
 
   return (
     <div
