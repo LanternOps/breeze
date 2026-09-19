@@ -69,7 +69,7 @@
 | `agent/internal/collectors/sessions.go`, `agent/internal/collectors/sessions_test.go`, `agent/internal/collectors/session_principal_windows.go`, `agent/internal/collectors/session_principal_unix.go` | W01 session principal wire contract; OS identity collection and retry tests | 16 |
 | `apps/api/src/routes/agents/sessions.ts`, `apps/api/src/routes/agents/sessions.test.ts`, `apps/api/src/services/callerVerification/loginObservation.ts`, `apps/api/src/services/callerVerification/subjects.ts` | W01 consumer and binding uniqueness; authenticated ingestion and device locking | 16 |
 | `apps/api/src/routes/agents/sessions.callerVerification.integration.test.ts` | Independent login, snapshot, retry, unmatched/ambiguous/cross-org evidence | 16 |
-| `apps/api/src/services/callerVerification/deviceMove.ts` (W01-owned), `apps/api/src/routes/devices/moveOrg.ts`, `apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts` | Reuse W01 move hook; serialize starts/results and prove old grants unusable | 17 |
+| `apps/api/src/services/callerVerification/deviceMove.ts` (W01-owned), `apps/api/src/routes/devices/moveOrg.ts`, `apps/api/src/routes/devices/moveOrg.test.ts`, `apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts` | Reuse W01 move hook and lock order; serialize starts/results and prove old grants unusable | 17 |
 | `apps/web/src/lib/api/callerVerification.workstation.test.ts` | Real W02 route response through W04 client, after W04 Task 1 exists | 14, 18 |
 
 ### Task 1: Freeze the Go IPC request and response contract
@@ -2217,7 +2217,7 @@ git commit -m "feat(caller-verification): observe directory-bound logins from se
 
 ### Task 17: Revoke workstation grants in the device org-move transaction
 
-**Files:** Create `apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts`; consume W01 `apps/api/src/services/callerVerification/deviceMove.ts` (Task 13 Step 3a); modify `apps/api/src/routes/devices/moveOrg.ts`, W01 `apps/api/src/services/callerVerification/service.ts:start`, and both API Vitest configs. Task 10 already locks the answering device through result processing. W01 Task 13 Step 3a now supplies the move hook; reuse its signature/body unchanged and add the W02 transport/locking proof below. No caller table joins the generic device-child walker.
+**Files:** Create `apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts`; consume W01 `apps/api/src/services/callerVerification/deviceMove.ts` (Task 13 Step 3a); retain W01's wiring in `apps/api/src/routes/devices/moveOrg.ts`; modify `apps/api/src/routes/devices/moveOrg.test.ts`, W01 `apps/api/src/services/callerVerification/service.ts:start`, and both API Vitest configs. Task 10 already locks the answering device through result processing. W01 Task 13 Step 3a now supplies the move hook; reuse its signature/body unchanged and add the W02 transport/locking proof below. No caller table joins the generic device-child walker.
 
 **Interfaces:** `revokeWorkstationGrantsForMove(tx,sourceOrgId,deviceId):Promise<void>` uses the route's **explicit** transaction, original org and `workstationDeviceRef`. It expires pending and revokes verified, unconsumed workstation grants, locks requester and target bindings in the same sorted order as the gate, and leaves consumed status/history and snapshot ownership untouched. The device row is locked before scanning grants, preventing new starts and results from escaping the scan.
 
@@ -2301,7 +2301,7 @@ it('rolls back revocation with a failed move transaction',async()=>{
 
 - [ ] **Step 3: Implement and wire the locked revocation.**
 
-W01 Task 13 Step 3a owns `deviceMove.ts` and its predicate/lock test. Do not recreate it with another signature. In `moveOrg.ts`, retain its `revokeWorkstationGrantsForMove` import and move its **single** lock-and-hook block to immediately after the `lockedSource`/`lockedTarget` existence checks and before `assertPamDeviceOrgMoveAllowed`:
+W01 Task 13 Step 3a owns `deviceMove.ts` and its predicate/lock test. Do not recreate it with another signature. In `moveOrg.ts`, retain its `revokeWorkstationGrantsForMove` import and its **single** lock-and-hook block in W01's position: after the `lockedSource`/`lockedTarget` existence checks, `assertPamDeviceOrgMoveAllowed`, custom-field re-home and manual-asset detach, immediately before `tx.update(devices)`. Keep this existing block in place; do not insert a second copy or relocate it before the PAM guard:
 
 ```ts
 const [callerMoveDevice]=await tx.select({orgId:devices.orgId}).from(devices)
@@ -2310,7 +2310,31 @@ if(callerMoveDevice?.orgId!==sourceOrgId)throw new Error('Device organization ch
 await revokeWorkstationGrantsForMove(tx,sourceOrgId,deviceId);
 ```
 
-This preserves the route's existing ordered org locks as the first locking operation. Any later PAM/currency/cascade failure rolls the revocation back with the move. Do not call a detached system context or use ambient `db` inside the hook: the route owns a nested transaction/savepoint and its explicit `tx` is the rollback boundary.
+This preserves the route's existing ordered org locks as the first locking operation and W01's statement indices 0–5 unchanged. A PAM refusal exits before revocation; any later currency/cascade failure rolls the revocation back with the move. Do not call a detached system context or use ambient `db` inside the hook: the route owns a nested transaction/savepoint and its explicit `tx` is the rollback boundary.
+
+In `moveOrg.test.ts`, retain W01's `rigTransactionSuccess` branch for `cols && 'orgId' in cols`, before its existing `payload` branch. It records `SELECT devices FOR update` and returns `[{orgId:SOURCE_ORG}]`; otherwise the new device read would fall through to the organization-lock fixture. In the existing test `runs after both organization SHARE locks and before the device update`, keep the inherited assertions below and append the three single-hook count assertions. Keep the existing response-status and `pamGuardMock` argument assertions too:
+
+```ts
+expect(statements[0]).toBe(
+  'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
+);
+expect(statements.slice(1,4)).toEqual([
+  'SELECT organizations FOR share (after 0 updates)',
+  'SELECT organizations FOR share (after 0 updates)',
+  'PAM guard',
+]);
+expect(collapseStmt(statements[4]!)).toContain('breeze_rehome_device_custom_field_values');
+expect(collapseStmt(statements[5]!)).toContain('UPDATE manual_assets SET linked_device_id = NULL');
+expect(statements[6]).toBe('SELECT devices FOR update');
+expect(collapseStmt(statements[7]!)).toContain('SELECT requester_binding_id,target_binding_id FROM caller_verifications');
+expect(collapseStmt(statements[8]!)).toContain('UPDATE caller_verifications');
+expect(statements[9]).toBe('UPDATE devices');
+expect(statements.filter(s=>s==='SELECT devices FOR update')).toHaveLength(1);
+expect(statements.map(collapseStmt).filter(s=>s.startsWith('SELECT requester_binding_id,target_binding_id FROM caller_verifications'))).toHaveLength(1);
+expect(statements.map(collapseStmt).filter(s=>s.startsWith('UPDATE caller_verifications'))).toHaveLength(1);
+```
+
+This fixture returns no caller grants, so the hook takes no subject advisory locks and occupies exactly indices 6–8. W01's `deviceMove.test.ts` covers sorted subject-lock acquisition with grants present; the live test above covers actual revocation and consumed history. The positional assertions catch moving the hook ahead of PAM, while the count assertions catch accidentally wiring it twice.
 
 In W01 `service.ts:start`, replace its device lookup (before `lockContact`/`withSubjectLocks`) with:
 
@@ -2327,7 +2351,7 @@ Keep that share lock through verification/command creation. Task 10 takes the sa
 
 ```bash
 (cd apps/api && npx tsc --noEmit)
-(cd apps/api && npx vitest run src/routes/devices/moveOrg.coverage.test.ts src/services/callerVerification/service.test.ts src/services/callerVerification/workstationResult.test.ts)
+(cd apps/api && npx vitest run src/routes/devices/moveOrg.test.ts src/routes/devices/moveOrg.coverage.test.ts src/services/callerVerification/deviceMove.test.ts src/services/callerVerification/service.test.ts src/services/callerVerification/workstationResult.test.ts)
 pnpm test-stack up
 (cd apps/api && npx vitest run --config vitest.integration.config.ts src/routes/devices/moveOrg.callerVerification.integration.test.ts src/services/callerVerification/workstation.integration.test.ts src/__tests__/integration/deviceMoveOrgCurrency.integration.test.ts)
 pnpm test-stack down
@@ -2338,7 +2362,7 @@ Use finally/trap cleanup. The first live test has a successful gate control befo
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add apps/api/src/routes/devices/moveOrg.ts apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts apps/api/src/services/callerVerification/service.ts apps/api/vitest.integration.config.ts apps/api/vitest.config.ts
+git add apps/api/src/routes/devices/moveOrg.ts apps/api/src/routes/devices/moveOrg.test.ts apps/api/src/routes/devices/moveOrg.callerVerification.integration.test.ts apps/api/src/services/callerVerification/service.ts apps/api/vitest.integration.config.ts apps/api/vitest.config.ts
 git commit -m "fix(caller-verification): revoke workstation grants when devices move orgs"
 ```
 
@@ -2370,7 +2394,7 @@ it('registers both transports and retains strict helper capability selection',()
 (cd apps/api && npx tsc --noEmit)
 (cd apps/helper && npx tsc --noEmit)
 (cd apps/api && npx vitest run src/services/callerVerification/workstationProtocol.test.ts src/services/callerVerification/workstationCapabilities.test.ts src/services/callerVerification/helperBranding.test.ts src/services/callerVerification/deliverers/workstation.test.ts src/services/callerVerification/workstationResult.test.ts src/services/callerVerification/workstationReceipt.test.ts src/services/commandResultHandlers.callerVerify.test.ts src/jobs/callerVerificationReconciliation.test.ts src/services/callerVerification/deviceSuggestions.test.ts src/routes/callerVerificationWorkstation.test.ts src/services/callerVerification/workstation.contract.test.ts)
-(cd apps/api && npx vitest run src/routes/agents/commands.test.ts src/routes/agentWs.test.ts src/routes/agents/heartbeat.test.ts src/routes/agents/sessions.test.ts src/services/callerVerification/loginObservation.test.ts src/services/callerVerification/deviceMove.test.ts src/routes/helper/index.test.ts src/routes/orgContacts.test.ts src/jobs/workerReadinessCoverage.test.ts src/services/workerEntrypointClosure.contract.test.ts src/jobs/scheduleRegistry.contract.test.ts src/routes/devices/moveOrg.coverage.test.ts src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts)
+(cd apps/api && npx vitest run src/routes/agents/commands.test.ts src/routes/agentWs.test.ts src/routes/agents/heartbeat.test.ts src/routes/agents/sessions.test.ts src/services/callerVerification/loginObservation.test.ts src/services/callerVerification/deviceMove.test.ts src/routes/helper/index.test.ts src/routes/orgContacts.test.ts src/jobs/workerReadinessCoverage.test.ts src/services/workerEntrypointClosure.contract.test.ts src/jobs/scheduleRegistry.contract.test.ts src/routes/devices/moveOrg.test.ts src/routes/devices/moveOrg.coverage.test.ts src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts)
 (cd apps/helper && npx vitest run src/windows/CallerVerifyWindow.test.tsx)
 (cd apps/helper/src-tauri && cargo test ipc::caller_verify && cargo test ipc::client)
 (cd agent && go test -race ./internal/ipc/... ./internal/sessionbroker/... ./internal/heartbeat/... ./internal/collectors/...)
@@ -2414,6 +2438,8 @@ gh pr create --base main --title "feat(caller-verification): add workstation cha
 If W01 is not merged, base the PR on its actual branch and explicitly run the CI workflow for this branch; `pull_request` CI targets main and a stacked PR can otherwise appear green without required tests. Do not merge or close issues manually.
 
 ## Self-review
+
+**Resolved executor blocker — inherited device-move lock order:** Task 17 keeps W01 Task 13 Step 3a's single device-lock/revocation block after PAM, custom-field re-home and manual-asset detach, immediately before the device UPDATE. Checked against the current `moveOrg.ts`, `moveOrg.test.ts` recorder and PAM guard, and W01's concrete hook/test additions: statement indices 0–5 stay unchanged, the empty-grant hook occupies 6–8, and the device UPDATE is 9. Task 17 retains those exact assertions, adds single-hook count assertions, includes the test in its commit command, and runs `moveOrg.test.ts` plus `deviceMove.test.ts`; Task 18 also runs the inherited route suite. These are implementation-time checks, not tests claimed run during this document-only correction.
 
 **Spec coverage:** Tasks 1–4 cover explicit OS login, console-only assist capability, correlated timeouts and principal reporting. Tasks 5–7 cover always-on-top branded, translated request confirmation and the exact safety line. Tasks 8–11 cover partner trust, transactional command creation, W01 outbox delivery, shared HTTP/WS decision processing and late rejection persistence. Task 12 implements all three recovery classes. Tasks 13–14 produce the `{data:[...]}` suggestions envelope with per-device readiness and exercise it through W04's real reader. Task 15 proves decision/receipt/effect rollback, mixed ready/outdated selection, replay and site isolation. Task 16 sends OS-verified login evidence through existing session reporting and tests unmatched, ambiguous and cross-org cases. Task 17 reuses W01's locked move revocation, proves refusal after a real authenticated move and preserves consumption history. Task 18 covers release checks and an open PR.
 

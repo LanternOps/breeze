@@ -62,8 +62,9 @@
 | `apps/api/src/services/aiAgentSdk.ts`, `apps/api/src/jobs/intentReleaseWorker.ts` | Inline/worker refusal persistence |
 | `apps/api/src/routes/mcpServer.ts`, `apps/api/src/routes/helper/index.ts` | External MCP and helper stream/history adapters |
 | `apps/api/src/services/callerVerification/callerVerificationGate.contract.test.ts` | Four-file named-case wiring contract |
-| `apps/api/src/__tests__/integration/callerVerificationEnforcement.integration.test.ts` | Task 13: email adapter, bindingless tier zero, administrative cap/audit and outbound failure through real release |
+| `apps/api/src/__tests__/integration/callerVerificationEnforcement.integration.test.ts` | Tasks 8/13: headless reset sealing/one-time reveal, email adapter, bindingless tier zero, administrative cap/audit and outbound failure through real release |
 | `apps/api/src/services/callerVerification/readiness.test.ts`, `apps/api/src/config/env.callerVerification.test.ts` | Task 14: inherited and new activation tests agree on unset→true, explicit false and invalid values |
+| `apps/api/src/__tests__/integration/callerVerification.integration.test.ts` | Task 14: migrate W01’s administrative factory regression to request proof, live session family and real Redis grants |
 | `apps/api/src/config/env.ts`, `.env.example`, `docker-compose.yml`, `deploy/docker-compose.prod.yml` | Activation and API env mapping |
 | `apps/docs/src/content/docs/security/caller-verification.mdx`, `docs/release-notes/next-release-draft.md` | User/operator guidance |
 
@@ -845,7 +846,7 @@ git commit -m "feat(caller-verification): enforce pinned OIDs in Graph executor"
 
 ### Task 8: Preserve intent context and guard Delegant plus headless routing
 
-**Files:** Modify `apps/api/src/services/aiAgentSdkTools.ts:632,686,723`, `apps/api/src/services/aiAgentSdkTools.m365gating.test.ts`; modify `apps/api/src/services/aiToolsM365.ts:73,102,217,245`, `apps/api/src/services/aiToolsM365.test.ts`; modify `apps/api/src/services/m365ToolsHeadless.ts:55`, `apps/api/src/services/m365ToolsHeadless.test.ts`; modify `apps/api/src/jobs/intentReleaseWorker.ts:1108`.
+**Files:** Modify `apps/api/src/services/aiAgentSdkTools.ts:632,686,723`, `apps/api/src/services/aiAgentSdkTools.m365gating.test.ts`; modify `apps/api/src/services/aiToolsM365.ts:73,102,217,245`, `apps/api/src/services/aiToolsM365.test.ts`; modify `apps/api/src/services/m365ToolsHeadless.ts:55`, `apps/api/src/services/m365ToolsHeadless.test.ts`; modify `apps/api/src/jobs/intentReleaseWorker.ts:1108`; create `apps/api/src/__tests__/integration/callerVerificationEnforcement.integration.test.ts` using Task 13’s shared fixture. Read `apps/api/src/services/actionIntents/resultSecrets.ts` and `apps/api/src/routes/actionIntents.ts`; their sealing and one-time reveal contracts stay intact.
 
 **Interfaces:** Session mutation handlers gain fourth `context?: ToolExecutionContext`; `call` gains sixth context parameter. `executeM365ToolHeadless(actionName: string, args: unknown, orgId: string, idempotencyKey?: string): Promise<string>` stays callable but now refuses missing intent; backend comes from the stored connection reference. No trusted ID is taken from `args`.
 
@@ -872,7 +873,87 @@ it('passed broker disable sends exactly the pinned OID once', async () => {
 
 Repeat the table for reset using its `SecretToolResult` carrier; assert no temporary password in `llmText`. The gate may perform the dedicated mailbox read, but the mutation handler never re-resolves a UPN.
 
-- [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/services/aiToolsM365.test.ts src/services/aiAgentSdkTools.m365gating.test.ts src/services/m365ToolsHeadless.test.ts` → missing fourth-argument pinning.
+Install Task 13's complete `seed`/`run`/transport/environment fixture in `callerVerificationEnforcement.integration.test.ts` now, once, and append this regression. Merge the following imports with that fixture and Task 13's later administrative imports. Only the external executor client is mocked; the worker, headless adapter, verification gate, secret sealer, authenticated reveal route and Redis/Postgres are real. Insert a new reset intent rather than updating `f.intent.actionName` or its arguments: the existing identity trigger makes those fields immutable. Reset requires the requester and target to be the same binding.
+
+```ts
+import { Hono } from 'hono';
+import { createAccessToken } from '../../services/jwt';
+import { actionIntentsRoutes } from '../../routes/actionIntents';
+import { refreshTokenFamilies } from '../../db/schema';
+import { createRole, grantRolePermissions, assignUserToOrganization } from './db-utils';
+
+it('headless reset completes with a sealed password that the requester can reveal only once', async () => {
+  vi.stubEnv('APP_ENCRYPTION_KEY', 'caller-reset-test-encryption-key-at-least-32-characters');
+  vi.stubEnv('APP_ENCRYPTION_KEY_ID', 'caller-reset-test');
+  vi.stubEnv('APP_ENCRYPTION_KEYRING', '{}');
+  const role = await createRole({ scope: 'organization', orgId: f.org.id });
+  await grantRolePermissions(role.id, [{ resource: 'm365', action: 'execute' }]);
+  await assignUserToOrganization(f.user.id, f.org.id, role.id);
+  const sid = randomUUID(), resetIntentId = randomUUID();
+  const args = { userIdentifier: 'target@example.com', reason: 'Caller verified account recovery' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  await run(async () => {
+    await db.update(users).set({ mfaEnabled: true }).where(eq(users.id, f.user.id));
+    await db.insert(refreshTokenFamilies).values({ familyId: sid, userId: f.user.id,
+      absoluteExpiresAt: new Date(Date.now() + 3600_000) });
+    await db.update(callerVerificationPolicies).set({ requiredTierResetPassword: 1 })
+      .where(eq(callerVerificationPolicies.partnerId, f.partner.id));
+    await db.update(callerVerifications).set({ actionScope: 'reset_password',
+      contactId: f.other.id, requesterBindingId: f.target.id })
+      .where(eq(callerVerifications.id, f.grant.id));
+    await db.insert(actionIntents).values({ ...f.intent, id: resetIntentId,
+      idempotencyKey: randomUUID(), correlationId: randomUUID(), status: 'approved',
+      actionName: 'm365_reset_password', arguments: args, argumentDigest: digest,
+      targetSummary: 'Reset target password', impactSummary: 'Replace sign-in credential' });
+    await db.insert(approvalRequests).values({ userId: f.user.id, requestingClientLabel: 'Caller regression',
+      actionLabel: 'Reset target password', actionToolName: 'm365_reset_password', actionArguments: args,
+      riskTier: 'high', riskSummary: 'Replace sign-in credential', status: 'approved',
+      expiresAt: f.intent.expiresAt, intentId: resetIntentId, boundArgumentDigest: digest });
+  });
+  const password = 'Caller-Test-Reset!928';
+  outbound.executeWriteAction.mockResolvedValueOnce({ success: true, action: 'm365.user.reset_password',
+    userId: f.target.entraOid, temporaryPassword: password, forceChangeNextSignIn: true });
+  // The worker owns its transaction boundaries; do not wrap release in run().
+  await releaseApprovedIntent(resetIntentId);
+  expect(outbound.executeWriteAction).toHaveBeenCalledTimes(1);
+  expect(outbound.executeWriteAction).toHaveBeenCalledWith(expect.objectContaining({
+    tenantId: f.tenant, idempotencyKey: resetIntentId,
+    action: { type: 'm365.user.reset_password', oid: f.target.entraOid, reason: args.reason },
+  }));
+  const [completed] = await run(() => db.select().from(actionIntents).where(eq(actionIntents.id, resetIntentId)));
+  expect(completed).toMatchObject({ status: 'completed', errorCode: null, executedAt: expect.any(Date),
+    dispatchStartedAt: expect.any(Date), result: { success: true, action: 'm365.user.reset_password',
+      temporaryPasswordEnc: expect.stringMatching(/^enc:v3:/) } });
+  expect(completed!.result).not.toHaveProperty('temporaryPassword');
+  expect(JSON.stringify(completed!.result)).not.toContain(password);
+  const [used] = await run(() => db.select().from(callerVerifications).where(eq(callerVerifications.id, f.grant.id)));
+  expect(used).toMatchObject({ consumedAt: expect.any(Date), consumedIntentRef: resetIntentId });
+  const token = await createAccessToken({ sub: f.user.id, email: f.user.email, roleId: role.id,
+    orgId: f.org.id, partnerId: f.partner.id, scope: 'organization', mfa: true,
+    aep: f.user.authEpoch, mep: f.user.mfaEpoch, sid });
+  const app = new Hono().route('/action-intents', actionIntentsRoutes);
+  const reveal = () => app.request(`/action-intents/${resetIntentId}/reveal-secret`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}` },
+  });
+  const first = await reveal();
+  expect(first.status).toBe(200);
+  expect(await first.json()).toMatchObject({ data: { temporaryPassword: password, forceChangeNextSignIn: true } });
+  const second = await reveal();
+  expect(second.status).toBe(404);
+  expect(await second.json()).toEqual({ error: 'not_found' });
+  const [burned] = await run(() => db.select().from(actionIntents).where(eq(actionIntents.id, resetIntentId)));
+  expect(burned!.result).toMatchObject({ temporaryPasswordRevealed: { revealedByUserId: f.user.id } });
+  expect(burned!.result).not.toHaveProperty('temporaryPasswordEnc');
+  expect(burned!.result).not.toHaveProperty('temporaryPassword');
+  expect(JSON.stringify(burned!.result)).not.toContain(password);
+  await releaseApprovedIntent(resetIntentId);
+  expect(outbound.executeWriteAction).toHaveBeenCalledTimes(1);
+});
+```
+
+The second sequential reveal is the existing uniform 404 after the secret is burned; 410 `already_revealed` is reserved for a concurrent CAS loser. Do not change the route to satisfy a different status expectation.
+
+- [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/services/aiToolsM365.test.ts src/services/aiAgentSdkTools.m365gating.test.ts src/services/m365ToolsHeadless.test.ts` → missing fourth-argument pinning. From repository root run `pnpm test-stack up`, then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerificationEnforcement.integration.test.ts -t 'headless reset completes'`. After the routing changes below, omitting only the reset result's `action` must fail the completion/sealed-secret assertions after one outbound mutation; restore the discriminator and rerun to pass.
 - [ ] **Step 3: Implement context plumbing and pinned dispatch.** `makeSessionAwareHandler`'s function type becomes `(args, auth, sessionId, context?: ToolExecutionContext) => Promise<string | SecretToolResult>`; its call becomes:
 
 ```ts
@@ -925,17 +1006,17 @@ if (actionName === 'm365_disable_user') {
 }
 const result = await m365ResetPasswordHandler(input, auth, loaded.intent.id, context);
 return result.kind === 'error' ? result.llmText
-  : JSON.stringify({ success: true, ...result.secrets });
+  : JSON.stringify({ ...result.secrets, success: true, action: 'm365.user.reset_password' });
 ```
 
-Worker already seals returned secrets; keep that seam. Reads retain the old session routing. The broker session string is correlation only; it never creates an administrative step-up context. Task 12 catches typed failures outside all these handlers.
+Keep the existing worker sealing seam: `sealActionResultSecrets` in `apps/api/src/services/actionIntents/resultSecrets.ts:38` only seals when `result.action === 'm365.user.reset_password'`. Set that discriminator after the secrets spread so it cannot be overwritten. The worker normalizes the JSON, seals the password, then calls `assertNoPlaintextSecret`; omitting `action` makes a successful external reset fail that plaintext guard. Do not bypass the guard or pre-seal the handler's carrier. Reads retain the old session routing. The broker session string is correlation only; it never creates an administrative step-up context. Task 12 catches typed failures outside all these handlers.
 
-- [ ] **Step 4: Run:** Step 2 command plus `cd apps/api && npx tsc --noEmit` → pass. SDK test must inspect actual handler's fourth argument for the pre-tool returned intent ID.
+- [ ] **Step 4: Run:** Both Step 2 commands plus `cd apps/api && npx vitest run src/services/actionIntents/resultSecrets.test.ts src/routes/actionIntents.test.ts` and `cd apps/api && npx tsc --noEmit` → pass. SDK test must inspect actual handler's fourth argument for the pre-tool returned intent ID. The live reset test must complete, store only v3 ciphertext, return the secret once, burn it, and issue no second mutation on worker retry. Task 13 runs this regression again with the entire enforcement suite.
 - [ ] **Step 5: Commit.**
 
 ```bash
 ls apps/api/migrations | sort | tail -1
-git add apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiAgentSdkTools.m365gating.test.ts apps/api/src/services/aiToolsM365.ts apps/api/src/services/aiToolsM365.test.ts apps/api/src/services/m365ToolsHeadless.ts apps/api/src/services/m365ToolsHeadless.test.ts apps/api/src/jobs/intentReleaseWorker.ts
+git add apps/api/src/__tests__/integration/callerVerificationEnforcement.integration.test.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiAgentSdkTools.m365gating.test.ts apps/api/src/services/aiToolsM365.ts apps/api/src/services/aiToolsM365.test.ts apps/api/src/services/m365ToolsHeadless.ts apps/api/src/services/m365ToolsHeadless.test.ts apps/api/src/jobs/intentReleaseWorker.ts
 git commit -m "feat(caller-verification): preserve intent context across M365 backends"
 ```
 
@@ -957,7 +1038,7 @@ it('empty subject set never cancels unrelated intents', async () => {
 });
 ```
 
-Install Task 13's complete `seed`/`run`/`beforeEach` fixture in the live enforcement file now, and add this regression before implementing revocation:
+Reuse Task 13's complete `seed`/`run`/`beforeEach` fixture installed in Task 8, and add this regression before implementing revocation:
 
 ```ts
 it('rejection cancels an approved intent for the bound target', async () => {
@@ -1572,7 +1653,7 @@ describe('caller verification enforcement sites', () => {
 
 The slice ends at the next function/case; keep the combined-label clause when formatting the switch. The combined control-plane two-label block counts as one guard for both actions. Keep the behavioural tests: a source reference alone proves neither ordering nor zero HTTP writes.
 
-The live suite imports `./setup` and seeds **before each test** because shared setup truncates core rows. Its fixture is new and explicit:
+The live suite imports `./setup` and seeds **before each test** because shared setup truncates core rows. Reuse this fixture installed in Task 8; retain its headless reset/reveal regression and Task 9’s cancellation regression, merging imports and hooks only once:
 
 ```ts
 import './setup';
@@ -2086,11 +2167,11 @@ git commit -m "test(caller-verification): prove dispatch, revocation and session
 
 ### Task 14: Activate the finished feature and publish operator guidance
 
-**Files:** Modify W01 flag in `apps/api/src/config/env.ts` (current flag conventions at `:642`), W01-owned `apps/api/src/services/callerVerification/gate.ts` flag adapter; create `apps/api/src/config/env.callerVerification.test.ts`; modify inherited `apps/api/src/services/callerVerification/readiness.test.ts`; modify `.env.example:1093`, `docker-compose.yml:278`, `deploy/docker-compose.prod.yml:202`; create `apps/docs/src/content/docs/security/caller-verification.mdx`; modify `docs/release-notes/next-release-draft.md:13`.
+**Files:** Modify W01 flag in `apps/api/src/config/env.ts` (current flag conventions at `:642`), W01-owned `apps/api/src/services/callerVerification/gate.ts` flag adapter; create `apps/api/src/config/env.callerVerification.test.ts`; modify inherited `apps/api/src/services/callerVerification/readiness.test.ts` and `apps/api/src/__tests__/integration/callerVerification.integration.test.ts`; modify `.env.example:1093`, `docker-compose.yml:278`, `deploy/docker-compose.prod.yml:202`; create `apps/docs/src/content/docs/security/caller-verification.mdx`; modify `docs/release-notes/next-release-draft.md:13`.
 
 **Interfaces:** Existing public `isCallerVerificationEnabled(): boolean` delegates to config. New/defaulted `callerVerificationEnabled(): boolean` reads `CALLER_VERIFICATION_ENABLED` at call time; absent→true, literal `'true'`→true, other values→false. Preserve explicit operator false. Activation is contingent on the prior tests and W01–W04 being merged.
 
-- [ ] **Step 1: Write the flag and compose contract test.**
+- [ ] **Step 1: Write the flag/compose contract and update inherited suites.**
 
 ```ts
 import { readFileSync } from 'node:fs';
@@ -2125,7 +2206,70 @@ it.each([
 });
 ```
 
-- [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/config/env.callerVerification.test.ts src/services/callerVerification/readiness.test.ts` → missing true default/mapping.
+Replace W01 Task 15's existing `admin factory keeps cap before proof consumption, incremented attempt and technician audit` test in `callerVerification.integration.test.ts` with the following; do not leave the old port-stubbing test alongside it. Task 11 requires `withAdministrativeProof` and consumes `mfaStepUpGrant` directly, so `configureCallerVerificationPorts({consumeStepUp:consume})` no longer supplies proof. Keep the shared `liveFixture`, `sys`, `expectHttpVerification` and the unrelated port restoration hook. `liveFixture()` already creates an active user, a permission-bearing org membership and an accessible target site through the real `setupTestEnvironment`; add a live refresh family and mint grants with that user's actual epochs and target binding.
+
+Merge these imports into that inherited file; close the service Redis singleton after the suite, as `mfaStepUpGrant.integration.test.ts` does. The shared integration setup already flushes the isolated Redis database between tests.
+
+```ts
+import { afterAll } from 'vitest';
+import { refreshTokenFamilies } from '../../db/schema';
+import { withAdministrativeProof } from '../../services/callerVerification/administrativeContext';
+import { callerVerificationAdministrativeDigest, mintStepUpGrant,
+  validateStepUpGrant } from '../../services/mfaStepUpGrant';
+import { closeRedis } from '../../services/redis';
+afterAll(async () => { await closeRedis(); });
+
+it('admin factory keeps cap before proof consumption, incremented attempt and technician audit', async () => {
+  const f = await liveFixture(), own = f.families[0]!;
+  const proof = { userId: f.env.user.id, sid: randomUUID(),
+    authEpoch: f.env.user.authEpoch, mfaEpoch: f.env.user.mfaEpoch };
+  await sys(async () => {
+    await db.update(p).set({ maxAttemptsPerHour: 2 }).where(eq(p.partnerId, f.env.partner.id));
+    await db.insert(refreshTokenFamilies).values({ familyId: proof.sid, userId: proof.userId,
+      absoluteExpiresAt: new Date(Date.now() + 3600_000) });
+  });
+  const reason = 'Confirmed employee offboarding with the authorized HR manager.';
+  const bind = { ...proof, operation: 'caller_verification_administrative_disable' as const,
+    resourceDigest: callerVerificationAdministrativeDigest({ orgId: own.orgId,
+      entraTenantId: own.binding.entraTenantId!, entraOid: own.binding.entraOid!, reason }) };
+  const stepUpGrantId = await mintStepUpGrant(bind);
+  expect(stepUpGrantId).not.toBeNull();
+  const input = { orgId: own.orgId, targetContactId: own.contact.id, reason,
+    stepUpGrantId: stepUpGrantId! };
+  // A durable session and grant alone cannot substitute for interactive context.
+  await expect(sys(() => createAdministrative(f.actor, input)))
+    .rejects.toMatchObject({ code: 'interactive_stepup_required' });
+  expect(await validateStepUpGrant(stepUpGrantId!, bind)).toBe(true);
+  const result = await sys(() => withAdministrativeProof(proof,
+    () => createAdministrative(f.actor, input)));
+  expectHttpVerification(result as unknown as Record<string, unknown>);
+  expect(result).toMatchObject({ method: 'administrative_stepup', status: 'verified',
+    actionScope: 'disable_user', tier: 3 });
+  const [stored] = await sys(() => db.select().from(v).where(eq(v.id, result.id)));
+  expect(stored).toMatchObject({ attemptNo: 2, requesterBindingId: null,
+    targetBindingId: own.binding.id, stepupSessionId: proof.sid,
+    stepupAuthEpoch: proof.authEpoch, stepupMfaEpoch: proof.mfaEpoch });
+  expect(stored!.stepupVerifiedAt).toBeInstanceOf(Date);
+  expect(await validateStepUpGrant(stepUpGrantId!, bind)).toBe(false);
+  const audit = await sys(() => db.select().from(auditLogs).where(and(
+    eq(auditLogs.resourceId, result.id), eq(auditLogs.action, 'caller_verification.administrative_created'))));
+  expect(audit).toHaveLength(1);
+  expect(audit[0]).toMatchObject({ actorType: 'user', actorId: f.env.user.id,
+    details: expect.objectContaining({ reason }) });
+  const cappedGrantId = await mintStepUpGrant(bind);
+  expect(cappedGrantId).not.toBeNull();
+  await expect(sys(() => withAdministrativeProof(proof, () => createAdministrative(f.actor,
+    { ...input, stepUpGrantId: cappedGrantId! })))).rejects.toMatchObject({ code: 'attempt_cap' });
+  // Prove the cap runs before Redis GETDEL, without the obsolete consume port spy.
+  expect(await validateStepUpGrant(cappedGrantId!, bind)).toBe(true);
+  const rows = await sys(() => db.select().from(v).where(and(
+    eq(v.orgId, own.orgId), eq(v.contactId, own.contact.id), eq(v.method, 'administrative_stepup'))));
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.id).toBe(result.id);
+});
+```
+
+- [ ] **Step 2: Run:** `cd apps/api && npx vitest run src/config/env.callerVerification.test.ts src/services/callerVerification/readiness.test.ts` → missing true default/mapping. From repository root run `pnpm test-stack up`, then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerification.integration.test.ts -t 'admin factory keeps cap before proof consumption'`. The migrated administrative regression should pass against Task 11; the inherited unmodified test fails with `interactive_stepup_required`. Do not weaken the proof requirement or restore the old consume port to make it pass.
 - [ ] **Step 3: Implement the config default and docs.**
 
 ```ts
@@ -2195,12 +2339,12 @@ Upgrade agents/helpers for workstation verification, establish Entra bindings an
 
 W04 owns translated product copy. Verify its `callerVerification.json` keys in all eight locales and its `runAction` adoption; add no English-only fallback UI here. Docs remain in the docs site's existing language convention.
 
-- [ ] **Step 4: Run:** `cd apps/api && npx vitest run src/config/env.callerVerification.test.ts src/services/callerVerification/readiness.test.ts src/config/envComposeParity.test.ts`; `cd apps/web && npx vitest run src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts`; `cd apps/docs && pnpm check && pnpm build` → pass. Check both false-hidden and true-visible W04 tests.
+- [ ] **Step 4: Run:** `cd apps/api && npx vitest run src/config/env.callerVerification.test.ts src/services/callerVerification/readiness.test.ts src/config/envComposeParity.test.ts`; `cd apps/web && npx vitest run src/lib/i18n src/lib/__tests__/no-silent-mutations.test.ts`; `cd apps/docs && pnpm check && pnpm build` → pass. Also run `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerification.integration.test.ts` against the running test stack to verify the entire inherited suite after its fixture migration. Check both false-hidden and true-visible W04 tests.
 - [ ] **Step 5: Commit.**
 
 ```bash
 ls apps/api/migrations | sort | tail -1
-git add apps/api/src/config/env.ts apps/api/src/config/env.callerVerification.test.ts apps/api/src/services/callerVerification/readiness.test.ts apps/api/src/services/callerVerification/gate.ts .env.example docker-compose.yml deploy/docker-compose.prod.yml apps/docs/src/content/docs/security/caller-verification.mdx docs/release-notes/next-release-draft.md
+git add apps/api/src/__tests__/integration/callerVerification.integration.test.ts apps/api/src/config/env.ts apps/api/src/config/env.callerVerification.test.ts apps/api/src/services/callerVerification/readiness.test.ts apps/api/src/services/callerVerification/gate.ts .env.example docker-compose.yml deploy/docker-compose.prod.yml apps/docs/src/content/docs/security/caller-verification.mdx docs/release-notes/next-release-draft.md
 git commit -m "feat(caller-verification): activate enforcement and document rollout"
 ```
 
@@ -2250,7 +2394,7 @@ cd apps/web && npx vitest run src/components/callerVerification src/lib/i18n src
 
 ```bash
 pnpm test-stack up
-cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerificationEnforcement.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/actionIntentsImmutabilityTrigger.integration.test.ts src/services/mfaStepUpGrant.integration.test.ts
+cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/callerVerificationEnforcement.integration.test.ts src/__tests__/integration/callerVerification.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/actionIntentsImmutabilityTrigger.integration.test.ts src/services/mfaStepUpGrant.integration.test.ts
 cd apps/api && npx vitest run --config vitest.config.rls-coverage.ts src/__tests__/integration/rls-coverage.integration.test.ts
 cd apps/api && npx vitest run --config vitest.config.integration-suite-coverage.ts
 cd apps/api && pnpm db:check-drift
@@ -2275,10 +2419,10 @@ Review the PR once with independent security review focused on identity/tenant p
 
 ## Self-review
 
-**Spec coverage.** D11/D14 pinning and route stability → Tasks 1–3, 6–8; D5 creation/release/three-backend enforcement → Tasks 3–8; D13 post-claim single-use semantics, real outbound failure with retained consumption/marker and refusal of another intent → Tasks 4–5, 12–13; tier-zero policy order with bindingless target → Tasks 5, 13; W03 email-reader context and successful email dispatch → Tasks 5, 13; D8 rejection, honest dispatch classification, system revocation and incident terminal linkage → Tasks 9, 13; D15 interactive administrative operation/digest, session family, epochs, preserved contact attempt cap before proof consumption, technician audit attribution and requester/target authorisation → Tasks 10–11, 13; refusal adapters → Task 12; consumed-intent status projection for W04’s translated failure/re-verification UI → Tasks 12–13; D16 activation, inherited readiness test, compose mapping, docs and release note → Tasks 14–15. W01 policy, provenance, composite FKs, cascade/export/merge and W02/W03 delivery remain dependency contracts, explicitly rerun at wave verification.
+**Spec coverage.** D11/D14 pinning and route stability → Tasks 1–3, 6–8; D5 creation/release/three-backend enforcement → Tasks 3–8; headless reset discriminator, worker sealing, successful completion and authenticated one-time reveal → Tasks 8, 13; D13 post-claim single-use semantics, real outbound failure with retained consumption/marker and refusal of another intent → Tasks 4–5, 12–13; tier-zero policy order with bindingless target → Tasks 5, 13; W03 email-reader context and successful email dispatch → Tasks 5, 13; D8 rejection, honest dispatch classification, system revocation and incident terminal linkage → Tasks 9, 13; D15 interactive administrative operation/digest, session family, epochs, preserved contact attempt cap before proof consumption, technician audit attribution and requester/target authorisation → Tasks 10–11, 13; refusal adapters → Task 12; consumed-intent status projection for W04’s translated failure/re-verification UI → Tasks 12–13; D15 inherited W01 administrative factory test migrated to request proof, live session/epochs and real Redis consumption with capped-grant preservation → Task 14; D16 activation, inherited readiness test, compose mapping, docs and release note → Tasks 14–15. W01 policy, provenance, composite FKs, cascade/export/merge and W02/W03 delivery remain dependency contracts, explicitly rerun at wave verification.
 
-**Verified repository corrections.** The session backend union currently lacks control-plane; the headless worker owns that route. Session-aware SDK drops the existing `actionIntentId`. Direct token cache omits tenant. Control-plane strict action schema needs OID support before the executor receives it. Release actor synthesises MFA at current line 292; step-up SID names a refresh family, not a legacy session. Cancel's public permission check is unsuitable; its operation-first CAS/outbox helpers are reusable. No incident append service exists. RLS coverage is excluded by the general integration runner. The real `intentReleaseWorkerM365Headless.integration.test.ts` supplies the outbound-client/configuration pattern, and `mfaStepUpGrant.ts` supplies a non-consuming proof validator for the cap regression. W03’s `withMailboxReader` and W01’s `projectVerification` are verified plan outputs, not pre-existing checkout modules. These are addressed explicitly rather than copied from stale spec line hints.
+**Verified repository corrections.** The session backend union currently lacks control-plane; the headless worker owns that route. Session-aware SDK drops the existing `actionIntentId`. Direct token cache omits tenant. Control-plane strict action schema needs OID support before the executor receives it. Release actor synthesises MFA at current line 292; step-up SID names a refresh family, not a legacy session. Cancel's public permission check is unsuitable; its operation-first CAS/outbox helpers are reusable. No incident append service exists. RLS coverage is excluded by the general integration runner. The real `intentReleaseWorkerM365Headless.integration.test.ts` supplies the outbound-client/configuration pattern, and `mfaStepUpGrant.ts` supplies a non-consuming proof validator for the cap regression. W03’s `withMailboxReader` and W01’s `projectVerification` are verified plan outputs, not pre-existing checkout modules. `resultSecrets.ts` requires the exact reset `action` discriminator; the worker seals before its plaintext guard, and `actionIntents.ts` returns 404 on a sequential reveal after burn. The reset fixture inserts a separate intent because the existing identity trigger forbids changing action name/arguments/digest. W01 Task 15’s inherited administrative regression uses `liveFixture`/`sys` and must replace its obsolete consume-port stub; the real refresh-family schema, `setupTestEnvironment` memberships and Redis mint/validate APIs support Task 14’s replacement. The cited `moveOrg.test.ts` statement recorder and W01/W02 hook-placement mismatch were checked; that third finding belongs to W02 and is outside this W05 edit. These are addressed explicitly rather than copied from stale spec line hints.
 
 **Type consistency.** Cross-wave gate, actor, service, error and revocation signatures are retained; only W05-private helpers, optional existing execution context plumbing and the additive HTTP `consumedIntentStatus` field are added; the index `VerificationView` stays unchanged. The refusal field is always `requiresCallerVerification`, the release code always `caller_verification_required`, the administrative operation always `caller_verification_administrative_disable`. No token, principal or epoch comes from a tool argument or administrative request body.
 
-**Execution completeness.** Run every red/green task against merged dependencies; update source anchors when prior waves move them. The document does not claim product tests were run while writing it. Security success requires behavioural client assertions and real DB races in addition to source contracts. Default activation is the last implementation change, and the last task ends at a reviewable PR.
+**Execution completeness.** Run every red/green task against merged dependencies; update source anchors when prior waves move them. Both blocker regressions include concrete fixtures, implementation changes, targeted/full run commands and owning-task commit paths. The document does not claim product tests were run while writing it; W01–W05 implementation outputs are not present in this checkout. Security success requires behavioural client assertions and real DB races in addition to source contracts. Default activation is the last implementation change, and the last task ends at a reviewable PR.
