@@ -253,7 +253,7 @@ reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$EXECUTOR_DOCK
   "executor image must not copy env, certificate, key, or secret files"
 reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$EXECUTOR_DOCKERFILE" \
   "executor image must use an explicit deterministic build context allowlist"
-require_grep 'directory: "/apps/m365-graph-read-executor"' .github/dependabot.yml \
+require_grep '(directory: |^ +- )"/apps/m365-graph-read-executor"$' .github/dependabot.yml \
   "Dependabot must maintain the executor Dockerfile's digest-pinned base image"
 
 ci_success_block="$GUARD_TMP_DIR/ci-success.yml"
@@ -387,7 +387,7 @@ reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$ACTIONS_EXECU
   "actions-executor image must not copy env, certificate, key, or secret files"
 reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$ACTIONS_EXECUTOR_DOCKERFILE" \
   "actions-executor image must use an explicit deterministic build context allowlist"
-require_grep 'directory: "/apps/m365-graph-actions-executor"' .github/dependabot.yml \
+require_grep '(directory: |^ +- )"/apps/m365-graph-actions-executor"$' .github/dependabot.yml \
   "Dependabot must maintain the actions-executor Dockerfile's digest-pinned base image"
 
 # The COMMUNICATIONS executor's release image gets the same digest-first shape.
@@ -445,7 +445,7 @@ require_grep '"\$MOVING_CHANNELS" == "true" && "\$NEWEST_STABLE" == "true"' "$OO
   "out-of-band image promotion must not move :latest/:X/:X.Y unless the tag is the newest stable release"
 require_grep 'dockerfile: apps/m365-communications-executor/Dockerfile' .github/workflows/security.yml \
   "security workflow's trivy-image-scan matrix must build and scan the communications-executor image"
-require_grep 'directory: "/apps/m365-communications-executor"' .github/dependabot.yml \
+require_grep '(directory: |^ +- )"/apps/m365-communications-executor"$' .github/dependabot.yml \
   "Dependabot must maintain the communications-executor Dockerfile's digest-pinned base image"
 
 # The communications executor's Dockerfile gets the same shape block as the
@@ -572,11 +572,11 @@ require_grep 'directory: "/apps/helper/src-tauri"' .github/dependabot.yml \
   "Dependabot must cover helper Cargo dependencies"
 require_grep 'directory: "/apps/viewer/src-tauri"' .github/dependabot.yml \
   "Dependabot must cover viewer Cargo dependencies"
-require_grep 'directory: "/apps/api"' .github/dependabot.yml \
+require_grep '(directory: |^ +- )"/apps/api"$' .github/dependabot.yml \
   "Dependabot must cover API Dockerfiles before digest pinning can be maintained"
-require_grep 'directory: "/apps/web"' .github/dependabot.yml \
+require_grep '(directory: |^ +- )"/apps/web"$' .github/dependabot.yml \
   "Dependabot must cover Web Dockerfiles before digest pinning can be maintained"
-require_grep 'directory: "/docker"' .github/dependabot.yml \
+require_grep '(directory: |^ +- )"/docker"$' .github/dependabot.yml \
   "Dependabot must cover release/security Dockerfiles before digest pinning can be maintained"
 require_grep 'language: \[javascript-typescript, go\]' .github/workflows/codeql.yml \
   "CodeQL must analyze both TypeScript and Go"

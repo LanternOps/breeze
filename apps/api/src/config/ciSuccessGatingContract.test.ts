@@ -115,7 +115,7 @@ describe('ci-success gating contract', () => {
       conditionalChecks,
       'The smoke-test PR exemption changed shape and must be re-reviewed.',
     ).toContain(
-      `if [[ "\${IS_PR}" != "true" ]] && [[ "\${SMOKE_TEST_RESULT}" != "success" ]]; then`,
+      `if [[ "\${IS_PR}" != "true" ]] && [[ "\${STACK_CHANGED}" == "true" ]] && [[ "\${SMOKE_TEST_RESULT}" != "success" ]]; then`,
     );
   });
 
@@ -124,7 +124,7 @@ describe('ci-success gating contract', () => {
       conditionalChecks,
       'The guided-setup-smoke PR exemption changed shape and must be re-reviewed.',
     ).toContain(
-      `if [[ "\${IS_PR}" != "true" ]] && [[ "\${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then`,
+      `if [[ "\${IS_PR}" != "true" ]] && [[ "\${STACK_CHANGED}" == "true" ]] && [[ "\${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then`,
     );
   });
 
@@ -184,17 +184,27 @@ describe('ci-success gating contract', () => {
     const exempt = new Set([
       'changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios', 'recovery-media-e2e',
     ]);
-    // lint/check-migrations/security-audit validate CI plumbing itself and must keep running
-    // on a tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.
-    const codeOnly = new Set(['lint', 'check-migrations', 'security-audit']);
+    // lint/security-audit validate CI plumbing itself and must keep running on a
+    // tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.
+    const codeOnly = new Set(['lint', 'security-audit']);
+    // Per-area gating (.github/scripts/ci-area-gating.test.mjs pins the exact per-job
+    // lines): an area-gated job appends ONE area clause to the code+app gate, so a
+    // docs-only or tooling-only PR still skips it. check-migrations is code AND api —
+    // never app, it is the release-lineage guard for tooling-only PRs.
+    const areaClause =
+      "(?: && (?:needs\\.changes\\.outputs\\.(?:api|web|portal|addins|m365|rust) == 'true'|" +
+      "\\(needs\\.changes\\.outputs\\.api == 'true' \\|\\| needs\\.changes\\.outputs\\.web == 'true' \\|\\| needs\\.changes\\.outputs\\.portal == 'true'\\)))?";
+    const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const ungated = workflowJobs.filter((job) => {
       if (exempt.has(job)) return false;
       const body = jobBodies.get(job) ?? '';
       if (!/^    needs: \[[^\]]*\bchanges\b[^\]]*\]$/m.test(body)) return true;
       const expectedIf = codeOnly.has(job)
-        ? "if: needs.changes.outputs.code == 'true'"
-        : "if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'";
-      return !new RegExp(`^    ${expectedIf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm').test(body);
+        ? escape("if: needs.changes.outputs.code == 'true'")
+        : job === 'check-migrations'
+          ? escape("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.api == 'true'")
+          : escape("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'") + areaClause;
+      return !new RegExp(`^    ${expectedIf}$`, 'm').test(body);
     });
     expect(
       ungated,

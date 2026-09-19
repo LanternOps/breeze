@@ -32,17 +32,17 @@ test('classifier: docs-only path sets report code=false docs=true agent=false ap
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
-    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false', paths.join(', '));
+    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false', paths.join(', '));
   }
 });
 
 test('classifier: any non-docs path reports code=true; docs=true only when a docs path is present', () => {
   for (const [paths, expected] of [
-    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false\napp=true'],
-    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true'],
-    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true'],
-    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true'],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true'],
+    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false'],
+    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false'],
+    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true'],
+    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false'],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true'],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
@@ -53,7 +53,7 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
 test('classifier: an empty file list fails closed to code=true docs=true agent=true app=true', () => {
   const run = classify([]);
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true\napp=true');
+  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true');
   assert.match(run.stderr, /fail-closed/u);
 });
 
@@ -174,7 +174,7 @@ test('merge_group: a docs-only entry is classified docs-only', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/docs/src/content/docs/agent.mdx': 'b\n', 'README.md': 'c\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=false\ndocs=true\nagent=false\napp=false');
+  assert.equal(output, 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false');
 });
 
 test('merge_group: a mixed entry is classified as code', () => {
@@ -183,7 +183,7 @@ test('merge_group: a mixed entry is classified as code', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true\nagent=false\napp=true');
+  assert.equal(output, 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false');
 });
 
 test('merge_group: a code-only entry is classified as code', () => {
@@ -192,7 +192,7 @@ test('merge_group: a code-only entry is classified as code', () => {
     { seed: { 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false');
 });
 
 test('merge_group: an agent-only entry is classified as code and agent', () => {
@@ -201,7 +201,7 @@ test('merge_group: an agent-only entry is classified as code and agent', () => {
     { seed: { 'agent/internal/foo.go': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true');
 });
 
 test('merge_group: a tooling-only entry is classified as code but not app', () => {
@@ -210,7 +210,7 @@ test('merge_group: a tooling-only entry is classified as code but not app', () =
     { seed: { 'scripts/security/check-npm-audit.sh': 'a\n', '.github/workflows/release.yml': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true');
 });
 
 test('merge_group: an unresolvable base sha fails safe to the full suite', () => {
@@ -222,21 +222,21 @@ test('merge_group: an unresolvable base sha fails safe to the full suite', () =>
   ]) {
     const { execution, output } = runClassifier(env, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true', JSON.stringify(env));
+    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true', JSON.stringify(env));
   }
 });
 
 test('merge_group: an empty diff fails closed to the full suite', () => {
   const { execution, output } = runClassifier({ EVENT_NAME: 'merge_group' });
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true');
+  assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true');
 });
 
 test('workflow_dispatch and any other event still run the full suite', () => {
   for (const EVENT_NAME of ['workflow_dispatch', 'push', 'schedule']) {
     const { execution, output } = runClassifier({ EVENT_NAME }, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true', EVENT_NAME);
+    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true', EVENT_NAME);
   }
 });
 
@@ -270,16 +270,26 @@ test('every code job is gated on the classifier', () => {
     'build-mobile-ios', // inherits the gate through mobile-native-changes (pinned by mobile-native-ci.test.mjs)
     'recovery-media-e2e', // compound gate (code AND agent) — asserted separately below
   ]);
-  // These three validate CI plumbing itself (the classifier tests, the
+  // These validate CI plumbing itself (the classifier tests, the
   // release-lineage/migration-immutability guards, the supply-chain guards)
-  // and must keep running on a tooling-only PR, so they stay gated on `code`
-  // alone — never additionally on `app`.
-  const codeOnly = new Set(['lint', 'check-migrations', 'security-audit']);
+  // and must keep running on a tooling-only PR, so they are never gated on
+  // `app`. check-migrations is additionally api-gated (a tooling-only change
+  // always sets api — pinned in ci-area-gating.test.mjs).
+  const codeOnly = new Set(['lint', 'security-audit']);
+  // Per-area jobs carry an extra area clause AFTER the code/app gate; the exact
+  // per-area `if:` lines are pinned by ci-area-gating.test.mjs. The prefix is
+  // still required here, so a docs-only or tooling-only PR still skips them.
+  const areaGated = /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && (needs\.changes\.outputs\.(api|web|portal|addins|m365|rust) == 'true'|\(needs\.changes\.outputs\.api == 'true' \|\| needs\.changes\.outputs\.web == 'true' \|\| needs\.changes\.outputs\.portal == 'true'\))$/mu;
   for (const name of jobs) {
     if (exempt.has(name)) continue;
     const body = job(name);
     assert.match(body, /^    needs: \[[^\]]*\bchanges\b[^\]]*\]$/mu, `${name} must list changes in needs:`);
-    if (codeOnly.has(name)) {
+    if (name === 'check-migrations') {
+      // code AND api, never app: it is the release-lineage guard for tooling-only PRs.
+      assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.api == 'true'$/mu, name);
+    } else if (areaGated.test(body)) {
+      continue;
+    } else if (codeOnly.has(name)) {
       assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, `${name} must be skipped on a docs-only PR, and stay code-only (not app-gated)`);
     } else {
       assert.match(
@@ -320,7 +330,7 @@ test('ci-success asserts recovery-media-e2e with the three-branch AGENT_CHANGED 
   );
 });
 
-// ─── Item 2: Test API sharded 4 ways ─────────────────────────────────
+// ─── Item 2: Test API sharded 8 ways ─────────────────────────────────
 // ~2470 vitest files import-time dominated, ~26-34 min unsharded. Only the
 // main `test:run` invocation is actually split; every other named step in
 // this job (extension-sdk, ee/workspace, tz, load-static, compat fixture,
@@ -334,16 +344,16 @@ const testApiStep = (name) => {
   return match[1];
 };
 
-test('test-api has a 4-way shard matrix', () => {
+test('test-api has an 8-way shard matrix', () => {
   const body = job('test-api');
-  assert.match(body, /^    name: Test API \(shard \$\{\{ matrix\.shard \}\}\/4\)$/mu);
-  assert.match(body, /^    strategy:\n      fail-fast: false\n      matrix:\n        shard: \[1, 2, 3, 4\]$/mu);
+  assert.match(body, /^    name: Test API \(shard \$\{\{ matrix\.shard \}\}\/8\)$/mu);
+  assert.match(body, /^    strategy:\n      fail-fast: false\n      matrix:\n        shard: \[1, 2, 3, 4, 5, 6, 7, 8\]$/mu);
   assert.match(body, /^    timeout-minutes: 30$/mu);
 });
 
 test('test-api runs the main vitest split with --shard and no bare "--"', () => {
   const step = testApiStep('Run API tests');
-  assert.match(step, /run: pnpm --filter=@breeze\/api test:run --shard=\$\{\{ matrix\.shard \}\}\/4$/mu);
+  assert.match(step, /run: pnpm --filter=@breeze\/api test:run --shard=\$\{\{ matrix\.shard \}\}\/8$/mu);
   assert.doesNotMatch(step, /pnpm --filter=@breeze\/api test:run -- /u, 'a bare "--" makes pnpm forward it literally and vitest silently ignores --shard');
 });
 
@@ -372,23 +382,23 @@ test('test-api setup steps run on every shard (no shard-1 guard)', () => {
   }
 });
 
-// ─── Item 3: integration-test sharded 8 ways, no lint/typecheck wait ────
+// ─── Item 3: integration-test sharded 16 ways, no lint/typecheck wait ───
 test('ci-success asserts lint/check-migrations/security-audit unconditionally and gates the rest on APP_CHANGED', () => {
   assert.match(summary, /needs: \[[^\]]*\bcheck-migrations\b[^\]]*\]/u, 'ci-success must needs: check-migrations — CHECK_MIGRATIONS_RESULT was previously asserted nowhere');
   assert.match(summary, /APP_CHANGED: \$\{\{ needs\.changes\.outputs\.app \}\}/u);
   assert.match(summary, /CHECK_MIGRATIONS_RESULT: \$\{\{ needs\.check-migrations\.result \}\}/u);
 });
 
-test('integration-test has an 8-way shard matrix and does not wait on lint/typecheck', () => {
+test('integration-test has a 16-way shard matrix and does not wait on lint/typecheck', () => {
   const body = job('integration-test');
-  assert.match(body, /^    name: Integration Tests \(shard \$\{\{ matrix\.shard \}\}\/8\)$/mu);
-  assert.match(body, /^        shard: \[1, 2, 3, 4, 5, 6, 7, 8\]$/mu);
+  assert.match(body, /^    name: Integration Tests \(shard \$\{\{ matrix\.shard \}\}\/16\)$/mu);
+  assert.match(body, /^        shard: \[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16\]$/mu);
   // The exact match already proves lint/typecheck are absent from the actual
   // `needs:` YAML line (as opposed to a doesNotMatch scan, which would also
   // trip on this test's own explanatory comment mentioning them by name).
   assert.match(body, /^    needs: \[changes\]$/mu, 'integration-test must not needs: lint or typecheck — that added ~8 min to the critical path and a lint failure still fails CI Success via ci-success');
   assert.match(body, /^    timeout-minutes: 40$/mu);
-  assert.match(body, /run: pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/8$/mu);
+  assert.match(body, /run: pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/16$/mu);
 });
 
 // Execute the real summary shell. The bypass may only fire on the literal
@@ -400,6 +410,8 @@ const resultVars = [...summary.matchAll(/^          (\w+_RESULT):/gmu)].map((m) 
 const allOf = (value) => Object.fromEntries(resultVars.map((v) => [v, value]));
 const passing = {
   ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', AGENT_CHANGED: 'true', APP_CHANGED: 'true',
+  // Every per-area flag true: the per-area tri-state lives in ci-area-gating.test.mjs.
+  API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
 };
 const docsOnlySkipped = {
   ...allOf('skipped'), CHANGES_RESULT: 'success', MOBILE_NATIVE_REQUIRED: '', AGENT_CHANGED: '', DOCS_CHANGED: 'true', DOCS_CHECK_RESULT: 'success',

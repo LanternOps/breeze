@@ -31,7 +31,8 @@ export class PiHoleV6Provider implements DnsProvider {
     // The Pi-hole v6 app password (used as the `password` in POST /api/auth).
     private readonly appPassword: string,
     private readonly config: PiHoleV6ProviderConfig,
-    private readonly allowPrivateNetwork = false
+    private readonly allowPrivateNetwork = false,
+    private readonly allowCarrierNat = false
   ) {}
 
   private baseUrl(): string {
@@ -49,6 +50,7 @@ export class PiHoleV6Provider implements DnsProvider {
       payload = await requestJson<Record<string, unknown>>(`${this.baseUrl()}/api/auth`, {
         method: 'POST',
         allowPrivateNetwork: this.allowPrivateNetwork,
+        allowCarrierNat: this.allowCarrierNat,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: this.appPassword })
       });
@@ -99,6 +101,7 @@ export class PiHoleV6Provider implements DnsProvider {
     return requestJson<T>(`${this.baseUrl()}${path}`, {
       ...init,
       allowPrivateNetwork: this.allowPrivateNetwork,
+      allowCarrierNat: this.allowCarrierNat,
       headers: {
         'X-FTL-SID': sid,
         ...(init.headers ?? {})

@@ -69,6 +69,13 @@ export interface DnsIntegrationConfig {
   // token endpoint; v6 reworked it into a session-based REST API at `/api/...`.
   // Unset defaults to 'v5' so existing Pi-hole integrations keep working.
   piholeVersion?: 'v5' | 'v6';
+  // Per-integration opt-in to reach a carrier-grade-NAT (100.64.0.0/10) endpoint
+  // — the range an overlay network such as Tailscale assigns to an appliance.
+  // Default absent (blocked). Only takes effect on a self-hosted deployment
+  // (where the on-prem appliance modes are enabled at all), so it cannot widen
+  // egress on the hosted platform. Enabling it is recorded in the audit log via
+  // the integration create/update route.
+  allowCarrierNatEgress?: boolean;
 }
 
 export interface DnsPolicyDomain {

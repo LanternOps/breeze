@@ -48,6 +48,7 @@ import { createOrganization, createPartner, createSite, createUser, setupTestEnv
 import { getTestDb } from './setup';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 
 // Partner/org ids seeded by this file, for afterAll cleanup.
 const seededPartnerIds: string[] = [];
@@ -611,13 +612,14 @@ describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
     const app = new Hono();
     app.route('/devices', moveOrgRoutes);
 
+    // Move-org step-up (spec 2026-09-18 W01): the route requires a fresh grant; mint one for exactly this request.
     const res = await app.request(`/devices/${deviceA.id}/move-org`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ orgId: orgA2.id, siteId: siteA2.id }),
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, deviceA.id, { orgId: orgA2.id, siteId: siteA2.id })),
     });
 
     // Must succeed.

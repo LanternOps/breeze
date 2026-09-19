@@ -239,8 +239,31 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       expect.objectContaining({ userId: USER_ID, scope: 'organization', orgId: ORG_ID }),
       expect.any(Object),
     );
+    // Provider fixture has trustsIdpMfa: false ⇒ not assured ⇒ no source.
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
     const linked = auditSpy.mock.calls.find(([, p]) => (p as { action?: string }).action === 'sso.identity.linked');
     expect(linked).toBeTruthy();
+  });
+
+  // The other arm of the source ternary: no Breeze-verified factor, but the
+  // provider is trusted AND the assertion attests MFA ⇒ the assurance rests on
+  // the IdP, so the source is 'idp' rather than 'factor' (spec D6).
+  it('sources the assurance from the IdP when the provider is trusted and the assertion attests it', async () => {
+    wire({
+      record: { ...RECORD, idpMfaAsserted: true },
+      provider: { ...PROVIDER_ROW, trustsIdpMfa: true },
+    });
+
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'idp' }),
+      expect.anything(),
+    );
   });
 
   it('consumes but does not mint a federated link when the completion IP is outside the partner allowlist', async () => {
@@ -270,6 +293,11 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     });
 
     expect(outcome.ok).toBe(true);
+    // A Breeze-verified factor in the ceremony outranks the IdP evaluation.
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'factor' }),
+      expect.anything(),
+    );
     expect(beginAuthIssuanceForStoredTransition).not.toHaveBeenCalled();
     expect(finishAuthIssuance).toHaveBeenCalledWith(capability, expect.any(Function));
   });

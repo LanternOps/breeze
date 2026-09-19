@@ -127,6 +127,27 @@ describe('guarded user-session issuance', () => {
     });
   });
 
+  it('signs the identity mfaSrc into both tokens as mfa_src, and omits it when the identity has none', async () => {
+    const withSource = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }]]);
+    const issued = await issueUserSession({ ...identity, mfaSrc: 'factor' }, {
+      tx: withSource.tx,
+      capability,
+      expectedEpochs: { authEpoch: 8, mfaEpoch: 13 },
+    });
+    await expect(verifyToken(issued.accessToken)).resolves.toMatchObject({ mfa: true, mfa_src: 'factor' });
+    await expect(verifyToken(issued.refreshToken)).resolves.toMatchObject({ mfa: true, mfa_src: 'factor' });
+
+    const withoutSource = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }]]);
+    const legacyShaped = await issueUserSession({ ...identity, mfa: false }, {
+      tx: withoutSource.tx,
+      capability,
+      expectedEpochs: { authEpoch: 8, mfaEpoch: 13 },
+    });
+    const access = await verifyToken(legacyShaped.accessToken);
+    expect(access?.mfa).toBe(false);
+    expect(access?.mfa_src).toBeUndefined();
+  });
+
   it('compare-and-swaps the presented family JTI before signing the successor', async () => {
     const familyId = '77777777-7777-4777-8777-777777777777';
     const presentedJti = '88888888-8888-4888-8888-888888888888';
