@@ -270,3 +270,21 @@ test.describe('multi-currency — non-USD org browser slices', () => {
     });
   });
 });
+
+// W01 settings consolidation (#6224, M1): the standalone org billing URL is
+// retired in favor of the org settings page's own Billing tab. Independent of
+// the serial multi-currency describe block above — needs only a valid orgId.
+test.describe('org billing settings — legacy URL redirect (M1)', () => {
+  test.beforeEach(clearRefreshState);
+
+  test('the legacy standalone billing URL redirects to the org settings Billing tab', async ({ authedPage: page }) => {
+    const token = await readAccessToken(page);
+    const created = await apiJson<{ id: string }>(
+      page.request, token, 'post', '/api/v1/orgs/organizations',
+      { name: `E2E Billing Redirect ${Date.now()}`, slug: `e2e-billing-redirect-${Date.now()}` },
+    );
+
+    const billing = new OrgBillingSettingsPage(page);
+    await billing.gotoLegacyUrlAndExpectRedirect(created.id);
+  });
+});

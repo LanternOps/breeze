@@ -113,7 +113,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, requirePermission, requireMfa, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext } from './auth';
+import { authMiddleware, requireScope, requirePermission, requireMfa, hasSatisfiedMfa, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext } from './auth';
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
@@ -1202,6 +1202,35 @@ describe('requireMfa', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+
+  // Contract: the `mfa` claim means "this session satisfies the EFFECTIVE MFA
+  // policy" (login/SSO/CF-Access mint it from getEffectiveMfaPolicy). It is
+  // NOT proof that a factor was presented — a tenant that does not require
+  // MFA admits password-only sessions here by design. Anything that needs a
+  // proven fresh factor uses the step-up grant primitive instead
+  // (services/mfaStepUpGrant.ts). These pin the gate's only input.
+  it('rejects when the auth context carries no token at all (claim absent ≠ satisfied)', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', { ...baseAuth, token: undefined });
+      await next();
+    });
+    app.use(requireMfa());
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+  });
+
+  it('hasSatisfiedMfa reads only the mfa claim: true only for mfa === true', () => {
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: true } } as any)).toBe(true);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: false } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: undefined } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: 'true' } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: undefined } as any)).toBe(false);
   });
 });
 

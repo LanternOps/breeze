@@ -403,9 +403,21 @@ describe('manage_invoices', () => {
     expect(invoiceService.voidPayment).not.toHaveBeenCalled();
   });
 
-  it('still ALLOWS an org-scoped principal the non-payment actions', async () => {
-    // The gate is scoped to the two payment actions; nothing else changes.
-    await getTool().handler({ action: 'issue', invoiceId: 'inv-1' }, orgScopedAuth);
+  // SUPERSEDED BY #6110 finding 1. This used to read "still ALLOWS an org-scoped
+  // principal the non-payment actions" — the payment gate was deliberately
+  // narrow. Scope parity with the HTTP door closed that: every route file under
+  // `routes/invoices/` is `requireScope('partner','system')` (invoices.ts:20,
+  // lifecycle.ts:24), so issuing an invoice at org scope was reachable through
+  // the tool and through nothing else.
+  it('refuses an org-scoped principal the non-payment actions too (was: allowed)', async () => {
+    const out = await getTool().handler({ action: 'issue', invoiceId: 'inv-1' }, orgScopedAuth);
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(invoiceService.issueInvoice).not.toHaveBeenCalled();
+  });
+
+  it('a PARTNER-scoped principal still gets the non-payment actions', async () => {
+    await getTool().handler({ action: 'issue', invoiceId: 'inv-1' }, auth);
 
     expect(invoiceService.issueInvoice).toHaveBeenCalled();
   });
@@ -609,5 +621,34 @@ describe('get_invoice / list_invoices deposit fields', () => {
     expect(invoices[0]).toMatchObject({ depositPaid: true });
     expect(invoices[1]).toMatchObject({ depositPaid: false });
     expect(invoices[2]).not.toHaveProperty('depositPaid');
+  });
+});
+
+/** #6110 finding 1 — every route file under `routes/invoices/` is
+ *  `requireScope('partner','system')` (invoices.ts:20, lifecycle.ts:24,
+ *  payments.ts:12, assembly.ts:17, bulk.ts:11). Before this, only the two
+ *  payment actions of manage_invoices were gated. */
+describe('invoice tools refuse organization scope (#6110 finding 1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('manage_invoices refuses an org-scoped caller on a NON-payment action too', async () => {
+    const out = await getTool().handler(
+      { action: 'delete_draft', invoiceId: 'inv-1' }, orgScopedAuth,
+    );
+    expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(invoiceService.deleteDraftInvoice).not.toHaveBeenCalled();
+  });
+
+  it.each(['list_invoices', 'get_invoice'] as const)('%s refuses an org-scoped caller', async (name) => {
+    const out = await getReadTool(name).handler({ invoiceId: 'inv-1' }, orgScopedAuth);
+    expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(invoiceService.getInvoice).not.toHaveBeenCalled();
+    expect(invoiceService.listInvoices).not.toHaveBeenCalled();
+  });
+
+  it('still admits a partner-scoped caller', async () => {
+    const out = await getReadTool('get_invoice').handler({ invoiceId: 'inv-1' }, auth);
+    expect(JSON.parse(out)).not.toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(invoiceService.getInvoice).toHaveBeenCalled();
   });
 });

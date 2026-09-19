@@ -127,14 +127,47 @@ async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | 
   };
 }
 
+export type RoleOsFilterable = {
+  roleFilter?: string[] | null;
+  osFilter?: string[] | null;
+};
+
+export type DeviceRoleOs = {
+  deviceRole?: string | null;
+  osType?: string | null;
+};
+
+/**
+ * Pure predicate matching the SQL semantics of buildRoleOsFilterConditions:
+ * - NULL or undefined filter matches all (backward compatible).
+ * - Non-empty filter matches if device's role/os is contained in the array.
+ * - Empty array filter matches none (matches Postgres `x = ANY('{}')` which is false).
+ */
+export function matchesRoleOsFilter(
+  assignment: RoleOsFilterable,
+  device: DeviceRoleOs
+): boolean {
+  if (assignment.roleFilter != null) {
+    if (!device.deviceRole || !assignment.roleFilter.includes(device.deviceRole)) {
+      return false;
+    }
+  }
+  if (assignment.osFilter != null) {
+    if (!device.osType || !assignment.osFilter.includes(device.osType)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Build SQL conditions that enforce roleFilter and osFilter on assignments.
  * NULL filter = match all (backward compatible).
  */
-function buildRoleOsFilterConditions(hierarchy: DeviceHierarchy): SQL[] {
+export function buildRoleOsFilterConditions(device: DeviceRoleOs): SQL[] {
   return [
-    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(hierarchy.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
-    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(hierarchy.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
+    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
+    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
   ];
 }
 
@@ -1701,6 +1734,12 @@ export async function resolveAllBackupAssignedDevices(
       assignmentTargetId: configPolicyAssignments.targetId,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
+      // #6001: role/OS targeting, applied per expanded device below. The
+      // per-device resolver enforces the same two columns in SQL
+      // (buildRoleOsFilterConditions); this one cannot, because it expands one
+      // assignment to many devices with different roles and OSes.
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
     })
     .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
@@ -1751,7 +1790,10 @@ export async function resolveAllBackupAssignedDevices(
   const targetableDevice = backupTargetableDeviceCondition();
 
   for (const row of sorted) {
-    let deviceIds: string[];
+    // Candidates carry role/os so the role/OS filter can be applied per device
+    // (#6001). Selecting the two columns here costs nothing — the branch
+    // queries already read the `devices` row.
+    let candidates: { id: string; deviceRole: string | null; osType: string | null }[];
 
     // EVERY branch must re-tenant to `orgId`. A partner-wide policy is visible
     // to every org under the partner, so its assignment can name a target in a
@@ -1764,7 +1806,7 @@ export async function resolveAllBackupAssignedDevices(
     switch (row.assignmentLevel) {
       case 'device': {
         const [device] = await db
-          .select({ id: devices.id })
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(
             and(
@@ -1774,12 +1816,12 @@ export async function resolveAllBackupAssignedDevices(
             )
           )
           .limit(1);
-        deviceIds = device ? [device.id] : [];
+        candidates = device ? [device] : [];
         break;
       }
       case 'device_group': {
-        const members = await db
-          .select({ deviceId: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(deviceGroupMemberships)
           .innerJoin(devices, eq(devices.id, deviceGroupMemberships.deviceId))
           .where(
@@ -1789,12 +1831,11 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = members.map((m) => m.deviceId);
         break;
       }
       case 'site': {
-        const siteDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(
             and(
@@ -1803,25 +1844,23 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = siteDevices.map((d) => d.id);
         break;
       }
       case 'organization': {
         // An org-level assignment contributes devices ONLY to the org it names.
         if (row.assignmentTargetId !== orgId) {
-          deviceIds = [];
+          candidates = [];
           break;
         }
-        const orgDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(and(eq(devices.orgId, orgId), targetableDevice));
-        deviceIds = orgDevices.map((d) => d.id);
         break;
       }
       case 'partner': {
-        const partnerDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .innerJoin(organizations, eq(devices.orgId, organizations.id))
           .where(
@@ -1831,12 +1870,27 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = partnerDevices.map((d) => d.id);
         break;
       }
       default:
-        deviceIds = [];
+        candidates = [];
     }
+
+    // #6001: role/OS targeting, applied with the SAME predicate the per-device
+    // resolver enforces in SQL (`matchesRoleOsFilter` mirrors
+    // `buildRoleOsFilterConditions`). Without it this resolver's candidate set
+    // was a strict SUPERSET of the manual one, so an assignment the device page
+    // excludes could outrank — and silently replace — the one it picks. Both
+    // are first-wins-by-hierarchy, so the two entry points then dispatched
+    // different links for the same device: manual backups succeeded while the
+    // nightly sweep shipped a pathless one.
+    //
+    // Filtering HERE (before `seen`) and not after is what makes the two agree:
+    // an excluded device must leave the slot open for the next assignment down
+    // the hierarchy, exactly as the manual resolver's WHERE clause does.
+    const deviceIds = candidates
+      .filter((device) => matchesRoleOsFilter(row, device))
+      .map((device) => device.id);
 
     // First assignment wins per device (sorted is already highest-priority-first)
     const profileId = row.backupSettings?.backupProfileId ?? null;

@@ -362,6 +362,7 @@ import {
   getRefreshRateWindowSeconds,
   beginAuthIssuance,
   finishAuthIssuance,
+  cancelAuthIssuance,
   issueUserSession,
   bindIssuedUserSession,
   recordAuthTransitionLegacyIssuer,
@@ -1045,6 +1046,90 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
   });
 });
 
+describe('POST /login — MFA branch fails closed when Redis is unavailable (#6177)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    enable2faState.value = true;
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'secret',
+      mfaMethod: 'totp',
+      mfaRecoveryCodes: ['scrypt$v1$hash-1'],
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 5 });
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
+    });
+  });
+
+  afterEach(() => {
+    enable2faState.value = false;
+    process.env.E2E_MODE = 'true';
+    vi.mocked(getRedis).mockReset();
+    vi.mocked(getRedis).mockImplementation(() => ({ setex: vi.fn(async () => 'OK') }) as any);
+  });
+
+  it('returns a retryable 503 (not a crash, not a token) when getRedis() is null at the MFA branch', async () => {
+    vi.mocked(getRedis).mockReturnValue(null as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(503);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Service temporarily unavailable' });
+    expect(createTokenPair).not.toHaveBeenCalled();
+    // The admitted issuance capability is released rather than finished.
+    expect(finishAuthIssuance).not.toHaveBeenCalled();
+    expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 503 when Redis flips unavailable between the rate-limit check and the MFA branch', async () => {
+    process.env.E2E_MODE = '';
+    const setexMock = vi.fn(async () => 'OK');
+    // The top-of-handler rate-limit read sees a live client; every later
+    // getRedis() call — including the one in the MFA branch — sees null,
+    // i.e. the connection dropped mid-request.
+    vi.mocked(getRedis)
+      .mockReturnValueOnce({ setex: setexMock } as any)
+      .mockReturnValue(null as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Service temporarily unavailable' });
+    expect(setexMock).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 without a tempToken when the pending-record write rejects (e.g. Redis OOM under noeviction)', async () => {
+    const setexMock = vi.fn(async () => {
+      throw new Error("OOM command not allowed when used memory > 'maxmemory'.");
+    });
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(setexMock).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Service temporarily unavailable' });
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () => {
   async function postRefresh() {
     return loginRoutes.request('/refresh', {
@@ -1481,6 +1566,83 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
 // #3696: per-refresh-token-FAMILY rate limiting. Every other describe block
 // in this file sets E2E_MODE=true, which skips this branch entirely — this
 // suite must turn it off so the code under test actually runs.
+// The `mfa` claim is the ONLY input to requireMfa()/hasSatisfiedMfa(). Login
+// sets it from the effective MFA policy (see the SR2-05 block above); refresh
+// must carry that assurance forward byte-for-byte — a refresh can never turn a
+// policy-locked (mfa:false) session into an assured one, and must not drop
+// assurance a factor proof already earned.
+describe('POST /refresh — mfa assurance is carried forward, never elevated', () => {
+  async function postRefresh(mfa: boolean) {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-42',
+      aep: 3,
+      mep: 1,
+      mfa,
+    } as any);
+    return loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breeze-auth-transition': 'v1' },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    enable2faState.value = true;
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      status: 'active',
+      authEpoch: 3,
+      mfaEpoch: 1,
+    }]) as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 1 });
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    } as any);
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+  });
+
+  afterEach(() => {
+    enable2faState.value = false;
+  });
+
+  it('mints mfa:false when the refresh token carried mfa:false (policy-locked session stays locked)', async () => {
+    const res = await postRefresh(false);
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false }),
+      expect.anything()
+    );
+  });
+
+  it('mints mfa:true when the refresh token carried mfa:true (earned assurance is not dropped)', async () => {
+    const res = await postRefresh(true);
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true }),
+      expect.anything()
+    );
+  });
+});
+
 describe('POST /refresh — per-family rate limiting (#3696)', () => {
   function postRefresh() {
     return loginRoutes.request('/refresh', {

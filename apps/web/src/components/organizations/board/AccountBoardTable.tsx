@@ -103,7 +103,12 @@ export function AccountBoardTable({
       tabIndex={rowTabIndex(row.org)}
       title={row.org.name}
       onKeyDown={(event) => onRowKeyDown(event, index)}
-      onClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+        event.preventDefault();
+        onOpenRecord(row.org);
+      }}
       className="block max-w-xs truncate text-sm font-medium hover:underline"
     >
       {row.org.name}

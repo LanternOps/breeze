@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import crypto from 'node:crypto';
 import {
   AttestationApplicationId,

@@ -6,6 +6,7 @@ import {
   backupVerifications as backupVerificationsTable,
   devices,
 } from '../../db/schema';
+import { createAuditLogAsync } from '../../services/auditService';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupProviderConfig, resolveBackupDestinationError, type BackupProviderConfig } from '../../services/backupProviderConfig';
 import { queueCommandForExecution } from '../../services/commandQueue';
@@ -257,13 +258,22 @@ function listBackupVerificationsFromMemory(orgId: string, filters: VerificationF
   return typeof filters.limit === 'number' ? rows.slice(0, filters.limit) : rows;
 }
 
+const MAX_LIST_FAILURE_REASON_LENGTH = 200;
+
 export function toVerificationListItem(row: BackupVerification): BackupVerification {
+  // Verification details are agent-controlled and can contain restore paths,
+  // failed-file names, command identifiers, and raw result internals. List
+  // consumers only get the simulated-evidence marker plus, for failed rows, a
+  // whitespace-normalized, length-capped `reason` string (never other keys).
+  const details: Record<string, unknown> = {};
+  if (row.details?.simulated === true) details.simulated = true;
+  if (row.status === 'failed' && typeof row.details?.reason === 'string') {
+    const reason = row.details.reason.replace(/\s+/g, ' ').trim().slice(0, MAX_LIST_FAILURE_REASON_LENGTH);
+    if (reason) details.reason = reason;
+  }
   return {
     ...row,
-    // Verification details are agent-controlled and can contain restore paths,
-    // failed-file names, command identifiers, and raw result internals. Every
-    // current list consumer only needs the simulated-evidence marker.
-    details: row.details?.simulated === true ? { simulated: true } : null,
+    details: Object.keys(details).length > 0 ? details : null,
   };
 }
 
@@ -711,10 +721,43 @@ async function runBackupVerificationInternal(
       provider: providerConfig.provider,
       providerConfig: providerConfig.providerConfig,
     },
-    { userId: input.requestedBy || undefined }
+    { userId: input.requestedBy || undefined, expectedOrgId: input.orgId }
   );
 
   if (dispatchResult.error) {
+    // The queue deliberately makes an org mismatch indistinguishable from a
+    // missing device. Record the revoked pairing without revealing its new owner.
+    if (dispatchResult.error === 'Device not found') {
+      const reason = 'device_org_changed';
+      console.warn('[backupVerification] refusing dispatch:', { deviceId: input.deviceId, orgId: input.orgId, reason });
+      const verification = addBackupVerification({
+        orgId: input.orgId,
+        deviceId: input.deviceId,
+        backupJobId: backupJob.id,
+        snapshotId,
+        verificationType: input.verificationType,
+        status: 'failed',
+        startedAt: now,
+        completedAt: new Date().toISOString(),
+        filesVerified: 0,
+        filesFailed: 0,
+        details: { source: input.source, requestedBy: input.requestedBy ?? null, reason },
+      }, input.orgId);
+      await persistVerificationToDb(verification);
+      await createAuditLogAsync({
+        orgId: input.orgId,
+        actorType: input.requestedBy ? 'user' : 'system',
+        actorId: input.requestedBy || '00000000-0000-0000-0000-000000000000',
+        action: 'backup.verification_failed',
+        resourceType: 'device',
+        resourceId: input.deviceId,
+        result: 'failure',
+        errorMessage: reason,
+        details: { reason, verificationId: verification.id, backupJobId: backupJob.id },
+      });
+      recordBackupDispatchFailure('backup_verification', reason);
+      throw new BackupVerificationDispatchError(dispatchResult.error, 409);
+    }
     recordBackupDispatchFailure(
       'backup_verification',
       dispatchResult.error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed'

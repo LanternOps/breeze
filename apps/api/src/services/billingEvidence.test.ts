@@ -37,19 +37,23 @@ const serviceMocks = vi.hoisted(() => ({
   getOwnedInvoiceOr404: vi.fn(),
   requireInvoiceAccess: vi.fn(),
   getOwnedContractOr404: vi.fn(),
+  requireWholeContractSiteAccess: vi.fn(),
 }));
 vi.mock('./invoiceService', () => ({
   getOwnedInvoiceOr404: serviceMocks.getOwnedInvoiceOr404,
   requireInvoiceAccess: serviceMocks.requireInvoiceAccess,
 }));
-vi.mock('./contractService', () => ({ getOwnedContractOr404: serviceMocks.getOwnedContractOr404 }));
+vi.mock('./contractService', () => ({
+  getOwnedContractOr404: serviceMocks.getOwnedContractOr404,
+  requireWholeContractSiteAccess: serviceMocks.requireWholeContractSiteAccess,
+}));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { InvoiceActor } from './invoiceTypes';
 import type { ContractActor } from './contractTypes';
 import { getPeriodOutcome, listInvoiceLineDevices } from './billingEvidence';
 
-const { getOwnedInvoiceOr404, requireInvoiceAccess, getOwnedContractOr404 } = serviceMocks;
+const { getOwnedInvoiceOr404, requireInvoiceAccess, getOwnedContractOr404, requireWholeContractSiteAccess } = serviceMocks;
 const { queryResults, queryLimits, queryPredicates, evidenceRowSelectSpy } = dbMocks;
 
 const INV = '11111111-1111-4111-8111-111111111111';
@@ -162,6 +166,29 @@ describe('getPeriodOutcome (#3205 W07)', () => {
     mockContract(); mockPeriodBelongsToContract(true); mockOutcome(null);
     await expect(getPeriodOutcome(CONTRACT, PERIOD, CONTRACT_ACTOR))
       .resolves.toEqual({ recorded: false, outcome: null });
+  });
+
+  // #6110 finding 4: every number this returns — snapshotDeviceTotal,
+  // uncoveredTotal, flaggedTotal, billedOverageTotal, the per-role digest — is a
+  // WHOLE-CONTRACT aggregate. Org access alone is not enough; the site axis has
+  // to clear the whole document, exactly as computeContractEstimate does.
+  it('runs the WHOLE-CONTRACT site guard, not just the org check', async () => {
+    mockContract(); mockPeriodBelongsToContract(true); mockOutcome(null);
+    const restricted = { ...CONTRACT_ACTOR, allowedSiteIds: ['siteA'] };
+    await getPeriodOutcome(CONTRACT, PERIOD, restricted);
+    expect(requireWholeContractSiteAccess).toHaveBeenCalledWith(restricted, CONTRACT);
+  });
+
+  it('propagates SITE_DENIED from the whole-contract guard before reading any outcome', async () => {
+    mockContract(); mockPeriodBelongsToContract(true); mockOutcome(null);
+    const queuedBefore = queryResults.length;
+    requireWholeContractSiteAccess.mockRejectedValueOnce(
+      Object.assign(new Error('Site access denied'), { status: 403, code: 'SITE_DENIED' }),
+    );
+    await expect(getPeriodOutcome(CONTRACT, PERIOD, { ...CONTRACT_ACTOR, allowedSiteIds: ['siteA'] }))
+      .rejects.toMatchObject({ status: 403, code: 'SITE_DENIED' });
+    // The guard ran BEFORE any outcome read: every queued result is still queued.
+    expect(queryResults.length).toBe(queuedBefore);
   });
 
   it('a recorded period returns the scalars and both jsonb digests', async () => {

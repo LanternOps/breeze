@@ -38,27 +38,29 @@ describe('PurposeStep — Fleet Designer (W01)', () => {
     expect(card).toHaveTextContent('a clean-slate migration, or a quarterly configuration audit');
   });
 
-  it('passes the draft kind through to ModeChoice, disabling shadow for a designer draft', () => {
+  it('passes the draft kind through to ModeChoice, which hides shadow for a designer draft (#6214)', () => {
     setup({ kind: 'designer', mode: 'off' });
-    expect(screen.getByTestId('ai-agent-mode-shadow')).toBeDisabled();
-    expect(screen.getByTestId('ai-agent-mode-shadow-unavailable')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-mode-shadow')).toBeNull();
+    expect(screen.getByTestId('ai-agent-mode-act')).toHaveTextContent('On');
   });
 
-  it('leaves shadow enabled for a non-designer draft', () => {
+  it('leaves shadow offered for a non-designer draft', () => {
     setup({ kind: 'triage', mode: 'off' });
     expect(screen.getByTestId('ai-agent-mode-shadow')).not.toBeDisabled();
   });
 
-  it('patches mode to off when switching to designer while shadow is selected', () => {
+  // #6214: a designer that lands on off sends the operator straight back to
+  // the Fleet Design page to discover the agent is "turned off".
+  it('patches mode to act when switching to designer (from shadow or off)', () => {
     const { patch } = setup({ kind: 'triage', mode: 'shadow' });
     fireEvent.click(screen.getByTestId('ai-agent-kind-card-designer'));
-    expect(patch).toHaveBeenCalledWith({ kind: 'designer', mode: 'off' });
+    expect(patch).toHaveBeenCalledWith({ kind: 'designer', mode: 'act' });
   });
 
-  it('does not touch mode when switching to designer from a non-shadow mode', () => {
-    const { patch } = setup({ kind: 'triage', mode: 'off' });
+  it('falls back to off when switching to designer while act is not offered to this tenant', () => {
+    const { patch } = setup({ kind: 'triage', mode: 'shadow' }, { actSupported: false });
     fireEvent.click(screen.getByTestId('ai-agent-kind-card-designer'));
-    expect(patch).toHaveBeenCalledWith({ kind: 'designer' });
+    expect(patch).toHaveBeenCalledWith({ kind: 'designer', mode: 'off' });
   });
 
   it('does not touch mode when switching between two non-designer kinds from shadow', () => {

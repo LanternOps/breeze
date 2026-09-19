@@ -32,6 +32,7 @@ const CAPABILITY_LABELS: Record<TrustDenial['capability'], string> = {
   device_execute: 'Script execution',
   installer_distribute: 'Installer distribution',
   agent_enroll: 'Agent enrollment',
+  custom_sending_domain: 'Custom sending domain',
 };
 
 export default function TrustProbationBanner() {

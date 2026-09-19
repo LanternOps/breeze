@@ -198,6 +198,9 @@ describe('m365_disable_user', () => {
 
 describe('m365 user resolution surfaces real failures (not a phantom "user not found")', () => {
   beforeEach(() => {
+    // An earlier test in this file flips the direct-Graph backend on; clearAllMocks
+    // does not reset a mockResolvedValue, so pin the Delegant path explicitly.
+    (hasDirectM365Connection as any).mockResolvedValue(false);
     (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
     (loadConnection as any).mockResolvedValue(activeConn);
   });
@@ -553,5 +556,57 @@ describe('m365_query_* handlers', () => {
       const out = await handlerFor('m365_query_users')({ mode: 'list' }, queryAuth);
       expect(JSON.parse(out)).toEqual({ error: 'Operation failed. Check server logs for details.' });
     });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Site ceiling on M365 WRITE tools (review #6110). Same reasoning as the
+// Google block: these Graph mutations act on the whole customer tenant, so a
+// caller carrying any site or exact-device ceiling has nothing to narrow.
+// ────────────────────────────────────────────────────────────────────────────
+describe('m365 write tools — site ceiling', () => {
+  const siteRestricted = { ...auth, scope: 'organization', allowedSiteIds: ['site-1'] } as any;
+  const deviceBound = { ...auth, scope: 'organization', allowedDeviceIds: ['dev-1'] } as any;
+
+  beforeEach(() => {
+    // An earlier test in this file flips the direct-Graph backend on; clearAllMocks
+    // does not reset a mockResolvedValue, so pin the Delegant path explicitly.
+    (hasDirectM365Connection as any).mockResolvedValue(false);
+    (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
+    (loadConnection as any).mockResolvedValue(activeConn);
+  });
+
+  it('m365_disable_user denies a site-restricted caller before calling Graph', async () => {
+    const out = await m365DisableUserHandler({ userIdentifier: 'u1', reason: 'r' }, siteRestricted, 'sess-1');
+    expect(out).toContain('Site-restricted');
+    expect(invokeDelegantTool).not.toHaveBeenCalled();
+    expect(invokeDirect).not.toHaveBeenCalled();
+  });
+
+  it('m365_disable_user denies a device-bound run', async () => {
+    const out = await m365DisableUserHandler({ userIdentifier: 'u1', reason: 'r' }, deviceBound, 'sess-1');
+    expect(out).toContain('Site-restricted');
+    expect(invokeDelegantTool).not.toHaveBeenCalled();
+  });
+
+  it('m365_reset_password denies a site-restricted caller', async () => {
+    const out = await m365ResetPasswordHandler({ userIdentifier: 'u1', reason: 'r' }, siteRestricted, 'sess-1');
+    expect(out.kind).toBe('error');
+    expect(out.llmText).toContain('Site-restricted');
+    expect(invokeDelegantTool).not.toHaveBeenCalled();
+  });
+
+  it('an unrestricted caller still reaches Graph (no over-blocking)', async () => {
+    (invokeDelegantTool as any).mockResolvedValue({ kind: 'ok', data: {} });
+    const out = await m365DisableUserHandler({ userIdentifier: 'u1', reason: 'r' }, auth, 'sess-1');
+    expect(out).toContain('Disabled');
+    expect(invokeDelegantTool).toHaveBeenCalled();
+  });
+
+  it('READS stay available to a site-restricted caller', async () => {
+    (invokeDelegantTool as any).mockResolvedValue({ kind: 'ok', data: { id: 'u1' } });
+    const out = await m365LookupUserHandler({ userIdentifier: 'u1' }, siteRestricted, 'sess-1');
+    expect(out).toContain('M365 user profile');
+    expect(invokeDelegantTool).toHaveBeenCalled();
   });
 });

@@ -32,6 +32,7 @@ import { RELEASE_LEASE_MS } from '../actionIntents/intentService';
 import {
   resolveIntentApprovers,
   isAgentIntentDecideAuthorized,
+  isOrgWideGovernanceIntent,
 } from '../actionIntents/intentApprovers';
 import { buildAuthContextForIntent } from '../actionIntents/actorContext';
 import {
@@ -43,9 +44,10 @@ import { devices } from '../../db/schema/devices';
 import { checkToolPermission } from '../aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
 import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg } from '../permissions';
+import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
-import { requiredAssurance, type RiskTier, type ApprovalProof } from '@breeze/shared';
+import { PERMISSION_GRANTS, requiredAssurance, type RiskTier, type ApprovalProof } from '@breeze/shared';
 import { scriptProposals } from '../../db/schema/scriptProposals';
 import { loadProposalRow } from '../scriptProposals/queries';
 import { resolveStrictAcknowledgement } from './strictAcknowledgement';
@@ -800,6 +802,54 @@ export async function decideApprovalRequest(
           return { httpStatus: 403, body: { error: 'forbidden' } };
         }
 
+        // SITE CEILING on the APPROVER (audit §1.1) — the decide-side twin of
+        // the raiser gate in services/aiToolsAiAgentGovernance.ts. An org-wide
+        // governance grant (today: manage_ai_agents:authorize_supervised_key)
+        // converts "ask a human" into "run unattended for this ORG": it fans
+        // out across every site, so there is nothing to narrow for a caller
+        // who holds only part of the org. `canMutateOrgWideGovernance` is the
+        // same predicate the raiser and every other org-wide governance write
+        // path uses; `deciderPerms` carries `scope` + `allowedSiteIds`, which
+        // is exactly what it reads. Approve-only, like every check in this
+        // block: a DENY only cancels the action and must stay available.
+        //
+        // The supervised lanes need no equivalent: an agent-originated intent
+        // already fails this closed through `isAgentIntentDecideAuthorized`
+        // (manage_ai_agents has no complete device target, so its target scope
+        // is `indirect`, which admits only site-unrestricted humans), and a
+        // supervised human self-decide re-runs the tool handler — and thus the
+        // raiser gate — at release.
+        const orgWideGovernance = isOrgWideGovernanceIntent(
+          linkedIntent.actionName,
+          linkedIntent.arguments,
+        );
+        if (orgWideGovernance && !canMutateOrgWideGovernance(deciderPerms)) {
+          recordActionIntentEvent({
+            orgId: linkedIntent.orgId,
+            intentId: linkedIntent.id,
+            actionName: linkedIntent.actionName,
+            argumentDigest: linkedIntent.argumentDigest,
+            source: linkedIntent.source,
+            outcome: 'approver_unauthorized',
+            actorId: userId,
+            details: { approvalId: existing.id, errorCode: 'site_ceiling' },
+          });
+          return {
+            httpStatus: 403,
+            body: {
+              error: 'site_ceiling',
+              // Review finding #2: a bare machine token left the web client
+              // with nothing to show but the token itself plus a generic
+              // "Try again" — actively wrong for a non-retryable denial. The
+              // client maps the `error` token to its own copy (never reads
+              // this string for UI), but a `message` gives every OTHER
+              // caller (API consumers, logs) a human-readable reason too.
+              message:
+                'This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.',
+            },
+          };
+        }
+
         // Sole-operator RE-DERIVATION (#2685). Four-eyes for a Tier-3 intent is
         // otherwise decided exactly once, at fan-out
         // (services/actionIntents/intentService.ts), by branch mutual exclusion:
@@ -834,8 +884,36 @@ export async function decideApprovalRequest(
         // WebAuthn challenge. Gated to `approved` only — a deny stays available
         // in every case, since denying only cancels the action.
         if (linkedIntent.requestedByUserId === userId) {
+          // Review finding #3: the SAME filters the fan-out applied
+          // (intentService.ts) — not just the org-wide-governance ceiling, but
+          // ALSO the STRICT-proposal `alsoRequire: scripts:write` narrowing
+          // (W03, #5612, spec §4.5). Passing a different value here than the
+          // fan-out did is the bug this argument exists to prevent: the
+          // re-derivation would either count an approver who cannot decide
+          // (refusing a genuine sole operator with not_sole_approver) or miss
+          // one the fan-out queued (admitting a self-approve that is not
+          // sole). Recomputed here rather than carried from the fan-out
+          // (there is nothing persisted to carry it in) — the inputs
+          // (`actionName === 'run_script'` + the proposal's current
+          // `strictHits`) are exactly what the fan-out itself derived them
+          // from, and are always available at decide time (the STRICT
+          // acknowledgement ceremony below re-loads the same proposal row).
+          let alsoRequire: { resource: string; action: string } | undefined;
+          if (linkedIntent.actionName === 'run_script') {
+            const proposalId = (linkedIntent.arguments as { proposalId?: unknown } | null)
+              ?.proposalId;
+            if (typeof proposalId === 'string' && proposalId.length > 0) {
+              const proposal = await loadProposalRow(proposalId);
+              if (proposal && (proposal.strictHits?.length ?? 0) > 0) {
+                alsoRequire = PERMISSION_GRANTS.SCRIPTS_WRITE;
+              }
+            }
+          }
           const eligibleNow = await runOutsideDbContext(() =>
-            resolveIntentApprovers(linkedIntent!.orgId),
+            resolveIntentApprovers(linkedIntent!.orgId, {
+              requireOrgWideGovernance: orgWideGovernance,
+              alsoRequire,
+            }),
           );
           const othersEligible = eligibleNow.filter((candidate) => candidate !== userId);
           // "ONLY eligible approver" is both halves: nobody else is eligible AND

@@ -1,6 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
+import {
+  SCHEMA_DIR,
+  SERVICES_DIR,
+  aiToolsSources,
+  argCount,
+  blankComments,
+  blankGuardedBlocks,
+  delegatesToGuardedHelper,
+  enclosingWindow,
+  functionBody,
+  matchClose,
+  splitOr,
+  tablesWithColumnIn,
+  walkTs,
+  windowStarts,
+  guardedLocalHelpers as guardedHelpersIn,
+  NON_FLEET_DEVICE_ID_COLUMNS,
+  DEVICE_COLUMN_RE,
+  TARGET_CONTENT_COLUMN_RE,
+} from './__testutils__/aiToolScopeScan';
 
 /**
  * Contract: every AI tool that reads or writes a DEVICE-BEARING table names the
@@ -37,8 +57,6 @@ import { join } from 'path';
  * unguarded call must be deleted, so a fixed site cannot be silently re-broken.
  */
 
-const SERVICES_DIR = __dirname;
-const SCHEMA_DIR = join(__dirname, '..', 'db', 'schema');
 
 /**
  * Identifiers that mean "this handler reasons about the exact-device axis".
@@ -57,65 +75,29 @@ const DEVICE_AXIS_MARKERS = [
   // `allowedDeviceIds` FIRST and only then the site axis
   // (`routes/tickets/siteScope.ts`), so naming it is naming the device axis.
   'deviceInSiteScope',
+  // `aiToolsSiteScope.ts` — applies BOTH axes to a list of device ids
+  // (`auth.allowedDeviceIds` intersection first, then the site allowlist), so
+  // naming it is naming the device axis. Its same-file wrappers (e.g.
+  // `scopedAffectedDevices` in aiToolsIncident.ts) name nothing else, which is
+  // why the cross-file call has to be a marker in its own right.
+  'scopeDeviceIdsToCaller',
+  // `siteCeilingAccess.ts` — `!hasSiteCeiling(auth) && !hasExactDeviceCeiling(auth)`.
+  // The second conjunct IS the device axis: a device-ceilinged caller (every
+  // agent run) is denied the org-wide governance write outright. Already a
+  // SITE marker in the twin suite; listing it here is exact parity, not a
+  // loosening. It gates the WRITE actions of the policy handlers — the
+  // list/get reads in the same handler are deliberately org-scoped on BOTH
+  // axes (org-wide governance config is not device data), which is the same
+  // judgement the site suite makes about the same call sites.
+  'canMutateOrgWideGovernance',
+  'hasExactDeviceCeiling',
 ] as const;
 
 // ---------------------------------------------------------------- utilities
-
-/**
- * Blank out COMMENTS in place, preserving every offset so windows and ordinals
- * stay aligned with the original text. String literals are skipped over (so a
- * `//` inside a URL is not mistaken for a comment) but left intact — the tool
- * names and `required: ['deviceId']` lists that scan (b) reads live in them.
- *
- * Load-bearing: a marker name mentioned in PROSE would otherwise count as a
- * guard. Verified by deleting the real `deviceScopeCondition` call from
- * `buildAgentLogConditions`: the contract stayed green because the comment
- * above it still said "allowedDeviceIds".
- */
-function blankComments(src: string): string {
-  const out = src.split('');
-  let i = 0;
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to && k < out.length; k++) if (out[k] !== '\n') out[k] = ' ';
-  };
-  while (i < src.length) {
-    const two = src.slice(i, i + 2);
-    if (two === '//') { const end = src.indexOf('\n', i); blank(i, end < 0 ? src.length : end); i = end < 0 ? src.length : end; continue; }
-    if (two === '/*') { const end = src.indexOf('*/', i + 2); const stop = end < 0 ? src.length : end + 2; blank(i, stop); i = stop; continue; }
-    const ch = src[i];
-    if (ch === "'" || ch === '"' || ch === '`') {
-      let j = i + 1;
-      while (j < src.length && src[j] !== ch) j += src[j] === '\\' ? 2 : 1;
-      i = j + 1;
-      continue;
-    }
-    i++;
-  }
-  return out.join('');
-}
-
-
-function matchClose(src: string, open: number, o: '(' | '{', c: ')' | '}'): number {
-  let depth = 0;
-  for (let i = open; i < src.length; i++) {
-    if (src[i] === o) depth++;
-    else if (src[i] === c && --depth === 0) return i;
-  }
-  return src.length;
-}
-
-/** Top-level argument count of a `name(...)` call slice. */
-function argCount(call: string): number {
-  const inner = call.slice(call.indexOf('(') + 1, call.lastIndexOf(')'));
-  let depth = 0;
-  let args = 1;
-  for (const ch of inner) {
-    if (ch === '(' || ch === '[') depth++;
-    else if (ch === ')' || ch === ']') depth--;
-    else if (ch === ',' && depth === 0) args++;
-  }
-  return inner.trim() === '' ? 0 : args;
-}
+//
+// The parser itself lives in `__testutils__/aiToolScopeScan.ts`, shared with
+// the SITE-axis twin (`aiToolsSiteScope.contract.test.ts`) so the two axes
+// cannot drift apart. What stays here is device-axis SEMANTICS.
 
 /**
  * True when `window` names the device axis. `deviceSiteDenied` counts only with
@@ -148,95 +130,18 @@ function namesDeviceAxisForTable(window: string, columns: readonly string[]): bo
 }
 
 /**
- * The body of a `function name(...)` declaration that starts at `matchIndex`,
- * by brace matching from the END of the PARAMETER LIST.
- *
- * Load-bearing (#6096 review): the previous `src.indexOf('{', matchIndex)`
- * grabbed the first brace after the NAME, which for a signature carrying an
- * inline object parameter type (`opts: { deviceId?: string; limit: number }`)
- * is the parameter TYPE, not the body. Two consequences, both silent:
- *   - `listMonitorEpisodes` was never verified in `verifiedCrossFileDelegates`
- *     (its "body" was the `opts` type, which names no marker);
- *   - a helper `function f(o: { allowedDeviceIds?: string[] }) {}` with an
- *     EMPTY body counted as guarded, because the marker was in the type.
- * `aiToolsFleet.ts:alertRuleTargetDenied` and
- * `aiToolsMonitoring.ts:assertMonitorSiteAccess` were both misparsed this way.
- */
-function functionBody(src: string, matchIndex: number, headerLength: number): string | null {
-  const parenOpen = src.indexOf('(', matchIndex + headerLength - 1);
-  if (parenOpen < 0) return null;
-  const parenClose = matchClose(src, parenOpen, '(', ')');
-  let i = parenClose + 1;
-  while (i < src.length && /\s/.test(src[i]!)) i++;
-  if (src[i] === ':') {
-    // Skip the return-type annotation. A `{` at depth 0 ends it and opens the
-    // body UNLESS the type has not started yet (`: { device: X } {`) or we sit
-    // right after a type operator, in which case the brace is an object TYPE.
-    i++;
-    let depth = 0;
-    let prev = ':';
-    for (; i < src.length; i++) {
-      const ch = src[i]!;
-      if (/\s/.test(ch)) continue;
-      if (ch === '<' || ch === '(' || ch === '[') { depth++; prev = ch; continue; }
-      if (ch === '>' || ch === ')' || ch === ']') { depth--; prev = ch; continue; }
-      if (ch === '{') {
-        if (depth > 0 || '|&:,='.includes(prev)) { depth++; prev = ch; continue; }
-        break;
-      }
-      if (ch === '}') { depth--; prev = ch; continue; }
-      prev = ch;
-    }
-  }
-  while (i < src.length && /\s/.test(src[i]!)) i++;
-  if (src[i] !== '{') return null;
-  return src.slice(i, matchClose(src, i, '{', '}') + 1);
-}
-
-/**
  * Same-file function DECLARATIONS whose body names the device axis. A handler
  * that delegates its predicate list to one of these (e.g.
  * `buildAgentLogConditions`) is guarded even though the marker is not lexically
- * inside the handler. Declarations only — an arrow-const heuristic matched far
- * too much and would mask real gaps.
+ * inside the handler.
  */
 function guardedLocalHelpers(src: string): string[] {
-  const helpers: string[] = [];
-  const re = /(?:export )?(?:async )?function (\w+)\s*\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(src)) !== null) {
-    const body = functionBody(src, m.index, m[0].length);
-    if (body !== null && namesDeviceAxis(body)) helpers.push(m[1]!);
-  }
-  return helpers;
-}
-
-function delegatesToGuardedHelper(window: string, helpers: readonly string[]): boolean {
-  return helpers.some((h) => new RegExp(`\\b${h}\\s*\\(`).test(window));
+  return guardedHelpersIn(src, namesDeviceAxis);
 }
 
 // ------------------------------------------------- site-axis reachability
 
 const SITE_AXIS_REF = /auth\.(?:allowedSiteIds|canAccessSite)\b/;
-
-/** Split a conditional test on TOP-LEVEL `||`. */
-function splitOr(test: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let last = 0;
-  for (let i = 0; i < test.length; i++) {
-    const ch = test[i]!;
-    if (ch === '(' || ch === '[' || ch === '{') depth++;
-    else if (ch === ')' || ch === ']' || ch === '}') depth--;
-    else if (depth === 0 && ch === '|' && test[i + 1] === '|') {
-      parts.push(test.slice(last, i));
-      i++;
-      last = i + 1;
-    }
-  }
-  parts.push(test.slice(last));
-  return parts.map((p) => p.trim()).filter((p) => p.length > 0);
-}
 
 /**
  * True when the test is true WHENEVER the site axis is absent, regardless of
@@ -257,96 +162,13 @@ function isSiteAbsentTest(test: string): boolean {
     || /^!\s*\(\s*auth\.(?:allowedSiteIds|canAccessSite)(?:\?\.length)?\s*\)$/.test(p));
 }
 
-/** End offset of a braceless statement starting at `i`. */
-function endOfStatement(src: string, i: number): number {
-  let depth = 0;
-  for (let k = i; k < src.length; k++) {
-    const ch = src[k]!;
-    if (ch === '(' || ch === '[' || ch === '{') depth++;
-    else if (ch === ')' || ch === ']' || ch === '}') { if (depth === 0) return k; depth--; }
-    else if (depth === 0 && ch === ';') return k + 1;
-    else if (depth === 0 && ch === '\n') return k;
-  }
-  return src.length;
-}
-
-/** Close offset of the innermost `{ … }` block enclosing `at`. */
-function enclosingBlockEnd(src: string, at: number): number {
-  const stack: number[] = [];
-  for (let i = 0; i < at; i++) {
-    if (src[i] === '{') stack.push(i);
-    else if (src[i] === '}') stack.pop();
-  }
-  const open = stack.pop();
-  if (open === undefined) return src.length;
-  return matchClose(src, open, '{', '}');
-}
-
 /**
  * Blank (offset-preserving) every region that only a SITE-restricted caller
- * reaches, so what survives is what a device-LESS run executes:
- *
- *   1. `if (<test naming auth.allowedSiteIds / auth.canAccessSite>) <consequent>`
- *      → the consequent (brace-matched, or to the end of a braceless
- *      statement). The `else` branch is kept: it IS the device-LESS path.
- *   2. when that test is true whenever the site axis is absent
- *      (`isSiteAbsentTest`) and the consequent is a jump, the REST of the
- *      enclosing block as well — `if (!auth.allowedSiteIds) return false;`
- *      makes everything below it site-only.
- *   3. the consequent of a ternary whose condition names the site axis.
+ * reaches, so what survives is what a device-LESS run executes. See
+ * `blankGuardedBlocks` in the shared scanner for the three rules.
  */
 function blankSiteGuarded(src: string): string {
-  const out = src.split('');
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to && k < out.length; k++) if (out[k] !== '\n') out[k] = ' ';
-  };
-
-  const ifRe = /\bif\s*\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = ifRe.exec(src)) !== null) {
-    const open = src.indexOf('(', m.index);
-    const close = matchClose(src, open, '(', ')');
-    const test = src.slice(open + 1, close);
-    if (!SITE_AXIS_REF.test(test)) continue;
-    let i = close + 1;
-    while (i < src.length && /\s/.test(src[i]!)) i++;
-    const end = src[i] === '{' ? matchClose(src, i, '{', '}') + 1 : endOfStatement(src, i);
-    const consequent = src.slice(i, end);
-    blank(i, end);
-    if (isSiteAbsentTest(test.trim()) && /^\{?\s*(?:return|throw|continue|break)\b/.test(consequent.trim())) {
-      blank(end, enclosingBlockEnd(src, m.index));
-    }
-  }
-
-  const ternRe = /auth\.(?:allowedSiteIds|canAccessSite)\b/g;
-  while ((m = ternRe.exec(src)) !== null) {
-    let depth = 0;
-    for (let i = m.index + m[0].length; i < src.length; i++) {
-      const ch = src[i]!;
-      if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
-      if (ch === ')' || ch === ']' || ch === '}') { if (depth === 0) break; depth--; continue; }
-      if (depth !== 0) continue;
-      if (ch === ';' || ch === ',') break;
-      if (ch === '?') {
-        if (src[i + 1] === '.' || src[i + 1] === '?') { i++; continue; }
-        let d2 = 0;
-        let j = i + 1;
-        for (; j < src.length; j++) {
-          const c2 = src[j]!;
-          if (c2 === '(' || c2 === '[' || c2 === '{') { d2++; continue; }
-          if (c2 === ')' || c2 === ']' || c2 === '}') { if (d2 === 0) break; d2--; continue; }
-          if (d2 !== 0) continue;
-          if (c2 === '?' && src[j + 1] !== '.' && src[j + 1] !== '?') { d2--; continue; }
-          if (c2 === ':') break;
-          if (c2 === ';') break;
-        }
-        blank(i + 1, j);
-        break;
-      }
-    }
-  }
-
-  return out.join('');
+  return blankGuardedBlocks(src, SITE_AXIS_REF, isSiteAbsentTest);
 }
 
 /**
@@ -392,93 +214,34 @@ function verifiedCrossFileDelegates(siteBlanked = false): string[] {
   return verified;
 }
 
-/**
- * Offsets that start a handler-sized window: a tool `handler:`, or any function
- * declaration. A call's window runs from the nearest preceding start to the next
- * one — the enclosing handler, and nothing of its neighbours.
- */
-function windowStarts(src: string): number[] {
-  const starts: number[] = [];
-  const re = /\bhandler:\s*(?:async|safeHandler)|\basync function \w+\s*\(|\bexport (?:async )?function \w+\s*\(|\bfunction \w+\s*\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(src)) !== null) starts.push(m.index);
-  return starts;
-}
-
-function enclosingWindow(src: string, starts: readonly number[], at: number): string {
-  let lo = 0;
-  for (const s of starts) {
-    if (s <= at) lo = s;
-    else break;
-  }
-  let hi = src.length;
-  for (const s of starts) {
-    if (s > at) { hi = s; break; }
-  }
-  return src.slice(lo, hi);
-}
-
-function walkTs(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const p = join(dir, entry);
-    if (statSync(p).isDirectory()) out.push(...walkTs(p));
-    else if (p.endsWith('.ts') && !p.includes('.test.')) out.push(p);
-  }
-  return out;
-}
-
-const AI_TOOLS_SOURCES = readdirSync(SERVICES_DIR)
-  .filter((f) => /^aiTools.*\.ts$/.test(f) && !f.includes('.test.'))
-  .sort();
-
-/**
- * `*DeviceId` columns that do NOT point at the RMM fleet `devices` table, so a
- * table carrying one is not device-bearing for this axis.
- *   - `mobileDeviceId`      → `mobileDevices` (MDM enrolment, own axis)
- *   - `authenticatorDeviceId` → an approver's authenticator, not a managed host
- *   - `breezeDeviceId` / `azureAdDeviceId` → M365 sync staging rows, matched to
- *     a device later; the rows are org-keyed and not agent-reachable
- *   - `unifiDeviceId` / `connectedDeviceId` → UniFi vendor ids (text), not FKs
- *   - `possibleReplacementOfDeviceId` → a self-pointer ON `devices`; that
- *     table's own axis is `id`, not this hint column
- */
-const NON_FLEET_DEVICE_ID_COLUMNS: ReadonlySet<string> = new Set([
-  'mobileDeviceId',
-  'authenticatorDeviceId',
-  'breezeDeviceId',
-  'azureAdDeviceId',
-  'unifiDeviceId',
-  'connectedDeviceId',
-  'possibleReplacementOfDeviceId',
-]);
+const AI_TOOLS_SOURCES = aiToolsSources();
 
 /**
  * Exported Drizzle tables in `src` that declare a fleet-device column, mapped to
- * the column names found.
+ * the column names found. The exclusion set and the column pattern are shared
+ * with the site suite (`__testutils__/aiToolScopeScan.ts`) — see their
+ * docstrings for why each spelling is in or out.
  *
- * Load-bearing (#6096 review): the previous `/\bdeviceId:\s/` was blind to
+ * Load-bearing (#6096 review): a plain `/\\bdeviceId:\\s/` was blind to
  * `linkedDeviceId`, `collectorDeviceId`, `scopeDeviceId` and `sourceDeviceId`,
- * so e.g. `discoveredAssets` was not device-bearing at all and `aiToolsNetwork.ts`
- * passed the whole contract with no device axis anywhere.
+ * so e.g. `discoveredAssets` was not device-bearing at all and
+ * `aiToolsNetwork.ts` passed the whole contract with no device axis anywhere.
  */
 function deviceBearingTablesIn(src: string): Map<string, string[]> {
-  const tables = new Map<string, string[]>();
-  const re = /export const (\w+)\s*=\s*pgTable\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(src)) !== null) {
-    const open = src.indexOf('(', m.index + m[0].length - 1);
-    const body = src.slice(open, matchClose(src, open, '(', ')'));
-    const colRe = /\b(\w*[Dd]eviceId):\s/g;
-    const cols = new Set<string>();
-    let c: RegExpExecArray | null;
-    while ((c = colRe.exec(body)) !== null) {
-      const col = c[1]!;
-      if (!NON_FLEET_DEVICE_ID_COLUMNS.has(col)) cols.add(col);
-    }
-    if (cols.size > 0) tables.set(m[1]!, [...cols]);
+  // `TARGET_CONTENT_COLUMN_RE` is the SECOND signal, adopted from the site
+  // suite by the #6110 review. `DEVICE_COLUMN_RE` is singular-only
+  // (`/\w*[Dd]eviceId:\s/`), so every table whose device attribution is an
+  // ARRAY or a jsonb target descriptor — `software_policies.target_ids`,
+  // `peripheral_policies.target_ids`, `incidents.affected_devices` — was
+  // invisible to this suite while the site twin had been scanning them all
+  // along. Widening it produced 24 hits, 23 of which resolved to guards this
+  // suite's marker list simply did not name (see the three additions above);
+  // the one residue is baselined below with its reason.
+  const out = tablesWithColumnIn(src, DEVICE_COLUMN_RE, NON_FLEET_DEVICE_ID_COLUMNS);
+  for (const [t, cols] of tablesWithColumnIn(src, TARGET_CONTENT_COLUMN_RE, NON_FLEET_DEVICE_ID_COLUMNS)) {
+    out.set(t, [...new Set([...(out.get(t) ?? []), ...cols])]);
   }
-  return tables;
+  return out;
 }
 
 function deviceBearingTables(): Map<string, string[]> {
@@ -509,17 +272,20 @@ const DEVICE_TABLE_BASELINE: readonly string[] = [
   // itself name the device axis. Reviewed one by one; none is endorsed as
   // "doesn't need the axis" — they are the residue this PR did not own.
   //
-  // `findAlertWithAccess`: resolves one alert by id on the org axis; every
-  // caller re-checks the alert's device before acting.
-  'aiTools.ts:alerts#0',
   // `markBackupJobDispatchFailed` / `markRestoreJobFailed`: internal status
   // writes keyed by a job id the same handler just created — no caller input.
   'aiToolsBackup.ts:backupJobs#0',
   'aiToolsBackup.ts:restoreJobs#0',
   'aiToolsBackupVm.ts:restoreJobs#0',
-  // `manage_software_policy` delete: cascades compliance rows by policyId after
-  // the policy row itself was authorised — device-fan-out, not a device read.
-  'aiToolsCompliance.ts:softwareComplianceStatus#1',
+  // `create_incident`'s INSERT writes `affectedDevices` straight from
+  // `input.affectedDeviceIds`, and the tool declares
+  // `deviceArgs: ['affectedDeviceIds']`, so `executeTool` → `enforceDeviceArgs`
+  // → `verifyDeviceAccess` (org + exact-device + site) has already run over
+  // every id before the handler is entered; omitting the argument creates an
+  // incident with no affected devices. Same reasoning, same call site, as the
+  // site twin's `aiToolsIncident.ts:incidents#1` exception. Surfaced by the
+  // `TARGET_CONTENT_COLUMN_RE` widening, not by a source regression.
+  'aiToolsIncident.ts:incidents#1',
   // `query_psa_status`: counts ticket mappings for an already-authorised PSA
   // connection id; the count is org-level, but it is not device-narrowed.
   'aiToolsIntegrations.ts:psaTicketMappings#0',
@@ -571,6 +337,12 @@ describe('contract: AI tools touching a device-bearing table name the device axi
     // The widened column scan must keep seeing the non-`deviceId` spellings that
     // used to be invisible (#6096 review hole 2).
     expect(DEVICE_TABLES.get('discoveredAssets')).toContain('linkedDeviceId');
+    // …and the CONTENT signal adopted from the site suite (#6110 review 1):
+    // tables whose only device attribution is an array / jsonb target
+    // descriptor, invisible to the singular `DEVICE_COLUMN_RE`.
+    expect(DEVICE_TABLES.get('softwarePolicies')).toContain('targetIds');
+    expect(DEVICE_TABLES.get('peripheralPolicies')).toContain('targetIds');
+    expect(DEVICE_TABLES.get('incidents')).toContain('affectedDevices');
   });
 
   it('no call site outside the frozen baseline', () => {
@@ -881,5 +653,27 @@ describe('scanner: device-bearing column detection', () => {
     expect([...found.keys()].sort()).toEqual(['assets', 'unifiPorts']);
     expect(found.get('assets')).toEqual(['linkedDeviceId']);
     expect(found.get('unifiPorts')).toEqual(['collectorDeviceId']);
+  });
+
+  it('sees ARRAY / jsonb target columns the singular pattern misses', () => {
+    // The #6110 review hole: `deviceIds:` does NOT match `/\w*[Dd]eviceId:\s/`,
+    // so a table attributed only through its content was never scanned here.
+    const found = deviceBearingTablesIn(`
+      export const policies = pgTable('policies', {
+        targetType: varchar('target_type'),
+        targetIds: jsonb('target_ids').$type<string[]>(),
+      });
+      export const incidents = pgTable('incidents', {
+        affectedDevices: jsonb('affected_devices').$type<string[]>(),
+      });
+      export const proposals = pgTable('proposals', {
+        targetDeviceIds: jsonb('target_device_ids').$type<string[]>(),
+      });
+      export const plain = pgTable('plain', {
+        name: varchar('name'),
+      });
+    `);
+    expect([...found.keys()].sort()).toEqual(['incidents', 'policies', 'proposals']);
+    expect(found.get('policies')).toEqual(['targetIds']);
   });
 });

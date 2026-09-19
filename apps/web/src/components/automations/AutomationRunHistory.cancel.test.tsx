@@ -166,7 +166,7 @@ describe('Cancel run affordance', () => {
 
   it('a 403 partner-wide denial surfaces a toast rather than a silent no-op', async () => {
     fetchWithAuthMock.mockResolvedValue(
-      jsonResponse({ error: 'Modifying a partner-wide policy requires full partner org access (orgAccess must be "all")' }, 403),
+      jsonResponse({ error: 'Managing partner-wide state requires full partner org access (orgAccess must be "all")' }, 403),
     );
     const user = userEvent.setup();
     render(<AutomationRunHistory runs={[makeRun()]} isOpen onClose={() => {}} permissions={withAutomationsWrite} />);

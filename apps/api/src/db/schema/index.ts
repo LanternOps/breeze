@@ -171,3 +171,4 @@ export * from "./topologyCollections";
 export * from './topologyOperations';
 
 export * from './topologyTemplates';
+export * from './emailSendingDomains';

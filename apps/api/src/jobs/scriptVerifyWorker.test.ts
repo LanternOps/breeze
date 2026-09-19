@@ -1,6 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const addJob = vi.fn();
+const sweepProposals = vi.fn();
+const scheduleReconciliation = vi.fn();
+vi.mock('./scriptVerifyReconciliation', () => ({
+  SCRIPT_VERIFY_RECONCILE_JOB_NAME: 'reconcile',
+  sweepScriptVerifyProposals: (...args: unknown[]) => sweepProposals(...args),
+  scheduleScriptVerifyReconciliation: (...args: unknown[]) => scheduleReconciliation(...args),
+}));
 vi.mock('bullmq', () => ({
   // Function expressions so `new Queue()` / `new Worker()` are constructible.
   Queue: function Queue() { return { add: addJob, close: vi.fn() }; },
@@ -47,7 +54,8 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
-import { runScriptVerifyJob } from './scriptVerifyWorker';
+import { initializeScriptVerifyWorker, processScriptVerifyJob, runScriptVerifyJob, shutdownScriptVerifyWorker } from './scriptVerifyWorker';
+import type { Job } from 'bullmq';
 
 const PROPOSAL = '44444444-4444-4444-8444-444444444444';
 const EXEC = '55555555-5555-4555-8555-555555555555';
@@ -185,5 +193,34 @@ describe('runScriptVerifyJob', () => {
     evaluateVerificationClaim.mockResolvedValue({ outcome: 'verified', evidence: { exitCode: 0 } });
     expect(await runScriptVerifyJob(JOB)).toBe('verified');
     expect(evaluateVerificationClaim).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe('reconciliation lifecycle', () => {
+  it('registers the schedule at worker startup', async () => {
+    try {
+      await initializeScriptVerifyWorker();
+      expect(scheduleReconciliation).toHaveBeenCalledOnce();
+    } finally {
+      await shutdownScriptVerifyWorker();
+    }
+  });
+
+  it('routes scheduled reconciliation jobs without parsing them as execution jobs', async () => {
+    await processScriptVerifyJob({ name: 'reconcile', data: { type: 'reconcile' } } as Job);
+    expect(sweepProposals).toHaveBeenCalledOnce();
+    expect(evaluateVerificationClaim).not.toHaveBeenCalled();
+  });
+
+  it('allows initialization to retry when schedule registration fails', async () => {
+    scheduleReconciliation.mockRejectedValueOnce(new Error('Redis down'));
+    try {
+      await expect(initializeScriptVerifyWorker()).rejects.toThrow('Redis down');
+      await initializeScriptVerifyWorker();
+      expect(scheduleReconciliation).toHaveBeenCalledTimes(2);
+    } finally {
+      await shutdownScriptVerifyWorker();
+    }
   });
 });

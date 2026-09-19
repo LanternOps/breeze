@@ -8,6 +8,8 @@ let deleteRows: unknown[] = [];
 let parseThrows = false;
 let dirGetThrows = false;
 
+const { authOverrides } = vi.hoisted(() => ({ authOverrides: { current: null as Record<string, unknown> | null } }));
+
 vi.mock('../config/env', () => ({ GOOGLE_WORKSPACE_ENABLED: true }));
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
@@ -15,9 +17,15 @@ vi.mock('../services/permissions', () => ({
     ORGS_WRITE: { resource: 'organizations', action: 'write' },
   },
 }));
+// `allowedSiteIds` is left UNDEFINED by default (an unrestricted caller);
+// the site-ceiling suite sets it per-test. Hoisted ref, not a module const —
+// vi.mock factories are hoisted above module initialisation.
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', { scope: 'organization', orgId: 'org-1', user: { id: 'user-1' } });
+    c.set('auth', {
+      scope: 'organization', orgId: 'org-1', user: { id: 'user-1' },
+      ...(authOverrides.current ?? {}),
+    });
     return next();
   }),
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
@@ -49,6 +57,9 @@ vi.mock('../db', () => ({
 import { googleRoutes } from './google';
 import { authMiddleware } from '../middleware/auth';
 import { encryptSecret } from '../services/secretCrypto';
+import { db } from '../db';
+import { getDirectoryClient } from '../services/googleClient';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 
 function app() {
   const a = new Hono();
@@ -67,6 +78,7 @@ const validBody = { customerDomain: 'example.com', adminEmail: 'admin@example.co
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authOverrides.current = null;
   selectRows = []; insertRows = []; deleteRows = [];
   parseThrows = false; dirGetThrows = false;
 });
@@ -147,5 +159,60 @@ describe('google connection routes', () => {
     bare.route('/google', googleRoutes);
     await bare.request('/google/connection');
     expect(authMiddleware).toHaveBeenCalled();
+  });
+});
+
+/**
+ * A Google Workspace connection IS the org's whole Workspace customer: the
+ * domain-wide-delegation service account behind every mutating google_* tool.
+ * Same org-wide governance class as the M365 connection — `organizations:write`
+ * + MFA alone let a site-restricted technician rewire or sever it.
+ */
+describe('google connection routes — org-wide governance site ceiling', () => {
+  it('POST /connection is 403 for a site-restricted caller, before the key is parsed', async () => {
+    authOverrides.current = { allowedSiteIds: ['site-1'] };
+    const res = await app().request('/google/connection', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(getDirectoryClient).not.toHaveBeenCalled();
+    expect(encryptSecret).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('POST /connection is 403 when the ceiling is the EMPTY site list', async () => {
+    authOverrides.current = { allowedSiteIds: [] };
+    const res = await app().request('/google/connection', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /connection is 403 for a site-restricted caller, with no delete issued', async () => {
+    authOverrides.current = { allowedSiteIds: ['site-1'] };
+    const res = await app().request('/google/connection', { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('leaves the UNRESTRICTED write paths unchanged', async () => {
+    insertRows = [storedRow];
+    const created = await app().request('/google/connection', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(validBody),
+    });
+    expect(created.status).toBe(201);
+
+    deleteRows = [storedRow];
+    const removed = await app().request('/google/connection', { method: 'DELETE' });
+    expect(removed.status).toBe(200);
+  });
+
+  it('does NOT gate the read surface', async () => {
+    authOverrides.current = { allowedSiteIds: ['site-1'] };
+    const res = await app().request('/google/connection');
+    expect(res.status).toBe(200);
   });
 });

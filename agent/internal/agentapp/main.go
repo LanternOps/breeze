@@ -494,11 +494,49 @@ func shutdownAgent(comps *agentComponents) {
 
 	clock := newShutdownClock(shutdownBudget)
 
+	// Cancel supervision before publishing intent, but do not wait for any
+	// subsystem before telling the watchdog this is an intentional stop.
+	if comps.supervisorCancel != nil {
+		comps.supervisorCancel()
+	}
+
+	// Write stopping state so the watchdog knows shutdown is intentional.
+	statePath := state.PathInDir(config.ConfigDir())
+	if err := state.Write(statePath, &state.AgentState{
+		Status:    state.StatusStopping,
+		Reason:    state.ReasonUserStop,
+		PID:       os.Getpid(),
+		Version:   version,
+		Timestamp: time.Now(),
+	}); err != nil {
+		log.Warn("failed to write stopping state file", "error", err.Error())
+	}
+
+	// Notify the watchdog of intentional shutdown so it doesn't restart us.
+	//
+	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
+	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
+	// stopped reading its end can park this call for longer than the entire
+	// stop window on its own — the same class of unbounded step as the log
+	// shipper, and enough to exhaust the whole budget before a single core
+	// teardown stage starts. Abandoning it is safe: the stopping-state file
+	// written just above is the durable signal the watchdog reconciles
+	// against, and this notify is only the fast path.
+	if broker := comps.hb.SessionBroker(); broker != nil {
+		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
+			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
+				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
+					Reason: state.ReasonUserStop,
+				})
+			})
+		}
+	}
+
 	// The optional, platform/config-dependent component stops share a
 	// sub-budget so they cannot starve the ungated core teardown below.
 	components := clock.sub(componentStopBudget)
 
-	// Cancel the ETW LUA subscriber FIRST so the kernel-side ETW
+	// Cancel the ETW LUA subscriber before other component waits so the kernel-side ETW
 	// session is closed before any later teardown can time out and
 	// orphan it. Otherwise Breeze-LUA-Discovery stays registered with
 	// the kernel and the next agent restart hits the
@@ -543,46 +581,11 @@ func shutdownAgent(comps *agentComponents) {
 		}
 	}
 
-	// Cancel the watchdog supervisor BEFORE we tell the watchdog the agent
-	// is intentionally stopping. Otherwise the supervisor could race
-	// in-flight and re-start a watchdog the SCM is mid-stop on.
+	// Supervision was cancelled before publishing shutdown intent above.
 	if comps.supervisorCancel != nil {
-		comps.supervisorCancel()
 		if comps.supervisorDone != nil {
 			components.run("watchdog supervisor stop", componentStopStage, func() {
 				<-comps.supervisorDone
-			})
-		}
-	}
-
-	// Write stopping state so the watchdog knows shutdown is intentional.
-	statePath := state.PathInDir(config.ConfigDir())
-	if err := state.Write(statePath, &state.AgentState{
-		Status:    state.StatusStopping,
-		Reason:    state.ReasonUserStop,
-		PID:       os.Getpid(),
-		Version:   version,
-		Timestamp: time.Now(),
-	}); err != nil {
-		log.Warn("failed to write stopping state file", "error", err.Error())
-	}
-
-	// Notify the watchdog of intentional shutdown so it doesn't restart us.
-	//
-	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
-	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
-	// stopped reading its end can park this call for longer than the entire
-	// stop window on its own — the same class of unbounded step as the log
-	// shipper, and enough to exhaust the whole budget before a single core
-	// teardown stage starts. Abandoning it is safe: the stopping-state file
-	// written just above is the durable signal the watchdog reconciles
-	// against, and this notify is only the fast path.
-	if broker := comps.hb.SessionBroker(); broker != nil {
-		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
-			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
-				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
-					Reason: state.ReasonUserStop,
-				})
 			})
 		}
 	}
